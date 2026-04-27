@@ -208,15 +208,18 @@ def insert_chart_from_template(
     etree.SubElement(series, q("Type")).text = "Column"
     etree.SubElement(series, q("Subtype")).text = "Plain"
 
-    # ChartAreas — Default with primary category and value axes.
+    # ChartAreas — Default with primary category and value axes. Per the
+    # RDL XSD, ChartCategoryAxes / ChartValueAxes contain <ChartAxis>
+    # children DIRECTLY; there is no <ChartCategoryAxis>/<ChartValueAxis>
+    # wrapper element. Report Builder's deserializer rejects the wrapped
+    # form with "invalid child element 'ChartCategoryAxis' ... expected
+    # 'ChartAxis'".
     chart_areas = etree.SubElement(chart, q("ChartAreas"))
     chart_area = etree.SubElement(chart_areas, q("ChartArea"), Name="Default")
     cat_axes = etree.SubElement(chart_area, q("ChartCategoryAxes"))
-    cat_axis = etree.SubElement(cat_axes, q("ChartCategoryAxis"))
-    etree.SubElement(cat_axis, q("ChartAxis"), Name="Primary")
+    etree.SubElement(cat_axes, q("ChartAxis"), Name="Primary")
     val_axes = etree.SubElement(chart_area, q("ChartValueAxes"))
-    val_axis = etree.SubElement(val_axes, q("ChartValueAxis"))
-    etree.SubElement(val_axis, q("ChartAxis"), Name="Primary")
+    etree.SubElement(val_axes, q("ChartAxis"), Name="Primary")
 
     # Legend + title.
     legends = etree.SubElement(chart, q("ChartLegends"))

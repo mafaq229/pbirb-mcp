@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from lxml import etree
+
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
@@ -260,6 +262,30 @@ class TestInsertChartTemplate:
         )
         assert series_label is not None
         assert series_label.text == "Amount"
+
+    def test_axes_collection_holds_chart_axis_directly(self, rdl_path):
+        # Regression: ChartCategoryAxes / ChartValueAxes accept <ChartAxis>
+        # children DIRECTLY per the RDL XSD. Wrapping them in
+        # <ChartCategoryAxis>/<ChartValueAxis> is invalid and Report
+        # Builder's deserializer rejects it explicitly.
+        insert_chart_from_template(
+            path=str(rdl_path),
+            name="SalesChart",
+            dataset_name="MainDataset",
+            category_field="ProductName",
+            value_field="Amount",
+            top="3in", left="0.5in", width="5in", height="3in",
+        )
+        doc = RDLDocument.open(rdl_path)
+        chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesChart']")
+        cat_axes = chart.find(f".//{q('ChartArea')}/{q('ChartCategoryAxes')}")
+        val_axes = chart.find(f".//{q('ChartArea')}/{q('ChartValueAxes')}")
+        # Direct children must be ChartAxis only.
+        assert [etree.QName(c).localname for c in list(cat_axes)] == ["ChartAxis"]
+        assert [etree.QName(c).localname for c in list(val_axes)] == ["ChartAxis"]
+        # No invalid intermediate wrappers.
+        assert chart.find(f".//{q('ChartCategoryAxis')}") is None
+        assert chart.find(f".//{q('ChartValueAxis')}") is None
 
     def test_default_chart_type_is_column(self, rdl_path):
         insert_chart_from_template(
