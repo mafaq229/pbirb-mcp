@@ -18,6 +18,7 @@ from pbirb_mcp.ops import (
     reader,
     styling,
     tablix,
+    templates,
     visibility,
 )
 
@@ -692,6 +693,69 @@ def register_all_tools(server: "MCPServer") -> None:
             "additionalProperties": False,
         },
         handler=body.remove_body_item,
+    )
+
+    server.register_tool(
+        name="insert_tablix_from_template",
+        description=(
+            "Build and append a basic Tablix to <Body>/<ReportItems>. One "
+            "column per name in `columns`; header row gets the column "
+            "name as a static label, detail row binds to "
+            "=Fields!<column>.Value. dataset_name must already exist."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "columns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+                "top": {"type": "string"},
+                "left": {"type": "string"},
+                "width": {"type": "string"},
+                "height": {"type": "string"},
+            },
+            "required": [
+                "path", "name", "dataset_name", "columns",
+                "top", "left", "width", "height",
+            ],
+            "additionalProperties": False,
+        },
+        handler=templates.insert_tablix_from_template,
+    )
+    server.register_tool(
+        name="insert_chart_from_template",
+        description=(
+            "Build and append a basic Column chart to <Body>/<ReportItems>. "
+            "Single category axis grouped by category_field; single Y series "
+            "Sum(Fields!<value_field>.Value). dataset_name must already exist. "
+            "Change <Type> post-insert (e.g. to Bar / Line / Pie) by "
+            "editing the chart directly."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "category_field": {"type": "string"},
+                "value_field": {"type": "string"},
+                "top": {"type": "string"},
+                "left": {"type": "string"},
+                "width": {"type": "string"},
+                "height": {"type": "string"},
+            },
+            "required": [
+                "path", "name", "dataset_name", "category_field", "value_field",
+                "top", "left", "width", "height",
+            ],
+            "additionalProperties": False,
+        },
+        handler=templates.insert_chart_from_template,
     )
 
     server.register_tool(
