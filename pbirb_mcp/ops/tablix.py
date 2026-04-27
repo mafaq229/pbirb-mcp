@@ -22,8 +22,8 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.ids import resolve_tablix
-from pbirb_mcp.core.xpath import find_child, find_children, q
+from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
+from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q, qrd
 
 
 # RDL 2016 FilterOperator enumeration.
@@ -170,8 +170,356 @@ def remove_tablix_filter(path: str, tablix_name: str, filter_index: int) -> dict
     return {"tablix": tablix_name, "removed_index": filter_index}
 
 
+# ---- group helpers --------------------------------------------------------
+
+
+def _row_hierarchy_members(tablix: etree._Element) -> etree._Element:
+    """Return the top-level <TablixRowHierarchy>/<TablixMembers> element."""
+    hierarchy = find_child(tablix, "TablixRowHierarchy")
+    if hierarchy is None:
+        # Defensive — every well-formed Tablix has a row hierarchy.
+        hierarchy = etree.SubElement(tablix, q("TablixRowHierarchy"))
+    members = find_child(hierarchy, "TablixMembers")
+    if members is None:
+        members = etree.SubElement(hierarchy, q("TablixMembers"))
+    return members
+
+
+def _find_member_for_group(
+    tablix: etree._Element, group_name: str
+) -> Optional[etree._Element]:
+    for member in tablix.iter(q("TablixMember")):
+        group = find_child(member, "Group")
+        if group is not None and group.get("Name") == group_name:
+            return member
+    return None
+
+
+def _group_names_in_tablix(tablix: etree._Element) -> set[str]:
+    return {
+        g.get("Name")
+        for g in tablix.iter(q("Group"))
+        if g.get("Name") is not None
+    }
+
+
+def _column_count(tablix: etree._Element) -> int:
+    body = find_child(tablix, "TablixBody")
+    cols_root = find_child(body, "TablixColumns") if body is not None else None
+    if cols_root is None:
+        return 0
+    return len(find_children(cols_root, "TablixColumn"))
+
+
+def _build_group_header_row(
+    column_count: int,
+    group_name: str,
+    group_expression: str,
+) -> etree._Element:
+    """Build a TablixRow whose first cell renders the group expression and
+    whose remaining cells are blank textboxes. Textbox names are derived
+    from the group name (``<group>_Header_<col_index>``) — Report Builder
+    enforces report-wide uniqueness, so the caller is responsible for
+    unique group names.
+    """
+    row = etree.Element(q("TablixRow"))
+    height = etree.SubElement(row, q("Height"))
+    height.text = "0.25in"
+    cells_root = etree.SubElement(row, q("TablixCells"))
+    for i in range(column_count):
+        cell = etree.SubElement(cells_root, q("TablixCell"))
+        contents = etree.SubElement(cell, q("CellContents"))
+        textbox_name = f"{group_name}_Header_{i}"
+        tb = etree.SubElement(contents, q("Textbox"), Name=textbox_name)
+        etree.SubElement(tb, q("CanGrow")).text = "true"
+        etree.SubElement(tb, q("KeepTogether")).text = "true"
+        paragraphs = etree.SubElement(tb, q("Paragraphs"))
+        paragraph = etree.SubElement(paragraphs, q("Paragraph"))
+        textruns = etree.SubElement(paragraph, q("TextRuns"))
+        textrun = etree.SubElement(textruns, q("TextRun"))
+        value = etree.SubElement(textrun, q("Value"))
+        # Only the first cell shows the group expression; others stay blank
+        # so the group-header row visually reads as a left-anchored caption.
+        value.text = group_expression if i == 0 else ""
+        etree.SubElement(textrun, q("Style"))
+        etree.SubElement(paragraph, q("Style"))
+        default_name = etree.SubElement(tb, qrd("DefaultName"))
+        default_name.text = textbox_name
+        etree.SubElement(tb, q("Style"))
+    return row
+
+
+# Per RDL XSD, child order inside <TablixMember> is roughly:
+#   KeepWithGroup, RepeatOnNewPage, FixedData, Group, SortExpressions,
+#   TablixHeader, Visibility, HideIfNoRows, KeepTogether, DataElementName,
+#   DataElementOutput, TablixMembers, ID, ...
+# We only ever emit a small subset; this list captures the local-name order
+# we care about so we can place an inserted child at the right position.
+_TABLIX_MEMBER_CHILD_ORDER = (
+    "KeepWithGroup",
+    "RepeatOnNewPage",
+    "FixedData",
+    "Group",
+    "SortExpressions",
+    "TablixHeader",
+    "Visibility",
+    "HideIfNoRows",
+    "KeepTogether",
+    "DataElementName",
+    "DataElementOutput",
+    "TablixMembers",
+)
+
+
+def _insert_member_child(
+    member: etree._Element, new_child: etree._Element
+) -> None:
+    """Insert ``new_child`` into ``member`` respecting the schema-required
+    sibling order. Replaces any existing element of the same local name so
+    callers can use this for both create and replace flows.
+    """
+    new_local = etree.QName(new_child).localname
+    existing = find_child(member, new_local)
+    if existing is not None:
+        member.replace(existing, new_child)
+        return
+
+    new_idx = _TABLIX_MEMBER_CHILD_ORDER.index(new_local)
+    # Find the first existing child whose order index is greater — insert
+    # immediately before it. If none, append.
+    for i, child in enumerate(list(member)):
+        local = etree.QName(child).localname
+        if local in _TABLIX_MEMBER_CHILD_ORDER:
+            if _TABLIX_MEMBER_CHILD_ORDER.index(local) > new_idx:
+                member.insert(i, new_child)
+                return
+    member.append(new_child)
+
+
+# ---- add_row_group --------------------------------------------------------
+
+
+def add_row_group(
+    path: str,
+    tablix_name: str,
+    group_name: str,
+    group_expression: str,
+    parent_group: Optional[str] = None,
+) -> dict[str, Any]:
+    """Wrap the current top-level row hierarchy in a new outer group.
+
+    A new ``<TablixMember>`` is created at the top of the row hierarchy
+    holding ``<Group Name=...>`` and a fresh group-header leaf member; all
+    previously top-level members move underneath it. A matching group-header
+    row is inserted at body row 0 with the group expression in the first
+    cell.
+
+    ``parent_group`` is reserved for nesting a new group beneath an existing
+    one (e.g. add City under Region) — not yet implemented.
+    """
+    if parent_group is not None:
+        raise NotImplementedError(
+            "parent_group nesting is not yet supported; only top-level "
+            "outer-group wrapping is implemented in this commit."
+        )
+
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+
+    if group_name in _group_names_in_tablix(tablix):
+        raise ValueError(
+            f"group name {group_name!r} already exists in tablix {tablix_name!r}"
+        )
+
+    members_root = _row_hierarchy_members(tablix)
+    existing_children = list(members_root)
+
+    # New outer wrapper member:
+    #   <TablixMember>
+    #     <Group Name=...><GroupExpressions><GroupExpression>...
+    #     <TablixMembers>
+    #       <TablixMember><KeepWithGroup>After</KeepWithGroup></TablixMember>  -- group header leaf
+    #       ...existing children moved here...
+    #     </TablixMembers>
+    #   </TablixMember>
+    new_outer = etree.Element(q("TablixMember"))
+    group = etree.SubElement(new_outer, q("Group"), Name=group_name)
+    expr_root = etree.SubElement(group, q("GroupExpressions"))
+    expr_node = etree.SubElement(expr_root, q("GroupExpression"))
+    expr_node.text = group_expression
+
+    inner_members = etree.SubElement(new_outer, q("TablixMembers"))
+    header_leaf = etree.SubElement(inner_members, q("TablixMember"))
+    keep = etree.SubElement(header_leaf, q("KeepWithGroup"))
+    keep.text = "After"
+
+    for child in existing_children:
+        members_root.remove(child)
+        inner_members.append(child)
+
+    members_root.append(new_outer)
+
+    # Body: insert a new row at position 0 for the group header.
+    body = find_child(tablix, "TablixBody")
+    rows_root = find_child(body, "TablixRows")
+    if rows_root is None:
+        rows_root = etree.SubElement(body, q("TablixRows"))
+    new_row = _build_group_header_row(
+        column_count=_column_count(tablix),
+        group_name=group_name,
+        group_expression=group_expression,
+    )
+    rows_root.insert(0, new_row)
+
+    doc.save()
+    return {
+        "tablix": tablix_name,
+        "group": group_name,
+        "expression": group_expression,
+    }
+
+
+# ---- remove_row_group ------------------------------------------------------
+
+
+def remove_row_group(
+    path: str,
+    tablix_name: str,
+    group_name: str,
+) -> dict[str, Any]:
+    """Inverse of :func:`add_row_group` for groups that were added via this
+    tool. Unwraps the group's children back to its parent and removes the
+    matching group-header row at body row 0.
+
+    Refuses to remove the conventional ``Details`` group — a tablix without
+    leaves is not useful, and Report Builder treats Details specially.
+    """
+    if group_name == "Details":
+        raise ValueError(
+            "Details is the conventional leaf group and cannot be removed; "
+            "drop the entire tablix instead if you really mean it."
+        )
+
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+
+    member = _find_member_for_group(tablix, group_name)
+    if member is None:
+        raise ElementNotFoundError(
+            f"group {group_name!r} not found in tablix {tablix_name!r}"
+        )
+
+    inner_members = find_child(member, "TablixMembers")
+    if inner_members is None or len(list(inner_members)) == 0:
+        # Nothing to unwrap — this is a leaf group (e.g. a sibling-style add
+        # we don't yet support). Refuse, since blindly removing would orphan
+        # body rows and leave the tablix in an inconsistent state.
+        raise ValueError(
+            f"group {group_name!r} has no nested children; refusing to "
+            "remove a leaf group automatically."
+        )
+
+    inner_children = list(inner_members)
+    # First inner child is the group-header leaf added by add_row_group.
+    header_leaf, *wrapped = inner_children
+
+    parent_members = member.getparent()
+    member_idx = list(parent_members).index(member)
+
+    # Replace the wrapper at its original position with its wrapped originals.
+    parent_members.remove(member)
+    for offset, child in enumerate(wrapped):
+        inner_members.remove(child)
+        parent_members.insert(member_idx + offset, child)
+
+    # Remove the body row for the group header. Position is row 0 if the
+    # removed group was the top-level outer wrapper (which is all we
+    # currently support adding via add_row_group).
+    body = find_child(tablix, "TablixBody")
+    rows_root = find_child(body, "TablixRows")
+    rows = find_children(rows_root, "TablixRow")
+    if rows:
+        rows_root.remove(rows[0])
+
+    doc.save()
+    return {"tablix": tablix_name, "removed": group_name}
+
+
+# ---- set_group_sort -------------------------------------------------------
+
+
+def set_group_sort(
+    path: str,
+    tablix_name: str,
+    group_name: str,
+    sort_expressions: list[str],
+) -> dict[str, Any]:
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+    member = _find_member_for_group(tablix, group_name)
+    if member is None:
+        raise ElementNotFoundError(
+            f"group {group_name!r} not found in tablix {tablix_name!r}"
+        )
+
+    new_block = etree.Element(q("SortExpressions"))
+    for expr in sort_expressions:
+        sort = etree.SubElement(new_block, q("SortExpression"))
+        value = etree.SubElement(sort, q("Value"))
+        value.text = expr
+
+    _insert_member_child(member, new_block)
+
+    doc.save()
+    return {
+        "tablix": tablix_name,
+        "group": group_name,
+        "sort_expressions": list(sort_expressions),
+    }
+
+
+# ---- set_group_visibility -------------------------------------------------
+
+
+def set_group_visibility(
+    path: str,
+    tablix_name: str,
+    group_name: str,
+    visibility_expression: str,
+    toggle_textbox: Optional[str] = None,
+) -> dict[str, Any]:
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+    member = _find_member_for_group(tablix, group_name)
+    if member is None:
+        raise ElementNotFoundError(
+            f"group {group_name!r} not found in tablix {tablix_name!r}"
+        )
+
+    new_vis = etree.Element(q("Visibility"))
+    hidden = etree.SubElement(new_vis, q("Hidden"))
+    hidden.text = visibility_expression
+    if toggle_textbox is not None:
+        toggle = etree.SubElement(new_vis, q("ToggleItem"))
+        toggle.text = toggle_textbox
+
+    _insert_member_child(member, new_vis)
+
+    doc.save()
+    return {
+        "tablix": tablix_name,
+        "group": group_name,
+        "visibility_expression": visibility_expression,
+        "toggle_textbox": toggle_textbox,
+    }
+
+
 __all__ = [
+    "add_row_group",
     "add_tablix_filter",
     "list_tablix_filters",
+    "remove_row_group",
     "remove_tablix_filter",
+    "set_group_sort",
+    "set_group_visibility",
 ]

@@ -217,6 +217,105 @@ def register_all_tools(server: "MCPServer") -> None:
         handler=tablix.add_tablix_filter,
     )
     server.register_tool(
+        name="add_row_group",
+        description=(
+            "Add a row group that wraps the entire current top-level row "
+            "hierarchy. Inserts a matching group-header row at body row 0 "
+            "with the group expression in the first cell. parent_group "
+            "(nesting under an existing group) is reserved for a future "
+            "commit and currently raises NotImplementedError."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "group_expression": {
+                    "type": "string",
+                    "description": "RDL expression, e.g. =Fields!Region.Value",
+                },
+                "parent_group": {"type": ["string", "null"]},
+            },
+            "required": ["path", "tablix_name", "group_name", "group_expression"],
+            "additionalProperties": False,
+        },
+        handler=tablix.add_row_group,
+    )
+    server.register_tool(
+        name="remove_row_group",
+        description=(
+            "Inverse of add_row_group: unwraps a group's children back to "
+            "its parent hierarchy and removes the matching header row at "
+            "body row 0. Refuses to remove the conventional Details group."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+            },
+            "required": ["path", "tablix_name", "group_name"],
+            "additionalProperties": False,
+        },
+        handler=tablix.remove_row_group,
+    )
+    server.register_tool(
+        name="set_group_sort",
+        description=(
+            "Replace a group's <SortExpressions> with a fresh list. Each "
+            "entry is an RDL expression, e.g. =Fields!Region.Value."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "sort_expressions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": [
+                "path",
+                "tablix_name",
+                "group_name",
+                "sort_expressions",
+            ],
+            "additionalProperties": False,
+        },
+        handler=tablix.set_group_sort,
+    )
+    server.register_tool(
+        name="set_group_visibility",
+        description=(
+            "Set <Visibility> on a group's TablixMember. Accepts a Hidden "
+            "expression and an optional ToggleItem (a textbox name that "
+            "toggles the group expand/collapse)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "visibility_expression": {"type": "string"},
+                "toggle_textbox": {"type": ["string", "null"]},
+            },
+            "required": [
+                "path",
+                "tablix_name",
+                "group_name",
+                "visibility_expression",
+            ],
+            "additionalProperties": False,
+        },
+        handler=tablix.set_group_visibility,
+    )
+
+    server.register_tool(
         name="remove_tablix_filter",
         description=(
             "Remove a filter by index. Filters are anonymous in RDL, so use "
