@@ -15,6 +15,7 @@ from pbirb_mcp.ops import (
     datasource,
     header_footer,
     page,
+    parameters,
     reader,
     styling,
     tablix,
@@ -756,6 +757,75 @@ def register_all_tools(server: "MCPServer") -> None:
             "additionalProperties": False,
         },
         handler=templates.insert_chart_from_template,
+    )
+
+    _STATIC_VALUE_ITEM = {
+        "oneOf": [
+            {"type": "string"},
+            {
+                "type": "object",
+                "properties": {
+                    "value": {"type": "string"},
+                    "label": {"type": "string"},
+                },
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+        ]
+    }
+    server.register_tool(
+        name="set_parameter_available_values",
+        description=(
+            "Set <ValidValues> on a report parameter. source='static' "
+            "writes a list of <ParameterValue> entries (each entry can "
+            "be a string or {value, label} dict); source='query' writes "
+            "a <DataSetReference> to a lookup dataset. Replaces any "
+            "existing <ValidValues> block."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "source": {"type": "string", "enum": ["static", "query"]},
+                "static_values": {
+                    "type": ["array", "null"],
+                    "items": _STATIC_VALUE_ITEM,
+                },
+                "query_dataset": {"type": ["string", "null"]},
+                "query_value_field": {"type": ["string", "null"]},
+                "query_label_field": {"type": ["string", "null"]},
+            },
+            "required": ["path", "name", "source"],
+            "additionalProperties": False,
+        },
+        handler=parameters.set_parameter_available_values,
+    )
+    server.register_tool(
+        name="set_parameter_default_values",
+        description=(
+            "Set <DefaultValue> on a report parameter. source='static' "
+            "writes a <Values> list of expressions; source='query' writes "
+            "a <DataSetReference> with ValueField only (no LabelField — "
+            "defaults are values, not display strings). Replaces existing."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "source": {"type": "string", "enum": ["static", "query"]},
+                "static_values": {
+                    "type": ["array", "null"],
+                    "items": {"type": "string"},
+                },
+                "query_dataset": {"type": ["string", "null"]},
+                "query_value_field": {"type": ["string", "null"]},
+            },
+            "required": ["path", "name", "source"],
+            "additionalProperties": False,
+        },
+        handler=parameters.set_parameter_default_values,
     )
 
     server.register_tool(
