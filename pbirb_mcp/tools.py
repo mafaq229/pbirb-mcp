@@ -9,7 +9,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pbirb_mcp.ops import dataset, datasource, header_footer, page, reader, tablix
+from pbirb_mcp.ops import (
+    dataset,
+    datasource,
+    header_footer,
+    page,
+    reader,
+    tablix,
+    visibility,
+)
 
 if TYPE_CHECKING:
     from pbirb_mcp.server import MCPServer
@@ -549,6 +557,30 @@ def register_all_tools(server: "MCPServer") -> None:
         description="Same as remove_header_item, for <PageFooter>.",
         input_schema=_NAMED_REMOVE_SCHEMA,
         handler=header_footer.remove_footer_item,
+    )
+
+
+    server.register_tool(
+        name="set_element_visibility",
+        description=(
+            "Set <Visibility> on any named ReportItem (Tablix, Textbox, "
+            "Image, Rectangle, Subreport, Chart). For group-level "
+            "visibility use set_group_visibility; for detail-row use "
+            "set_detail_row_visibility. toggle_textbox optionally points "
+            "at a textbox name that toggles expand/collapse."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "element_name": {"type": "string"},
+                "hidden_expression": {"type": "string"},
+                "toggle_textbox": {"type": ["string", "null"]},
+            },
+            "required": ["path", "element_name", "hidden_expression"],
+            "additionalProperties": False,
+        },
+        handler=visibility.set_element_visibility,
     )
 
 
