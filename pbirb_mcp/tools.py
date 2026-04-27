@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pbirb_mcp.ops import reader
+from pbirb_mcp.ops import dataset, reader
 
 if TYPE_CHECKING:
     from pbirb_mcp.server import MCPServer
@@ -61,6 +61,81 @@ def register_all_tools(server: "MCPServer") -> None:
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=reader.get_tablixes,
+    )
+
+    server.register_tool(
+        name="update_dataset_query",
+        description=(
+            "Replace the DAX command text of a named dataset. The full DAX "
+            "expression is accepted verbatim; empty bodies are rejected."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "dax_body": {
+                    "type": "string",
+                    "description": "Full DAX (e.g. EVALUATE TOPN(10, 'Sales')).",
+                },
+            },
+            "required": ["path", "dataset_name", "dax_body"],
+            "additionalProperties": False,
+        },
+        handler=dataset.update_dataset_query,
+    )
+    server.register_tool(
+        name="add_query_parameter",
+        description=(
+            "Add a <QueryParameter> binding to a dataset's query. Use to wire "
+            "report parameters into DAX (e.g. =Parameters!DateFrom.Value)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "name": {"type": "string"},
+                "value_expression": {"type": "string"},
+            },
+            "required": ["path", "dataset_name", "name", "value_expression"],
+            "additionalProperties": False,
+        },
+        handler=dataset.add_query_parameter,
+    )
+    server.register_tool(
+        name="update_query_parameter",
+        description="Change the value expression of an existing query parameter.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "name": {"type": "string"},
+                "value_expression": {"type": "string"},
+            },
+            "required": ["path", "dataset_name", "name", "value_expression"],
+            "additionalProperties": False,
+        },
+        handler=dataset.update_query_parameter,
+    )
+    server.register_tool(
+        name="remove_query_parameter",
+        description=(
+            "Remove a query parameter from a dataset. Cleans up the empty "
+            "<QueryParameters/> block when removing the last one."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "dataset_name", "name"],
+            "additionalProperties": False,
+        },
+        handler=dataset.remove_query_parameter,
     )
 
 
