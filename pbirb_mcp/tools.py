@@ -13,6 +13,7 @@ from pbirb_mcp.ops import (
     body,
     dataset,
     datasource,
+    embedded_images,
     header_footer,
     page,
     parameters,
@@ -853,6 +854,71 @@ def register_all_tools(server: "MCPServer") -> None:
             "additionalProperties": False,
         },
         handler=parameters.update_parameter_advanced,
+    )
+
+    server.register_tool(
+        name="add_embedded_image",
+        description=(
+            "Read a real image file off disk, base64-encode it, and store "
+            "it under <EmbeddedImages>. Reference it later with "
+            "image_source='Embedded' + value=<name>. Supported MIME types: "
+            "image/bmp, image/gif, image/jpeg, image/png, image/x-png."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "mime_type": {
+                    "type": "string",
+                    "enum": [
+                        "image/bmp",
+                        "image/gif",
+                        "image/jpeg",
+                        "image/png",
+                        "image/x-png",
+                    ],
+                },
+                "image_path": {
+                    "type": "string",
+                    "description": "Filesystem path to the source image.",
+                },
+            },
+            "required": ["path", "name", "mime_type", "image_path"],
+            "additionalProperties": False,
+        },
+        handler=embedded_images.add_embedded_image,
+    )
+    server.register_tool(
+        name="list_embedded_images",
+        description=(
+            "List embedded images in the report by name and MIME type. "
+            "Returns an empty list when <EmbeddedImages> is absent."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=embedded_images.list_embedded_images,
+    )
+    server.register_tool(
+        name="remove_embedded_image",
+        description=(
+            "Remove a named embedded image. Drops the empty "
+            "<EmbeddedImages/> block when removing the last entry."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=embedded_images.remove_embedded_image,
     )
 
     server.register_tool(
