@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pbirb_mcp.ops import (
+    body,
     dataset,
     datasource,
     header_footer,
@@ -614,6 +615,83 @@ def register_all_tools(server: "MCPServer") -> None:
             "additionalProperties": False,
         },
         handler=styling.set_textbox_style,
+    )
+
+    _BODY_TEXTBOX_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "name": {"type": "string"},
+            "text": {
+                "type": "string",
+                "description": "Static text or RDL expression (=...).",
+            },
+            "top": {"type": "string"},
+            "left": {"type": "string"},
+            "width": {"type": "string"},
+            "height": {"type": "string"},
+        },
+        "required": ["path", "name", "text", "top", "left", "width", "height"],
+        "additionalProperties": False,
+    }
+    _BODY_IMAGE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "name": {"type": "string"},
+            "image_source": {
+                "type": "string",
+                "enum": ["External", "Embedded", "Database"],
+            },
+            "value": {"type": "string"},
+            "top": {"type": "string"},
+            "left": {"type": "string"},
+            "width": {"type": "string"},
+            "height": {"type": "string"},
+        },
+        "required": [
+            "path", "name", "image_source", "value",
+            "top", "left", "width", "height",
+        ],
+        "additionalProperties": False,
+    }
+    server.register_tool(
+        name="add_body_textbox",
+        description=(
+            "Add a Textbox to <Body>/<ReportItems>. text accepts static "
+            "strings or RDL expressions (e.g. =Globals!ReportName). "
+            "Coexists with the existing tablix; rejects names already in use."
+        ),
+        input_schema=_BODY_TEXTBOX_SCHEMA,
+        handler=body.add_body_textbox,
+    )
+    server.register_tool(
+        name="add_body_image",
+        description=(
+            "Add an Image to <Body>/<ReportItems>. image_source: "
+            "External (URL), Embedded (EmbeddedImage Name), Database "
+            "(=Fields!Photo.Value)."
+        ),
+        input_schema=_BODY_IMAGE_SCHEMA,
+        handler=body.add_body_image,
+    )
+    server.register_tool(
+        name="remove_body_item",
+        description=(
+            "Remove a named item (Textbox, Image, or Tablix) from "
+            "<Body>/<ReportItems>. Destructive but explicit — raises if "
+            "the name doesn't match anything."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=body.remove_body_item,
     )
 
     server.register_tool(
