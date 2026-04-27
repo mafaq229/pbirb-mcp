@@ -514,12 +514,90 @@ def set_group_visibility(
     }
 
 
+# ---- set_detail_row_visibility --------------------------------------------
+
+
+def set_detail_row_visibility(
+    path: str,
+    tablix_name: str,
+    expression: str,
+    toggle_textbox: Optional[str] = None,
+) -> dict[str, Any]:
+    """Set ``<Visibility>`` on the ``Details`` group's TablixMember.
+
+    The detail group is the conventional leaf in a Power BI paginated
+    tablix — Report Builder always emits it as ``<Group Name="Details" />``.
+    Hiding it is how callers conditionally suppress the per-row body
+    without restructuring the hierarchy.
+    """
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+    member = _find_member_for_group(tablix, "Details")
+    if member is None:
+        raise ElementNotFoundError(
+            f"tablix {tablix_name!r} has no Details group"
+        )
+
+    new_vis = etree.Element(q("Visibility"))
+    hidden = etree.SubElement(new_vis, q("Hidden"))
+    hidden.text = expression
+    if toggle_textbox is not None:
+        toggle = etree.SubElement(new_vis, q("ToggleItem"))
+        toggle.text = toggle_textbox
+
+    _insert_member_child(member, new_vis)
+
+    doc.save()
+    return {
+        "tablix": tablix_name,
+        "expression": expression,
+        "toggle_textbox": toggle_textbox,
+    }
+
+
+# ---- set_row_height -------------------------------------------------------
+
+
+def set_row_height(
+    path: str,
+    tablix_name: str,
+    row_index: int,
+    height: str,
+) -> dict[str, Any]:
+    if not height or not height.strip():
+        raise ValueError("height must be a non-empty RDL size (e.g. '0.25in', '1cm')")
+
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+    body = find_child(tablix, "TablixBody")
+    rows_root = find_child(body, "TablixRows") if body is not None else None
+    rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
+    if row_index < 0 or row_index >= len(rows):
+        raise IndexError(
+            f"tablix {tablix_name!r} has no row at index {row_index} "
+            f"(rows={len(rows)})"
+        )
+
+    row = rows[row_index]
+    height_node = find_child(row, "Height")
+    if height_node is None:
+        # Per RDL XSD, <Height> is the first child of <TablixRow>.
+        height_node = etree.Element(q("Height"))
+        row.insert(0, height_node)
+    height_node.text = height
+
+    doc.save()
+    return {"tablix": tablix_name, "row_index": row_index, "height": height}
+
+
 __all__ = [
     "add_row_group",
     "add_tablix_filter",
     "list_tablix_filters",
     "remove_row_group",
     "remove_tablix_filter",
+    "set_detail_row_visibility",
     "set_group_sort",
     "set_group_visibility",
+    "set_row_height",
 ]

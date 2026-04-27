@@ -316,6 +316,46 @@ def register_all_tools(server: "MCPServer") -> None:
     )
 
     server.register_tool(
+        name="set_detail_row_visibility",
+        description=(
+            "Set <Visibility> on the tablix's Details group, optionally with "
+            "a ToggleItem textbox name. Use to hide detail rows by expression "
+            "without restructuring the row hierarchy."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "expression": {"type": "string"},
+                "toggle_textbox": {"type": ["string", "null"]},
+            },
+            "required": ["path", "tablix_name", "expression"],
+            "additionalProperties": False,
+        },
+        handler=tablix.set_detail_row_visibility,
+    )
+    server.register_tool(
+        name="set_row_height",
+        description=(
+            "Set the Height of the Nth body row (0-indexed) in a tablix. "
+            "Accepts any RDL size string ('0.25in', '1cm', '12pt')."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "row_index": {"type": "integer", "minimum": 0},
+                "height": {"type": "string"},
+            },
+            "required": ["path", "tablix_name", "row_index", "height"],
+            "additionalProperties": False,
+        },
+        handler=tablix.set_row_height,
+    )
+
+    server.register_tool(
         name="remove_tablix_filter",
         description=(
             "Remove a filter by index. Filters are anonymous in RDL, so use "
