@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pbirb_mcp.ops import dataset, datasource, page, reader, tablix
+from pbirb_mcp.ops import dataset, datasource, header_footer, page, reader, tablix
 
 if TYPE_CHECKING:
     from pbirb_mcp.server import MCPServer
@@ -420,6 +420,135 @@ def register_all_tools(server: "MCPServer") -> None:
             "additionalProperties": False,
         },
         handler=page.set_page_orientation,
+    )
+
+
+    _SECTION_FLAGS_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "height": {"type": ["string", "null"]},
+            "print_on_first_page": {"type": ["boolean", "null"]},
+            "print_on_last_page": {"type": ["boolean", "null"]},
+        },
+        "required": ["path"],
+        "additionalProperties": False,
+    }
+    _TEXTBOX_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "name": {"type": "string"},
+            "text": {
+                "type": "string",
+                "description": "Static text or RDL expression (=...).",
+            },
+            "top": {"type": "string"},
+            "left": {"type": "string"},
+            "width": {"type": "string"},
+            "height": {"type": "string"},
+        },
+        "required": ["path", "name", "text", "top", "left", "width", "height"],
+        "additionalProperties": False,
+    }
+    _IMAGE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "name": {"type": "string"},
+            "image_source": {
+                "type": "string",
+                "enum": ["External", "Embedded", "Database"],
+            },
+            "value": {
+                "type": "string",
+                "description": (
+                    "URL for External, embedded-image name for Embedded, "
+                    "or =Fields!X.Value for Database."
+                ),
+            },
+            "top": {"type": "string"},
+            "left": {"type": "string"},
+            "width": {"type": "string"},
+            "height": {"type": "string"},
+        },
+        "required": [
+            "path", "name", "image_source", "value",
+            "top", "left", "width", "height",
+        ],
+        "additionalProperties": False,
+    }
+    _NAMED_REMOVE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "name": {"type": "string"},
+        },
+        "required": ["path", "name"],
+        "additionalProperties": False,
+    }
+
+    server.register_tool(
+        name="set_page_header",
+        description=(
+            "Create or update <PageHeader>: height plus PrintOnFirstPage / "
+            "PrintOnLastPage flags. All fields optional — only what's "
+            "passed gets written."
+        ),
+        input_schema=_SECTION_FLAGS_SCHEMA,
+        handler=header_footer.set_page_header,
+    )
+    server.register_tool(
+        name="set_page_footer",
+        description="Same as set_page_header, for <PageFooter>.",
+        input_schema=_SECTION_FLAGS_SCHEMA,
+        handler=header_footer.set_page_footer,
+    )
+    server.register_tool(
+        name="add_header_textbox",
+        description=(
+            "Add a Textbox to <PageHeader>/<ReportItems>. text accepts "
+            "static strings or RDL expressions (=Parameters!DateFrom.Value)."
+        ),
+        input_schema=_TEXTBOX_SCHEMA,
+        handler=header_footer.add_header_textbox,
+    )
+    server.register_tool(
+        name="add_footer_textbox",
+        description="Same as add_header_textbox, for <PageFooter>.",
+        input_schema=_TEXTBOX_SCHEMA,
+        handler=header_footer.add_footer_textbox,
+    )
+    server.register_tool(
+        name="add_header_image",
+        description=(
+            "Add an Image to <PageHeader>/<ReportItems>. image_source is "
+            "External (URL in value), Embedded (EmbeddedImage Name in value), "
+            "or Database (=Fields!Photo.Value-style expression)."
+        ),
+        input_schema=_IMAGE_SCHEMA,
+        handler=header_footer.add_header_image,
+    )
+    server.register_tool(
+        name="add_footer_image",
+        description="Same as add_header_image, for <PageFooter>.",
+        input_schema=_IMAGE_SCHEMA,
+        handler=header_footer.add_footer_image,
+    )
+    server.register_tool(
+        name="remove_header_item",
+        description=(
+            "Remove a named Textbox or Image from <PageHeader>/<ReportItems>. "
+            "Empties the ReportItems block when the last item leaves."
+        ),
+        input_schema=_NAMED_REMOVE_SCHEMA,
+        handler=header_footer.remove_header_item,
+    )
+    server.register_tool(
+        name="remove_footer_item",
+        description="Same as remove_header_item, for <PageFooter>.",
+        input_schema=_NAMED_REMOVE_SCHEMA,
+        handler=header_footer.remove_footer_item,
     )
 
 
