@@ -9,7 +9,7 @@ description = "MCP server for editing Power BI Report Builder paginated reports 
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "Muhammad Afaq" }]
+authors = [{ name = "Muhammad Afaq", email = "muhammadafaq1999@gmail.com" }]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -27,6 +27,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/mafaq229/pbirb-mcp"
+Repository = "https://github.com/mafaq229/pbirb-mcp"
+Issues = "https://github.com/mafaq229/pbirb-mcp/issues"
 
 [project.scripts]
 pbirb-mcp = "pbirb_mcp_server:main"
