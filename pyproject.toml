@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pbirb-mcp"
+version = "0.1.0"
+description = "MCP server for editing Power BI Report Builder paginated reports (RDL)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Muhammad Afaq" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
+dependencies = [
+    "lxml>=4.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+pbirb-mcp = "pbirb_mcp_server:main"
+
+[tool.setuptools]
+py-modules = ["pbirb_mcp_server"]
+
+[tool.setuptools.packages.find]
+include = ["pbirb_mcp*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+pbirb_mcp = ["schemas/*.xsd", "templates/*.xml"]
