@@ -15,6 +15,7 @@ from pbirb_mcp.ops import (
     header_footer,
     page,
     reader,
+    styling,
     tablix,
     visibility,
 )
@@ -559,6 +560,61 @@ def register_all_tools(server: "MCPServer") -> None:
         handler=header_footer.remove_footer_item,
     )
 
+
+    server.register_tool(
+        name="set_textbox_style",
+        description=(
+            "Set styling on a named Textbox. Properties route to the right "
+            "nested Style node automatically: background_color, "
+            "border_*, vertical_align go on Textbox/Style; text_align on "
+            "Paragraph/Style; font_*, color, format on TextRun/Style. All "
+            "fields optional — only what's passed gets written. Cell-level "
+            "styling: every tablix cell is a Textbox with a unique name, so "
+            "use this tool with the cell's textbox name (e.g. 'HeaderAmount')."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "textbox_name": {"type": "string"},
+                "font_family": {"type": ["string", "null"]},
+                "font_size": {
+                    "type": ["string", "null"],
+                    "description": "RDL size, e.g. '11pt'.",
+                },
+                "font_weight": {
+                    "type": ["string", "null"],
+                    "description": "Normal | Bold | Lighter | ... or numeric.",
+                },
+                "color": {
+                    "type": ["string", "null"],
+                    "description": "Text color — '#RRGGBB' or named.",
+                },
+                "background_color": {"type": ["string", "null"]},
+                "border_style": {
+                    "type": ["string", "null"],
+                    "description": "None | Solid | Dotted | Dashed | Double.",
+                },
+                "border_color": {"type": ["string", "null"]},
+                "border_width": {"type": ["string", "null"]},
+                "text_align": {
+                    "type": ["string", "null"],
+                    "description": "Left | Center | Right | Justify | General.",
+                },
+                "vertical_align": {
+                    "type": ["string", "null"],
+                    "description": "Top | Middle | Bottom.",
+                },
+                "format": {
+                    "type": ["string", "null"],
+                    "description": "Number/date format (e.g. '#,0.00', 'C2', 'd').",
+                },
+            },
+            "required": ["path", "textbox_name"],
+            "additionalProperties": False,
+        },
+        handler=styling.set_textbox_style,
+    )
 
     server.register_tool(
         name="set_element_visibility",
