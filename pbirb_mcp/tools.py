@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pbirb_mcp.ops import dataset, datasource, reader
+from pbirb_mcp.ops import dataset, datasource, reader, tablix
 
 if TYPE_CHECKING:
     from pbirb_mcp.server import MCPServer
@@ -170,6 +170,70 @@ def register_all_tools(server: "MCPServer") -> None:
             "additionalProperties": False,
         },
         handler=dataset.remove_query_parameter,
+    )
+
+
+    server.register_tool(
+        name="list_tablix_filters",
+        description=(
+            "List all filters on a named tablix in document order. Returns "
+            "expression, operator, and values per filter; index in the list "
+            "is the stable handle for remove_tablix_filter."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+            },
+            "required": ["path", "tablix_name"],
+            "additionalProperties": False,
+        },
+        handler=tablix.list_tablix_filters,
+    )
+    server.register_tool(
+        name="add_tablix_filter",
+        description=(
+            "Append a <Filter> to a tablix. Operator must be one of the RDL "
+            "2016 enumeration (Equal, NotEqual, GreaterThan, In, Between, ...). "
+            "Returns the new filter's index for follow-up calls."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "expression": {"type": "string"},
+                "operator": {"type": "string"},
+                "values": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+            },
+            "required": ["path", "tablix_name", "expression", "operator", "values"],
+            "additionalProperties": False,
+        },
+        handler=tablix.add_tablix_filter,
+    )
+    server.register_tool(
+        name="remove_tablix_filter",
+        description=(
+            "Remove a filter by index. Filters are anonymous in RDL, so use "
+            "list_tablix_filters first to find the right index. Removing the "
+            "last filter also drops the empty <Filters/> block."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "filter_index": {"type": "integer", "minimum": 0},
+            },
+            "required": ["path", "tablix_name", "filter_index"],
+            "additionalProperties": False,
+        },
+        handler=tablix.remove_tablix_filter,
     )
 
 
