@@ -13,6 +13,7 @@ import os
 import sys
 
 from pbirb_mcp.server import MCPServer
+from pbirb_mcp.tools import register_all_tools
 
 
 def _configure_logging() -> None:
@@ -39,6 +40,7 @@ def main() -> int:
     logger = logging.getLogger("pbirb_mcp")
     logger.info("pbirb-mcp starting")
     server = MCPServer()
+    register_all_tools(server)
     server.run_stdio()
     return 0
 
