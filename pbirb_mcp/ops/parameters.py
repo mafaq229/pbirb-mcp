@@ -215,7 +215,54 @@ def set_parameter_default_values(
     return {"parameter": name, "source": source}
 
 
+# ---- update_parameter_advanced -------------------------------------------
+
+
+def update_parameter_advanced(
+    path: str,
+    name: str,
+    multi_value: Optional[bool] = None,
+    hidden: Optional[bool] = None,
+    allow_null: Optional[bool] = None,
+    allow_blank: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Toggle the four boolean flags on a report parameter.
+
+    Each flag is independently optional; only fields the caller passes
+    are written. Cascading parameter dependencies (the original plan's
+    ``depends_on``) are NOT a separate flag in RDL — they're inferred
+    from ``=Parameters!X.Value`` references in a lookup dataset's
+    ``<QueryParameters>``. Wire one parameter to depend on another by
+    combining ``set_parameter_available_values(source='query', ...)``
+    with ``add_query_parameter(...)`` on that lookup dataset.
+    """
+    flags: list[tuple[str, Optional[bool]]] = [
+        ("MultiValue", multi_value),
+        ("Hidden", hidden),
+        ("Nullable", allow_null),
+        ("AllowBlank", allow_blank),
+    ]
+    if all(v is None for _, v in flags):
+        return {"parameter": name, "changed": []}
+
+    doc = RDLDocument.open(path)
+    parameter = resolve_parameter(doc, name)
+
+    changed: list[str] = []
+    for local, value in flags:
+        if value is None:
+            continue
+        new_node = etree.Element(q(local))
+        new_node.text = "true" if value else "false"
+        _set_or_replace_in_order(parameter, new_node)
+        changed.append(local)
+
+    doc.save()
+    return {"parameter": name, "changed": changed}
+
+
 __all__ = [
     "set_parameter_available_values",
     "set_parameter_default_values",
+    "update_parameter_advanced",
 ]

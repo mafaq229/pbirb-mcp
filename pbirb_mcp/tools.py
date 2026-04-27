@@ -829,6 +829,33 @@ def register_all_tools(server: "MCPServer") -> None:
     )
 
     server.register_tool(
+        name="update_parameter_advanced",
+        description=(
+            "Toggle the four boolean flags on a report parameter: "
+            "multi_value, hidden, allow_null (writes <Nullable>), "
+            "allow_blank. Each is independently optional. With no flags "
+            "passed it's a no-op. Cascading parameters are NOT a flag — "
+            "use set_parameter_available_values(source='query') + "
+            "add_query_parameter on the lookup dataset to wire a "
+            "dependency on another parameter."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "multi_value": {"type": ["boolean", "null"]},
+                "hidden": {"type": ["boolean", "null"]},
+                "allow_null": {"type": ["boolean", "null"]},
+                "allow_blank": {"type": ["boolean", "null"]},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=parameters.update_parameter_advanced,
+    )
+
+    server.register_tool(
         name="set_alternating_row_color",
         description=(
             "Zebra-stripe a tablix's detail row by writing "
