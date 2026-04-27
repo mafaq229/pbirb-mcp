@@ -25,8 +25,8 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.ids import resolve_textbox
-from pbirb_mcp.core.xpath import find_child, q
+from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix, resolve_textbox
+from pbirb_mcp.core.xpath import find_child, find_children, q
 
 
 # Per RDL XSD, the order of <Style> children includes (subset relevant here):
@@ -228,4 +228,100 @@ def set_textbox_style(
     return {"textbox": textbox_name, "changed": changed}
 
 
-__all__ = ["set_textbox_style"]
+# ---- alternating row color -----------------------------------------------
+
+
+def _detail_row_index(tablix: etree._Element) -> Optional[int]:
+    """Return the body-row index of the ``Details`` leaf in a depth-first
+    walk of the row hierarchy. ``None`` if the tablix has no Details group.
+
+    Body rows correspond 1:1 with leaf TablixMembers in document order, so
+    counting leaves until we find the Details group yields the right
+    ``TablixBody/TablixRows/TablixRow`` index — even after add_row_group
+    nests the original hierarchy under a new outer group.
+    """
+    rh = find_child(tablix, "TablixRowHierarchy")
+    if rh is None:
+        return None
+    members_root = find_child(rh, "TablixMembers")
+    if members_root is None:
+        return None
+
+    counter = [0]
+    found_at: list[int] = []
+
+    def walk(member: etree._Element) -> None:
+        children = find_child(member, "TablixMembers")
+        leaves = list(children) if children is not None else []
+        if not leaves:
+            group = find_child(member, "Group")
+            if group is not None and group.get("Name") == "Details":
+                found_at.append(counter[0])
+            counter[0] += 1
+            return
+        for sub in leaves:
+            walk(sub)
+
+    for m in list(members_root):
+        walk(m)
+    return found_at[0] if found_at else None
+
+
+def set_alternating_row_color(
+    path: str,
+    tablix_name: str,
+    color_a: str,
+    color_b: str,
+) -> dict[str, Any]:
+    """Set a zebra-striping ``BackgroundColor`` expression on every cell
+    in the tablix's detail row.
+
+    The expression is::
+
+        =IIf(RowNumber(Nothing) Mod 2, "<color_a>", "<color_b>")
+
+    Odd rows get ``color_a``; even rows get ``color_b``. The expression is
+    written verbatim per cell, replacing any existing BackgroundColor.
+    """
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+    detail_idx = _detail_row_index(tablix)
+    if detail_idx is None:
+        raise ElementNotFoundError(
+            f"tablix {tablix_name!r} has no Details group; "
+            "alternating-row-color requires one"
+        )
+
+    body = find_child(tablix, "TablixBody")
+    rows_root = find_child(body, "TablixRows") if body is not None else None
+    rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
+    detail_row = rows[detail_idx]
+
+    expression = f'=IIf(RowNumber(Nothing) Mod 2, "{color_a}", "{color_b}")'
+
+    cells_root = find_child(detail_row, "TablixCells")
+    if cells_root is None:
+        return {"tablix": tablix_name, "row_index": detail_idx, "cells": []}
+    cells_touched: list[str] = []
+
+    for cell in find_children(cells_root, "TablixCell"):
+        contents = find_child(cell, "CellContents")
+        textbox = find_child(contents, "Textbox") if contents is not None else None
+        if textbox is None:
+            continue
+        outer_style = _ensure_style(textbox)
+        _set_or_create_in_style(outer_style, "BackgroundColor", expression)
+        name = textbox.get("Name")
+        if name:
+            cells_touched.append(name)
+
+    doc.save()
+    return {
+        "tablix": tablix_name,
+        "row_index": detail_idx,
+        "expression": expression,
+        "cells": cells_touched,
+    }
+
+
+__all__ = ["set_alternating_row_color", "set_textbox_style"]

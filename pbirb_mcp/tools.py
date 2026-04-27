@@ -617,6 +617,35 @@ def register_all_tools(server: "MCPServer") -> None:
     )
 
     server.register_tool(
+        name="set_alternating_row_color",
+        description=(
+            "Zebra-stripe a tablix's detail row by writing "
+            "BackgroundColor=IIf(RowNumber(Nothing) Mod 2, color_a, color_b) "
+            "on every detail cell's Textbox. Walks the row hierarchy to "
+            "find the Details leaf — works after add_row_group nests the "
+            "structure deeper. Replaces any existing BackgroundColor."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "color_a": {
+                    "type": "string",
+                    "description": "Odd-row color, e.g. '#F2F2F2'.",
+                },
+                "color_b": {
+                    "type": "string",
+                    "description": "Even-row color, e.g. '#FFFFFF'.",
+                },
+            },
+            "required": ["path", "tablix_name", "color_a", "color_b"],
+            "additionalProperties": False,
+        },
+        handler=styling.set_alternating_row_color,
+    )
+
+    server.register_tool(
         name="set_element_visibility",
         description=(
             "Set <Visibility> on any named ReportItem (Tablix, Textbox, "
