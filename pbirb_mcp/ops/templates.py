@@ -187,10 +187,14 @@ def insert_chart_from_template(
     cat_label = etree.SubElement(cat_member, q("Label"))
     cat_label.text = f"=Fields!{category_field}.Value"
 
-    # ChartSeriesHierarchy — single static series.
+    # ChartSeriesHierarchy — single static series. Per RDL XSD a ChartMember
+    # is required to have a <Label>; an empty member fails Report Builder's
+    # deserializer with "ChartMember is empty ... missing mandatory child
+    # element of type 'Label'", even though it parses as well-formed XML.
     series_hier = etree.SubElement(chart, q("ChartSeriesHierarchy"))
     series_members = etree.SubElement(series_hier, q("ChartMembers"))
-    etree.SubElement(series_members, q("ChartMember"))
+    series_member = etree.SubElement(series_members, q("ChartMember"))
+    etree.SubElement(series_member, q("Label")).text = value_field
 
     # ChartData — one ChartSeries with Y = Sum(value_field).
     chart_data = etree.SubElement(chart, q("ChartData"))

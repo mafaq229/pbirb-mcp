@@ -238,6 +238,29 @@ class TestInsertChartTemplate:
         )
         assert y.text == "=Sum(Fields!Amount.Value)"
 
+    def test_series_chart_member_has_label(self, rdl_path):
+        # Regression: Report Builder's deserializer rejects an empty
+        # <ChartMember> with "missing mandatory child element of type
+        # 'Label'", even though lxml round-trips it cleanly. Both the
+        # category and series ChartMembers need a Label.
+        insert_chart_from_template(
+            path=str(rdl_path),
+            name="SalesChart",
+            dataset_name="MainDataset",
+            category_field="ProductName",
+            value_field="Amount",
+            top="3in", left="0.5in", width="5in", height="3in",
+        )
+        doc = RDLDocument.open(rdl_path)
+        chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesChart']")
+        # Category member's Label was already set; assert series member's too.
+        series_label = chart.find(
+            f"{q('ChartSeriesHierarchy')}/{q('ChartMembers')}/"
+            f"{q('ChartMember')}/{q('Label')}"
+        )
+        assert series_label is not None
+        assert series_label.text == "Amount"
+
     def test_default_chart_type_is_column(self, rdl_path):
         insert_chart_from_template(
             path=str(rdl_path),
