@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pbirb_mcp.ops import dataset, datasource, reader, tablix
+from pbirb_mcp.ops import dataset, datasource, page, reader, tablix
 
 if TYPE_CHECKING:
     from pbirb_mcp.server import MCPServer
@@ -373,6 +373,53 @@ def register_all_tools(server: "MCPServer") -> None:
             "additionalProperties": False,
         },
         handler=tablix.remove_tablix_filter,
+    )
+
+
+    server.register_tool(
+        name="set_page_setup",
+        description=(
+            "Update <Page> dimensions, margins, and column count on the "
+            "first ReportSection. All fields are optional — only what's "
+            "passed gets written. columns=1 strips the <Columns/> element."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "page_height": {"type": ["string", "null"]},
+                "page_width": {"type": ["string", "null"]},
+                "margin_top": {"type": ["string", "null"]},
+                "margin_bottom": {"type": ["string", "null"]},
+                "margin_left": {"type": ["string", "null"]},
+                "margin_right": {"type": ["string", "null"]},
+                "columns": {"type": ["integer", "null"], "minimum": 1},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=page.set_page_setup,
+    )
+    server.register_tool(
+        name="set_page_orientation",
+        description=(
+            "Set page orientation by swapping PageHeight and PageWidth when "
+            "the current orientation doesn't match the requested one. "
+            "Idempotent. Accepts 'Portrait' or 'Landscape'."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "orientation": {
+                    "type": "string",
+                    "enum": ["Portrait", "Landscape"],
+                },
+            },
+            "required": ["path", "orientation"],
+            "additionalProperties": False,
+        },
+        handler=page.set_page_orientation,
     )
 
 
