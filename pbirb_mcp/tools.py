@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pbirb_mcp.ops import dataset, reader
+from pbirb_mcp.ops import dataset, datasource, reader
 
 if TYPE_CHECKING:
     from pbirb_mcp.server import MCPServer
@@ -119,6 +119,40 @@ def register_all_tools(server: "MCPServer") -> None:
         },
         handler=dataset.update_query_parameter,
     )
+    server.register_tool(
+        name="set_datasource_connection",
+        description=(
+            "Repoint a DataSource at a Power BI XMLA endpoint. workspace_url "
+            "accepts a bare workspace name or a full powerbi:// URL; "
+            "DataProvider is set to SQL (the AS provider id in RDL)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {
+                    "type": "string",
+                    "description": "RDL DataSource Name attribute.",
+                },
+                "workspace_url": {
+                    "type": "string",
+                    "description": "Workspace name or full powerbi:// XMLA URL.",
+                },
+                "dataset_name": {
+                    "type": "string",
+                    "description": "PBI semantic model (Initial Catalog).",
+                },
+                "integrated_security": {
+                    "type": "boolean",
+                    "description": "Default true. False omits the element.",
+                },
+            },
+            "required": ["path", "name", "workspace_url", "dataset_name"],
+            "additionalProperties": False,
+        },
+        handler=datasource.set_datasource_connection,
+    )
+
     server.register_tool(
         name="remove_query_parameter",
         description=(
