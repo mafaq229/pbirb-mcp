@@ -179,6 +179,40 @@ class TestAddSubtotalRow:
         )
         RDLDocument.open(rdl_with_region_group).validate()
 
+    def test_second_footer_call_still_resolves_details_row_columns(
+        self, rdl_with_region_group
+    ):
+        """Regression: pre-fix, the second add_subtotal_row(footer) call
+        looked at the literal last row — which was the previous subtotal
+        row's textboxes (e.g. ``Region_Footer_2``), so passing the original
+        Details-row name (``Amount``) raised ElementNotFoundError. The fix
+        walks the row hierarchy for the Details leaf, so the same name
+        keeps working across repeat calls."""
+        add_subtotal_row(
+            path=str(rdl_with_region_group),
+            tablix_name="MainTable",
+            group_name="Region",
+            aggregates=[{"column": "Amount", "expression": "=Sum(Fields!Amount.Value)"}],
+            position="footer",
+        )
+        # Second call must still accept the Details-row column name.
+        add_subtotal_row(
+            path=str(rdl_with_region_group),
+            tablix_name="MainTable",
+            group_name="Region",
+            aggregates=[{"column": "Amount", "expression": "=Avg(Fields!Amount.Value)"}],
+            position="footer",
+        )
+        # Both subtotal rows landed and both have the aggregate in column 2.
+        tablix = _tablix(RDLDocument.open(rdl_with_region_group), "MainTable")
+        rows = _body_rows(tablix)
+        # Body rows: [group header, header, Details, subtotal#1, subtotal#2].
+        assert len(rows) == 5
+        sub1 = _row_cell_textboxes(rows[3])
+        sub2 = _row_cell_textboxes(rows[4])
+        assert _textrun_value(sub1[2]) == "=Sum(Fields!Amount.Value)"
+        assert _textrun_value(sub2[2]) == "=Avg(Fields!Amount.Value)"
+
 
 class TestToolRegistration:
     def test_tool_registered(self):

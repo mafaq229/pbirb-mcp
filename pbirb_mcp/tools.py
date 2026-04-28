@@ -487,12 +487,13 @@ def register_all_tools(server: MCPServer) -> None:
         name="add_subtotal_row",
         description=(
             "Append a subtotal row to a row-axis group. aggregates is a list "
-            "of {column, expression} entries; column is matched against the "
-            "data row's textbox names, expression is the aggregate (e.g. "
-            "=Sum(Fields!X.Value)). Columns not listed get blank cells. "
-            "position='footer' (default) appends; 'header' inserts at body "
-            "row 1 (right after the group-header row). Group must have been "
-            "added via add_row_group."
+            "of {column, expression} entries; column matches against the "
+            "Details row's textbox names (the same names add_tablix_column "
+            "uses as column_name — NOT field names). expression is the "
+            "aggregate (e.g. =Sum(Fields!X.Value)). Columns not listed get "
+            "blank cells. position='footer' (default) appends; 'header' "
+            "inserts at body row 1 (right after the group-header row). "
+            "Group must have been added via add_row_group."
         ),
         input_schema={
             "type": "object",

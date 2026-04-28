@@ -5,12 +5,20 @@ existing row-group's ``<TablixMembers>`` and adds a matching body
 row. Each cell of the new row either holds an aggregate expression
 (when the user supplies one for that column) or is blank.
 
-Aggregates are matched to columns by **textbox name** in the existing
-data row — the same handle used by :func:`add_tablix_column` and
+Aggregates are matched to columns by **textbox name in the Details
+row** — the same handle used by :func:`add_tablix_column` and
 :func:`remove_tablix_column`. The user passes a list of
-``{"column": <data-row textbox name>, "expression": <aggregate>}``
+``{"column": <Details-row textbox name>, "expression": <aggregate>}``
 entries; only listed columns get aggregate cells, all others stay
 blank.
+
+Why "Details row" and not "last row": after one ``add_subtotal_row``
+call with ``position="footer"``, the literal last row is the new
+subtotal we just added — its cells have synthesized names like
+``<group>_Footer_<col>``. A second call would mistakenly look those
+up instead of the original data row's textbox names. Walking the row
+hierarchy for the ``Details`` leaf is correct under any wrapping.
+Tablixes without a ``Details`` group fall back to last-row behaviour.
 
 Position:
 
@@ -34,6 +42,7 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
+from pbirb_mcp.ops.styling import _detail_row_index
 
 _VALID_POSITIONS = frozenset({"header", "footer"})
 
@@ -52,8 +61,14 @@ def _find_row_member_wrapper(tablix: etree._Element, group_name: str) -> Optiona
 
 
 def _data_row_textbox_names(tablix: etree._Element) -> list[Optional[str]]:
-    """Return the textbox name at each column index of the *last* TablixRow.
-    None for cells with no textbox."""
+    """Return the textbox name at each column index of the Details row.
+
+    The Details row is identified by walking the row hierarchy for the
+    ``Details`` leaf (same approach used by ``set_alternating_row_color``
+    and the post-fix ``add_tablix_column``). Falls back to the literal
+    last row when the tablix has no Details group — preserves v0.1
+    behaviour for tablixes that never had a Details leaf to begin with.
+    """
     body = find_child(tablix, "TablixBody")
     rows_root = find_child(body, "TablixRows") if body is not None else None
     if rows_root is None:
@@ -61,8 +76,11 @@ def _data_row_textbox_names(tablix: etree._Element) -> list[Optional[str]]:
     rows = find_children(rows_root, "TablixRow")
     if not rows:
         return []
-    last_row = rows[-1]
-    cells_root = find_child(last_row, "TablixCells")
+
+    detail_idx = _detail_row_index(tablix)
+    target_row = rows[detail_idx] if detail_idx is not None else rows[-1]
+
+    cells_root = find_child(target_row, "TablixCells")
     if cells_root is None:
         return []
     names: list[Optional[str]] = []
@@ -102,10 +120,11 @@ def add_subtotal_row(
     """Add a subtotal row to ``group_name``'s row-axis member.
 
     ``aggregates`` is a list of ``{"column": <textbox-name>, "expression":
-    <aggregate>}`` entries matched against the data row's textbox names.
-    Columns not listed get blank cells. New cell textbox names are
-    ``<group>_<position>_<row_index_in_member>_<col>`` — synthesized to
-    stay report-wide unique.
+    <aggregate>}`` entries. ``column`` matches against the **Details
+    row's** textbox names — i.e. the same identifiers ``add_tablix_column``
+    uses for its ``column_name``. Columns not listed get blank cells. New
+    cell textbox names are ``<group>_<Header|Footer>_<col>`` — synthesized
+    to stay report-wide unique.
 
     ``position`` is ``"footer"`` (default — appends) or ``"header"``
     (inserts after the group-header leaf).
