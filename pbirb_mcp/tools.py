@@ -22,6 +22,7 @@ from pbirb_mcp.ops import (
     tablix,
     tablix_cells,
     tablix_columns,
+    tablix_static,
     tablix_subtotals,
     templates,
     visibility,
@@ -543,6 +544,63 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_cells.set_cell_span,
+    )
+    server.register_tool(
+        name="add_static_row",
+        description=(
+            "Add a static (no-group) row to a tablix. Each cell holds "
+            "literal text. cells is a list of strings, one per body column "
+            "(left to right); shorter list = blank trailing cells, longer "
+            "list errors. Cell textboxes are named row_name (col 0) and "
+            "row_name_<col_index> (others) — unique report-wide so row_name "
+            "must not clash with any existing textbox. position is "
+            "0-indexed; default appends. height defaults to 0.25in."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "row_name": {"type": "string"},
+                "cells": {
+                    "type": ["array", "null"],
+                    "items": {"type": "string"},
+                },
+                "position": {"type": ["integer", "null"], "minimum": 0},
+                "height": {"type": ["string", "null"]},
+            },
+            "required": ["path", "tablix_name", "row_name"],
+            "additionalProperties": False,
+        },
+        handler=tablix_static.add_static_row,
+    )
+    server.register_tool(
+        name="add_static_column",
+        description=(
+            "Add a static (no-group) column to a tablix. Each cell holds "
+            "literal text. cells is a list of strings, one per body row "
+            "(top to bottom); shorter list = blank trailing cells, longer "
+            "list errors. Cell textboxes are named column_name (row 0) and "
+            "column_name_<row_index> (others). position is 0-indexed; "
+            "default appends. width defaults to 1in."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "column_name": {"type": "string"},
+                "cells": {
+                    "type": ["array", "null"],
+                    "items": {"type": "string"},
+                },
+                "position": {"type": ["integer", "null"], "minimum": 0},
+                "width": {"type": ["string", "null"]},
+            },
+            "required": ["path", "tablix_name", "column_name"],
+            "additionalProperties": False,
+        },
+        handler=tablix_static.add_static_column,
     )
 
     server.register_tool(
