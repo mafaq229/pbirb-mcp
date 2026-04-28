@@ -1,0 +1,95 @@
+name: Bug report
+description: Report a tool that produces wrong XML, fails to round-trip, or crashes
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Reproductions live in `.rdl` files, so a
+        small RDL fragment is the highest-signal thing you can include.
+        For security issues (path traversal, XXE, etc.) please use
+        [private vulnerability reporting](https://github.com/mafaq229/pbirb-mcp/security/advisories/new) instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: pbirb-mcp version
+      description: Output of `pip show pbirb-mcp` or the git SHA if installed from source.
+      placeholder: "0.1.1"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.11.7"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 14.5 / Windows 11 / Ubuntu 22.04"
+    validations:
+      required: true
+
+  - type: textarea
+    id: tool-call
+    attributes:
+      label: Tool call
+      description: The exact JSON-RPC payload, the Python invocation, or the prompt you gave the LLM.
+      render: text
+      placeholder: |
+        {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+          "name":"add_row_group",
+          "arguments":{"path":"/tmp/r.rdl","tablix_name":"Tablix1","group_name":"ByRegion","group_expression":"=Fields!Region.Value"}
+        }}
+    validations:
+      required: true
+
+  - type: textarea
+    id: input-rdl
+    attributes:
+      label: Input RDL fragment
+      description: The smallest fragment of the input `.rdl` that triggers the bug. A pasted `<DataSet>`, `<Tablix>`, or `<ReportParameter>` block is usually enough; the full report is rarely needed.
+      render: xml
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: What happened. If the tool produced bad XML, paste the relevant fragment of the saved file. If Report Builder rejected it, paste the exact error.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What you expected — and ideally the XML diff you'd want to see.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: rb-smoke
+    attributes:
+      label: Did you open the resulting RDL in Power BI Report Builder?
+      description: Required to triage. Report Builder is the actual integration test; unit tests don't always catch deserialiser nits.
+      options:
+        - "Yes — and Report Builder showed the issue"
+        - "Yes — Report Builder accepted it but rendered wrong"
+        - "No — I don't have Report Builder available"
+        - "N/A — bug is at the tool layer, no save happened"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server logs (optional)
+      description: Output with `PBIRB_MCP_LOG_LEVEL=DEBUG`. Strip any sensitive paths before pasting.
+      render: text

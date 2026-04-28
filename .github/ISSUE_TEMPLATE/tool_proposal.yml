@@ -1,0 +1,86 @@
+name: Tool proposal
+description: Propose a new MCP tool (or change an existing one's schema)
+labels: ["tool-proposal", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when you're proposing a *specific* tool with a *specific* schema. For "I want to do X in Report Builder," use the feature-request template instead.
+
+        Tool schemas are part of the surface contract — see [CONTRIBUTING.md § Versioning](https://github.com/mafaq229/pbirb-mcp/blob/main/CONTRIBUTING.md#versioning) for the bump rules.
+
+  - type: input
+    id: tool-name
+    attributes:
+      label: Proposed tool name
+      description: Snake_case, verb-first, mirrors existing names (`add_*`, `set_*`, `remove_*`, `get_*`, `list_*`).
+      placeholder: "add_column_group"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Tool description (LLM-facing)
+      description: How it should appear in `tools/list`. This is *prompt input* for the LLM — write it for an LLM to read. Include pre-conditions and constraints (e.g., *"`Globals!PageNumber` only works in PageHeader/PageFooter"*).
+    validations:
+      required: true
+
+  - type: textarea
+    id: schema
+    attributes:
+      label: Input schema sketch
+      description: JSON Schema (or a close approximation). Mark required vs optional; include enums and regex constraints where applicable.
+      render: json
+      placeholder: |
+        {
+          "type": "object",
+          "properties": {
+            "path": {"type": "string"},
+            "tablix_name": {"type": "string"},
+            "group_name": {"type": "string"},
+            "group_expression": {"type": "string"},
+            "parent_group": {"type": ["string", "null"]}
+          },
+          "required": ["path", "tablix_name", "group_name", "group_expression"]
+        }
+    validations:
+      required: true
+
+  - type: textarea
+    id: output-shape
+    attributes:
+      label: Output shape
+      description: What the tool returns to the LLM on success. JSON sketch.
+      render: json
+    validations:
+      required: false
+
+  - type: textarea
+    id: errors
+    attributes:
+      label: Error semantics
+      description: Which conditions raise which errors? (Missing element → `ElementNotFoundError`, invalid input → `ValueError`, etc.)
+    validations:
+      required: false
+
+  - type: textarea
+    id: example-session
+    attributes:
+      label: Example LLM session
+      description: Realistic prompt → tool calls. One paragraph or a few lines is fine.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: bump
+    attributes:
+      label: Anticipated SemVer bump
+      description: Per the rules in CONTRIBUTING.md.
+      options:
+        - "MINOR — new tool, additive only"
+        - "MINOR — new optional input on an existing tool"
+        - "MAJOR — breaking change to an existing tool"
+        - "I'm not sure"
+    validations:
+      required: true
