@@ -58,6 +58,69 @@ class TestToolsCall:
         assert resp["error"]["code"] == -32601
         assert "no_such_tool" in resp["error"]["message"]
 
+    def test_handler_exception_returns_iserror_content(self, server):
+        # MCP spec: tool-handler exceptions belong in result content with
+        # isError: true, not as JSON-RPC errors. Verify the rich exception
+        # message survives instead of being flattened to a generic string.
+        def boom(**_kwargs):
+            raise ValueError("specific reason with locator [Tablix2/Cell3]")
+
+        server.register_tool(
+            name="explode",
+            description="raises",
+            input_schema={"type": "object", "additionalProperties": True},
+            handler=boom,
+        )
+        resp = server.handle_request(
+            _request("tools/call", {"name": "explode", "arguments": {}})
+        )
+        assert "error" not in resp
+        assert resp["result"]["isError"] is True
+        text = resp["result"]["content"][0]["text"]
+        payload = json.loads(text)
+        assert payload["error_type"] == "ValueError"
+        assert "specific reason" in payload["message"]
+        assert "Tablix2/Cell3" in payload["message"]
+
+    def test_handler_lookup_error_preserves_type(self, server):
+        # ElementNotFoundError (a LookupError) should carry through with its
+        # type name so callers can branch on it.
+        from pbirb_mcp.core.ids import ElementNotFoundError
+
+        def missing(**_kwargs):
+            raise ElementNotFoundError("no Textbox named 'DoesNotExist'")
+
+        server.register_tool(
+            name="lookup_fail",
+            description="raises",
+            input_schema={"type": "object", "additionalProperties": True},
+            handler=missing,
+        )
+        resp = server.handle_request(
+            _request("tools/call", {"name": "lookup_fail", "arguments": {}})
+        )
+        assert resp["result"]["isError"] is True
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        assert payload["error_type"] == "ElementNotFoundError"
+        assert "DoesNotExist" in payload["message"]
+
+    def test_handler_success_has_no_iserror(self, server):
+        def ok(**_kwargs):
+            return {"hello": "world"}
+
+        server.register_tool(
+            name="ok",
+            description="ok",
+            input_schema={"type": "object", "additionalProperties": True},
+            handler=ok,
+        )
+        resp = server.handle_request(_request("tools/call", {"name": "ok", "arguments": {}}))
+        assert "error" not in resp
+        # Per MCP, successful results don't carry isError; absence implies false.
+        assert resp["result"].get("isError") in (None, False)
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        assert payload == {"hello": "world"}
+
 
 class TestNotifications:
     def test_initialized_notification_returns_none(self, server):

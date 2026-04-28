@@ -118,7 +118,25 @@ class MCPServer:
         if not isinstance(arguments, dict):
             raise _MCPError(INVALID_PARAMS, "tools/call `arguments` must be an object")
 
-        result = tool.handler(**arguments)
+        # Per MCP spec, tool-handler exceptions are surfaced in the result
+        # content with `isError: true`, NOT as JSON-RPC errors. JSON-RPC errors
+        # are reserved for protocol issues (bad envelope, unknown method, bad
+        # params). Returning handler errors as JSON-RPC -32603 caused MCP
+        # clients to render them as opaque "Tool execution failed" strings,
+        # hiding the rich messages tools already raise (locators in
+        # remove_parameter, missing-column hints in add_subtotal_row, etc.).
+        try:
+            result = tool.handler(**arguments)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("tool %s raised", name)
+            payload = {
+                "error_type": type(exc).__name__,
+                "message": str(exc) or repr(exc),
+            }
+            return {
+                "content": [{"type": "text", "text": json.dumps(payload, default=str)}],
+                "isError": True,
+            }
         return {"content": [{"type": "text", "text": json.dumps(result, default=str)}]}
 
     # ---- transport ----------------------------------------------------------
