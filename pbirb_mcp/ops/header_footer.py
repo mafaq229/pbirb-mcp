@@ -83,11 +83,16 @@ def _ensure_page_section(page: etree._Element, region: _Region) -> etree._Elemen
     return sec
 
 
-def _set_or_create_text_in_order(parent: etree._Element, local: str, value: str) -> None:
+def _set_or_create_text_in_order(parent: etree._Element, local: str, value: str) -> bool:
+    """Write/replace ``<local>value</local>`` under ``parent`` respecting
+    schema sibling order. Returns True iff the value actually changed
+    (used by callers that surface a ``changed`` list/bool)."""
     existing = find_child(parent, local)
     if existing is not None:
+        if existing.text == value:
+            return False
         existing.text = value
-        return
+        return True
     new_node = etree.Element(q(local))
     new_node.text = value
     new_idx = _PAGE_SECTION_CHILD_ORDER.index(local)
@@ -98,8 +103,9 @@ def _set_or_create_text_in_order(parent: etree._Element, local: str, value: str)
             and _PAGE_SECTION_CHILD_ORDER.index(child_local) > new_idx
         ):
             parent.insert(i, new_node)
-            return
+            return True
     parent.append(new_node)
+    return True
 
 
 def _ensure_report_items(section: etree._Element) -> etree._Element:
@@ -193,18 +199,20 @@ def _set_section(
     doc = RDLDocument.open(path)
     page = _resolve_page(doc)
     section = _ensure_page_section(page, region)
-    if height is not None:
-        _set_or_create_text_in_order(section, "Height", height)
+    changed: list[str] = []
+    if height is not None and _set_or_create_text_in_order(section, "Height", height):
+        changed.append("Height")
     if print_on_first_page is not None:
-        _set_or_create_text_in_order(
-            section, "PrintOnFirstPage", "true" if print_on_first_page else "false"
-        )
+        text = "true" if print_on_first_page else "false"
+        if _set_or_create_text_in_order(section, "PrintOnFirstPage", text):
+            changed.append("PrintOnFirstPage")
     if print_on_last_page is not None:
-        _set_or_create_text_in_order(
-            section, "PrintOnLastPage", "true" if print_on_last_page else "false"
-        )
-    doc.save()
-    return {"path": str(doc.path), "region": region.name}
+        text = "true" if print_on_last_page else "false"
+        if _set_or_create_text_in_order(section, "PrintOnLastPage", text):
+            changed.append("PrintOnLastPage")
+    if changed:
+        doc.save()
+    return {"path": str(doc.path), "region": region.name, "changed": changed}
 
 
 def _add_textbox(
