@@ -1555,6 +1555,58 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=styling.set_alternating_row_color,
     )
+    server.register_tool(
+        name="set_conditional_row_color",
+        description=(
+            "Color every cell of a tablix's detail row based on the value "
+            "of one of its fields. Builds a Switch(...) expression mapping "
+            "field values to colors and writes it as BackgroundColor on "
+            "every detail cell. value_expression is the field reference "
+            "(e.g. 'Fields!Status.Value' — a leading '=' is accepted). "
+            "color_map is an ordered dict of value->color (e.g. "
+            "{\"Red\":\"#FF0000\",\"Yellow\":\"#FFFF00\"}); first match "
+            "wins. Unmatched values fall back to default_color "
+            "(default 'Transparent'). When case_sensitive is False "
+            "(default), wraps the field reference in UCase() and uppercases "
+            "the keys for case-insensitive matching. Walks the row "
+            "hierarchy to find the Details leaf — works after add_row_group "
+            "nests the structure. Replaces any existing BackgroundColor."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "value_expression": {
+                    "type": "string",
+                    "description": (
+                        "Field reference to switch on, e.g. "
+                        "'Fields!Status.Value'. Leading '=' optional."
+                    ),
+                },
+                "color_map": {
+                    "type": "object",
+                    "description": (
+                        "Ordered map of expected values to color strings. "
+                        "First match in declaration order wins."
+                    ),
+                    "additionalProperties": {"type": "string"},
+                    "minProperties": 1,
+                },
+                "default_color": {
+                    "type": "string",
+                    "default": "Transparent",
+                },
+                "case_sensitive": {
+                    "type": "boolean",
+                    "default": False,
+                },
+            },
+            "required": ["path", "tablix_name", "value_expression", "color_map"],
+            "additionalProperties": False,
+        },
+        handler=styling.set_conditional_row_color,
+    )
 
     server.register_tool(
         name="set_element_visibility",

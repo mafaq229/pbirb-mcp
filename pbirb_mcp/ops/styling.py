@@ -320,4 +320,132 @@ def set_alternating_row_color(
     }
 
 
-__all__ = ["set_alternating_row_color", "set_textbox_style"]
+def _normalise_value_expression(expr: str) -> str:
+    """Strip a leading ``=`` so we can use the expression inline inside a
+    Switch(...) without doubling up. The ``set_conditional_row_color`` tool
+    accepts either ``Fields!X.Value`` or ``=Fields!X.Value`` from the LLM
+    and produces a single, well-formed Switch expression either way.
+    """
+    return expr[1:] if expr.startswith("=") else expr
+
+
+def _build_conditional_color_switch(
+    value_expression: str,
+    color_map: dict[str, str],
+    default_color: str,
+    *,
+    case_sensitive: bool,
+) -> str:
+    """Build a Switch(...) expression mapping ``value_expression`` outcomes
+    to colors. The expression is the value an LLM might type directly:
+    each row of the detail body picks up the right BackgroundColor at
+    render time.
+    """
+    inner = _normalise_value_expression(value_expression)
+    operand = inner if case_sensitive else f"UCase({inner})"
+
+    arms: list[str] = []
+    for raw_value, color in color_map.items():
+        match_value = raw_value if case_sensitive else raw_value.upper()
+        # RDL string literals use double quotes; embedded quotes are doubled.
+        match_literal = '"' + match_value.replace('"', '""') + '"'
+        color_literal = '"' + color.replace('"', '""') + '"'
+        arms.append(f"{operand}={match_literal}, {color_literal}")
+    # Final fallback arm — Switch with no match returns Nothing, which RDL
+    # renders as no fill. Always emit a default so unmatched values pick up
+    # default_color explicitly.
+    default_literal = '"' + default_color.replace('"', '""') + '"'
+    arms.append(f"True, {default_literal}")
+
+    return "=Switch(" + ", ".join(arms) + ")"
+
+
+def set_conditional_row_color(
+    path: str,
+    tablix_name: str,
+    value_expression: str,
+    color_map: dict[str, str],
+    default_color: str = "Transparent",
+    case_sensitive: bool = False,
+) -> dict[str, Any]:
+    """Color every cell of a tablix's detail row based on the value of
+    one of its fields.
+
+    Builds a ``Switch(...)`` expression from ``color_map`` and writes it
+    as the ``BackgroundColor`` style on every cell of the Details row —
+    same surface as ``set_alternating_row_color``, but conditional on a
+    field value rather than ``RowNumber Mod 2``.
+
+    Args:
+        value_expression: Field reference, e.g. ``"Fields!Status.Value"``
+            (a leading ``=`` is accepted and stripped).
+        color_map: Mapping of expected values to color strings, e.g.
+            ``{"Red": "#FF0000", "Yellow": "#FFFF00"}``. Order is preserved
+            in the generated Switch — the first matching arm wins.
+        default_color: Fallback for values not in ``color_map``.
+            Default ``"Transparent"`` (no fill).
+        case_sensitive: When False (default), wraps the field reference in
+            ``UCase(...)`` and uppercases the keys, so the comparison is
+            case-insensitive.
+
+    Returns the same shape as ``set_alternating_row_color``:
+    ``{tablix, row_index, expression, cells}``.
+    """
+    if not color_map:
+        raise ValueError("color_map must contain at least one value→color entry")
+
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+    detail_idx = _detail_row_index(tablix)
+    if detail_idx is None:
+        raise ElementNotFoundError(
+            f"tablix {tablix_name!r} has no Details group; "
+            "set_conditional_row_color requires one"
+        )
+
+    body = find_child(tablix, "TablixBody")
+    rows_root = find_child(body, "TablixRows") if body is not None else None
+    rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
+    detail_row = rows[detail_idx]
+
+    expression = _build_conditional_color_switch(
+        value_expression=value_expression,
+        color_map=color_map,
+        default_color=default_color,
+        case_sensitive=case_sensitive,
+    )
+
+    cells_root = find_child(detail_row, "TablixCells")
+    if cells_root is None:
+        return {
+            "tablix": tablix_name,
+            "row_index": detail_idx,
+            "expression": expression,
+            "cells": [],
+        }
+    cells_touched: list[str] = []
+    for cell in find_children(cells_root, "TablixCell"):
+        contents = find_child(cell, "CellContents")
+        textbox = find_child(contents, "Textbox") if contents is not None else None
+        if textbox is None:
+            continue
+        outer_style = _ensure_style(textbox)
+        _set_or_create_in_style(outer_style, "BackgroundColor", expression)
+        name = textbox.get("Name")
+        if name:
+            cells_touched.append(name)
+
+    doc.save()
+    return {
+        "tablix": tablix_name,
+        "row_index": detail_idx,
+        "expression": expression,
+        "cells": cells_touched,
+    }
+
+
+__all__ = [
+    "set_alternating_row_color",
+    "set_conditional_row_color",
+    "set_textbox_style",
+]
