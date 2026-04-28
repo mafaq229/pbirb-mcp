@@ -30,14 +30,15 @@ jobs:
           # brittleness of caching against pyproject.toml hashes.
           enable-cache: false
 
-      - name: Install ruff
-        run: uv pip install --system "ruff>=0.6"
-
+      # Use `uvx` instead of `uv pip install --system`: the runner's /usr
+      # Python is PEP 668 externally-managed, so --system errors out.
+      # Ruff is a single Rust binary so a transient venv via uvx is
+      # ideal — no project-Python install, no PEP 668 dance.
       - name: ruff check
-        run: ruff check .
+        run: uvx --from "ruff>=0.6" ruff check .
 
       - name: ruff format --check
-        run: ruff format --check .
+        run: uvx --from "ruff>=0.6" ruff format --check .
 
   test:
     name: pytest (Python ${{ matrix.python-version }})
