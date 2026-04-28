@@ -1,0 +1,197 @@
+name: Release
+
+# Triggered on annotated tag push matching v* (e.g. v0.1.2). The maintainer's
+# release flow (see CONTRIBUTING.md and .local/maintainer/02-release-process.md)
+# bumps pyproject.toml, moves the CHANGELOG ## [Unreleased] section to a
+# dated version heading, commits, then `git tag -a vX.Y.Z && git push --tags`.
+# That tag push lands here.
+on:
+  push:
+    tags:
+      - "v*"
+
+# Per-job permissions are granted explicitly. Repo-wide stays read.
+permissions:
+  contents: read
+
+# Don't cancel a release mid-flight. Two simultaneous tags would be a race
+# the human caused; better to surface a duplicate-publish error from PyPI
+# than to silently drop a release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ---- Stage 1: tag/version sanity --------------------------------------
+  verify:
+    name: Verify tag matches pyproject version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag and pyproject
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PYPROJECT_VERSION=$(awk -F'"' '/^version = "/{print $2; exit}' pyproject.toml)
+          echo "tag=$TAG"
+          echo "pyproject=$PYPROJECT_VERSION"
+          if [ "$TAG" != "$PYPROJECT_VERSION" ]; then
+            echo "::error::Tag v$TAG does not match pyproject version $PYPROJECT_VERSION."
+            echo "::error::Bump pyproject.toml to match the tag, or retag to match pyproject."
+            exit 1
+          fi
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+
+  # ---- Stage 2: tests must pass on every supported Python ---------------
+  test:
+    name: pytest (Python ${{ matrix.python-version }})
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      # If 3.9 fails there's no point publishing — abort the rest.
+      fail-fast: true
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: false
+
+      - name: Install project + dev deps
+        run: uv pip install --system -e ".[dev]"
+
+      - name: pytest
+        run: pytest tests/ -v
+
+  # ---- Stage 3: build sdist + wheel once, share via artifact ------------
+  build:
+    name: Build sdist + wheel
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build
+        run: pip install --user build
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Show built artifacts
+        run: ls -la dist/
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---- Stage 4: publish to PyPI via Trusted Publishing (OIDC) -----------
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # The `pypi` environment ties this job to the GitHub repo environment
+    # of the same name AND to the Trusted Publisher record on PyPI. The
+    # url shows up as a clickable link on the GitHub Actions run.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/pbirb-mcp/${{ needs.verify.outputs.version }}/
+    permissions:
+      # Required for OIDC token issuance. No long-lived API token needed.
+      id-token: write
+    steps:
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # No `password:` — OIDC handles auth via the Trusted Publisher
+          # config on PyPI. No `repository-url:` — defaults to PyPI proper.
+          packages-dir: dist/
+          # Skip if a wheel/sdist with the same version already exists.
+          # Belt-and-suspenders: the verify job catches this earlier, but
+          # this prevents a partial publish if e.g. only one of sdist/wheel
+          # exists from a prior aborted run.
+          skip-existing: false
+          verbose: true
+
+  # ---- Stage 5: create the GitHub Release with CHANGELOG body -----------
+  github-release:
+    name: Create GitHub Release
+    needs: [verify, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to create the GitHub Release.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          # Print every line BETWEEN the "## [VERSION]" heading and the
+          # next "## " heading, exclusive on both ends.
+          awk -v ver="$VERSION" '
+            $0 ~ ("^## \\[" ver "\\]") { p = 1; next }
+            /^## / { p = 0 }
+            p
+          ' CHANGELOG.md | sed '/./,$!d' > /tmp/release_notes.md
+
+          if [ ! -s /tmp/release_notes.md ]; then
+            echo "::error::No CHANGELOG section found for version $VERSION."
+            echo "::error::Add a '## [$VERSION] - YYYY-MM-DD' heading to CHANGELOG.md."
+            exit 1
+          fi
+
+          echo "::group::Release notes that will be posted to the GitHub Release"
+          cat /tmp/release_notes.md
+          echo "::endgroup::"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Tag is implicit from the trigger (refs/tags/v*).
+          name: v${{ needs.verify.outputs.version }}
+          body_path: /tmp/release_notes.md
+          files: dist/*
+          fail_on_unmatched_files: true
+          # We supply the body ourselves; don't auto-generate from commits.
+          generate_release_notes: false
+          # Prerelease detection: anything with a "-" after vX.Y.Z is treated
+          # as a prerelease (rc, alpha, beta, etc.). Stable releases match
+          # the strict "v\d+\.\d+\.\d+$" pattern.
+          prerelease: ${{ contains(needs.verify.outputs.version, '-') }}
