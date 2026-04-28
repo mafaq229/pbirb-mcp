@@ -342,9 +342,249 @@ def set_column_group_visibility(
     )
 
 
+# ---- add_tablix_column / remove_tablix_column (v0.2 commit 2) -------------
+
+
+def _all_textbox_names(doc: RDLDocument) -> set[str]:
+    """Every Textbox.Name in the entire report. Report Builder enforces
+    report-wide uniqueness, so this is the right scope for collision check."""
+    names = set()
+    for tb in doc.root.iter(q("Textbox")):
+        n = tb.get("Name")
+        if n:
+            names.add(n)
+    return names
+
+
+def _build_tablix_column_cell(
+    textbox_name: str,
+    cell_text: str,
+) -> etree._Element:
+    """Build one TablixCell for an add_tablix_column insertion. Same shape as
+    ``templates._build_cell_textbox`` so the new cell looks like everything
+    else Report Builder emits."""
+    cell = etree.Element(q("TablixCell"))
+    contents = etree.SubElement(cell, q("CellContents"))
+    tb = etree.SubElement(contents, q("Textbox"), Name=textbox_name)
+    etree.SubElement(tb, q("CanGrow")).text = "true"
+    etree.SubElement(tb, q("KeepTogether")).text = "true"
+    paragraphs = etree.SubElement(tb, q("Paragraphs"))
+    paragraph = etree.SubElement(paragraphs, q("Paragraph"))
+    textruns = etree.SubElement(paragraph, q("TextRuns"))
+    textrun = etree.SubElement(textruns, q("TextRun"))
+    value = etree.SubElement(textrun, q("Value"))
+    value.text = cell_text
+    etree.SubElement(textrun, q("Style"))
+    etree.SubElement(paragraph, q("Style"))
+    default_name = etree.SubElement(tb, qrd("DefaultName"))
+    default_name.text = textbox_name
+    etree.SubElement(tb, q("Style"))
+    return cell
+
+
+def add_tablix_column(
+    path: str,
+    tablix_name: str,
+    column_name: str,
+    expression: str,
+    position: Optional[int] = None,
+    width: Optional[str] = None,
+    header_text: Optional[str] = None,
+) -> dict[str, Any]:
+    """Append (or insert) a new column into a tablix.
+
+    ``column_name`` is the textbox name placed in the column's data row
+    (= the last ``<TablixRow>``). It must be unique report-wide.
+    ``expression`` is the value placed inside that textbox's ``<TextRun>``
+    (typically ``=Fields!X.Value``).
+
+    For a tablix with ≥ 2 rows: row 0 (header) gets ``header_text``
+    (default = ``column_name``) as a literal; middle rows get blank
+    cells; the last row gets ``expression``. Cell textbox names follow
+    the pattern ``<column_name>`` for the data row and
+    ``<column_name>_<row_index>`` for non-data rows so report-wide
+    uniqueness holds given a unique ``column_name``.
+
+    ``position`` is a 0-indexed insertion position; default = append.
+    ``width`` defaults to ``"1in"``. Both the body's ``<TablixColumn>``
+    and the column hierarchy's leaf ``<TablixMember>`` are inserted at
+    the same position; existing column-group wrappers are not modified.
+    """
+    if width is None:
+        width = "1in"
+
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+
+    # Report-wide name uniqueness — Report Builder enforces it and a
+    # collision is a silent corruption.
+    if column_name in _all_textbox_names(doc):
+        raise ValueError(
+            f"textbox name {column_name!r} already exists in this report; "
+            "pick a unique name (Report Builder enforces report-wide unique textbox names)."
+        )
+
+    body = find_child(tablix, "TablixBody")
+    if body is None:
+        raise ValueError(f"tablix {tablix_name!r} has no <TablixBody>")
+    cols_root = find_child(body, "TablixColumns")
+    if cols_root is None:
+        cols_root = etree.SubElement(body, q("TablixColumns"))
+    existing_cols = find_children(cols_root, "TablixColumn")
+    n_cols = len(existing_cols)
+
+    if position is None:
+        insert_at = n_cols
+    else:
+        if position < 0 or position > n_cols:
+            raise IndexError(f"position {position} out of range; tablix has {n_cols} column(s)")
+        insert_at = position
+
+    # ---- body: insert <TablixColumn> at insert_at ------------------------
+    new_column = etree.Element(q("TablixColumn"))
+    etree.SubElement(new_column, q("Width")).text = width
+    if insert_at == n_cols:
+        cols_root.append(new_column)
+    else:
+        cols_root.insert(insert_at, new_column)
+
+    # ---- column hierarchy: insert a top-level <TablixMember /> at the
+    # mirroring position. We add at the top level so a column added next
+    # to (rather than under) an existing column group lands as a sibling.
+    members_root = _column_hierarchy_members(tablix)
+    new_member = etree.Element(q("TablixMember"))
+    top_members = list(members_root)
+    if insert_at >= len(top_members):
+        members_root.append(new_member)
+    else:
+        members_root.insert(insert_at, new_member)
+
+    # ---- body rows: insert a fresh cell at insert_at ---------------------
+    rows_root = find_child(body, "TablixRows")
+    rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
+    n_rows = len(rows)
+    header_text_value = header_text if header_text is not None else column_name
+
+    for i, row in enumerate(rows):
+        cells_root = find_child(row, "TablixCells")
+        if cells_root is None:
+            cells_root = etree.SubElement(row, q("TablixCells"))
+
+        if n_rows == 1:
+            # Single-row tablix: that row is the data row.
+            cell_text = expression
+            tb_name = column_name
+        elif i == n_rows - 1:
+            # Last row of multi-row tablix: data row.
+            cell_text = expression
+            tb_name = column_name
+        elif i == 0:
+            # First row of multi-row tablix: header row.
+            cell_text = header_text_value
+            tb_name = f"{column_name}_{i}"
+        else:
+            # Middle rows: blank.
+            cell_text = ""
+            tb_name = f"{column_name}_{i}"
+
+        new_cell = _build_tablix_column_cell(tb_name, cell_text)
+        if insert_at == len(find_children(cells_root, "TablixCell")):
+            cells_root.append(new_cell)
+        else:
+            cells_root.insert(insert_at, new_cell)
+
+    doc.save()
+    return {
+        "tablix": tablix_name,
+        "column_name": column_name,
+        "position": insert_at,
+        "width": width,
+    }
+
+
+def remove_tablix_column(
+    path: str,
+    tablix_name: str,
+    column_name: str,
+) -> dict[str, Any]:
+    """Remove the column whose data-row textbox is named ``column_name``.
+
+    The column-index is discovered by scanning every row's cells for a
+    textbox with that exact name; the first hit's column-index is the
+    target. Removes the matching ``<TablixColumn>`` from
+    ``<TablixColumns>``, the matching top-level ``<TablixMember>`` from
+    the column hierarchy, and the cell at that index from every row.
+
+    Errors with :class:`ElementNotFoundError` if no row contains a
+    textbox with the given name.
+    """
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+
+    body = find_child(tablix, "TablixBody")
+    if body is None:
+        raise ElementNotFoundError(
+            f"tablix {tablix_name!r} has no <TablixBody>; nothing to remove."
+        )
+    rows_root = find_child(body, "TablixRows")
+    rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
+
+    target_index: Optional[int] = None
+    for row in rows:
+        cells_root = find_child(row, "TablixCells")
+        if cells_root is None:
+            continue
+        for col_idx, cell in enumerate(find_children(cells_root, "TablixCell")):
+            tb = cell.find(f"{q('CellContents')}/{q('Textbox')}")
+            if tb is not None and tb.get("Name") == column_name:
+                target_index = col_idx
+                break
+        if target_index is not None:
+            break
+    if target_index is None:
+        raise ElementNotFoundError(
+            f"no textbox named {column_name!r} found in any row of tablix {tablix_name!r}"
+        )
+
+    # ---- body: remove <TablixColumn> at target_index ---------------------
+    cols_root = find_child(body, "TablixColumns")
+    if cols_root is not None:
+        cols = find_children(cols_root, "TablixColumn")
+        if target_index < len(cols):
+            cols_root.remove(cols[target_index])
+
+    # ---- column hierarchy: remove the top-level <TablixMember> at the
+    # same position. If a column group wraps that position, fall back to
+    # leaving the hierarchy alone — defensive, since group-wrapped removal
+    # is more nuanced and out of scope for this commit.
+    members_root = _column_hierarchy_members(tablix)
+    top_members = list(members_root)
+    if target_index < len(top_members):
+        candidate = top_members[target_index]
+        # Only remove a leaf-style member (no <Group> child); a group
+        # wrapper would mean the column belongs to a group whose width
+        # we'd otherwise silently change.
+        if find_child(candidate, "Group") is None:
+            members_root.remove(candidate)
+
+    # ---- rows: remove the cell at target_index from every row ------------
+    for row in rows:
+        cells_root = find_child(row, "TablixCells")
+        if cells_root is None:
+            continue
+        cells = find_children(cells_root, "TablixCell")
+        if target_index < len(cells):
+            cells_root.remove(cells[target_index])
+
+    doc.save()
+    return {"tablix": tablix_name, "removed_column": column_name, "position": target_index}
+
+
 __all__ = [
     "add_column_group",
+    "add_tablix_column",
     "remove_column_group",
+    "remove_tablix_column",
     "set_column_group_sort",
     "set_column_group_visibility",
 ]

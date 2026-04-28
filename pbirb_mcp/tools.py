@@ -427,6 +427,57 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=tablix_columns.set_column_group_visibility,
     )
+    server.register_tool(
+        name="add_tablix_column",
+        description=(
+            "Append (or insert) a column into a tablix. column_name is the "
+            "textbox name placed in the data row's new cell — must be unique "
+            "report-wide. expression goes inside that textbox's TextRun "
+            "(typically =Fields!X.Value). For a tablix with >= 2 rows the "
+            "first row gets header_text (default = column_name) as a literal, "
+            "middle rows get blank cells, and the last row gets expression. "
+            "position is 0-indexed; default appends at end. width defaults to "
+            "1in. Inserts a matching top-level TablixMember in the column "
+            "hierarchy at the same index."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "column_name": {"type": "string"},
+                "expression": {"type": "string"},
+                "position": {"type": ["integer", "null"], "minimum": 0},
+                "width": {"type": ["string", "null"]},
+                "header_text": {"type": ["string", "null"]},
+            },
+            "required": ["path", "tablix_name", "column_name", "expression"],
+            "additionalProperties": False,
+        },
+        handler=tablix_columns.add_tablix_column,
+    )
+    server.register_tool(
+        name="remove_tablix_column",
+        description=(
+            "Remove the tablix column whose data-row cell holds a textbox "
+            "named column_name. Drops the matching TablixColumn, removes the "
+            "top-level TablixMember at that column index (only if it's a "
+            "leaf, never a column group wrapper), and removes the cell at "
+            "that index from every TablixRow. Errors if no row contains a "
+            "textbox with the given name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "column_name": {"type": "string"},
+            },
+            "required": ["path", "tablix_name", "column_name"],
+            "additionalProperties": False,
+        },
+        handler=tablix_columns.remove_tablix_column,
+    )
 
     server.register_tool(
         name="set_detail_row_visibility",
