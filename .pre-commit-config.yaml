@@ -1,0 +1,36 @@
+# Run via:
+#   pip install pre-commit && pre-commit install
+# Then every `git commit` runs ruff format + ruff check + the fast tests.
+# Fixing lint drift before the push keeps CI green and avoids round-trips.
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: \.rdl$
+      - id: end-of-file-fixer
+        exclude: \.rdl$
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]
+
+  # Fast smoke — relies on the project's existing virtualenv at .venv/.
+  # Designed to run in well under a second on the current 273-test suite.
+  - repo: local
+    hooks:
+      - id: pytest-fast
+        name: pytest -x (fast)
+        entry: .venv/bin/python -m pytest -x --no-header -q
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
