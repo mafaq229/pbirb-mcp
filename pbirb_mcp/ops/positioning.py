@@ -73,10 +73,17 @@ def _insert_layout_child(item: etree._Element, new_child: etree._Element) -> Non
     item.append(new_child)
 
 
-def _set_layout_value(item: etree._Element, local_name: str, value: str) -> None:
+def _set_layout_value(item: etree._Element, local_name: str, value: str) -> bool:
+    """Write ``<local_name>value</local_name>`` into ``item``. Returns True
+    if the file value actually changed (used by callers to surface a
+    ``changed: bool`` flag for idempotency)."""
+    existing = find_child(item, local_name)
+    if existing is not None and existing.text == value:
+        return False
     new = etree.Element(q(local_name))
     new.text = value
     _insert_layout_child(item, new)
+    return True
 
 
 # Item types we recognise as named ReportItems.
@@ -138,6 +145,33 @@ def _resolve_footer(doc: RDLDocument) -> etree._Element:
 # ---- public tools (commit 6) ---------------------------------------------
 
 
+def _move_named_item(
+    doc: RDLDocument,
+    container: etree._Element,
+    container_label: str,
+    name: str,
+    top: str,
+    left: str,
+) -> dict[str, Any]:
+    item = _find_named_item(container, name)
+    if item is None:
+        raise ElementNotFoundError(f"{container_label} has no named item {name!r}")
+    changed_fields: list[str] = []
+    if _set_layout_value(item, "Top", top):
+        changed_fields.append("Top")
+    if _set_layout_value(item, "Left", left):
+        changed_fields.append("Left")
+    if changed_fields:
+        doc.save()
+    return {
+        "name": name,
+        "container": container_label,
+        "top": top,
+        "left": left,
+        "changed": bool(changed_fields),
+    }
+
+
 def set_body_item_position(
     path: str,
     name: str,
@@ -146,17 +180,12 @@ def set_body_item_position(
 ) -> dict[str, Any]:
     """Move an existing named body item to ``(top, left)`` without
     otherwise restructuring it. ``top`` / ``left`` are passed through
-    verbatim — Report Builder accepts any RDL size unit.
+    verbatim — Report Builder accepts any RDL size unit. Returns
+    ``changed: false`` when the item is already at the requested
+    position (idempotent — file is not rewritten).
     """
     doc = RDLDocument.open(path)
-    container = _resolve_body(doc)
-    item = _find_named_item(container, name)
-    if item is None:
-        raise ElementNotFoundError(f"body has no named item {name!r}")
-    _set_layout_value(item, "Top", top)
-    _set_layout_value(item, "Left", left)
-    doc.save()
-    return {"name": name, "container": "body", "top": top, "left": left}
+    return _move_named_item(doc, _resolve_body(doc), "body", name, top, left)
 
 
 # ---- public tools (commit 7) ---------------------------------------------
@@ -168,16 +197,10 @@ def set_header_item_position(
     top: str,
     left: str,
 ) -> dict[str, Any]:
-    """Move a named item inside ``<PageHeader>``."""
+    """Move a named item inside ``<PageHeader>``. Idempotent — see
+    ``set_body_item_position`` for the ``changed`` semantics."""
     doc = RDLDocument.open(path)
-    container = _resolve_header(doc)
-    item = _find_named_item(container, name)
-    if item is None:
-        raise ElementNotFoundError(f"page header has no named item {name!r}")
-    _set_layout_value(item, "Top", top)
-    _set_layout_value(item, "Left", left)
-    doc.save()
-    return {"name": name, "container": "header", "top": top, "left": left}
+    return _move_named_item(doc, _resolve_header(doc), "header", name, top, left)
 
 
 def set_footer_item_position(
@@ -186,16 +209,10 @@ def set_footer_item_position(
     top: str,
     left: str,
 ) -> dict[str, Any]:
-    """Move a named item inside ``<PageFooter>``."""
+    """Move a named item inside ``<PageFooter>``. Idempotent — see
+    ``set_body_item_position`` for the ``changed`` semantics."""
     doc = RDLDocument.open(path)
-    container = _resolve_footer(doc)
-    item = _find_named_item(container, name)
-    if item is None:
-        raise ElementNotFoundError(f"page footer has no named item {name!r}")
-    _set_layout_value(item, "Top", top)
-    _set_layout_value(item, "Left", left)
-    doc.save()
-    return {"name": name, "container": "footer", "top": top, "left": left}
+    return _move_named_item(doc, _resolve_footer(doc), "footer", name, top, left)
 
 
 # ---- public tools (commit 8) ---------------------------------------------
@@ -208,7 +225,9 @@ def set_body_item_size(
     height: Optional[str] = None,
 ) -> dict[str, Any]:
     """Resize an existing named body item. Either ``width`` or ``height``
-    (or both) must be supplied; missing fields are left untouched."""
+    (or both) must be supplied; missing fields are left untouched.
+    Returns ``changed: false`` when neither dimension differs from the
+    current value (idempotent — file is not rewritten)."""
     if width is None and height is None:
         raise ValueError("at least one of width or height must be supplied; both None is a no-op.")
     doc = RDLDocument.open(path)
@@ -216,12 +235,20 @@ def set_body_item_size(
     item = _find_named_item(container, name)
     if item is None:
         raise ElementNotFoundError(f"body has no named item {name!r}")
-    if width is not None:
-        _set_layout_value(item, "Width", width)
-    if height is not None:
-        _set_layout_value(item, "Height", height)
-    doc.save()
-    return {"name": name, "container": "body", "width": width, "height": height}
+    changed_fields: list[str] = []
+    if width is not None and _set_layout_value(item, "Width", width):
+        changed_fields.append("Width")
+    if height is not None and _set_layout_value(item, "Height", height):
+        changed_fields.append("Height")
+    if changed_fields:
+        doc.save()
+    return {
+        "name": name,
+        "container": "body",
+        "width": width,
+        "height": height,
+        "changed": bool(changed_fields),
+    }
 
 
 __all__ = [

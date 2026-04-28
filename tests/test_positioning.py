@@ -207,6 +207,50 @@ class TestSetBodyItemSize:
 # ---- registration --------------------------------------------------------
 
 
+class TestIdempotency:
+    def test_set_body_item_position_changed_true_on_move(self, rdl_path):
+        result = set_body_item_position(
+            path=str(rdl_path),
+            name="MainTable",
+            top="2cm",
+            left="0in",
+        )
+        assert result["changed"] is True
+
+    def test_set_body_item_position_changed_false_on_no_op(self, rdl_path):
+        # First move sets the position; the second move with the same args
+        # is a no-op and should report changed=False without rewriting the
+        # file.
+        set_body_item_position(
+            path=str(rdl_path),
+            name="MainTable",
+            top="2cm",
+            left="0in",
+        )
+        mtime_before = Path(rdl_path).stat().st_mtime_ns
+        result = set_body_item_position(
+            path=str(rdl_path),
+            name="MainTable",
+            top="2cm",
+            left="0in",
+        )
+        assert result["changed"] is False
+        # File mtime is unchanged — we didn't rewrite the document.
+        assert Path(rdl_path).stat().st_mtime_ns == mtime_before
+
+    def test_set_body_item_size_changed_false_on_no_op(self, rdl_path):
+        # Read the existing tablix size first so we know what's a no-op.
+        doc = RDLDocument.open(rdl_path)
+        tablix = _named(_body(doc), "MainTable")
+        current_width = find_child(tablix, "Width").text
+        result = set_body_item_size(
+            path=str(rdl_path),
+            name="MainTable",
+            width=current_width,
+        )
+        assert result["changed"] is False
+
+
 class TestToolRegistration:
     def test_all_four_tools_registered(self):
         server = MCPServer()
