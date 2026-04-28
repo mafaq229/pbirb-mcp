@@ -336,6 +336,64 @@ class TestSetGroupVisibility:
                 visibility_expression="true",
             )
 
+    def test_refuses_column_axis_group(self, rdl_path):
+        """Symmetric guard: row-axis tools refuse a group living only on the
+        column axis (mirrors how set_column_group_visibility rejects row-axis
+        groups). Hint message points at the column-axis sibling tool."""
+        from pbirb_mcp.ops.tablix_columns import add_column_group
+
+        add_column_group(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Quarter",
+            group_expression="=Fields!Quarter.Value",
+        )
+        with pytest.raises(ElementNotFoundError) as exc:
+            set_group_visibility(
+                path=str(rdl_path),
+                tablix_name="MainTable",
+                group_name="Quarter",
+                visibility_expression="true",
+            )
+        assert "column-axis" in str(exc.value) or "set_column_group_visibility" in str(exc.value)
+
+
+class TestRowAxisGuards:
+    def test_set_group_sort_refuses_column_axis(self, rdl_path):
+        from pbirb_mcp.ops.tablix_columns import add_column_group
+
+        add_column_group(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Quarter",
+            group_expression="=Fields!Quarter.Value",
+        )
+        with pytest.raises(ElementNotFoundError) as exc:
+            set_group_sort(
+                path=str(rdl_path),
+                tablix_name="MainTable",
+                group_name="Quarter",
+                sort_expressions=["=1"],
+            )
+        assert "set_column_group_sort" in str(exc.value)
+
+    def test_remove_row_group_refuses_column_axis(self, rdl_path):
+        from pbirb_mcp.ops.tablix_columns import add_column_group
+
+        add_column_group(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Quarter",
+            group_expression="=Fields!Quarter.Value",
+        )
+        with pytest.raises(ElementNotFoundError) as exc:
+            remove_row_group(
+                path=str(rdl_path),
+                tablix_name="MainTable",
+                group_name="Quarter",
+            )
+        assert "remove_column_group" in str(exc.value)
+
 
 # ---- registration ---------------------------------------------------------
 

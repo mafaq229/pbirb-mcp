@@ -37,9 +37,9 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 from pbirb_mcp.ops.tablix import (
+    _apply_sort_to_member,
+    _apply_visibility_to_member,
     _group_names_in_tablix,
-    set_group_sort,
-    set_group_visibility,
 )
 
 # ---- column-hierarchy helpers ---------------------------------------------
@@ -289,25 +289,24 @@ def set_column_group_sort(
 ) -> dict[str, Any]:
     """Set ``<SortExpressions>`` on a column-axis group's TablixMember.
 
-    Behaves identically to :func:`pbirb_mcp.ops.tablix.set_group_sort` but
-    refuses up front if ``group_name`` is not in the column hierarchy.
+    Refuses up front if ``group_name`` is not in the column hierarchy —
+    use :func:`set_group_sort` for the row-axis case.
     """
-    # Hierarchy sanity check before delegating — gives the LLM a clearer
-    # error than the generic "group not found" when it's invoked on the
-    # wrong axis.
-    doc_check = RDLDocument.open(path)
-    tablix_check = resolve_tablix(doc_check, tablix_name)
-    if _find_column_member_for_group(tablix_check, group_name) is None:
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+    member = _find_column_member_for_group(tablix, group_name)
+    if member is None:
         raise ElementNotFoundError(
             f"column-axis group {group_name!r} not found in tablix "
             f"{tablix_name!r}; for a row-axis group use set_group_sort."
         )
-    return set_group_sort(
-        path=path,
-        tablix_name=tablix_name,
-        group_name=group_name,
-        sort_expressions=sort_expressions,
-    )
+    _apply_sort_to_member(member, sort_expressions)
+    doc.save()
+    return {
+        "tablix": tablix_name,
+        "group": group_name,
+        "sort_expressions": list(sort_expressions),
+    }
 
 
 # ---- set_column_group_visibility ------------------------------------------
@@ -322,24 +321,25 @@ def set_column_group_visibility(
 ) -> dict[str, Any]:
     """Set ``<Visibility>`` on a column-axis group's TablixMember.
 
-    Behaves identically to
-    :func:`pbirb_mcp.ops.tablix.set_group_visibility` but refuses up front
-    if ``group_name`` is not in the column hierarchy.
+    Refuses up front if ``group_name`` is not in the column hierarchy —
+    use :func:`set_group_visibility` for the row-axis case.
     """
-    doc_check = RDLDocument.open(path)
-    tablix_check = resolve_tablix(doc_check, tablix_name)
-    if _find_column_member_for_group(tablix_check, group_name) is None:
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+    member = _find_column_member_for_group(tablix, group_name)
+    if member is None:
         raise ElementNotFoundError(
             f"column-axis group {group_name!r} not found in tablix "
             f"{tablix_name!r}; for a row-axis group use set_group_visibility."
         )
-    return set_group_visibility(
-        path=path,
-        tablix_name=tablix_name,
-        group_name=group_name,
-        visibility_expression=visibility_expression,
-        toggle_textbox=toggle_textbox,
-    )
+    _apply_visibility_to_member(member, visibility_expression, toggle_textbox)
+    doc.save()
+    return {
+        "tablix": tablix_name,
+        "group": group_name,
+        "visibility_expression": visibility_expression,
+        "toggle_textbox": toggle_textbox,
+    }
 
 
 # ---- add_tablix_column / remove_tablix_column (v0.2 commit 2) -------------
