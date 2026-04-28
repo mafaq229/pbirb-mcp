@@ -19,6 +19,7 @@ from pbirb_mcp.ops import (
     parameters,
     positioning,
     reader,
+    snapshot,
     styling,
     tablix,
     tablix_cells,
@@ -768,6 +769,20 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=reader.get_rectangle,
+    )
+
+    # ---- snapshot (v0.2 commit 14) ----------------------------------------
+    server.register_tool(
+        name="backup_report",
+        description=(
+            "Copy the report to <path>.bak.<UTC-timestamp>. Original is "
+            "untouched. Cheap explicit checkpoint to call before a "
+            "destructive batch (remove_*, rename_parameter, etc.). Returns "
+            "the backup path. Set PBIRB_MCP_AUTO_BACKUP=1 to opt into "
+            "automatic backups before destructive ops (off by default)."
+        ),
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=snapshot.backup_report,
     )
 
     server.register_tool(
