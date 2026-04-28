@@ -1461,7 +1461,10 @@ def register_all_tools(server: MCPServer) -> None:
             "Read a real image file off disk, base64-encode it, and store "
             "it under <EmbeddedImages>. Reference it later with "
             "image_source='Embedded' + value=<name>. Supported MIME types: "
-            "image/bmp, image/gif, image/jpeg, image/png, image/x-png."
+            "image/bmp, image/gif, image/jpeg, image/png, image/x-png. "
+            "The file's magic bytes are sniffed and must match mime_type — "
+            "claiming PNG bytes as image/jpeg is rejected here rather than "
+            "letting Report Builder fail at preview time."
         ),
         input_schema={
             "type": "object",
@@ -1505,7 +1508,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_embedded_image",
         description=(
-            "Remove a named embedded image. Drops the empty "
+            "Remove a named embedded image. Refuses (lists offending Image "
+            "elements) when any <Image Source=\"Embedded\"><Value>=name> "
+            "still references it; pass force=True to remove anyway and "
+            "accept the dangling references. Drops the empty "
             "<EmbeddedImages/> block when removing the last entry."
         ),
         input_schema={
@@ -1513,6 +1519,7 @@ def register_all_tools(server: MCPServer) -> None:
             "properties": {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
+                "force": {"type": "boolean", "default": False},
             },
             "required": ["path", "name"],
             "additionalProperties": False,
