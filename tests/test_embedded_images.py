@@ -145,6 +145,46 @@ class TestAddEmbeddedImage:
                 image_path=str(tmp_path / "nope.png"),
             )
 
+    def test_mime_mismatch_rejected(self, rdl_path, png_path):
+        """PNG bytes claimed as image/jpeg fail the magic-byte sniff. Without
+        this check Report Builder would only fail at preview time."""
+        with pytest.raises(ValueError) as exc:
+            add_embedded_image(
+                path=str(rdl_path),
+                name="Logo",
+                mime_type="image/jpeg",
+                image_path=str(png_path),
+            )
+        # Error message names both the claim and the detected format so the
+        # caller can self-correct.
+        msg = str(exc.value)
+        assert "image/jpeg" in msg
+        assert "image/png" in msg
+
+    def test_unrecognised_bytes_rejected(self, rdl_path, tmp_path):
+        """A file that isn't a recognised image format at all is rejected."""
+        bogus = tmp_path / "not_an_image.png"
+        bogus.write_bytes(b"this is plain text, not an image")
+        with pytest.raises(ValueError) as exc:
+            add_embedded_image(
+                path=str(rdl_path),
+                name="Logo",
+                mime_type="image/png",
+                image_path=str(bogus),
+            )
+        assert "magic bytes" in str(exc.value)
+
+    def test_x_png_alias_accepts_png_bytes(self, rdl_path, png_path):
+        """image/x-png is an RDL alias for image/png — PNG bytes should pass."""
+        add_embedded_image(
+            path=str(rdl_path),
+            name="Logo",
+            mime_type="image/x-png",
+            image_path=str(png_path),
+        )
+        entry = find_children(_embedded_block(rdl_path), "EmbeddedImage")[0]
+        assert find_child(entry, "MIMEType").text == "image/x-png"
+
     def test_round_trip_safe(self, rdl_path, png_path):
         add_embedded_image(
             path=str(rdl_path),
@@ -220,6 +260,69 @@ class TestRemoveEmbeddedImage:
     def test_unknown_name_raises(self, rdl_path):
         with pytest.raises(ElementNotFoundError):
             remove_embedded_image(path=str(rdl_path), name="Ghost")
+
+    def test_refuses_when_referenced_by_body_image(self, rdl_path, png_path):
+        """An Image element with Source=Embedded + Value=<name> blocks
+        removal; the error names the offending Image so the caller knows
+        what to fix."""
+        from pbirb_mcp.ops.body import add_body_image
+
+        add_embedded_image(
+            path=str(rdl_path),
+            name="Logo",
+            mime_type="image/png",
+            image_path=str(png_path),
+        )
+        add_body_image(
+            path=str(rdl_path),
+            name="HeaderLogo",
+            image_source="Embedded",
+            value="Logo",
+            top="0in",
+            left="0in",
+            width="1in",
+            height="0.5in",
+        )
+
+        with pytest.raises(ValueError) as exc:
+            remove_embedded_image(path=str(rdl_path), name="Logo")
+        msg = str(exc.value)
+        assert "HeaderLogo" in msg
+        assert "force=True" in msg
+
+        # The image is still there.
+        assert _embedded_block(rdl_path) is not None
+        assert any(
+            e.get("Name") == "Logo"
+            for e in find_children(_embedded_block(rdl_path), "EmbeddedImage")
+        )
+
+    def test_force_bypasses_reference_check(self, rdl_path, png_path):
+        """force=True deletes the image even when references exist; the
+        result echoes the force flag so the caller knows what happened."""
+        from pbirb_mcp.ops.body import add_body_image
+
+        add_embedded_image(
+            path=str(rdl_path),
+            name="Logo",
+            mime_type="image/png",
+            image_path=str(png_path),
+        )
+        add_body_image(
+            path=str(rdl_path),
+            name="HeaderLogo",
+            image_source="Embedded",
+            value="Logo",
+            top="0in",
+            left="0in",
+            width="1in",
+            height="0.5in",
+        )
+
+        out = remove_embedded_image(path=str(rdl_path), name="Logo", force=True)
+        assert out["force"] is True
+        assert out["removed"] == "Logo"
+        assert _embedded_block(rdl_path) is None
 
 
 # ---- registration ---------------------------------------------------------

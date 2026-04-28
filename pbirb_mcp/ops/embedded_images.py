@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from lxml import etree
 
@@ -38,6 +38,30 @@ _VALID_MIME_TYPES = frozenset(
         "image/x-png",
     }
 )
+
+
+# Magic-byte prefixes for the supported formats. We sniff the file to refuse
+# obvious mime/format mismatches early — without this, callers can embed PNG
+# bytes as image/jpeg and only see the breakage when Report Builder fails
+# to render at preview time.
+_FORMAT_MAGIC: dict[str, tuple[bytes, ...]] = {
+    "image/bmp": (b"BM",),
+    "image/gif": (b"GIF87a", b"GIF89a"),
+    "image/jpeg": (b"\xff\xd8\xff",),
+    "image/png": (b"\x89PNG\r\n\x1a\n",),
+    "image/x-png": (b"\x89PNG\r\n\x1a\n",),
+}
+
+
+def _sniff_mime(prefix: bytes) -> Optional[str]:
+    """Return the canonical MIME type for the given file prefix, or None
+    if the bytes don't match any supported format."""
+    for mime, signatures in _FORMAT_MAGIC.items():
+        for sig in signatures:
+            if prefix.startswith(sig):
+                # x-png is an alias for png; collapse for comparison purposes.
+                return "image/png" if mime == "image/x-png" else mime
+    return None
 
 
 # Top-level <Report> child order we care about for placement. The fixture
@@ -103,7 +127,26 @@ def add_embedded_image(
     if not src.is_file():
         raise FileNotFoundError(image_path)
 
-    encoded = base64.b64encode(src.read_bytes()).decode("ascii")
+    image_bytes = src.read_bytes()
+
+    # Sniff the magic bytes and refuse mime/format mismatches early. Report
+    # Builder otherwise embeds the bad bytes happily and only fails at
+    # preview time, far from the call that introduced the bug.
+    detected = _sniff_mime(image_bytes[:8])
+    canonical_claim = "image/png" if mime_type == "image/x-png" else mime_type
+    if detected is None:
+        raise ValueError(
+            f"file {image_path!r} does not look like a supported image "
+            f"(magic bytes: {image_bytes[:8]!r})."
+        )
+    if detected != canonical_claim:
+        raise ValueError(
+            f"mime_type {mime_type!r} does not match the file content "
+            f"(detected {detected!r} from magic bytes). Pass the matching "
+            "mime_type or supply the right file."
+        )
+
+    encoded = base64.b64encode(image_bytes).decode("ascii")
 
     doc = RDLDocument.open(path)
     block = _ensure_embedded_block(doc.root)
@@ -144,17 +187,64 @@ def list_embedded_images(path: str) -> list[dict[str, str]]:
 # ---- remove_embedded_image ------------------------------------------------
 
 
-def remove_embedded_image(path: str, name: str) -> dict[str, Any]:
+def _scan_embedded_image_references(doc: RDLDocument, name: str) -> list[str]:
+    """Walk every ``<Image>`` looking for ``Source=Embedded`` + ``Value=<name>``.
+
+    Returns a list of human-readable locator strings (the Image's Name and,
+    when nameless, an ancestor anchor). Mirrors the pattern used by
+    ``parameters._scan_parameter_references`` so callers get the same
+    experience: the message lists where the offending references live, and
+    they can decide to fix them or pass ``force=True``.
+    """
+    locators: list[str] = []
+    for img in doc.root.iter(q("Image")):
+        source = find_child(img, "Source")
+        if source is None or source.text != "Embedded":
+            continue
+        value = find_child(img, "Value")
+        if value is None or value.text != name:
+            continue
+        img_name = img.get("Name") or "<unnamed>"
+        locators.append(f"Image[Name={img_name!r}]")
+    return locators
+
+
+def remove_embedded_image(
+    path: str,
+    name: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Remove a named embedded image.
+
+    By default refuses if any ``<Image Source="Embedded"><Value>=<name>``
+    still references it — the report would render with a broken image at
+    every reference site. Pass ``force=True`` to remove anyway and accept
+    the dangling references; this matches the safety story in
+    ``remove_parameter``.
+
+    Drops the empty ``<EmbeddedImages/>`` block when removing the last entry.
+    """
     doc = RDLDocument.open(path)
     block = find_child(doc.root, "EmbeddedImages")
     target = _find_embedded(block, name) if block is not None else None
     if target is None:
         raise ElementNotFoundError(f"embedded image named {name!r} not found")
+
+    if not force:
+        locators = _scan_embedded_image_references(doc, name)
+        if locators:
+            raise ValueError(
+                f"embedded image {name!r} is still referenced from "
+                f"{len(locators)} location(s): {locators[:5]}"
+                + (" (more elided)" if len(locators) > 5 else "")
+                + ". Pass force=True to remove anyway."
+            )
+
     block.remove(target)
     if len(find_children(block, "EmbeddedImage")) == 0:
         block.getparent().remove(block)
     doc.save()
-    return {"removed": name}
+    return {"removed": name, "force": force}
 
 
 __all__ = [

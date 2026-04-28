@@ -182,7 +182,19 @@ def _row_hierarchy_members(tablix: etree._Element) -> etree._Element:
 
 
 def _find_member_for_group(tablix: etree._Element, group_name: str) -> Optional[etree._Element]:
-    for member in tablix.iter(q("TablixMember")):
+    """Find a TablixMember bearing ``<Group Name=...>`` in the **row** axis only.
+
+    Scoped to ``TablixRowHierarchy`` so that row-axis tools (``set_group_sort``,
+    ``set_group_visibility``, ``remove_row_group``, ``set_detail_row_visibility``)
+    refuse to act on a column-axis group with a name collision. Mirrors the
+    explicit row/column split already in ``tablix_columns._find_column_member_for_group``.
+    Use ``resolve_group`` from ``core.ids`` for hierarchy-agnostic lookup when
+    that's the right semantic.
+    """
+    row_hierarchy = find_child(tablix, "TablixRowHierarchy")
+    if row_hierarchy is None:
+        return None
+    for member in row_hierarchy.iter(q("TablixMember")):
         group = find_child(member, "Group")
         if group is not None and group.get("Name") == group_name:
             return member
@@ -393,7 +405,10 @@ def remove_row_group(
 
     member = _find_member_for_group(tablix, group_name)
     if member is None:
-        raise ElementNotFoundError(f"group {group_name!r} not found in tablix {tablix_name!r}")
+        raise ElementNotFoundError(
+            f"row-axis group {group_name!r} not found in tablix {tablix_name!r}; "
+            "use remove_column_group for a column-axis group."
+        )
 
     inner_members = find_child(member, "TablixMembers")
     if inner_members is None or len(list(inner_members)) == 0:
@@ -434,6 +449,17 @@ def remove_row_group(
 # ---- set_group_sort -------------------------------------------------------
 
 
+def _apply_sort_to_member(member: etree._Element, sort_expressions: list[str]) -> None:
+    """Hierarchy-agnostic core of set_group_sort / set_column_group_sort —
+    operates on an already-resolved TablixMember."""
+    new_block = etree.Element(q("SortExpressions"))
+    for expr in sort_expressions:
+        sort = etree.SubElement(new_block, q("SortExpression"))
+        value = etree.SubElement(sort, q("Value"))
+        value.text = expr
+    _insert_member_child(member, new_block)
+
+
 def set_group_sort(
     path: str,
     tablix_name: str,
@@ -444,15 +470,12 @@ def set_group_sort(
     tablix = resolve_tablix(doc, tablix_name)
     member = _find_member_for_group(tablix, group_name)
     if member is None:
-        raise ElementNotFoundError(f"group {group_name!r} not found in tablix {tablix_name!r}")
+        raise ElementNotFoundError(
+            f"row-axis group {group_name!r} not found in tablix {tablix_name!r}; "
+            "for a column-axis group use set_column_group_sort."
+        )
 
-    new_block = etree.Element(q("SortExpressions"))
-    for expr in sort_expressions:
-        sort = etree.SubElement(new_block, q("SortExpression"))
-        value = etree.SubElement(sort, q("Value"))
-        value.text = expr
-
-    _insert_member_child(member, new_block)
+    _apply_sort_to_member(member, sort_expressions)
 
     doc.save()
     return {
@@ -463,6 +486,21 @@ def set_group_sort(
 
 
 # ---- set_group_visibility -------------------------------------------------
+
+
+def _apply_visibility_to_member(
+    member: etree._Element,
+    visibility_expression: str,
+    toggle_textbox: Optional[str],
+) -> None:
+    """Hierarchy-agnostic core of set_group_visibility / set_column_group_visibility."""
+    new_vis = etree.Element(q("Visibility"))
+    hidden = etree.SubElement(new_vis, q("Hidden"))
+    hidden.text = visibility_expression
+    if toggle_textbox is not None:
+        toggle = etree.SubElement(new_vis, q("ToggleItem"))
+        toggle.text = toggle_textbox
+    _insert_member_child(member, new_vis)
 
 
 def set_group_visibility(
@@ -476,16 +514,12 @@ def set_group_visibility(
     tablix = resolve_tablix(doc, tablix_name)
     member = _find_member_for_group(tablix, group_name)
     if member is None:
-        raise ElementNotFoundError(f"group {group_name!r} not found in tablix {tablix_name!r}")
+        raise ElementNotFoundError(
+            f"row-axis group {group_name!r} not found in tablix {tablix_name!r}; "
+            "for a column-axis group use set_column_group_visibility."
+        )
 
-    new_vis = etree.Element(q("Visibility"))
-    hidden = etree.SubElement(new_vis, q("Hidden"))
-    hidden.text = visibility_expression
-    if toggle_textbox is not None:
-        toggle = etree.SubElement(new_vis, q("ToggleItem"))
-        toggle.text = toggle_textbox
-
-    _insert_member_child(member, new_vis)
+    _apply_visibility_to_member(member, visibility_expression, toggle_textbox)
 
     doc.save()
     return {

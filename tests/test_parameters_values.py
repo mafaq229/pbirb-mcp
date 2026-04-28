@@ -160,13 +160,48 @@ class TestErrors:
                 static_values=["X"],
             )
 
-    def test_static_requires_values(self, rdl_path):
-        with pytest.raises(ValueError):
-            set_parameter_available_values(
-                path=str(rdl_path),
-                name="DateFrom",
-                source="static",
-            )
+    def test_static_with_no_values_clears_block(self, rdl_path):
+        """Per the parameter-CRUD clear convention (mirrors
+        set_parameter_prompt('')): source='static' with no values
+        clears the <ValidValues> element entirely."""
+        # Seed: write something to clear.
+        set_parameter_available_values(
+            path=str(rdl_path),
+            name="DateFrom",
+            source="static",
+            static_values=["X", "Y"],
+        )
+        param = _param(rdl_path, "DateFrom")
+        assert find_child(param, "ValidValues") is not None
+
+        # Clear: no static_values arg.
+        result = set_parameter_available_values(
+            path=str(rdl_path),
+            name="DateFrom",
+            source="static",
+        )
+        assert result["cleared"] is True
+        param = _param(rdl_path, "DateFrom")
+        assert find_child(param, "ValidValues") is None
+
+    def test_static_with_empty_list_clears_block(self, rdl_path):
+        # Seed.
+        set_parameter_available_values(
+            path=str(rdl_path),
+            name="DateFrom",
+            source="static",
+            static_values=["X"],
+        )
+        # Clear via explicit empty list.
+        result = set_parameter_available_values(
+            path=str(rdl_path),
+            name="DateFrom",
+            source="static",
+            static_values=[],
+        )
+        assert result["cleared"] is True
+        param = _param(rdl_path, "DateFrom")
+        assert find_child(param, "ValidValues") is None
 
     def test_query_requires_dataset_and_value_field(self, rdl_path):
         with pytest.raises(ValueError):
@@ -257,6 +292,81 @@ class TestDefaultValuesReplace:
         defaults = _param(rdl_path, "DateFrom").findall(q("DefaultValue"))
         assert len(defaults) == 1
         assert defaults[0].find(f"{q('Values')}/{q('Value')}").text == "B"
+
+
+class TestDefaultValuesClear:
+    """`set_parameter_default_values(source='static')` with no values clears
+    the <DefaultValue> element. Mirrors the parameter-CRUD clear convention
+    (see `set_parameter_prompt('')`)."""
+
+    def test_static_with_no_values_clears_block(self, rdl_path):
+        set_parameter_default_values(
+            path=str(rdl_path),
+            name="DateFrom",
+            source="static",
+            static_values=["=Today()"],
+        )
+        assert find_child(_param(rdl_path, "DateFrom"), "DefaultValue") is not None
+
+        result = set_parameter_default_values(
+            path=str(rdl_path),
+            name="DateFrom",
+            source="static",
+        )
+        assert result["cleared"] is True
+        assert find_child(_param(rdl_path, "DateFrom"), "DefaultValue") is None
+
+    def test_static_with_empty_list_clears_block(self, rdl_path):
+        set_parameter_default_values(
+            path=str(rdl_path),
+            name="DateFrom",
+            source="static",
+            static_values=["=Today()"],
+        )
+        result = set_parameter_default_values(
+            path=str(rdl_path),
+            name="DateFrom",
+            source="static",
+            static_values=[],
+        )
+        assert result["cleared"] is True
+        assert find_child(_param(rdl_path, "DateFrom"), "DefaultValue") is None
+
+    def test_clear_then_set_type_flow(self, rdl_path):
+        """Clearing defaults unblocks `set_parameter_type` when the previous
+        defaults were incompatible with the new type — the documented
+        recovery path from the type-mismatch error."""
+        from pbirb_mcp.ops.parameters import set_parameter_type
+
+        # Seed a String-typed param with a non-numeric default.
+        set_parameter_default_values(
+            path=str(rdl_path),
+            name="DateFrom",
+            source="static",
+            static_values=["not-a-date-and-not-an-integer"],
+        )
+        # Now switching to Integer should refuse with the structured message.
+        with pytest.raises(ValueError) as exc:
+            set_parameter_type(
+                path=str(rdl_path),
+                name="DateFrom",
+                type="Integer",
+            )
+        assert "set_parameter_default_values" in str(exc.value)
+
+        # Clear the defaults using the new clear convention.
+        set_parameter_default_values(
+            path=str(rdl_path),
+            name="DateFrom",
+            source="static",
+        )
+        # And the type change now succeeds.
+        out = set_parameter_type(
+            path=str(rdl_path),
+            name="DateFrom",
+            type="Integer",
+        )
+        assert out["type"] == "Integer"
 
 
 # ---- round-trip ----------------------------------------------------------

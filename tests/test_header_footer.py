@@ -118,6 +118,24 @@ class TestSetPageSection:
         doc = RDLDocument.open(rdl_path)
         doc.validate()
 
+    def test_returns_changed_list_naming_what_was_written(
+        self, rdl_path, region, set_fn, _a, _b, _c, section_local
+    ):
+        result = set_fn(
+            path=str(rdl_path),
+            height="0.5in",
+            print_on_first_page=True,
+        )
+        assert result["region"] == region
+        assert sorted(result["changed"]) == ["Height", "PrintOnFirstPage"]
+
+    def test_idempotent_no_op_returns_empty_changed(
+        self, rdl_path, region, set_fn, _a, _b, _c, section_local
+    ):
+        set_fn(path=str(rdl_path), height="0.5in", print_on_first_page=True)
+        result = set_fn(path=str(rdl_path), height="0.5in", print_on_first_page=True)
+        assert result["changed"] == []
+
 
 # ---- add_*_textbox --------------------------------------------------------
 

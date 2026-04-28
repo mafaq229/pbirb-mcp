@@ -17,9 +17,15 @@ from pbirb_mcp.ops import (
     header_footer,
     page,
     parameters,
+    positioning,
     reader,
+    snapshot,
     styling,
     tablix,
+    tablix_cells,
+    tablix_columns,
+    tablix_static,
+    tablix_subtotals,
     templates,
     visibility,
 )
@@ -325,6 +331,579 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix.set_group_visibility,
+    )
+
+    # ---- column-axis groups (v0.2) ----------------------------------------
+    server.register_tool(
+        name="add_column_group",
+        description=(
+            "Add a column group that wraps the current top-level column "
+            "hierarchy. Inserts a matching column at body column 0 (default "
+            "1in width) and a header cell at column 0 of every existing row "
+            "with the group expression in the topmost cell. Mirrors "
+            "add_row_group on the column axis. parent_group nesting is "
+            "reserved for a future commit and currently raises "
+            "NotImplementedError."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "group_expression": {
+                    "type": "string",
+                    "description": "RDL expression, e.g. =Fields!Region.Value",
+                },
+                "parent_group": {"type": ["string", "null"]},
+            },
+            "required": ["path", "tablix_name", "group_name", "group_expression"],
+            "additionalProperties": False,
+        },
+        handler=tablix_columns.add_column_group,
+    )
+    server.register_tool(
+        name="remove_column_group",
+        description=(
+            "Inverse of add_column_group: unwraps a column-axis group's "
+            "children back to the top of the column hierarchy and removes "
+            "the matching body column at position 0 (along with each row's "
+            "first cell). Errors if group_name only exists on the row axis."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+            },
+            "required": ["path", "tablix_name", "group_name"],
+            "additionalProperties": False,
+        },
+        handler=tablix_columns.remove_column_group,
+    )
+    server.register_tool(
+        name="set_column_group_sort",
+        description=(
+            "Replace a column-axis group's <SortExpressions> with a fresh "
+            "list. Mirrors set_group_sort but refuses up front if "
+            "group_name is on the row axis (use set_group_sort instead)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "sort_expressions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["path", "tablix_name", "group_name", "sort_expressions"],
+            "additionalProperties": False,
+        },
+        handler=tablix_columns.set_column_group_sort,
+    )
+    server.register_tool(
+        name="set_column_group_visibility",
+        description=(
+            "Set <Visibility> on a column-axis group's TablixMember. Accepts "
+            "a Hidden expression and an optional ToggleItem (textbox name "
+            "that toggles expand/collapse). Mirrors set_group_visibility "
+            "but refuses up front if group_name is on the row axis."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "visibility_expression": {"type": "string"},
+                "toggle_textbox": {"type": ["string", "null"]},
+            },
+            "required": [
+                "path",
+                "tablix_name",
+                "group_name",
+                "visibility_expression",
+            ],
+            "additionalProperties": False,
+        },
+        handler=tablix_columns.set_column_group_visibility,
+    )
+    server.register_tool(
+        name="add_tablix_column",
+        description=(
+            "Append (or insert) a column into a tablix. column_name is the "
+            "textbox name placed in the data row's new cell — must be unique "
+            "report-wide. expression goes inside that textbox's TextRun "
+            "(typically =Fields!X.Value). For a tablix with >= 2 rows the "
+            "first row gets header_text (default = column_name) as a literal, "
+            "middle rows get blank cells, and the last row gets expression. "
+            "position is 0-indexed; default appends at end. width defaults to "
+            "1in. Inserts a matching top-level TablixMember in the column "
+            "hierarchy at the same index."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "column_name": {"type": "string"},
+                "expression": {"type": "string"},
+                "position": {"type": ["integer", "null"], "minimum": 0},
+                "width": {"type": ["string", "null"]},
+                "header_text": {"type": ["string", "null"]},
+            },
+            "required": ["path", "tablix_name", "column_name", "expression"],
+            "additionalProperties": False,
+        },
+        handler=tablix_columns.add_tablix_column,
+    )
+    server.register_tool(
+        name="remove_tablix_column",
+        description=(
+            "Remove the tablix column whose data-row cell holds a textbox "
+            "named column_name. Drops the matching TablixColumn, removes the "
+            "top-level TablixMember at that column index (only if it's a "
+            "leaf, never a column group wrapper), and removes the cell at "
+            "that index from every TablixRow. Errors if no row contains a "
+            "textbox with the given name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "column_name": {"type": "string"},
+            },
+            "required": ["path", "tablix_name", "column_name"],
+            "additionalProperties": False,
+        },
+        handler=tablix_columns.remove_tablix_column,
+    )
+    server.register_tool(
+        name="add_subtotal_row",
+        description=(
+            "Append a subtotal row to a row-axis group. aggregates is a list "
+            "of {column, expression} entries; column matches against the "
+            "Details row's textbox names (the same names add_tablix_column "
+            "uses as column_name — NOT field names). expression is the "
+            "aggregate (e.g. =Sum(Fields!X.Value)). Columns not listed get "
+            "blank cells. position='footer' (default) appends; 'header' "
+            "inserts at body row 1 (right after the group-header row). "
+            "Group must have been added via add_row_group."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "aggregates": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "column": {"type": "string"},
+                            "expression": {"type": "string"},
+                        },
+                        "required": ["column", "expression"],
+                        "additionalProperties": False,
+                    },
+                },
+                "position": {
+                    "type": "string",
+                    "enum": ["header", "footer"],
+                    "default": "footer",
+                },
+            },
+            "required": ["path", "tablix_name", "group_name", "aggregates"],
+            "additionalProperties": False,
+        },
+        handler=tablix_subtotals.add_subtotal_row,
+    )
+    server.register_tool(
+        name="set_cell_span",
+        description=(
+            "Set <RowSpan> and/or <ColSpan> on a tablix cell. The cell is "
+            "addressed by (row_index, column_name) where column_name is the "
+            "textbox name inside the cell. At least one of row_span / "
+            "col_span must be supplied; both must be >= 1. Pass 1 to "
+            "explicitly reset a span. Replaces existing values if present."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "row_index": {"type": "integer", "minimum": 0},
+                "column_name": {"type": "string"},
+                "row_span": {"type": ["integer", "null"], "minimum": 1},
+                "col_span": {"type": ["integer", "null"], "minimum": 1},
+            },
+            "required": ["path", "tablix_name", "row_index", "column_name"],
+            "additionalProperties": False,
+        },
+        handler=tablix_cells.set_cell_span,
+    )
+    server.register_tool(
+        name="add_static_row",
+        description=(
+            "Add a static (no-group) row to a tablix. Each cell holds "
+            "literal text. cells is a list of strings, one per body column "
+            "(left to right); shorter list = blank trailing cells, longer "
+            "list errors. Cell textboxes are named row_name (col 0) and "
+            "row_name_<col_index> (others) — unique report-wide so row_name "
+            "must not clash with any existing textbox. position is "
+            "0-indexed; default appends. height defaults to 0.25in."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "row_name": {"type": "string"},
+                "cells": {
+                    "type": ["array", "null"],
+                    "items": {"type": "string"},
+                },
+                "position": {"type": ["integer", "null"], "minimum": 0},
+                "height": {"type": ["string", "null"]},
+            },
+            "required": ["path", "tablix_name", "row_name"],
+            "additionalProperties": False,
+        },
+        handler=tablix_static.add_static_row,
+    )
+    server.register_tool(
+        name="add_static_column",
+        description=(
+            "Add a static (no-group) column to a tablix. Each cell holds "
+            "literal text. cells is a list of strings, one per body row "
+            "(top to bottom); shorter list = blank trailing cells, longer "
+            "list errors. Cell textboxes are named column_name (row 0) and "
+            "column_name_<row_index> (others). position is 0-indexed; "
+            "default appends. width defaults to 1in."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "column_name": {"type": "string"},
+                "cells": {
+                    "type": ["array", "null"],
+                    "items": {"type": "string"},
+                },
+                "position": {"type": ["integer", "null"], "minimum": 0},
+                "width": {"type": ["string", "null"]},
+            },
+            "required": ["path", "tablix_name", "column_name"],
+            "additionalProperties": False,
+        },
+        handler=tablix_static.add_static_column,
+    )
+
+    # ---- positioning (v0.2 commits 6-8) -----------------------------------
+    server.register_tool(
+        name="set_body_item_position",
+        description=(
+            "Move an existing named ReportItem inside <Body> to (top, left). "
+            "Preserves all other properties (size, style, group structure). "
+            "top and left are passed through verbatim — RDL accepts any size "
+            "unit (2cm, 0.75in, 108pt). Errors if no body item by that name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "top": {"type": "string"},
+                "left": {"type": "string"},
+            },
+            "required": ["path", "name", "top", "left"],
+            "additionalProperties": False,
+        },
+        handler=positioning.set_body_item_position,
+    )
+    server.register_tool(
+        name="set_header_item_position",
+        description=(
+            "Move an existing named ReportItem inside <PageHeader> to "
+            "(top, left). Errors if there is no <PageHeader> (call "
+            "set_page_header first) or no item by that name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "top": {"type": "string"},
+                "left": {"type": "string"},
+            },
+            "required": ["path", "name", "top", "left"],
+            "additionalProperties": False,
+        },
+        handler=positioning.set_header_item_position,
+    )
+    server.register_tool(
+        name="set_footer_item_position",
+        description=(
+            "Move an existing named ReportItem inside <PageFooter> to "
+            "(top, left). Errors if there is no <PageFooter> (call "
+            "set_page_footer first) or no item by that name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "top": {"type": "string"},
+                "left": {"type": "string"},
+            },
+            "required": ["path", "name", "top", "left"],
+            "additionalProperties": False,
+        },
+        handler=positioning.set_footer_item_position,
+    )
+    server.register_tool(
+        name="set_body_item_size",
+        description=(
+            "Resize an existing named ReportItem inside <Body>. At least "
+            "one of width / height must be supplied; missing fields are "
+            "left untouched. Same RDL size-string convention as the "
+            "position tools."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "width": {"type": ["string", "null"]},
+                "height": {"type": ["string", "null"]},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=positioning.set_body_item_size,
+    )
+
+    # ---- reader extensions (v0.2) -----------------------------------------
+    server.register_tool(
+        name="list_body_items",
+        description=(
+            "List every named ReportItem at the top level of <Body>. "
+            "Returns name, type (Tablix / Textbox / Image / Rectangle / "
+            "Subreport / Chart / etc.), top, left, width, height. Use "
+            "before set_body_item_position / set_body_item_size when you "
+            "don't already know what's in the body."
+        ),
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=reader.list_body_items,
+    )
+    server.register_tool(
+        name="list_header_items",
+        description="Same shape as list_body_items but for <PageHeader>.",
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=reader.list_header_items,
+    )
+    server.register_tool(
+        name="list_footer_items",
+        description="Same shape as list_body_items but for <PageFooter>.",
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=reader.list_footer_items,
+    )
+    server.register_tool(
+        name="get_textbox",
+        description=(
+            "Return effective state of a named Textbox: position, size, "
+            "Visibility, CanGrow, CanShrink, plus a nested style dict that "
+            "mirrors set_textbox_style's routing — "
+            "{box: {BackgroundColor, VerticalAlign, padding, ...}, "
+            "border: {Style, Color, Width}, paragraph: {TextAlign}, "
+            "run: {FontFamily, FontSize, FontWeight, Color, Format, ...}}. "
+            "Empty branches are dropped. runs[] entries each carry their own "
+            "per-run style. Searches the entire report; tablix-cell textboxes "
+            "have None for top/left/width/height. Top-level positioned items "
+            "with a missing <Top> or <Left> coerce to '0in' (RDL default)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=reader.get_textbox,
+    )
+    server.register_tool(
+        name="get_image",
+        description=(
+            "Return effective state of a named Image: position, size, "
+            "Source (External / Embedded / Database), Value, Sizing "
+            "(AutoSize / Fit / FitProportional / Clip), MIMEType, Style, "
+            "Visibility."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=reader.get_image,
+    )
+    server.register_tool(
+        name="get_rectangle",
+        description=(
+            "Return effective state of a named Rectangle: position, size, "
+            "names of contained ReportItems, Style, Visibility."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=reader.get_rectangle,
+    )
+
+    # ---- snapshot (v0.2 commit 14) ----------------------------------------
+    server.register_tool(
+        name="backup_report",
+        description=(
+            "Copy the report to <path>.bak.<UTC-timestamp>. Original is "
+            "untouched. Cheap explicit checkpoint to call before a "
+            "destructive batch (remove_*, rename_parameter, etc.). Returns "
+            "the backup path. Set PBIRB_MCP_AUTO_BACKUP=1 to opt into "
+            "automatic backups before destructive ops (off by default)."
+        ),
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=snapshot.backup_report,
+    )
+
+    # ---- parameter CRUD (v0.2 commits 15-19) ------------------------------
+    server.register_tool(
+        name="set_parameter_prompt",
+        description=(
+            "Write the <Prompt> text on a ReportParameter. Empty string "
+            "clears the <Prompt> element entirely; pass a single space ' ' "
+            "for blank-but-present."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "prompt": {"type": "string"},
+            },
+            "required": ["path", "name", "prompt"],
+            "additionalProperties": False,
+        },
+        handler=parameters.set_parameter_prompt,
+    )
+    server.register_tool(
+        name="set_parameter_type",
+        description=(
+            "Set <DataType> on a ReportParameter. type ∈ {Boolean, "
+            "DateTime, Integer, Float, String}. Rejects with ValueError "
+            "if any existing literal default value would be incompatible "
+            "with the new type — fix defaults first via "
+            "set_parameter_default_values, then retry."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "type": {
+                    "type": "string",
+                    "enum": ["Boolean", "DateTime", "Integer", "Float", "String"],
+                },
+            },
+            "required": ["path", "name", "type"],
+            "additionalProperties": False,
+        },
+        handler=parameters.set_parameter_type,
+    )
+    server.register_tool(
+        name="add_parameter",
+        description=(
+            "Create a new ReportParameter with a minimal valid declaration. "
+            "Appends to <ReportParameters> (creating it if absent). Pair "
+            "with set_parameter_available_values / "
+            "set_parameter_default_values afterwards for value lists. "
+            "Booleans are only emitted when an explicit value is supplied."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "type": {
+                    "type": "string",
+                    "enum": ["Boolean", "DateTime", "Integer", "Float", "String"],
+                },
+                "prompt": {"type": ["string", "null"]},
+                "allow_null": {"type": ["boolean", "null"]},
+                "allow_blank": {"type": ["boolean", "null"]},
+                "multi_value": {"type": ["boolean", "null"]},
+                "hidden": {"type": ["boolean", "null"]},
+            },
+            "required": ["path", "name", "type"],
+            "additionalProperties": False,
+        },
+        handler=parameters.add_parameter,
+    )
+    server.register_tool(
+        name="remove_parameter",
+        description=(
+            "Remove a ReportParameter by name. Refuses (lists offending "
+            "locators) if the parameter is still referenced anywhere in "
+            "the report by Parameters!<name>.Value or .Label. Pass "
+            "force=True to remove anyway."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=parameters.remove_parameter,
+    )
+    server.register_tool(
+        name="rename_parameter",
+        description=(
+            "Rename a ReportParameter and rewrite every textual occurrence "
+            "of Parameters!<old_name>.Value / .Label across the entire "
+            "report. Case-sensitive. Atomic: collects all matches first, "
+            "then commits. Errors if new_name already exists or equals "
+            "old_name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_name": {"type": "string"},
+                "new_name": {"type": "string"},
+            },
+            "required": ["path", "old_name", "new_name"],
+            "additionalProperties": False,
+        },
+        handler=parameters.rename_parameter,
     )
 
     server.register_tool(
@@ -711,7 +1290,11 @@ def register_all_tools(server: MCPServer) -> None:
             "Build and append a basic Tablix to <Body>/<ReportItems>. One "
             "column per name in `columns`; header row gets the column "
             "name as a static label, detail row binds to "
-            "=Fields!<column>.Value. dataset_name must already exist."
+            "=Fields!<column>.Value. dataset_name must already exist. "
+            "`width` is the tablix outer width — each column defaults to "
+            "1in regardless, so for a 3-column tablix the columns sum to "
+            "3in even if you pass width=10cm. Resize columns afterwards "
+            "via direct edits or future column-width tools."
         ),
         input_schema={
             "type": "object",
@@ -798,11 +1381,14 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_parameter_available_values",
         description=(
-            "Set <ValidValues> on a report parameter. source='static' "
-            "writes a list of <ParameterValue> entries (each entry can "
-            "be a string or {value, label} dict); source='query' writes "
-            "a <DataSetReference> to a lookup dataset. Replaces any "
-            "existing <ValidValues> block."
+            "Set or clear <ValidValues> on a report parameter. "
+            "source='static' with a non-empty static_values writes a list "
+            "of <ParameterValue> entries (each entry can be a string or "
+            "{value, label} dict). source='static' with static_values=[] "
+            "or omitted CLEARS the <ValidValues> element entirely (mirrors "
+            "set_parameter_prompt('') and returns cleared=true). "
+            "source='query' writes a <DataSetReference> to a lookup "
+            "dataset. Replaces any existing <ValidValues> block."
         ),
         input_schema={
             "type": "object",
@@ -826,10 +1412,14 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_parameter_default_values",
         description=(
-            "Set <DefaultValue> on a report parameter. source='static' "
-            "writes a <Values> list of expressions; source='query' writes "
-            "a <DataSetReference> with ValueField only (no LabelField — "
-            "defaults are values, not display strings). Replaces existing."
+            "Set or clear <DefaultValue> on a report parameter. "
+            "source='static' with a non-empty static_values writes a "
+            "<Values> list of expressions. source='static' with "
+            "static_values=[] or omitted CLEARS the <DefaultValue> element "
+            "entirely (mirrors set_parameter_prompt('') and returns "
+            "cleared=true). source='query' writes a <DataSetReference> "
+            "with ValueField only (no LabelField — defaults are values, "
+            "not display strings). Replaces any existing block."
         ),
         input_schema={
             "type": "object",
@@ -883,7 +1473,10 @@ def register_all_tools(server: MCPServer) -> None:
             "Read a real image file off disk, base64-encode it, and store "
             "it under <EmbeddedImages>. Reference it later with "
             "image_source='Embedded' + value=<name>. Supported MIME types: "
-            "image/bmp, image/gif, image/jpeg, image/png, image/x-png."
+            "image/bmp, image/gif, image/jpeg, image/png, image/x-png. "
+            "The file's magic bytes are sniffed and must match mime_type — "
+            "claiming PNG bytes as image/jpeg is rejected here rather than "
+            "letting Report Builder fail at preview time."
         ),
         input_schema={
             "type": "object",
@@ -927,7 +1520,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_embedded_image",
         description=(
-            "Remove a named embedded image. Drops the empty "
+            "Remove a named embedded image. Refuses (lists offending Image "
+            'elements) when any <Image Source="Embedded"><Value>=name> '
+            "still references it; pass force=True to remove anyway and "
+            "accept the dangling references. Drops the empty "
             "<EmbeddedImages/> block when removing the last entry."
         ),
         input_schema={
@@ -935,6 +1531,7 @@ def register_all_tools(server: MCPServer) -> None:
             "properties": {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
+                "force": {"type": "boolean", "default": False},
             },
             "required": ["path", "name"],
             "additionalProperties": False,
@@ -969,6 +1566,58 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=styling.set_alternating_row_color,
+    )
+    server.register_tool(
+        name="set_conditional_row_color",
+        description=(
+            "Color every cell of a tablix's detail row based on the value "
+            "of one of its fields. Builds a Switch(...) expression mapping "
+            "field values to colors and writes it as BackgroundColor on "
+            "every detail cell. value_expression is the field reference "
+            "(e.g. 'Fields!Status.Value' — a leading '=' is accepted). "
+            "color_map is an ordered dict of value->color (e.g. "
+            '{"Red":"#FF0000","Yellow":"#FFFF00"}); first match '
+            "wins. Unmatched values fall back to default_color "
+            "(default 'Transparent'). When case_sensitive is False "
+            "(default), wraps the field reference in UCase() and uppercases "
+            "the keys for case-insensitive matching. Walks the row "
+            "hierarchy to find the Details leaf — works after add_row_group "
+            "nests the structure. Replaces any existing BackgroundColor."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "value_expression": {
+                    "type": "string",
+                    "description": (
+                        "Field reference to switch on, e.g. "
+                        "'Fields!Status.Value'. Leading '=' optional."
+                    ),
+                },
+                "color_map": {
+                    "type": "object",
+                    "description": (
+                        "Ordered map of expected values to color strings. "
+                        "First match in declaration order wins."
+                    ),
+                    "additionalProperties": {"type": "string"},
+                    "minProperties": 1,
+                },
+                "default_color": {
+                    "type": "string",
+                    "default": "Transparent",
+                },
+                "case_sensitive": {
+                    "type": "boolean",
+                    "default": False,
+                },
+            },
+            "required": ["path", "tablix_name", "value_expression", "color_map"],
+            "additionalProperties": False,
+        },
+        handler=styling.set_conditional_row_color,
     )
 
     server.register_tool(
