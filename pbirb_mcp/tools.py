@@ -20,6 +20,7 @@ from pbirb_mcp.ops import (
     reader,
     styling,
     tablix,
+    tablix_columns,
     templates,
     visibility,
 )
@@ -325,6 +326,106 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix.set_group_visibility,
+    )
+
+    # ---- column-axis groups (v0.2) ----------------------------------------
+    server.register_tool(
+        name="add_column_group",
+        description=(
+            "Add a column group that wraps the current top-level column "
+            "hierarchy. Inserts a matching column at body column 0 (default "
+            "1in width) and a header cell at column 0 of every existing row "
+            "with the group expression in the topmost cell. Mirrors "
+            "add_row_group on the column axis. parent_group nesting is "
+            "reserved for a future commit and currently raises "
+            "NotImplementedError."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "group_expression": {
+                    "type": "string",
+                    "description": "RDL expression, e.g. =Fields!Region.Value",
+                },
+                "parent_group": {"type": ["string", "null"]},
+            },
+            "required": ["path", "tablix_name", "group_name", "group_expression"],
+            "additionalProperties": False,
+        },
+        handler=tablix_columns.add_column_group,
+    )
+    server.register_tool(
+        name="remove_column_group",
+        description=(
+            "Inverse of add_column_group: unwraps a column-axis group's "
+            "children back to the top of the column hierarchy and removes "
+            "the matching body column at position 0 (along with each row's "
+            "first cell). Errors if group_name only exists on the row axis."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+            },
+            "required": ["path", "tablix_name", "group_name"],
+            "additionalProperties": False,
+        },
+        handler=tablix_columns.remove_column_group,
+    )
+    server.register_tool(
+        name="set_column_group_sort",
+        description=(
+            "Replace a column-axis group's <SortExpressions> with a fresh "
+            "list. Mirrors set_group_sort but refuses up front if "
+            "group_name is on the row axis (use set_group_sort instead)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "sort_expressions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["path", "tablix_name", "group_name", "sort_expressions"],
+            "additionalProperties": False,
+        },
+        handler=tablix_columns.set_column_group_sort,
+    )
+    server.register_tool(
+        name="set_column_group_visibility",
+        description=(
+            "Set <Visibility> on a column-axis group's TablixMember. Accepts "
+            "a Hidden expression and an optional ToggleItem (textbox name "
+            "that toggles expand/collapse). Mirrors set_group_visibility "
+            "but refuses up front if group_name is on the row axis."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "visibility_expression": {"type": "string"},
+                "toggle_textbox": {"type": ["string", "null"]},
+            },
+            "required": [
+                "path",
+                "tablix_name",
+                "group_name",
+                "visibility_expression",
+            ],
+            "additionalProperties": False,
+        },
+        handler=tablix_columns.set_column_group_visibility,
     )
 
     server.register_tool(
