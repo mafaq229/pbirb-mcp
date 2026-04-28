@@ -688,6 +688,88 @@ def register_all_tools(server: MCPServer) -> None:
         handler=positioning.set_body_item_size,
     )
 
+    # ---- reader extensions (v0.2) -----------------------------------------
+    server.register_tool(
+        name="list_body_items",
+        description=(
+            "List every named ReportItem at the top level of <Body>. "
+            "Returns name, type (Tablix / Textbox / Image / Rectangle / "
+            "Subreport / Chart / etc.), top, left, width, height. Use "
+            "before set_body_item_position / set_body_item_size when you "
+            "don't already know what's in the body."
+        ),
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=reader.list_body_items,
+    )
+    server.register_tool(
+        name="list_header_items",
+        description="Same shape as list_body_items but for <PageHeader>.",
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=reader.list_header_items,
+    )
+    server.register_tool(
+        name="list_footer_items",
+        description="Same shape as list_body_items but for <PageFooter>.",
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=reader.list_footer_items,
+    )
+    server.register_tool(
+        name="get_textbox",
+        description=(
+            "Return effective state of a named Textbox: position, size, "
+            "TextRun values, key Style fields (FontFamily / FontSize / "
+            "FontWeight / Color / BackgroundColor / TextAlign / Format / "
+            "padding), Visibility, CanGrow, CanShrink. Searches the entire "
+            "report; tablix-cell textboxes have None for top/left/width/height."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=reader.get_textbox,
+    )
+    server.register_tool(
+        name="get_image",
+        description=(
+            "Return effective state of a named Image: position, size, "
+            "Source (External / Embedded / Database), Value, Sizing "
+            "(AutoSize / Fit / FitProportional / Clip), MIMEType, Style, "
+            "Visibility."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=reader.get_image,
+    )
+    server.register_tool(
+        name="get_rectangle",
+        description=(
+            "Return effective state of a named Rectangle: position, size, "
+            "names of contained ReportItems, Style, Visibility."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=reader.get_rectangle,
+    )
+
     server.register_tool(
         name="set_detail_row_visibility",
         description=(

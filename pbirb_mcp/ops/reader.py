@@ -47,12 +47,22 @@ def describe_report(path: str) -> dict[str, Any]:
             "margin_right": _text(find_child(page_node, "RightMargin")),
         }
 
+    body_node = root.find(f".//{{{RDL_NS}}}ReportSection/{{{RDL_NS}}}Body")
+    header_node = page_node.find(f"{{{RDL_NS}}}PageHeader") if page_node is not None else None
+    footer_node = page_node.find(f"{{{RDL_NS}}}PageFooter") if page_node is not None else None
+
     return {
         "path": str(doc.path),
         "data_sources": [ds.get("Name") for ds in root.iter(f"{{{RDL_NS}}}DataSource")],
         "datasets": [ds.get("Name") for ds in root.iter(f"{{{RDL_NS}}}DataSet")],
         "parameters": [p.get("Name") for p in root.iter(f"{{{RDL_NS}}}ReportParameter")],
         "tablixes": [t.get("Name") for t in root.iter(f"{{{RDL_NS}}}Tablix")],
+        # v0.2: full body / header / footer item enumeration so the LLM can
+        # see every named ReportItem (Tablix, Textbox, Image, Rectangle, etc.)
+        # without a follow-up list_*_items call.
+        "body_items": _list_items_in(body_node),
+        "header_items": _list_items_in(header_node),
+        "footer_items": _list_items_in(footer_node),
         "page": page,
     }
 
@@ -196,6 +206,34 @@ def _visibility(node: etree._Element) -> Optional[dict[str, Any]]:
     }
 
 
+def _tablix_cells(tablix: etree._Element) -> list[dict[str, Any]]:
+    """Enumerate every body cell as (row, col, textbox_name, row_span, col_span).
+    textbox_name is None for cells with no Textbox child (rare but possible)."""
+    body = find_child(tablix, "TablixBody")
+    rows_root = find_child(body, "TablixRows") if body is not None else None
+    if rows_root is None:
+        return []
+    out: list[dict[str, Any]] = []
+    for row_idx, row in enumerate(find_children(rows_root, "TablixRow")):
+        cells_root = find_child(row, "TablixCells")
+        if cells_root is None:
+            continue
+        for col_idx, cell in enumerate(find_children(cells_root, "TablixCell")):
+            tb = cell.find(f"{{{RDL_NS}}}CellContents/{{{RDL_NS}}}Textbox")
+            row_span = _text(find_child(cell, "RowSpan"))
+            col_span = _text(find_child(cell, "ColSpan"))
+            out.append(
+                {
+                    "row": row_idx,
+                    "col": col_idx,
+                    "textbox_name": tb.get("Name") if tb is not None else None,
+                    "row_span": int(row_span) if row_span else 1,
+                    "col_span": int(col_span) if col_span else 1,
+                }
+            )
+    return out
+
+
 def get_tablixes(path: str) -> list[dict[str, Any]]:
     doc = RDLDocument.open(path)
     out: list[dict[str, Any]] = []
@@ -227,14 +265,229 @@ def get_tablixes(path: str) -> list[dict[str, Any]]:
                 "sort_expressions": _sort_expressions(t),
                 "filters": filters,
                 "visibility": _visibility(t),
+                # v0.2: cell-level inventory so LLMs can discover which
+                # textbox names live where without parsing raw XML.
+                "cells": _tablix_cells(t),
             }
         )
     return out
 
 
+# ---- v0.2: list_*_items / get_textbox / get_image / get_rectangle --------
+
+
+_REPORT_ITEM_TAGS = (
+    "Tablix",
+    "Textbox",
+    "Image",
+    "Rectangle",
+    "Subreport",
+    "Chart",
+    "Map",
+    "Gauge",
+    "Line",
+    "List",
+)
+
+
+def _layout_dict(el: etree._Element) -> dict[str, Any]:
+    """Return name/type/top/left/width/height for a ReportItem."""
+    return {
+        "name": el.get("Name"),
+        "type": etree.QName(el).localname,
+        "top": _text(find_child(el, "Top")),
+        "left": _text(find_child(el, "Left")),
+        "width": _text(find_child(el, "Width")),
+        "height": _text(find_child(el, "Height")),
+    }
+
+
+def _list_items_in(container: Optional[etree._Element]) -> list[dict[str, Any]]:
+    if container is None:
+        return []
+    items_root = find_child(container, "ReportItems")
+    if items_root is None:
+        return []
+    out: list[dict[str, Any]] = []
+    for child in items_root:
+        if etree.QName(child).localname in _REPORT_ITEM_TAGS:
+            out.append(_layout_dict(child))
+    return out
+
+
+def _resolve_body(doc: RDLDocument) -> Optional[etree._Element]:
+    return doc.root.find(f".//{{{RDL_NS}}}ReportSection/{{{RDL_NS}}}Body")
+
+
+def _resolve_page(doc: RDLDocument) -> Optional[etree._Element]:
+    return doc.root.find(f".//{{{RDL_NS}}}ReportSection/{{{RDL_NS}}}Page")
+
+
+def _resolve_header(doc: RDLDocument) -> Optional[etree._Element]:
+    page = _resolve_page(doc)
+    if page is None:
+        return None
+    return find_child(page, "PageHeader")
+
+
+def _resolve_footer(doc: RDLDocument) -> Optional[etree._Element]:
+    page = _resolve_page(doc)
+    if page is None:
+        return None
+    return find_child(page, "PageFooter")
+
+
+def list_body_items(path: str) -> list[dict[str, Any]]:
+    """Enumerate every named ReportItem at the top level of <Body>.
+    Returns a list of {name, type, top, left, width, height}."""
+    doc = RDLDocument.open(path)
+    return _list_items_in(_resolve_body(doc))
+
+
+def list_header_items(path: str) -> list[dict[str, Any]]:
+    """Same shape as ``list_body_items`` for <PageHeader>."""
+    doc = RDLDocument.open(path)
+    return _list_items_in(_resolve_header(doc))
+
+
+def list_footer_items(path: str) -> list[dict[str, Any]]:
+    """Same shape as ``list_body_items`` for <PageFooter>."""
+    doc = RDLDocument.open(path)
+    return _list_items_in(_resolve_footer(doc))
+
+
+def _runs_of(textbox: etree._Element) -> list[dict[str, Any]]:
+    runs = []
+    for paragraph in textbox.iter(f"{{{RDL_NS}}}Paragraph"):
+        for run in paragraph.iter(f"{{{RDL_NS}}}TextRun"):
+            value = find_child(run, "Value")
+            runs.append({"value": _text(value)})
+    return runs
+
+
+def _style_dict(el: Optional[etree._Element]) -> Optional[dict[str, Any]]:
+    """Capture key Style children. Best-effort; returns None if no style."""
+    style = find_child(el, "Style") if el is not None else None
+    if style is None:
+        return None
+    out: dict[str, Any] = {}
+    for child_local in (
+        "FontFamily",
+        "FontSize",
+        "FontWeight",
+        "FontStyle",
+        "Color",
+        "BackgroundColor",
+        "TextAlign",
+        "VerticalAlign",
+        "Format",
+        "PaddingTop",
+        "PaddingBottom",
+        "PaddingLeft",
+        "PaddingRight",
+    ):
+        node = find_child(style, child_local)
+        if node is not None and node.text is not None:
+            out[child_local] = node.text
+    return out or None
+
+
+def _find_named_anywhere(doc: RDLDocument, local_name: str, name: str) -> Optional[etree._Element]:
+    for el in doc.root.iter(f"{{{RDL_NS}}}{local_name}"):
+        if el.get("Name") == name:
+            return el
+    return None
+
+
+def get_textbox(path: str, name: str) -> dict[str, Any]:
+    """Return position, size, runs, style, visibility for a named Textbox.
+
+    Searches the entire report (body, header, footer, AND tablix cell
+    contents). Tablix-cell textboxes don't have top/left/width/height —
+    those fields are returned as None.
+    """
+    doc = RDLDocument.open(path)
+    tb = _find_named_anywhere(doc, "Textbox", name)
+    if tb is None:
+        from pbirb_mcp.core.ids import ElementNotFoundError
+
+        raise ElementNotFoundError(f"no Textbox named {name!r}")
+    return {
+        "name": name,
+        "type": "Textbox",
+        "top": _text(find_child(tb, "Top")),
+        "left": _text(find_child(tb, "Left")),
+        "width": _text(find_child(tb, "Width")),
+        "height": _text(find_child(tb, "Height")),
+        "runs": _runs_of(tb),
+        "style": _style_dict(tb),
+        "visibility": _visibility(tb),
+        "can_grow": _text(find_child(tb, "CanGrow")),
+        "can_shrink": _text(find_child(tb, "CanShrink")),
+    }
+
+
+def get_image(path: str, name: str) -> dict[str, Any]:
+    """Return position, size, source, value, sizing for a named Image."""
+    doc = RDLDocument.open(path)
+    img = _find_named_anywhere(doc, "Image", name)
+    if img is None:
+        from pbirb_mcp.core.ids import ElementNotFoundError
+
+        raise ElementNotFoundError(f"no Image named {name!r}")
+    return {
+        "name": name,
+        "type": "Image",
+        "top": _text(find_child(img, "Top")),
+        "left": _text(find_child(img, "Left")),
+        "width": _text(find_child(img, "Width")),
+        "height": _text(find_child(img, "Height")),
+        "source": _text(find_child(img, "Source")),
+        "value": _text(find_child(img, "Value")),
+        "sizing": _text(find_child(img, "Sizing")),
+        "mime_type": _text(find_child(img, "MIMEType")),
+        "style": _style_dict(img),
+        "visibility": _visibility(img),
+    }
+
+
+def get_rectangle(path: str, name: str) -> dict[str, Any]:
+    """Return position, size, contained-item names, and style for a Rectangle."""
+    doc = RDLDocument.open(path)
+    rect = _find_named_anywhere(doc, "Rectangle", name)
+    if rect is None:
+        from pbirb_mcp.core.ids import ElementNotFoundError
+
+        raise ElementNotFoundError(f"no Rectangle named {name!r}")
+    contained: list[str] = []
+    items_root = find_child(rect, "ReportItems")
+    if items_root is not None:
+        for child in items_root:
+            n = child.get("Name")
+            if n is not None:
+                contained.append(n)
+    return {
+        "name": name,
+        "type": "Rectangle",
+        "top": _text(find_child(rect, "Top")),
+        "left": _text(find_child(rect, "Left")),
+        "width": _text(find_child(rect, "Width")),
+        "height": _text(find_child(rect, "Height")),
+        "contained_items": contained,
+        "style": _style_dict(rect),
+        "visibility": _visibility(rect),
+    }
+
+
 __all__ = [
     "describe_report",
     "get_datasets",
+    "get_image",
     "get_parameters",
+    "get_rectangle",
     "get_tablixes",
+    "get_textbox",
+    "list_body_items",
+    "list_footer_items",
+    "list_header_items",
 ]
