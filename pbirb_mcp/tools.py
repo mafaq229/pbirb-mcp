@@ -785,6 +785,121 @@ def register_all_tools(server: MCPServer) -> None:
         handler=snapshot.backup_report,
     )
 
+    # ---- parameter CRUD (v0.2 commits 15-19) ------------------------------
+    server.register_tool(
+        name="set_parameter_prompt",
+        description=(
+            "Write the <Prompt> text on a ReportParameter. Empty string "
+            "clears the <Prompt> element entirely; pass a single space ' ' "
+            "for blank-but-present."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "prompt": {"type": "string"},
+            },
+            "required": ["path", "name", "prompt"],
+            "additionalProperties": False,
+        },
+        handler=parameters.set_parameter_prompt,
+    )
+    server.register_tool(
+        name="set_parameter_type",
+        description=(
+            "Set <DataType> on a ReportParameter. type ∈ {Boolean, "
+            "DateTime, Integer, Float, String}. Rejects with ValueError "
+            "if any existing literal default value would be incompatible "
+            "with the new type — fix defaults first via "
+            "set_parameter_default_values, then retry."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "type": {
+                    "type": "string",
+                    "enum": ["Boolean", "DateTime", "Integer", "Float", "String"],
+                },
+            },
+            "required": ["path", "name", "type"],
+            "additionalProperties": False,
+        },
+        handler=parameters.set_parameter_type,
+    )
+    server.register_tool(
+        name="add_parameter",
+        description=(
+            "Create a new ReportParameter with a minimal valid declaration. "
+            "Appends to <ReportParameters> (creating it if absent). Pair "
+            "with set_parameter_available_values / "
+            "set_parameter_default_values afterwards for value lists. "
+            "Booleans are only emitted when an explicit value is supplied."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "type": {
+                    "type": "string",
+                    "enum": ["Boolean", "DateTime", "Integer", "Float", "String"],
+                },
+                "prompt": {"type": ["string", "null"]},
+                "allow_null": {"type": ["boolean", "null"]},
+                "allow_blank": {"type": ["boolean", "null"]},
+                "multi_value": {"type": ["boolean", "null"]},
+                "hidden": {"type": ["boolean", "null"]},
+            },
+            "required": ["path", "name", "type"],
+            "additionalProperties": False,
+        },
+        handler=parameters.add_parameter,
+    )
+    server.register_tool(
+        name="remove_parameter",
+        description=(
+            "Remove a ReportParameter by name. Refuses (lists offending "
+            "locators) if the parameter is still referenced anywhere in "
+            "the report by Parameters!<name>.Value or .Label. Pass "
+            "force=True to remove anyway."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=parameters.remove_parameter,
+    )
+    server.register_tool(
+        name="rename_parameter",
+        description=(
+            "Rename a ReportParameter and rewrite every textual occurrence "
+            "of Parameters!<old_name>.Value / .Label across the entire "
+            "report. Case-sensitive. Atomic: collects all matches first, "
+            "then commits. Errors if new_name already exists or equals "
+            "old_name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_name": {"type": "string"},
+                "new_name": {"type": "string"},
+            },
+            "required": ["path", "old_name", "new_name"],
+            "additionalProperties": False,
+        },
+        handler=parameters.rename_parameter,
+    )
+
     server.register_tool(
         name="set_detail_row_visibility",
         description=(
