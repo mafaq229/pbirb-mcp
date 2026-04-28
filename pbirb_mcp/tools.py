@@ -1521,7 +1521,7 @@ def register_all_tools(server: MCPServer) -> None:
         name="remove_embedded_image",
         description=(
             "Remove a named embedded image. Refuses (lists offending Image "
-            "elements) when any <Image Source=\"Embedded\"><Value>=name> "
+            'elements) when any <Image Source="Embedded"><Value>=name> '
             "still references it; pass force=True to remove anyway and "
             "accept the dangling references. Drops the empty "
             "<EmbeddedImages/> block when removing the last entry."
@@ -1576,7 +1576,7 @@ def register_all_tools(server: MCPServer) -> None:
             "every detail cell. value_expression is the field reference "
             "(e.g. 'Fields!Status.Value' — a leading '=' is accepted). "
             "color_map is an ordered dict of value->color (e.g. "
-            "{\"Red\":\"#FF0000\",\"Yellow\":\"#FFFF00\"}); first match "
+            '{"Red":"#FF0000","Yellow":"#FFFF00"}); first match '
             "wins. Unmatched values fall back to default_color "
             "(default 'Transparent'). When case_sensitive is False "
             "(default), wraps the field reference in UCase() and uppercases "

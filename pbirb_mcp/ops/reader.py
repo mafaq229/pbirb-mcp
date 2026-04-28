@@ -421,9 +421,7 @@ def _runs_of(textbox: etree._Element) -> list[dict[str, Any]]:
     per-run style fields ``set_textbox_style`` writes (font / color / format)."""
     runs: list[dict[str, Any]] = []
     paragraphs_root = find_child(textbox, "Paragraphs")
-    paragraphs = (
-        find_children(paragraphs_root, "Paragraph") if paragraphs_root is not None else []
-    )
+    paragraphs = find_children(paragraphs_root, "Paragraph") if paragraphs_root is not None else []
     for paragraph in paragraphs:
         runs_root = find_child(paragraph, "TextRuns")
         if runs_root is None:

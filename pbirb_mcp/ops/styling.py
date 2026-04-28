@@ -399,8 +399,7 @@ def set_conditional_row_color(
     detail_idx = _detail_row_index(tablix)
     if detail_idx is None:
         raise ElementNotFoundError(
-            f"tablix {tablix_name!r} has no Details group; "
-            "set_conditional_row_color requires one"
+            f"tablix {tablix_name!r} has no Details group; set_conditional_row_color requires one"
         )
 
     body = find_child(tablix, "TablixBody")

@@ -179,9 +179,7 @@ class TestAddSubtotalRow:
         )
         RDLDocument.open(rdl_with_region_group).validate()
 
-    def test_second_footer_call_still_resolves_details_row_columns(
-        self, rdl_with_region_group
-    ):
+    def test_second_footer_call_still_resolves_details_row_columns(self, rdl_with_region_group):
         """Regression: pre-fix, the second add_subtotal_row(footer) call
         looked at the literal last row — which was the previous subtotal
         row's textboxes (e.g. ``Region_Footer_2``), so passing the original

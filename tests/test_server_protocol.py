@@ -71,9 +71,7 @@ class TestToolsCall:
             input_schema={"type": "object", "additionalProperties": True},
             handler=boom,
         )
-        resp = server.handle_request(
-            _request("tools/call", {"name": "explode", "arguments": {}})
-        )
+        resp = server.handle_request(_request("tools/call", {"name": "explode", "arguments": {}}))
         assert "error" not in resp
         assert resp["result"]["isError"] is True
         text = resp["result"]["content"][0]["text"]
