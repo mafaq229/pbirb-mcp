@@ -718,10 +718,15 @@ def register_all_tools(server: MCPServer) -> None:
         name="get_textbox",
         description=(
             "Return effective state of a named Textbox: position, size, "
-            "TextRun values, key Style fields (FontFamily / FontSize / "
-            "FontWeight / Color / BackgroundColor / TextAlign / Format / "
-            "padding), Visibility, CanGrow, CanShrink. Searches the entire "
-            "report; tablix-cell textboxes have None for top/left/width/height."
+            "Visibility, CanGrow, CanShrink, plus a nested style dict that "
+            "mirrors set_textbox_style's routing — "
+            "{box: {BackgroundColor, VerticalAlign, padding, ...}, "
+            "border: {Style, Color, Width}, paragraph: {TextAlign}, "
+            "run: {FontFamily, FontSize, FontWeight, Color, Format, ...}}. "
+            "Empty branches are dropped. runs[] entries each carry their own "
+            "per-run style. Searches the entire report; tablix-cell textboxes "
+            "have None for top/left/width/height. Top-level positioned items "
+            "with a missing <Top> or <Left> coerce to '0in' (RDL default)."
         ),
         input_schema={
             "type": "object",

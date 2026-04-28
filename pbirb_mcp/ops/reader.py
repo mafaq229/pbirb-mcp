@@ -291,12 +291,17 @@ _REPORT_ITEM_TAGS = (
 
 
 def _layout_dict(el: etree._Element) -> dict[str, Any]:
-    """Return name/type/top/left/width/height for a ReportItem."""
+    """Return name/type/top/left/width/height for a ReportItem.
+
+    Per RDL semantics, a missing ``<Top>`` / ``<Left>`` element means 0 — so
+    we coerce those to ``"0in"`` rather than ``None``. This avoids surprising
+    callers who do arithmetic on the response.
+    """
     return {
         "name": el.get("Name"),
         "type": etree.QName(el).localname,
-        "top": _text(find_child(el, "Top")),
-        "left": _text(find_child(el, "Left")),
+        "top": _text(find_child(el, "Top")) or "0in",
+        "left": _text(find_child(el, "Left")) or "0in",
         "width": _text(find_child(el, "Width")),
         "height": _text(find_child(el, "Height")),
     }
@@ -356,17 +361,134 @@ def list_footer_items(path: str) -> list[dict[str, Any]]:
     return _list_items_in(_resolve_footer(doc))
 
 
+_BOX_STYLE_FIELDS = (
+    "BackgroundColor",
+    "VerticalAlign",
+    "PaddingTop",
+    "PaddingBottom",
+    "PaddingLeft",
+    "PaddingRight",
+    "WritingMode",
+)
+_PARAGRAPH_STYLE_FIELDS = ("TextAlign",)
+_RUN_STYLE_FIELDS = (
+    "FontFamily",
+    "FontSize",
+    "FontWeight",
+    "FontStyle",
+    "Color",
+    "Format",
+    "TextDecoration",
+)
+_BORDER_STYLE_FIELDS = ("Style", "Color", "Width")
+
+
+def _capture_style_fields(
+    style: Optional[etree._Element], fields: tuple[str, ...]
+) -> Optional[dict[str, str]]:
+    """Read the given Style children of ``style``; return ``{name: text}`` or None."""
+    if style is None:
+        return None
+    out: dict[str, str] = {}
+    for local in fields:
+        node = find_child(style, local)
+        if node is not None and node.text is not None:
+            out[local] = node.text
+    return out or None
+
+
+def _run_style_dict(run: etree._Element) -> Optional[dict[str, str]]:
+    """Style fields that live on a ``TextRun/Style``."""
+    return _capture_style_fields(find_child(run, "Style"), _RUN_STYLE_FIELDS)
+
+
+def _paragraph_style_dict(paragraph: etree._Element) -> Optional[dict[str, str]]:
+    """Style fields that live on a ``Paragraph/Style``."""
+    return _capture_style_fields(find_child(paragraph, "Style"), _PARAGRAPH_STYLE_FIELDS)
+
+
+def _border_dict(style: Optional[etree._Element]) -> Optional[dict[str, str]]:
+    """Capture the simple ``Border`` sub-element. Per-side borders
+    (``TopBorder`` / etc.) are reported separately if useful later."""
+    if style is None:
+        return None
+    border = find_child(style, "Border")
+    return _capture_style_fields(border, _BORDER_STYLE_FIELDS) if border is not None else None
+
+
 def _runs_of(textbox: etree._Element) -> list[dict[str, Any]]:
-    runs = []
-    for paragraph in textbox.iter(f"{{{RDL_NS}}}Paragraph"):
-        for run in paragraph.iter(f"{{{RDL_NS}}}TextRun"):
-            value = find_child(run, "Value")
-            runs.append({"value": _text(value)})
+    """Enumerate text runs as ``{value, style}`` so callers see the same
+    per-run style fields ``set_textbox_style`` writes (font / color / format)."""
+    runs: list[dict[str, Any]] = []
+    paragraphs_root = find_child(textbox, "Paragraphs")
+    paragraphs = (
+        find_children(paragraphs_root, "Paragraph") if paragraphs_root is not None else []
+    )
+    for paragraph in paragraphs:
+        runs_root = find_child(paragraph, "TextRuns")
+        if runs_root is None:
+            continue
+        for run in find_children(runs_root, "TextRun"):
+            entry: dict[str, Any] = {"value": _text(find_child(run, "Value"))}
+            run_style = _run_style_dict(run)
+            if run_style is not None:
+                entry["style"] = run_style
+            runs.append(entry)
     return runs
 
 
+def _full_textbox_style(textbox: etree._Element) -> Optional[dict[str, Any]]:
+    """Return a nested style dict matching the ``set_textbox_style`` routing.
+
+    Shape::
+
+        {
+          "box":       {BackgroundColor, VerticalAlign, Padding*, ...},
+          "border":    {Style, Color, Width},
+          "paragraph": {TextAlign},
+          "run":       {FontFamily, FontSize, FontWeight, Color, Format, ...},
+        }
+
+    Empty branches are dropped. Returns ``None`` when nothing of interest is
+    present so callers can treat it like the previous flat-or-None shape.
+
+    Paragraph and run capture *only the first* paragraph / first run — the
+    same behavior ``set_textbox_style`` uses for writes.
+    """
+    box = _capture_style_fields(find_child(textbox, "Style"), _BOX_STYLE_FIELDS)
+    border = _border_dict(find_child(textbox, "Style"))
+
+    paragraph_style: Optional[dict[str, str]] = None
+    run_style: Optional[dict[str, str]] = None
+    paragraphs_root = find_child(textbox, "Paragraphs")
+    if paragraphs_root is not None:
+        first_paragraph = find_child(paragraphs_root, "Paragraph")
+        if first_paragraph is not None:
+            paragraph_style = _paragraph_style_dict(first_paragraph)
+            runs_root = find_child(first_paragraph, "TextRuns")
+            if runs_root is not None:
+                first_run = find_child(runs_root, "TextRun")
+                if first_run is not None:
+                    run_style = _run_style_dict(first_run)
+
+    out: dict[str, Any] = {}
+    if box:
+        out["box"] = box
+    if border:
+        out["border"] = border
+    if paragraph_style:
+        out["paragraph"] = paragraph_style
+    if run_style:
+        out["run"] = run_style
+    return out or None
+
+
 def _style_dict(el: Optional[etree._Element]) -> Optional[dict[str, Any]]:
-    """Capture key Style children. Best-effort; returns None if no style."""
+    """Capture key Style children. Best-effort; returns None if no style.
+
+    Used by non-Textbox readers (Image, Rectangle) where there's only one
+    Style block to look at — fall back to a flat field dump.
+    """
     style = find_child(el, "Style") if el is not None else None
     if style is None:
         return None
@@ -399,12 +521,51 @@ def _find_named_anywhere(doc: RDLDocument, local_name: str, name: str) -> Option
     return None
 
 
+def _is_positioned_item(el: etree._Element) -> bool:
+    """True when ``el`` is a top-level positioned ReportItem (body / header /
+    footer / rectangle child), not a tablix-cell textbox.
+
+    Cell textboxes live under ``TablixCell/CellContents`` and have no
+    ``Top`` / ``Left`` / ``Width`` / ``Height`` of their own — the cell
+    positions them. Top-level items always carry at least Width or Height.
+    Use that as the signal so we don't accidentally coerce cell-textbox
+    layout fields into "0in".
+    """
+    return find_child(el, "Width") is not None or find_child(el, "Height") is not None
+
+
+def _layout_dict_for(el: etree._Element) -> dict[str, Optional[str]]:
+    """Top/Left/Width/Height with the right coercion for the item's container.
+
+    Top-level positioned items: missing Top/Left coerce to "0in" (RDL
+    semantic default). Cell textboxes: all four fields stay None.
+    """
+    if _is_positioned_item(el):
+        return {
+            "top": _text(find_child(el, "Top")) or "0in",
+            "left": _text(find_child(el, "Left")) or "0in",
+            "width": _text(find_child(el, "Width")),
+            "height": _text(find_child(el, "Height")),
+        }
+    return {
+        "top": _text(find_child(el, "Top")),
+        "left": _text(find_child(el, "Left")),
+        "width": _text(find_child(el, "Width")),
+        "height": _text(find_child(el, "Height")),
+    }
+
+
 def get_textbox(path: str, name: str) -> dict[str, Any]:
     """Return position, size, runs, style, visibility for a named Textbox.
 
     Searches the entire report (body, header, footer, AND tablix cell
     contents). Tablix-cell textboxes don't have top/left/width/height —
     those fields are returned as None.
+
+    ``style`` is a nested dict mirroring how ``set_textbox_style`` routes
+    properties: ``{"box": {...}, "border": {...}, "paragraph": {...},
+    "run": {...}}``. Empty branches are dropped. ``runs`` entries each
+    carry their own ``style`` dict.
     """
     doc = RDLDocument.open(path)
     tb = _find_named_anywhere(doc, "Textbox", name)
@@ -415,12 +576,9 @@ def get_textbox(path: str, name: str) -> dict[str, Any]:
     return {
         "name": name,
         "type": "Textbox",
-        "top": _text(find_child(tb, "Top")),
-        "left": _text(find_child(tb, "Left")),
-        "width": _text(find_child(tb, "Width")),
-        "height": _text(find_child(tb, "Height")),
+        **_layout_dict_for(tb),
         "runs": _runs_of(tb),
-        "style": _style_dict(tb),
+        "style": _full_textbox_style(tb),
         "visibility": _visibility(tb),
         "can_grow": _text(find_child(tb, "CanGrow")),
         "can_shrink": _text(find_child(tb, "CanShrink")),
@@ -438,10 +596,7 @@ def get_image(path: str, name: str) -> dict[str, Any]:
     return {
         "name": name,
         "type": "Image",
-        "top": _text(find_child(img, "Top")),
-        "left": _text(find_child(img, "Left")),
-        "width": _text(find_child(img, "Width")),
-        "height": _text(find_child(img, "Height")),
+        **_layout_dict_for(img),
         "source": _text(find_child(img, "Source")),
         "value": _text(find_child(img, "Value")),
         "sizing": _text(find_child(img, "Sizing")),
@@ -469,10 +624,7 @@ def get_rectangle(path: str, name: str) -> dict[str, Any]:
     return {
         "name": name,
         "type": "Rectangle",
-        "top": _text(find_child(rect, "Top")),
-        "left": _text(find_child(rect, "Left")),
-        "width": _text(find_child(rect, "Width")),
-        "height": _text(find_child(rect, "Height")),
+        **_layout_dict_for(rect),
         "contained_items": contained,
         "style": _style_dict(rect),
         "visibility": _visibility(rect),

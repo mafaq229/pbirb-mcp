@@ -144,6 +144,151 @@ class TestGetTextbox:
         with pytest.raises(ElementNotFoundError):
             get_textbox(path=str(rdl_path), name="NoSuch")
 
+    def test_returns_run_paragraph_border_styles_after_set_textbox_style(self, rdl_path):
+        """Read-after-write: the run/paragraph/border style fields written by
+        set_textbox_style come back from get_textbox in the nested shape."""
+        from pbirb_mcp.ops.styling import set_textbox_style
+
+        add_body_textbox(
+            path=str(rdl_path),
+            name="Stylish",
+            text="hello",
+            top="0in",
+            left="0in",
+            width="2in",
+            height="0.25in",
+        )
+        set_textbox_style(
+            path=str(rdl_path),
+            textbox_name="Stylish",
+            font_family="Calibri",
+            font_size="14pt",
+            font_weight="Bold",
+            color="#112233",
+            background_color="#FFFF00",
+            text_align="Center",
+            vertical_align="Middle",
+            format="C2",
+            border_style="Solid",
+            border_color="#000000",
+            border_width="1pt",
+        )
+
+        out = get_textbox(path=str(rdl_path), name="Stylish")
+        style = out["style"]
+        assert style is not None, "style branch should not be empty after writes"
+
+        # Box (Textbox/Style)
+        assert style["box"]["BackgroundColor"] == "#FFFF00"
+        assert style["box"]["VerticalAlign"] == "Middle"
+
+        # Border (Textbox/Style/Border)
+        assert style["border"]["Style"] == "Solid"
+        assert style["border"]["Color"] == "#000000"
+        assert style["border"]["Width"] == "1pt"
+
+        # Paragraph (Paragraphs/Paragraph/Style)
+        assert style["paragraph"]["TextAlign"] == "Center"
+
+        # Run (Paragraphs/Paragraph/TextRuns/TextRun/Style)
+        assert style["run"]["FontFamily"] == "Calibri"
+        assert style["run"]["FontSize"] == "14pt"
+        assert style["run"]["FontWeight"] == "Bold"
+        assert style["run"]["Color"] == "#112233"
+        assert style["run"]["Format"] == "C2"
+
+        # Per-run style is also surfaced inside runs[]
+        assert out["runs"]
+        first = out["runs"][0]
+        assert first.get("style") is not None
+        assert first["style"]["FontFamily"] == "Calibri"
+
+    def test_no_style_returns_none(self, rdl_path):
+        # A bare textbox added with only text — the writer emits empty <Style/>
+        # blocks but no field children, so style should be None (empty branches
+        # are dropped).
+        add_body_textbox(
+            path=str(rdl_path),
+            name="Bare",
+            text="bare",
+            top="0in",
+            left="0in",
+            width="1in",
+            height="0.25in",
+        )
+        out = get_textbox(path=str(rdl_path), name="Bare")
+        # Either None or {} — both signal "nothing styled yet". Reject any
+        # accidental fields populated.
+        assert out["style"] in (None, {})
+
+
+class TestLayoutCoercion:
+    def test_missing_top_left_coerced_to_0in_for_positioned_items(self, rdl_path):
+        """When a body item has Width/Height but no Top/Left, top/left should
+        come back as ``"0in"`` (RDL default) — not ``None``."""
+        from lxml import etree
+
+        from pbirb_mcp.core.document import RDLDocument
+        from pbirb_mcp.core.xpath import RDL_NS, find_child, q
+
+        # Add a textbox with explicit positioning, then strip its <Top> and
+        # <Left> elements to simulate a fixture where they were omitted.
+        add_body_textbox(
+            path=str(rdl_path),
+            name="NoTop",
+            text="x",
+            top="0in",
+            left="0in",
+            width="1in",
+            height="0.25in",
+        )
+        doc = RDLDocument.open(str(rdl_path))
+        body = doc.root.find(f".//{{{RDL_NS}}}ReportSection/{{{RDL_NS}}}Body")
+        items = find_child(body, "ReportItems")
+        target = next(c for c in items if c.get("Name") == "NoTop")
+        for local in ("Top", "Left"):
+            existing = find_child(target, local)
+            if existing is not None:
+                target.remove(existing)
+        doc.save()
+
+        out = get_textbox(path=str(rdl_path), name="NoTop")
+        assert out["top"] == "0in"
+        assert out["left"] == "0in"
+        # Width/Height not coerced — they remain real values.
+        assert out["width"] == "1in"
+        assert out["height"] == "0.25in"
+
+    def test_list_body_items_coerces_top_left(self, rdl_path):
+        from lxml import etree
+
+        from pbirb_mcp.core.document import RDLDocument
+        from pbirb_mcp.core.xpath import RDL_NS, find_child
+
+        add_body_textbox(
+            path=str(rdl_path),
+            name="MissingTop",
+            text="x",
+            top="0in",
+            left="0in",
+            width="1in",
+            height="0.25in",
+        )
+        doc = RDLDocument.open(str(rdl_path))
+        body = doc.root.find(f".//{{{RDL_NS}}}ReportSection/{{{RDL_NS}}}Body")
+        items = find_child(body, "ReportItems")
+        target = next(c for c in items if c.get("Name") == "MissingTop")
+        for local in ("Top", "Left"):
+            existing = find_child(target, local)
+            if existing is not None:
+                target.remove(existing)
+        doc.save()
+
+        listed = list_body_items(path=str(rdl_path))
+        entry = next(i for i in listed if i["name"] == "MissingTop")
+        assert entry["top"] == "0in"
+        assert entry["left"] == "0in"
+
 
 class TestGetImage:
     def test_returns_image_metadata(self, rdl_path, tmp_path):
