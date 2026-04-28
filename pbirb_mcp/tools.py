@@ -21,6 +21,7 @@ from pbirb_mcp.ops import (
     styling,
     tablix,
     tablix_columns,
+    tablix_subtotals,
     templates,
     visibility,
 )
@@ -477,6 +478,46 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_columns.remove_tablix_column,
+    )
+    server.register_tool(
+        name="add_subtotal_row",
+        description=(
+            "Append a subtotal row to a row-axis group. aggregates is a list "
+            "of {column, expression} entries; column is matched against the "
+            "data row's textbox names, expression is the aggregate (e.g. "
+            "=Sum(Fields!X.Value)). Columns not listed get blank cells. "
+            "position='footer' (default) appends; 'header' inserts at body "
+            "row 1 (right after the group-header row). Group must have been "
+            "added via add_row_group."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "aggregates": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "column": {"type": "string"},
+                            "expression": {"type": "string"},
+                        },
+                        "required": ["column", "expression"],
+                        "additionalProperties": False,
+                    },
+                },
+                "position": {
+                    "type": "string",
+                    "enum": ["header", "footer"],
+                    "default": "footer",
+                },
+            },
+            "required": ["path", "tablix_name", "group_name", "aggregates"],
+            "additionalProperties": False,
+        },
+        handler=tablix_subtotals.add_subtotal_row,
     )
 
     server.register_tool(
