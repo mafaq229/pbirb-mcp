@@ -17,6 +17,7 @@ from pbirb_mcp.ops import (
     header_footer,
     page,
     parameters,
+    positioning,
     reader,
     styling,
     tablix,
@@ -601,6 +602,90 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_static.add_static_column,
+    )
+
+    # ---- positioning (v0.2 commits 6-8) -----------------------------------
+    server.register_tool(
+        name="set_body_item_position",
+        description=(
+            "Move an existing named ReportItem inside <Body> to (top, left). "
+            "Preserves all other properties (size, style, group structure). "
+            "top and left are passed through verbatim — RDL accepts any size "
+            "unit (2cm, 0.75in, 108pt). Errors if no body item by that name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "top": {"type": "string"},
+                "left": {"type": "string"},
+            },
+            "required": ["path", "name", "top", "left"],
+            "additionalProperties": False,
+        },
+        handler=positioning.set_body_item_position,
+    )
+    server.register_tool(
+        name="set_header_item_position",
+        description=(
+            "Move an existing named ReportItem inside <PageHeader> to "
+            "(top, left). Errors if there is no <PageHeader> (call "
+            "set_page_header first) or no item by that name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "top": {"type": "string"},
+                "left": {"type": "string"},
+            },
+            "required": ["path", "name", "top", "left"],
+            "additionalProperties": False,
+        },
+        handler=positioning.set_header_item_position,
+    )
+    server.register_tool(
+        name="set_footer_item_position",
+        description=(
+            "Move an existing named ReportItem inside <PageFooter> to "
+            "(top, left). Errors if there is no <PageFooter> (call "
+            "set_page_footer first) or no item by that name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "top": {"type": "string"},
+                "left": {"type": "string"},
+            },
+            "required": ["path", "name", "top", "left"],
+            "additionalProperties": False,
+        },
+        handler=positioning.set_footer_item_position,
+    )
+    server.register_tool(
+        name="set_body_item_size",
+        description=(
+            "Resize an existing named ReportItem inside <Body>. At least "
+            "one of width / height must be supplied; missing fields are "
+            "left untouched. Same RDL size-string convention as the "
+            "position tools."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "width": {"type": ["string", "null"]},
+                "height": {"type": ["string", "null"]},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=positioning.set_body_item_size,
     )
 
     server.register_tool(
