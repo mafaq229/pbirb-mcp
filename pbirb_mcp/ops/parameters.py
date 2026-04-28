@@ -24,12 +24,10 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import (
-    ElementNotFoundError,
     resolve_dataset,
     resolve_parameter,
 )
 from pbirb_mcp.core.xpath import find_child, q
-
 
 _VALID_SOURCES = ("static", "query")
 
@@ -51,9 +49,7 @@ _PARAMETER_CHILD_ORDER = (
 )
 
 
-def _set_or_replace_in_order(
-    parent: etree._Element, new_child: etree._Element
-) -> None:
+def _set_or_replace_in_order(parent: etree._Element, new_child: etree._Element) -> None:
     new_local = etree.QName(new_child).localname
     existing = find_child(parent, new_local)
     if existing is not None:
@@ -63,10 +59,7 @@ def _set_or_replace_in_order(
         new_idx = _PARAMETER_CHILD_ORDER.index(new_local)
         for i, child in enumerate(list(parent)):
             local = etree.QName(child).localname
-            if (
-                local in _PARAMETER_CHILD_ORDER
-                and _PARAMETER_CHILD_ORDER.index(local) > new_idx
-            ):
+            if local in _PARAMETER_CHILD_ORDER and _PARAMETER_CHILD_ORDER.index(local) > new_idx:
                 parent.insert(i, new_child)
                 return
     parent.append(new_child)
@@ -77,9 +70,7 @@ def _set_or_replace_in_order(
 
 def _check_source(source: str) -> None:
     if source not in _VALID_SOURCES:
-        raise ValueError(
-            f"source must be one of {_VALID_SOURCES!r}; got {source!r}"
-        )
+        raise ValueError(f"source must be one of {_VALID_SOURCES!r}; got {source!r}")
 
 
 def _validate_query_args(
@@ -88,9 +79,7 @@ def _validate_query_args(
     doc: RDLDocument,
 ) -> None:
     if not query_dataset or not query_value_field:
-        raise ValueError(
-            "source='query' requires both query_dataset and query_value_field"
-        )
+        raise ValueError("source='query' requires both query_dataset and query_value_field")
     # Raises ElementNotFoundError when the dataset doesn't exist.
     resolve_dataset(doc, query_dataset)
 
@@ -111,9 +100,7 @@ def _build_static_parameter_values(
             label_text = entry
         elif isinstance(entry, dict):
             if "value" not in entry:
-                raise ValueError(
-                    "dict static_values entries must include a 'value' key"
-                )
+                raise ValueError("dict static_values entries must include a 'value' key")
             value_text = entry["value"]
             label_text = entry.get("label", entry["value"])
         else:
@@ -164,9 +151,7 @@ def set_parameter_available_values(
     else:
         _validate_query_args(query_dataset, query_value_field, doc)
         valid_values.append(
-            _build_dataset_reference(
-                query_dataset, query_value_field, query_label_field
-            )
+            _build_dataset_reference(query_dataset, query_value_field, query_label_field)
         )
 
     _set_or_replace_in_order(parameter, valid_values)
@@ -204,9 +189,7 @@ def set_parameter_default_values(
         # DefaultValue's DataSetReference has no LabelField — defaults are
         # values, not display strings.
         default_value.append(
-            _build_dataset_reference(
-                query_dataset, query_value_field, label_field=None
-            )
+            _build_dataset_reference(query_dataset, query_value_field, label_field=None)
         )
 
     _set_or_replace_in_order(parameter, default_value)

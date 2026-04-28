@@ -54,7 +54,10 @@ class TestAddBodyTextbox:
             path=str(rdl_path),
             name="Stamp",
             text="CONFIDENTIAL",
-            top="0in", left="0in", width="2in", height="0.4in",
+            top="0in",
+            left="0in",
+            width="2in",
+            height="0.4in",
         )
         after = _body_items(rdl_path)
         names_after = [el.get("Name") for el in after]
@@ -67,7 +70,10 @@ class TestAddBodyTextbox:
             path=str(rdl_path),
             name="Stamp",
             text="CONFIDENTIAL",
-            top="0in", left="0in", width="2in", height="0.4in",
+            top="0in",
+            left="0in",
+            width="2in",
+            height="0.4in",
         )
         doc = RDLDocument.open(rdl_path)
         tb = doc.root.find(f".//{{{RDL_NS}}}Textbox[@Name='Stamp']")
@@ -81,7 +87,10 @@ class TestAddBodyTextbox:
             path=str(rdl_path),
             name="Watermark",
             text="=Globals!ReportName",
-            top="0in", left="0in", width="3in", height="0.3in",
+            top="0in",
+            left="0in",
+            width="3in",
+            height="0.3in",
         )
         doc = RDLDocument.open(rdl_path)
         tb = doc.root.find(f".//{{{RDL_NS}}}Textbox[@Name='Watermark']")
@@ -98,7 +107,10 @@ class TestAddBodyTextbox:
                 path=str(rdl_path),
                 name="MainTable",
                 text="oops",
-                top="0in", left="0in", width="1in", height="0.3in",
+                top="0in",
+                left="0in",
+                width="1in",
+                height="0.3in",
             )
 
 
@@ -112,7 +124,10 @@ class TestAddBodyImage:
             name="Banner",
             image_source="External",
             value="https://example.com/banner.png",
-            top="0in", left="0in", width="6.5in", height="0.5in",
+            top="0in",
+            left="0in",
+            width="6.5in",
+            height="0.5in",
         )
         doc = RDLDocument.open(rdl_path)
         img = doc.root.find(f".//{{{RDL_NS}}}Image[@Name='Banner']")
@@ -127,7 +142,10 @@ class TestAddBodyImage:
                 name="Bad",
                 image_source="Magic",
                 value="x",
-                top="0in", left="0in", width="1in", height="1in",
+                top="0in",
+                left="0in",
+                width="1in",
+                height="1in",
             )
 
     def test_duplicate_name_rejected(self, rdl_path):
@@ -136,7 +154,10 @@ class TestAddBodyImage:
             name="Banner",
             image_source="External",
             value="https://example.com/banner.png",
-            top="0in", left="0in", width="1in", height="0.5in",
+            top="0in",
+            left="0in",
+            width="1in",
+            height="0.5in",
         )
         with pytest.raises(ValueError):
             add_body_image(
@@ -144,7 +165,10 @@ class TestAddBodyImage:
                 name="Banner",
                 image_source="External",
                 value="https://example.com/other.png",
-                top="0in", left="0in", width="1in", height="0.5in",
+                top="0in",
+                left="0in",
+                width="1in",
+                height="0.5in",
             )
 
 
@@ -157,7 +181,10 @@ class TestRemoveBodyItem:
             path=str(rdl_path),
             name="Stamp",
             text="CONFIDENTIAL",
-            top="0in", left="0in", width="2in", height="0.4in",
+            top="0in",
+            left="0in",
+            width="2in",
+            height="0.4in",
         )
         remove_body_item(path=str(rdl_path), name="Stamp")
         names = [el.get("Name") for el in _body_items(rdl_path)]
@@ -180,7 +207,10 @@ class TestRemoveBodyItem:
             path=str(rdl_path),
             name="Stamp",
             text="X",
-            top="0in", left="0in", width="1in", height="0.3in",
+            top="0in",
+            left="0in",
+            width="1in",
+            height="0.3in",
         )
         remove_body_item(path=str(rdl_path), name="Stamp")
         doc = RDLDocument.open(rdl_path)
@@ -194,8 +224,8 @@ class TestToolRegistration:
     def test_three_body_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {"add_body_textbox", "add_body_image", "remove_body_item"} <= names

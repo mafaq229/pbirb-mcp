@@ -16,7 +16,7 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.xpath import RDL_NS, RD_NS, XPATH_NS, find_child, find_children
+from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children
 
 
 def _text(node: Optional[etree._Element]) -> Optional[str]:
@@ -49,22 +49,10 @@ def describe_report(path: str) -> dict[str, Any]:
 
     return {
         "path": str(doc.path),
-        "data_sources": [
-            ds.get("Name")
-            for ds in root.iter(f"{{{RDL_NS}}}DataSource")
-        ],
-        "datasets": [
-            ds.get("Name")
-            for ds in root.iter(f"{{{RDL_NS}}}DataSet")
-        ],
-        "parameters": [
-            p.get("Name")
-            for p in root.iter(f"{{{RDL_NS}}}ReportParameter")
-        ],
-        "tablixes": [
-            t.get("Name")
-            for t in root.iter(f"{{{RDL_NS}}}Tablix")
-        ],
+        "data_sources": [ds.get("Name") for ds in root.iter(f"{{{RDL_NS}}}DataSource")],
+        "datasets": [ds.get("Name") for ds in root.iter(f"{{{RDL_NS}}}DataSet")],
+        "parameters": [p.get("Name") for p in root.iter(f"{{{RDL_NS}}}ReportParameter")],
+        "tablixes": [t.get("Name") for t in root.iter(f"{{{RDL_NS}}}Tablix")],
         "page": page,
     }
 
@@ -76,8 +64,7 @@ def _filter_dict(filter_node: etree._Element) -> dict[str, Any]:
     expr = find_child(filter_node, "FilterExpression")
     op = find_child(filter_node, "Operator")
     values = [
-        _text(v)
-        for v in filter_node.findall(f"{{{RDL_NS}}}FilterValues/{{{RDL_NS}}}FilterValue")
+        _text(v) for v in filter_node.findall(f"{{{RDL_NS}}}FilterValues/{{{RDL_NS}}}FilterValue")
     ]
     return {
         "expression": _text(expr),

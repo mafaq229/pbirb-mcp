@@ -38,25 +38,21 @@ def _one(matches: list[etree._Element], kind: str, name: str) -> etree._Element:
     if not matches:
         raise ElementNotFoundError(f"{kind} {name!r} not found")
     if len(matches) > 1:
-        raise AmbiguousElementError(
-            f"{kind} {name!r} is ambiguous: {len(matches)} matches"
-        )
+        raise AmbiguousElementError(f"{kind} {name!r} is ambiguous: {len(matches)} matches")
     return matches[0]
 
 
-def resolve_tablix(doc: "RDLDocument", name: str) -> etree._Element:
+def resolve_tablix(doc: RDLDocument, name: str) -> etree._Element:
     matches = list(doc.root.xpath(".//r:Tablix[@Name=$n]", namespaces=XPATH_NS, n=name))
     return _one(matches, "Tablix", name)
 
 
-def resolve_dataset(doc: "RDLDocument", name: str) -> etree._Element:
-    matches = list(
-        doc.root.xpath(".//r:DataSets/r:DataSet[@Name=$n]", namespaces=XPATH_NS, n=name)
-    )
+def resolve_dataset(doc: RDLDocument, name: str) -> etree._Element:
+    matches = list(doc.root.xpath(".//r:DataSets/r:DataSet[@Name=$n]", namespaces=XPATH_NS, n=name))
     return _one(matches, "DataSet", name)
 
 
-def resolve_parameter(doc: "RDLDocument", name: str) -> etree._Element:
+def resolve_parameter(doc: RDLDocument, name: str) -> etree._Element:
     matches = list(
         doc.root.xpath(
             ".//r:ReportParameters/r:ReportParameter[@Name=$n]",
@@ -67,21 +63,19 @@ def resolve_parameter(doc: "RDLDocument", name: str) -> etree._Element:
     return _one(matches, "ReportParameter", name)
 
 
-def resolve_textbox(doc: "RDLDocument", name: str) -> etree._Element:
+def resolve_textbox(doc: RDLDocument, name: str) -> etree._Element:
     matches = list(doc.root.xpath(".//r:Textbox[@Name=$n]", namespaces=XPATH_NS, n=name))
     return _one(matches, "Textbox", name)
 
 
-def resolve_group(doc: "RDLDocument", tablix_name: str, group_name: str) -> etree._Element:
+def resolve_group(doc: RDLDocument, tablix_name: str, group_name: str) -> etree._Element:
     """Resolve a ``Group`` element by name within a named tablix.
 
     Searches both ``TablixRowHierarchy`` and ``TablixColumnHierarchy`` so the
     same call works for row groups (the common case) and column groups.
     """
     tablix = resolve_tablix(doc, tablix_name)
-    matches = list(
-        tablix.xpath(".//r:Group[@Name=$n]", namespaces=XPATH_NS, n=group_name)
-    )
+    matches = list(tablix.xpath(".//r:Group[@Name=$n]", namespaces=XPATH_NS, n=group_name))
     return _one(matches, f"Group in tablix {tablix_name!r}", group_name)
 
 

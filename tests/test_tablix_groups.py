@@ -50,11 +50,7 @@ def _row_hierarchy_top_members(tablix):
 
 
 def _body_row_count(tablix) -> int:
-    return len(
-        find_children(
-            tablix.find(f"{q('TablixBody')}/{q('TablixRows')}"), "TablixRow"
-        )
-    )
+    return len(find_children(tablix.find(f"{q('TablixBody')}/{q('TablixRows')}"), "TablixRow"))
 
 
 # ---- add_row_group --------------------------------------------------------
@@ -94,12 +90,8 @@ class TestAddRowGroup:
         tablix = _tablix(after, "MainTable")
         assert _body_row_count(tablix) == rows_before + 1
         # The first cell of the new row 0 must hold the group expression.
-        first_row = tablix.findall(
-            f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}"
-        )[0]
-        first_cell = first_row.findall(
-            f"{q('TablixCells')}/{q('TablixCell')}"
-        )[0]
+        first_row = tablix.findall(f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}")[0]
+        first_cell = first_row.findall(f"{q('TablixCells')}/{q('TablixCell')}")[0]
         textrun_value = first_cell.find(
             f"{q('CellContents')}/{q('Textbox')}/{q('Paragraphs')}/"
             f"{q('Paragraph')}/{q('TextRuns')}/{q('TextRun')}/{q('Value')}"
@@ -172,9 +164,8 @@ class TestRemoveRowGroup:
     def test_inverts_add_row_group(self, rdl_path):
         before_doc = RDLDocument.open(rdl_path)
         before_top = [
-            etree_node.tag for etree_node in _row_hierarchy_top_members(
-                _tablix(before_doc, "MainTable")
-            )
+            etree_node.tag
+            for etree_node in _row_hierarchy_top_members(_tablix(before_doc, "MainTable"))
         ]
         before_rows = _body_row_count(_tablix(before_doc, "MainTable"))
 
@@ -191,9 +182,7 @@ class TestRemoveRowGroup:
         )
 
         after_doc = RDLDocument.open(rdl_path)
-        after_top = [
-            n.tag for n in _row_hierarchy_top_members(_tablix(after_doc, "MainTable"))
-        ]
+        after_top = [n.tag for n in _row_hierarchy_top_members(_tablix(after_doc, "MainTable"))]
         assert after_top == before_top
         assert _body_row_count(_tablix(after_doc, "MainTable")) == before_rows
 
@@ -245,10 +234,7 @@ class TestSetGroupSort:
         assert member is not None
         sorts_root = find_child(member, "SortExpressions")
         assert sorts_root is not None
-        values = [
-            s.find(q("Value")).text
-            for s in find_children(sorts_root, "SortExpression")
-        ]
+        values = [s.find(q("Value")).text for s in find_children(sorts_root, "SortExpression")]
         assert values == ["=Fields!Region.Value"]
 
     def test_replaces_existing_sort_expressions(self, rdl_path):
@@ -307,9 +293,9 @@ class TestSetGroupVisibility:
         doc = RDLDocument.open(rdl_path)
         tablix = _tablix(doc, "MainTable")
         member = next(
-            m for m in tablix.iter(q("TablixMember"))
-            if m.find(q("Group")) is not None
-            and m.find(q("Group")).get("Name") == "Region"
+            m
+            for m in tablix.iter(q("TablixMember"))
+            if m.find(q("Group")) is not None and m.find(q("Group")).get("Name") == "Region"
         )
         vis = find_child(member, "Visibility")
         assert vis is not None
@@ -334,9 +320,9 @@ class TestSetGroupVisibility:
         doc = RDLDocument.open(rdl_path)
         tablix = _tablix(doc, "MainTable")
         member = next(
-            m for m in tablix.iter(q("TablixMember"))
-            if m.find(q("Group")) is not None
-            and m.find(q("Group")).get("Name") == "Region"
+            m
+            for m in tablix.iter(q("TablixMember"))
+            if m.find(q("Group")) is not None and m.find(q("Group")).get("Name") == "Region"
         )
         vis = find_child(member, "Visibility")
         assert find_child(vis, "ToggleItem").text == "HeaderProductID"
@@ -358,9 +344,9 @@ class TestToolRegistration:
     def test_grouping_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {
             "add_row_group",

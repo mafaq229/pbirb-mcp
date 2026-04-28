@@ -36,10 +36,7 @@ def rdl_path(tmp_path: Path) -> Path:
 
 
 def _flags_from_reader(rdl_path: Path, name: str) -> dict:
-    return {
-        p["name"]: p
-        for p in get_parameters(path=str(rdl_path))
-    }[name]
+    return {p["name"]: p for p in get_parameters(path=str(rdl_path))}[name]
 
 
 # ---- happy path ----------------------------------------------------------
@@ -185,8 +182,8 @@ class TestToolRegistration:
     def test_tool_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "update_parameter_advanced" in names

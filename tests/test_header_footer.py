@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import RDL_NS, find_child, q
 from pbirb_mcp.ops.header_footer import (
     add_footer_image,
     add_footer_textbox,
@@ -44,8 +44,22 @@ def _section(rdl_path: Path, local: str):
 
 # Parametrised per-region table: (region_name, set_fn, add_textbox, add_image, remove_fn, section_local)
 REGIONS = [
-    ("header", set_page_header, add_header_textbox, add_header_image, remove_header_item, "PageHeader"),
-    ("footer", set_page_footer, add_footer_textbox, add_footer_image, remove_footer_item, "PageFooter"),
+    (
+        "header",
+        set_page_header,
+        add_header_textbox,
+        add_header_image,
+        remove_header_item,
+        "PageHeader",
+    ),
+    (
+        "footer",
+        set_page_footer,
+        add_footer_textbox,
+        add_footer_image,
+        remove_footer_item,
+        "PageFooter",
+    ),
 ]
 REGION_IDS = [r[0] for r in REGIONS]
 
@@ -53,13 +67,9 @@ REGION_IDS = [r[0] for r in REGIONS]
 # ---- set_page_header / set_page_footer ------------------------------------
 
 
-@pytest.mark.parametrize(
-    "region,set_fn,_a,_b,_c,section_local", REGIONS, ids=REGION_IDS
-)
+@pytest.mark.parametrize("region,set_fn,_a,_b,_c,section_local", REGIONS, ids=REGION_IDS)
 class TestSetPageSection:
-    def test_creates_section_when_absent(
-        self, rdl_path, region, set_fn, _a, _b, _c, section_local
-    ):
+    def test_creates_section_when_absent(self, rdl_path, region, set_fn, _a, _b, _c, section_local):
         set_fn(
             path=str(rdl_path),
             height="0.5in",
@@ -103,9 +113,7 @@ class TestSetPageSection:
         assert find_child(sec, "PrintOnFirstPage").text == "true"
         assert find_child(sec, "PrintOnLastPage").text == "true"
 
-    def test_round_trip_safe(
-        self, rdl_path, region, set_fn, _a, _b, _c, section_local
-    ):
+    def test_round_trip_safe(self, rdl_path, region, set_fn, _a, _b, _c, section_local):
         set_fn(path=str(rdl_path), height="0.5in")
         doc = RDLDocument.open(rdl_path)
         doc.validate()
@@ -114,9 +122,7 @@ class TestSetPageSection:
 # ---- add_*_textbox --------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "region,set_fn,add_textbox,_b,_c,section_local", REGIONS, ids=REGION_IDS
-)
+@pytest.mark.parametrize("region,set_fn,add_textbox,_b,_c,section_local", REGIONS, ids=REGION_IDS)
 class TestAddTextbox:
     def test_static_text_lands_in_textrun_value(
         self, rdl_path, region, set_fn, add_textbox, _b, _c, section_local
@@ -154,9 +160,7 @@ class TestAddTextbox:
             height="0.25in",
         )
         sec = _section(rdl_path, section_local)
-        textbox = sec.find(
-            f"{q('ReportItems')}/{q('Textbox')}[@Name='ParamLine']"
-        )
+        textbox = sec.find(f"{q('ReportItems')}/{q('Textbox')}[@Name='ParamLine']")
         value = textbox.find(
             f"{q('Paragraphs')}/{q('Paragraph')}/{q('TextRuns')}/{q('TextRun')}/{q('Value')}"
         )
@@ -188,23 +192,27 @@ class TestAddTextbox:
             path=str(rdl_path),
             name="Title",
             text="Hello",
-            top="0in", left="0in", width="2in", height="0.3in",
+            top="0in",
+            left="0in",
+            width="2in",
+            height="0.3in",
         )
         with pytest.raises(ValueError):
             add_textbox(
                 path=str(rdl_path),
                 name="Title",
                 text="World",
-                top="0in", left="0in", width="2in", height="0.3in",
+                top="0in",
+                left="0in",
+                width="2in",
+                height="0.3in",
             )
 
 
 # ---- add_*_image ----------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "region,set_fn,_a,add_image,_c,section_local", REGIONS, ids=REGION_IDS
-)
+@pytest.mark.parametrize("region,set_fn,_a,add_image,_c,section_local", REGIONS, ids=REGION_IDS)
 class TestAddImage:
     def test_external_source_writes_url(
         self, rdl_path, region, set_fn, _a, add_image, _c, section_local
@@ -235,7 +243,10 @@ class TestAddImage:
             name="Logo",
             image_source="Embedded",
             value="LogoImage",
-            top="0in", left="0in", width="1in", height="0.5in",
+            top="0in",
+            left="0in",
+            width="1in",
+            height="0.5in",
         )
         sec = _section(rdl_path, section_local)
         image = sec.find(f"{q('ReportItems')}/{q('Image')}[@Name='Logo']")
@@ -251,7 +262,10 @@ class TestAddImage:
                 name="Logo",
                 image_source="Magic",
                 value="x",
-                top="0in", left="0in", width="1in", height="1in",
+                top="0in",
+                left="0in",
+                width="1in",
+                height="1in",
             )
 
 
@@ -271,7 +285,10 @@ class TestRemoveItem:
             path=str(rdl_path),
             name="Stamp",
             text="Confidential",
-            top="0in", left="0in", width="2in", height="0.3in",
+            top="0in",
+            left="0in",
+            width="2in",
+            height="0.3in",
         )
         remove_fn(path=str(rdl_path), name="Stamp")
         sec = _section(rdl_path, section_local)
@@ -286,14 +303,20 @@ class TestRemoveItem:
             path=str(rdl_path),
             name="Title",
             text="Hello",
-            top="0in", left="0in", width="2in", height="0.3in",
+            top="0in",
+            left="0in",
+            width="2in",
+            height="0.3in",
         )
         add_image(
             path=str(rdl_path),
             name="Logo",
             image_source="External",
             value="https://example.com/logo.png",
-            top="0in", left="2.1in", width="1in", height="0.5in",
+            top="0in",
+            left="2.1in",
+            width="1in",
+            height="0.5in",
         )
         remove_fn(path=str(rdl_path), name="Logo")
         sec = _section(rdl_path, section_local)
@@ -305,6 +328,7 @@ class TestRemoveItem:
         self, rdl_path, region, set_fn, add_textbox, add_image, remove_fn, section_local
     ):
         from pbirb_mcp.core.ids import ElementNotFoundError
+
         with pytest.raises(ElementNotFoundError):
             remove_fn(path=str(rdl_path), name="Ghost")
 
@@ -316,9 +340,9 @@ class TestToolRegistration:
     def test_eight_header_footer_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {
             "set_page_header",

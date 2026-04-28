@@ -9,10 +9,10 @@ import pytest
 from lxml import etree
 
 from pbirb_mcp.core.document import (
+    RD_NS,
+    RDL_NS,
     RDLDocument,
     RDLValidationError,
-    RDL_NS,
-    RD_NS,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pbi_paginated_minimal.rdl"
@@ -139,10 +139,7 @@ class TestValidate:
 
     def test_validate_rejects_missing_required_sections(self, tmp_path):
         bad = tmp_path / "bad.rdl"
-        bad.write_text(
-            '<?xml version="1.0" encoding="utf-8"?>'
-            f'<Report xmlns="{RDL_NS}"></Report>'
-        )
+        bad.write_text(f'<?xml version="1.0" encoding="utf-8"?><Report xmlns="{RDL_NS}"></Report>')
         doc = RDLDocument.open(bad)
         with pytest.raises(RDLValidationError) as excinfo:
             doc.validate()

@@ -23,7 +23,6 @@ from pbirb_mcp.core.ids import resolve_dataset
 from pbirb_mcp.core.xpath import find_child, q, qrd
 from pbirb_mcp.ops.body import _ensure_body_report_items, _names_in, _resolve_body
 
-
 # ---- shared cell builders -------------------------------------------------
 
 
@@ -59,9 +58,7 @@ def _all_named_items(doc: RDLDocument) -> set[str]:
 
 def _ensure_no_collision(doc: RDLDocument, name: str) -> None:
     if name in _all_named_items(doc):
-        raise ValueError(
-            f"body item named {name!r} already exists; pick a unique name"
-        )
+        raise ValueError(f"body item named {name!r} already exists; pick a unique name")
 
 
 # ---- insert_tablix_from_template -----------------------------------------
@@ -102,17 +99,13 @@ def insert_tablix_from_template(
     for col_name in columns:
         # Header textbox name follows the fixture's "Header<Name>" convention,
         # prefixed with the tablix name to avoid report-wide collisions.
-        header_cells.append(
-            _build_cell_textbox(f"{name}_Header_{col_name}", col_name)
-        )
+        header_cells.append(_build_cell_textbox(f"{name}_Header_{col_name}", col_name))
     # Detail row.
     detail_row = etree.SubElement(rows_root, q("TablixRow"))
     etree.SubElement(detail_row, q("Height")).text = "0.25in"
     detail_cells = etree.SubElement(detail_row, q("TablixCells"))
     for col_name in columns:
-        detail_cells.append(
-            _build_cell_textbox(f"{name}_{col_name}", f"=Fields!{col_name}.Value")
-        )
+        detail_cells.append(_build_cell_textbox(f"{name}_{col_name}", f"=Fields!{col_name}.Value"))
 
     # ---- TablixColumnHierarchy ----
     col_h = etree.SubElement(tablix, q("TablixColumnHierarchy"))

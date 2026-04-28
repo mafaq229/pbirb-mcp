@@ -24,7 +24,6 @@ from pbirb_mcp.core.ids import (
 )
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, q
 
-
 # RDL ReportItem-derived types that legitimately accept <Visibility> as a
 # child and that this tool is willing to target. Group / DataSet / Field /
 # ReportParameter etc. also have a Name attribute but are out of scope.
@@ -38,15 +37,11 @@ _VISIBILITY_BEARING_TAGS = (
 )
 
 
-def _resolve_named_report_item(
-    doc: RDLDocument, name: str
-) -> etree._Element:
+def _resolve_named_report_item(doc: RDLDocument, name: str) -> etree._Element:
     # XPath constraint: tag local-name must be one of the visibility-bearing
     # ReportItem types. Avoids accidentally hitting <DataSet Name="...">,
     # <ReportParameter Name="...">, <Group Name="...">.
-    type_clause = " or ".join(
-        f"local-name()='{tag}'" for tag in _VISIBILITY_BEARING_TAGS
-    )
+    type_clause = " or ".join(f"local-name()='{tag}'" for tag in _VISIBILITY_BEARING_TAGS)
     matches = list(
         doc.root.xpath(
             f".//*[@Name=$n and ({type_clause})]",
@@ -56,13 +51,10 @@ def _resolve_named_report_item(
     )
     if not matches:
         raise ElementNotFoundError(
-            f"no ReportItem named {name!r} (looked at: "
-            f"{', '.join(_VISIBILITY_BEARING_TAGS)})"
+            f"no ReportItem named {name!r} (looked at: {', '.join(_VISIBILITY_BEARING_TAGS)})"
         )
     if len(matches) > 1:
-        raise AmbiguousElementError(
-            f"ReportItem name {name!r} matches {len(matches)} elements"
-        )
+        raise AmbiguousElementError(f"ReportItem name {name!r} matches {len(matches)} elements")
     return matches[0]
 
 

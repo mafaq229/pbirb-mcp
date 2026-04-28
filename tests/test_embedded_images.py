@@ -17,7 +17,7 @@ import pytest
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import find_child, find_children
 from pbirb_mcp.ops.embedded_images import (
     add_embedded_image,
     list_embedded_images,
@@ -98,27 +98,32 @@ class TestAddEmbeddedImage:
 
     def test_appends_subsequent_images_to_block(self, rdl_path, png_path):
         add_embedded_image(
-            path=str(rdl_path), name="Logo", mime_type="image/png",
+            path=str(rdl_path),
+            name="Logo",
+            mime_type="image/png",
             image_path=str(png_path),
         )
         add_embedded_image(
-            path=str(rdl_path), name="Banner", mime_type="image/png",
+            path=str(rdl_path),
+            name="Banner",
+            mime_type="image/png",
             image_path=str(png_path),
         )
-        names = [
-            e.get("Name")
-            for e in find_children(_embedded_block(rdl_path), "EmbeddedImage")
-        ]
+        names = [e.get("Name") for e in find_children(_embedded_block(rdl_path), "EmbeddedImage")]
         assert names == ["Logo", "Banner"]
 
     def test_duplicate_name_rejected(self, rdl_path, png_path):
         add_embedded_image(
-            path=str(rdl_path), name="Logo", mime_type="image/png",
+            path=str(rdl_path),
+            name="Logo",
+            mime_type="image/png",
             image_path=str(png_path),
         )
         with pytest.raises(ValueError):
             add_embedded_image(
-                path=str(rdl_path), name="Logo", mime_type="image/png",
+                path=str(rdl_path),
+                name="Logo",
+                mime_type="image/png",
                 image_path=str(png_path),
             )
 
@@ -142,7 +147,9 @@ class TestAddEmbeddedImage:
 
     def test_round_trip_safe(self, rdl_path, png_path):
         add_embedded_image(
-            path=str(rdl_path), name="Logo", mime_type="image/png",
+            path=str(rdl_path),
+            name="Logo",
+            mime_type="image/png",
             image_path=str(png_path),
         )
         doc = RDLDocument.open(rdl_path)
@@ -161,11 +168,15 @@ class TestListEmbeddedImages:
         jpg_path = tmp_path / "logo.jpg"
         jpg_path.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00")
         add_embedded_image(
-            path=str(rdl_path), name="Logo", mime_type="image/png",
+            path=str(rdl_path),
+            name="Logo",
+            mime_type="image/png",
             image_path=str(png_path),
         )
         add_embedded_image(
-            path=str(rdl_path), name="Cover", mime_type="image/jpeg",
+            path=str(rdl_path),
+            name="Cover",
+            mime_type="image/jpeg",
             image_path=str(jpg_path),
         )
         listing = list_embedded_images(path=str(rdl_path))
@@ -181,23 +192,26 @@ class TestListEmbeddedImages:
 class TestRemoveEmbeddedImage:
     def test_removes_named_image(self, rdl_path, png_path):
         add_embedded_image(
-            path=str(rdl_path), name="Logo", mime_type="image/png",
+            path=str(rdl_path),
+            name="Logo",
+            mime_type="image/png",
             image_path=str(png_path),
         )
         add_embedded_image(
-            path=str(rdl_path), name="Banner", mime_type="image/png",
+            path=str(rdl_path),
+            name="Banner",
+            mime_type="image/png",
             image_path=str(png_path),
         )
         remove_embedded_image(path=str(rdl_path), name="Logo")
-        names = [
-            e.get("Name")
-            for e in find_children(_embedded_block(rdl_path), "EmbeddedImage")
-        ]
+        names = [e.get("Name") for e in find_children(_embedded_block(rdl_path), "EmbeddedImage")]
         assert names == ["Banner"]
 
     def test_removes_block_when_last_image_removed(self, rdl_path, png_path):
         add_embedded_image(
-            path=str(rdl_path), name="Logo", mime_type="image/png",
+            path=str(rdl_path),
+            name="Logo",
+            mime_type="image/png",
             image_path=str(png_path),
         )
         remove_embedded_image(path=str(rdl_path), name="Logo")
@@ -215,9 +229,9 @@ class TestToolRegistration:
     def test_three_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {
             "add_embedded_image",

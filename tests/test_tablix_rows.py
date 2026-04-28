@@ -116,9 +116,7 @@ class TestSetRowHeight:
         )
         doc = RDLDocument.open(rdl_path)
         tablix = doc.root.find(f".//{{{RDL_NS}}}Tablix[@Name='MainTable']")
-        rows = tablix.findall(
-            f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}"
-        )
+        rows = tablix.findall(f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}")
         assert find_child(rows[1], "Height").text == "0.5in"
         # Other rows untouched.
         assert find_child(rows[0], "Height").text == "0.25in"
@@ -132,9 +130,7 @@ class TestSetRowHeight:
         )
         doc = RDLDocument.open(rdl_path)
         tablix = doc.root.find(f".//{{{RDL_NS}}}Tablix[@Name='MainTable']")
-        rows = tablix.findall(
-            f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}"
-        )
+        rows = tablix.findall(f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}")
         assert find_child(rows[0], "Height").text == "1.2cm"
 
     def test_invalid_row_index_raises(self, rdl_path):
@@ -181,8 +177,8 @@ class TestToolRegistration:
     def test_row_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {"set_detail_row_visibility", "set_row_height"} <= names

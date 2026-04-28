@@ -23,8 +23,7 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
-from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q, qrd
-
+from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 
 # RDL 2016 FilterOperator enumeration.
 _VALID_OPERATORS = frozenset(
@@ -117,8 +116,7 @@ def add_tablix_filter(
 ) -> dict[str, Any]:
     if operator not in _VALID_OPERATORS:
         raise ValueError(
-            f"unknown filter operator {operator!r}; "
-            f"valid operators are: {sorted(_VALID_OPERATORS)}"
+            f"unknown filter operator {operator!r}; valid operators are: {sorted(_VALID_OPERATORS)}"
         )
     if not values:
         raise ValueError("at least one filter value is required")
@@ -157,9 +155,7 @@ def remove_tablix_filter(path: str, tablix_name: str, filter_index: int) -> dict
     filters_root = find_child(tablix, "Filters")
     filters = find_children(filters_root, "Filter") if filters_root is not None else []
     if not filters or filter_index < 0 or filter_index >= len(filters):
-        raise IndexError(
-            f"tablix {tablix_name!r} has no filter at index {filter_index}"
-        )
+        raise IndexError(f"tablix {tablix_name!r} has no filter at index {filter_index}")
 
     target = filters[filter_index]
     filters_root.remove(target)
@@ -185,9 +181,7 @@ def _row_hierarchy_members(tablix: etree._Element) -> etree._Element:
     return members
 
 
-def _find_member_for_group(
-    tablix: etree._Element, group_name: str
-) -> Optional[etree._Element]:
+def _find_member_for_group(tablix: etree._Element, group_name: str) -> Optional[etree._Element]:
     for member in tablix.iter(q("TablixMember")):
         group = find_child(member, "Group")
         if group is not None and group.get("Name") == group_name:
@@ -196,11 +190,7 @@ def _find_member_for_group(
 
 
 def _group_names_in_tablix(tablix: etree._Element) -> set[str]:
-    return {
-        g.get("Name")
-        for g in tablix.iter(q("Group"))
-        if g.get("Name") is not None
-    }
+    return {g.get("Name") for g in tablix.iter(q("Group")) if g.get("Name") is not None}
 
 
 def _column_count(tablix: etree._Element) -> int:
@@ -271,9 +261,7 @@ _TABLIX_MEMBER_CHILD_ORDER = (
 )
 
 
-def _insert_member_child(
-    member: etree._Element, new_child: etree._Element
-) -> None:
+def _insert_member_child(member: etree._Element, new_child: etree._Element) -> None:
     """Insert ``new_child`` into ``member`` respecting the schema-required
     sibling order. Replaces any existing element of the same local name so
     callers can use this for both create and replace flows.
@@ -289,10 +277,12 @@ def _insert_member_child(
     # immediately before it. If none, append.
     for i, child in enumerate(list(member)):
         local = etree.QName(child).localname
-        if local in _TABLIX_MEMBER_CHILD_ORDER:
-            if _TABLIX_MEMBER_CHILD_ORDER.index(local) > new_idx:
-                member.insert(i, new_child)
-                return
+        if (
+            local in _TABLIX_MEMBER_CHILD_ORDER
+            and _TABLIX_MEMBER_CHILD_ORDER.index(local) > new_idx
+        ):
+            member.insert(i, new_child)
+            return
     member.append(new_child)
 
 
@@ -327,9 +317,7 @@ def add_row_group(
     tablix = resolve_tablix(doc, tablix_name)
 
     if group_name in _group_names_in_tablix(tablix):
-        raise ValueError(
-            f"group name {group_name!r} already exists in tablix {tablix_name!r}"
-        )
+        raise ValueError(f"group name {group_name!r} already exists in tablix {tablix_name!r}")
 
     members_root = _row_hierarchy_members(tablix)
     existing_children = list(members_root)
@@ -405,9 +393,7 @@ def remove_row_group(
 
     member = _find_member_for_group(tablix, group_name)
     if member is None:
-        raise ElementNotFoundError(
-            f"group {group_name!r} not found in tablix {tablix_name!r}"
-        )
+        raise ElementNotFoundError(f"group {group_name!r} not found in tablix {tablix_name!r}")
 
     inner_members = find_child(member, "TablixMembers")
     if inner_members is None or len(list(inner_members)) == 0:
@@ -458,9 +444,7 @@ def set_group_sort(
     tablix = resolve_tablix(doc, tablix_name)
     member = _find_member_for_group(tablix, group_name)
     if member is None:
-        raise ElementNotFoundError(
-            f"group {group_name!r} not found in tablix {tablix_name!r}"
-        )
+        raise ElementNotFoundError(f"group {group_name!r} not found in tablix {tablix_name!r}")
 
     new_block = etree.Element(q("SortExpressions"))
     for expr in sort_expressions:
@@ -492,9 +476,7 @@ def set_group_visibility(
     tablix = resolve_tablix(doc, tablix_name)
     member = _find_member_for_group(tablix, group_name)
     if member is None:
-        raise ElementNotFoundError(
-            f"group {group_name!r} not found in tablix {tablix_name!r}"
-        )
+        raise ElementNotFoundError(f"group {group_name!r} not found in tablix {tablix_name!r}")
 
     new_vis = etree.Element(q("Visibility"))
     hidden = etree.SubElement(new_vis, q("Hidden"))
@@ -534,9 +516,7 @@ def set_detail_row_visibility(
     tablix = resolve_tablix(doc, tablix_name)
     member = _find_member_for_group(tablix, "Details")
     if member is None:
-        raise ElementNotFoundError(
-            f"tablix {tablix_name!r} has no Details group"
-        )
+        raise ElementNotFoundError(f"tablix {tablix_name!r} has no Details group")
 
     new_vis = etree.Element(q("Visibility"))
     hidden = etree.SubElement(new_vis, q("Hidden"))
@@ -574,8 +554,7 @@ def set_row_height(
     rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
     if row_index < 0 or row_index >= len(rows):
         raise IndexError(
-            f"tablix {tablix_name!r} has no row at index {row_index} "
-            f"(rows={len(rows)})"
+            f"tablix {tablix_name!r} has no row at index {row_index} (rows={len(rows)})"
         )
 
     row = rows[row_index]
