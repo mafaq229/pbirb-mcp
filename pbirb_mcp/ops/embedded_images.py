@@ -28,7 +28,6 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import find_child, find_children, q
 
-
 # Per the RDL spec, embedded images only support these MIME types.
 _VALID_MIME_TYPES = frozenset(
     {
@@ -98,10 +97,7 @@ def add_embedded_image(
     image_path: str,
 ) -> dict[str, Any]:
     if mime_type not in _VALID_MIME_TYPES:
-        raise ValueError(
-            f"mime_type must be one of {sorted(_VALID_MIME_TYPES)}; "
-            f"got {mime_type!r}"
-        )
+        raise ValueError(f"mime_type must be one of {sorted(_VALID_MIME_TYPES)}; got {mime_type!r}")
 
     src = Path(image_path)
     if not src.is_file():
@@ -112,9 +108,7 @@ def add_embedded_image(
     doc = RDLDocument.open(path)
     block = _ensure_embedded_block(doc.root)
     if _find_embedded(block, name) is not None:
-        raise ValueError(
-            f"embedded image named {name!r} already exists"
-        )
+        raise ValueError(f"embedded image named {name!r} already exists")
 
     entry = etree.SubElement(block, q("EmbeddedImage"), Name=name)
     etree.SubElement(entry, q("MIMEType")).text = mime_type
@@ -155,9 +149,7 @@ def remove_embedded_image(path: str, name: str) -> dict[str, Any]:
     block = find_child(doc.root, "EmbeddedImages")
     target = _find_embedded(block, name) if block is not None else None
     if target is None:
-        raise ElementNotFoundError(
-            f"embedded image named {name!r} not found"
-        )
+        raise ElementNotFoundError(f"embedded image named {name!r} not found")
     block.remove(target)
     if len(find_children(block, "EmbeddedImage")) == 0:
         block.getparent().remove(block)

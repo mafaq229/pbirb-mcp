@@ -8,7 +8,8 @@ because lxml does not support an empty default-namespace prefix in XPath.
 
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from collections.abc import Iterable
+from typing import Optional
 
 from lxml import etree
 

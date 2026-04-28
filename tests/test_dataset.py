@@ -19,7 +19,7 @@ import pytest
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children
+from pbirb_mcp.core.xpath import RDL_NS
 from pbirb_mcp.ops.dataset import (
     add_query_parameter,
     remove_query_parameter,
@@ -255,9 +255,9 @@ class TestToolRegistration:
     def test_dataset_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {
             "update_dataset_query",
@@ -269,8 +269,8 @@ class TestToolRegistration:
     def test_update_dataset_query_input_schema(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         tool = next(t for t in listing if t["name"] == "update_dataset_query")
         assert set(tool["inputSchema"]["required"]) == {"path", "dataset_name", "dax_body"}

@@ -22,9 +22,8 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q, qrd
+from pbirb_mcp.core.xpath import find_child, q, qrd
 from pbirb_mcp.ops.page import _resolve_page  # type: ignore[attr-defined]
-
 
 _VALID_IMAGE_SOURCES = ("External", "Embedded", "Database")
 
@@ -77,19 +76,14 @@ def _ensure_page_section(page: etree._Element, region: _Region) -> etree._Elemen
     new_idx = _PAGE_CHILD_ORDER.index(region.section_local)
     for i, child in enumerate(list(page)):
         local = etree.QName(child).localname
-        if (
-            local in _PAGE_CHILD_ORDER
-            and _PAGE_CHILD_ORDER.index(local) > new_idx
-        ):
+        if local in _PAGE_CHILD_ORDER and _PAGE_CHILD_ORDER.index(local) > new_idx:
             page.insert(i, sec)
             return sec
     page.append(sec)
     return sec
 
 
-def _set_or_create_text_in_order(
-    parent: etree._Element, local: str, value: str
-) -> None:
+def _set_or_create_text_in_order(parent: etree._Element, local: str, value: str) -> None:
     existing = find_child(parent, local)
     if existing is not None:
         existing.text = value
@@ -130,11 +124,7 @@ def _names_in_section(section: etree._Element) -> set[str]:
     items = find_child(section, "ReportItems")
     if items is None:
         return set()
-    return {
-        el.get("Name")
-        for el in list(items)
-        if el.get("Name") is not None
-    }
+    return {el.get("Name") for el in list(items) if el.get("Name") is not None}
 
 
 # ---- builders -------------------------------------------------------------
@@ -236,9 +226,7 @@ def _add_textbox(
         _set_or_create_text_in_order(section, "Height", "0.5in")
     items = _ensure_report_items(section)
     if name in _names_in_section(section):
-        raise ValueError(
-            f"item named {name!r} already exists in {region.section_local}"
-        )
+        raise ValueError(f"item named {name!r} already exists in {region.section_local}")
     items.append(_build_textbox(name, text, top, left, width, height))
     doc.save()
     return {"region": region.name, "name": name}
@@ -257,8 +245,7 @@ def _add_image(
 ) -> dict[str, Any]:
     if image_source not in _VALID_IMAGE_SOURCES:
         raise ValueError(
-            f"image_source must be one of {_VALID_IMAGE_SOURCES!r}; "
-            f"got {image_source!r}"
+            f"image_source must be one of {_VALID_IMAGE_SOURCES!r}; got {image_source!r}"
         )
     doc = RDLDocument.open(path)
     page = _resolve_page(doc)
@@ -267,9 +254,7 @@ def _add_image(
         _set_or_create_text_in_order(section, "Height", "0.5in")
     items = _ensure_report_items(section)
     if name in _names_in_section(section):
-        raise ValueError(
-            f"item named {name!r} already exists in {region.section_local}"
-        )
+        raise ValueError(f"item named {name!r} already exists in {region.section_local}")
     items.append(_build_image(name, image_source, value, top, left, width, height))
     doc.save()
     return {"region": region.name, "name": name}
@@ -287,9 +272,7 @@ def _remove_item(path: str, region: _Region, name: str) -> dict[str, Any]:
                 target = el
                 break
     if target is None:
-        raise ElementNotFoundError(
-            f"no item named {name!r} in {region.section_local}"
-        )
+        raise ElementNotFoundError(f"no item named {name!r} in {region.section_local}")
     items.remove(target)
     if len(list(items)) == 0:
         section.remove(items)
@@ -319,13 +302,25 @@ def set_page_footer(
 
 
 def add_header_textbox(
-    path: str, name: str, text: str, top: str, left: str, width: str, height: str,
+    path: str,
+    name: str,
+    text: str,
+    top: str,
+    left: str,
+    width: str,
+    height: str,
 ) -> dict[str, Any]:
     return _add_textbox(path, HEADER, name, text, top, left, width, height)
 
 
 def add_footer_textbox(
-    path: str, name: str, text: str, top: str, left: str, width: str, height: str,
+    path: str,
+    name: str,
+    text: str,
+    top: str,
+    left: str,
+    width: str,
+    height: str,
 ) -> dict[str, Any]:
     return _add_textbox(path, FOOTER, name, text, top, left, width, height)
 
@@ -340,9 +335,7 @@ def add_header_image(
     width: str,
     height: str,
 ) -> dict[str, Any]:
-    return _add_image(
-        path, HEADER, name, image_source, value, top, left, width, height
-    )
+    return _add_image(path, HEADER, name, image_source, value, top, left, width, height)
 
 
 def add_footer_image(
@@ -355,9 +348,7 @@ def add_footer_image(
     width: str,
     height: str,
 ) -> dict[str, Any]:
-    return _add_image(
-        path, FOOTER, name, image_source, value, top, left, width, height
-    )
+    return _add_image(path, FOOTER, name, image_source, value, top, left, width, height)
 
 
 def remove_header_item(path: str, name: str) -> dict[str, Any]:

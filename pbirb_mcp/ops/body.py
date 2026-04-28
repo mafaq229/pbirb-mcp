@@ -53,11 +53,7 @@ def _ensure_body_report_items(body: etree._Element) -> etree._Element:
 
 
 def _names_in(items: etree._Element) -> set[str]:
-    return {
-        el.get("Name")
-        for el in list(items)
-        if el.get("Name") is not None
-    }
+    return {el.get("Name") for el in list(items) if el.get("Name") is not None}
 
 
 # ---- add_body_textbox -----------------------------------------------------
@@ -97,8 +93,7 @@ def add_body_image(
 ) -> dict[str, Any]:
     if image_source not in _VALID_IMAGE_SOURCES:
         raise ValueError(
-            f"image_source must be one of {_VALID_IMAGE_SOURCES!r}; "
-            f"got {image_source!r}"
+            f"image_source must be one of {_VALID_IMAGE_SOURCES!r}; got {image_source!r}"
         )
     doc = RDLDocument.open(path)
     body = _resolve_body(doc)
@@ -124,9 +119,7 @@ def remove_body_item(path: str, name: str) -> dict[str, Any]:
                 target = el
                 break
     if target is None:
-        raise ElementNotFoundError(
-            f"no body item named {name!r}"
-        )
+        raise ElementNotFoundError(f"no body item named {name!r}")
     kind = etree.QName(target).localname
     items.remove(target)
     if len(list(items)) == 0:

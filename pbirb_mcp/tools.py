@@ -41,7 +41,7 @@ _PATH_ONLY_SCHEMA: dict = {
 }
 
 
-def register_all_tools(server: "MCPServer") -> None:
+def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="describe_report",
         description=(
@@ -184,7 +184,6 @@ def register_all_tools(server: "MCPServer") -> None:
         },
         handler=dataset.remove_query_parameter,
     )
-
 
     server.register_tool(
         name="list_tablix_filters",
@@ -388,7 +387,6 @@ def register_all_tools(server: "MCPServer") -> None:
         handler=tablix.remove_tablix_filter,
     )
 
-
     server.register_tool(
         name="set_page_setup",
         description=(
@@ -434,7 +432,6 @@ def register_all_tools(server: "MCPServer") -> None:
         },
         handler=page.set_page_orientation,
     )
-
 
     _SECTION_FLAGS_SCHEMA = {
         "type": "object",
@@ -486,8 +483,14 @@ def register_all_tools(server: "MCPServer") -> None:
             "height": {"type": "string"},
         },
         "required": [
-            "path", "name", "image_source", "value",
-            "top", "left", "width", "height",
+            "path",
+            "name",
+            "image_source",
+            "value",
+            "top",
+            "left",
+            "width",
+            "height",
         ],
         "additionalProperties": False,
     }
@@ -563,7 +566,6 @@ def register_all_tools(server: "MCPServer") -> None:
         input_schema=_NAMED_REMOVE_SCHEMA,
         handler=header_footer.remove_footer_item,
     )
-
 
     server.register_tool(
         name="set_textbox_style",
@@ -653,8 +655,14 @@ def register_all_tools(server: "MCPServer") -> None:
             "height": {"type": "string"},
         },
         "required": [
-            "path", "name", "image_source", "value",
-            "top", "left", "width", "height",
+            "path",
+            "name",
+            "image_source",
+            "value",
+            "top",
+            "left",
+            "width",
+            "height",
         ],
         "additionalProperties": False,
     }
@@ -722,8 +730,14 @@ def register_all_tools(server: "MCPServer") -> None:
                 "height": {"type": "string"},
             },
             "required": [
-                "path", "name", "dataset_name", "columns",
-                "top", "left", "width", "height",
+                "path",
+                "name",
+                "dataset_name",
+                "columns",
+                "top",
+                "left",
+                "width",
+                "height",
             ],
             "additionalProperties": False,
         },
@@ -752,8 +766,15 @@ def register_all_tools(server: "MCPServer") -> None:
                 "height": {"type": "string"},
             },
             "required": [
-                "path", "name", "dataset_name", "category_field", "value_field",
-                "top", "left", "width", "height",
+                "path",
+                "name",
+                "dataset_name",
+                "category_field",
+                "value_field",
+                "top",
+                "left",
+                "width",
+                "height",
             ],
             "additionalProperties": False,
         },

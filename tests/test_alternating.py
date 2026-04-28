@@ -16,8 +16,8 @@ import pytest
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
-from pbirb_mcp.ops.tablix import add_row_group
 from pbirb_mcp.ops.styling import set_alternating_row_color, set_textbox_style
+from pbirb_mcp.ops.tablix import add_row_group
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
 
@@ -61,9 +61,7 @@ def _detail_row_textboxes(rdl_path: Path):
     for m in list(members_root):
         walk(m)
 
-    rows = tablix.findall(
-        f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}"
-    )
+    rows = tablix.findall(f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}")
     detail_row = rows[detail_idx[0]]
     return [
         cell.find(f"{q('CellContents')}/{q('Textbox')}")
@@ -85,9 +83,7 @@ class TestBasicFixture:
         for tb in _detail_row_textboxes(rdl_path):
             bg = tb.find(f"{q('Style')}/{q('BackgroundColor')}")
             assert bg is not None
-            assert bg.text == (
-                '=IIf(RowNumber(Nothing) Mod 2, "#F2F2F2", "#FFFFFF")'
-            )
+            assert bg.text == ('=IIf(RowNumber(Nothing) Mod 2, "#F2F2F2", "#FFFFFF")')
 
     def test_does_not_touch_header_row_cells(self, rdl_path):
         set_alternating_row_color(
@@ -99,18 +95,14 @@ class TestBasicFixture:
         # Header textboxes (row 0) shouldn't have BackgroundColor set.
         doc = RDLDocument.open(rdl_path)
         tablix = doc.root.find(f".//{{{RDL_NS}}}Tablix[@Name='MainTable']")
-        rows = tablix.findall(
-            f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}"
-        )
+        rows = tablix.findall(f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}")
         header_textboxes = [
             cell.find(f"{q('CellContents')}/{q('Textbox')}")
             for cell in rows[0].findall(f"{q('TablixCells')}/{q('TablixCell')}")
         ]
         for tb in header_textboxes:
             bg = tb.find(f"{q('Style')}/{q('BackgroundColor')}")
-            assert bg is None or bg.text != (
-                '=IIf(RowNumber(Nothing) Mod 2, "#F2F2F2", "#FFFFFF")'
-            )
+            assert bg is None or bg.text != ('=IIf(RowNumber(Nothing) Mod 2, "#F2F2F2", "#FFFFFF")')
 
     def test_overwrites_existing_background_color(self, rdl_path):
         # Pre-stamp one detail textbox with a static colour, then verify
@@ -127,9 +119,7 @@ class TestBasicFixture:
             color_b="#B",
         )
         doc = RDLDocument.open(rdl_path)
-        tb = doc.root.find(
-            f".//{{{RDL_NS}}}Textbox[@Name='Amount']"
-        )
+        tb = doc.root.find(f".//{{{RDL_NS}}}Textbox[@Name='Amount']")
         bgs = tb.findall(f"{q('Style')}/{q('BackgroundColor')}")
         assert len(bgs) == 1
         assert bgs[0].text == '=IIf(RowNumber(Nothing) Mod 2, "#A", "#B")'
@@ -160,11 +150,9 @@ class TestWithGroups:
 
         # Group-header textboxes (row 0) must NOT have it.
         doc = RDLDocument.open(rdl_path)
-        gh_tb = doc.root.find(
-            f".//{{{RDL_NS}}}Textbox[@Name='Region_Header_0']"
-        )
+        gh_tb = doc.root.find(f".//{{{RDL_NS}}}Textbox[@Name='Region_Header_0']")
         gh_bg = gh_tb.find(f"{q('Style')}/{q('BackgroundColor')}")
-        assert gh_bg is None or '#A' not in (gh_bg.text or "")
+        assert gh_bg is None or "#A" not in (gh_bg.text or "")
 
 
 # ---- error paths ----------------------------------------------------------
@@ -216,8 +204,8 @@ class TestToolRegistration:
     def test_tool_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "set_alternating_row_color" in names

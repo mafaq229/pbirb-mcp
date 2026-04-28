@@ -93,9 +93,7 @@ class TestParagraphLevelProps:
         )
         tb = _textbox(rdl_path, "Amount")
         # Paragraph/Style/TextAlign — NOT Textbox/Style/TextAlign.
-        ta = tb.find(
-            f"{q('Paragraphs')}/{q('Paragraph')}/{q('Style')}/{q('TextAlign')}"
-        )
+        ta = tb.find(f"{q('Paragraphs')}/{q('Paragraph')}/{q('Style')}/{q('TextAlign')}")
         assert ta is not None and ta.text == "Right"
         # And specifically NOT on Textbox/Style.
         outer = tb.find(f"{q('Style')}/{q('TextAlign')}")
@@ -117,8 +115,7 @@ class TestRunLevelProps:
         )
         tb = _textbox(rdl_path, "HeaderProductID")
         run_style = tb.find(
-            f"{q('Paragraphs')}/{q('Paragraph')}/{q('TextRuns')}/"
-            f"{q('TextRun')}/{q('Style')}"
+            f"{q('Paragraphs')}/{q('Paragraph')}/{q('TextRuns')}/{q('TextRun')}/{q('Style')}"
         )
         assert find_child(run_style, "FontFamily").text == "Segoe UI"
         assert find_child(run_style, "FontSize").text == "11pt"
@@ -215,8 +212,8 @@ class TestToolRegistration:
     def test_tool_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "set_textbox_style" in names

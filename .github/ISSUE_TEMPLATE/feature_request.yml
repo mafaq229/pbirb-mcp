@@ -1,0 +1,51 @@
+name: Feature request
+description: Ask for a Power BI Report Builder capability that pbirb-mcp doesn't expose yet
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please scan the [roadmap](https://github.com/mafaq229/pbirb-mcp/blob/main/CHANGELOG.md) — your idea may already be planned for a future MINOR. Single-author project; feature requests are evaluated against the roadmap during the next MINOR cycle.
+
+  - type: textarea
+    id: feature
+    attributes:
+      label: Which Report Builder feature?
+      description: Name the feature as it appears in Power BI Report Builder (e.g. "Indicator with multi-state thresholds", "Drillthrough action on a chart series", "Document Map labels").
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot or RDL fragment
+      description: A screenshot of the Report Builder dialog or property panel, or the RDL XML fragment that represents the feature. Helps disambiguate what you're asking for.
+    validations:
+      required: false
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: How are you doing this today? Hand-edited XML? A different tool? A multi-call sequence? Helps gauge how painful the gap is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Example LLM session
+      description: One paragraph of what you'd say to the LLM to drive this feature, and what you'd expect the LLM to do step-by-step.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: How blocked are you?
+      options:
+        - "Nice-to-have — I have a workaround"
+        - "Slows me down — I hit this every session"
+        - "Blocking — I can't do my work without this"
+    validations:
+      required: true

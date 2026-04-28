@@ -22,7 +22,7 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset
-from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import find_child, find_children, q
 
 
 def _query(dataset: etree._Element) -> etree._Element:
@@ -31,9 +31,7 @@ def _query(dataset: etree._Element) -> etree._Element:
         # An RDL DataSet without a Query is malformed — every PBI Report
         # Builder export has one. Raise a clear error rather than auto-creating
         # one whose child order we'd have to guess.
-        raise ValueError(
-            f"DataSet {dataset.get('Name')!r} has no <Query> element"
-        )
+        raise ValueError(f"DataSet {dataset.get('Name')!r} has no <Query> element")
     return query
 
 
@@ -94,9 +92,7 @@ def add_query_parameter(
     qp_root = _query_parameters_root(query, create=True)
 
     if _find_query_parameter(qp_root, name) is not None:
-        raise ValueError(
-            f"QueryParameter {name!r} already exists in dataset {dataset_name!r}"
-        )
+        raise ValueError(f"QueryParameter {name!r} already exists in dataset {dataset_name!r}")
 
     qp = etree.SubElement(qp_root, q("QueryParameter"), Name=name)
     value = etree.SubElement(qp, q("Value"))
@@ -117,14 +113,10 @@ def update_query_parameter(
     query = _query(dataset)
     qp_root = _query_parameters_root(query, create=False)
     if qp_root is None:
-        raise ElementNotFoundError(
-            f"QueryParameter {name!r} not found in dataset {dataset_name!r}"
-        )
+        raise ElementNotFoundError(f"QueryParameter {name!r} not found in dataset {dataset_name!r}")
     qp = _find_query_parameter(qp_root, name)
     if qp is None:
-        raise ElementNotFoundError(
-            f"QueryParameter {name!r} not found in dataset {dataset_name!r}"
-        )
+        raise ElementNotFoundError(f"QueryParameter {name!r} not found in dataset {dataset_name!r}")
 
     value = find_child(qp, "Value")
     if value is None:
@@ -141,14 +133,10 @@ def remove_query_parameter(path: str, dataset_name: str, name: str) -> dict[str,
     query = _query(dataset)
     qp_root = _query_parameters_root(query, create=False)
     if qp_root is None:
-        raise ElementNotFoundError(
-            f"QueryParameter {name!r} not found in dataset {dataset_name!r}"
-        )
+        raise ElementNotFoundError(f"QueryParameter {name!r} not found in dataset {dataset_name!r}")
     qp = _find_query_parameter(qp_root, name)
     if qp is None:
-        raise ElementNotFoundError(
-            f"QueryParameter {name!r} not found in dataset {dataset_name!r}"
-        )
+        raise ElementNotFoundError(f"QueryParameter {name!r} not found in dataset {dataset_name!r}")
     qp_root.remove(qp)
 
     # An empty <QueryParameters/> block sometimes confuses Report Builder's

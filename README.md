@@ -1,5 +1,10 @@
 # pbirb-mcp
 
+[![CI](https://github.com/mafaq229/pbirb-mcp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mafaq229/pbirb-mcp/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/pbirb-mcp.svg)](https://pypi.org/project/pbirb-mcp/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pbirb-mcp.svg)](https://pypi.org/project/pbirb-mcp/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 An MCP server for editing **Power BI Report Builder paginated reports** (`.rdl`)
 through Claude (Desktop, CLI, or any MCP client). Forty-plus tools cover the
 gaps that otherwise force hand-written XML: dataset filters, headers and
@@ -9,6 +14,18 @@ expressions, styling, page setup, advanced parameters, and embedded images.
 The server speaks JSON-RPC 2.0 over stdio. It opens an `.rdl` from disk,
 mutates it in place via lxml, validates structure, and writes atomically — a
 failed save never leaves a half-written report or scrubs the original.
+
+## Stability
+
+Pre-1.0. The tool surface — tool names, `inputSchema`, output shapes, error
+semantics — is the contract. While on `0.x`, MINOR releases may include a
+small breaking change with a migration note in
+[CHANGELOG.md](CHANGELOG.md); after v1.0, breaking changes require MAJOR.
+See [CONTRIBUTING.md](CONTRIBUTING.md#versioning) for the full bump rules
+adapted from SemVer for an MCP tool surface.
+
+Pin to a MINOR while on `0.x` (e.g. `pbirb-mcp~=0.1`) if your prompts
+depend on specific tool names or schemas.
 
 ---
 
@@ -450,6 +467,31 @@ deserialiser nits.
 5. Open the modified RDL in Report Builder.
 
 The commit-by-commit history shows the pattern in practice.
+
+---
+
+## Releases
+
+[CHANGELOG.md](CHANGELOG.md) tracks every release in
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Releases
+are also published as
+[GitHub Releases](https://github.com/mafaq229/pbirb-mcp/releases) and to
+[PyPI](https://pypi.org/project/pbirb-mcp/).
+
+Versions follow SemVer adapted for an MCP tool surface — see
+[CONTRIBUTING.md § Versioning](CONTRIBUTING.md#versioning).
+
+## Contributing
+
+PRs welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers dev setup, the
+hard rules (tests-first, lxml only, stable IDs, atomic save,
+byte-identity round-trip, smoke in Report Builder), the SemVer-for-MCP
+bump table, and the PR review checklist.
+
+Bug reports and tool proposals: please use the
+[issue templates](https://github.com/mafaq229/pbirb-mcp/issues/new/choose).
+For security issues, see [SECURITY.md](SECURITY.md). All participants
+are expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ---
 

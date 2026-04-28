@@ -52,6 +52,7 @@ class TestResolveTablix:
         body = doc.root.find(f".//{{{RDL_NS}}}Body/{{{RDL_NS}}}ReportItems")
         original = body.find(q("Tablix"))
         from copy import deepcopy
+
         dup = deepcopy(original)
         body.append(dup)
         with pytest.raises(AmbiguousElementError):

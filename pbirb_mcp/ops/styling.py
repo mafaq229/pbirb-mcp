@@ -28,7 +28,6 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix, resolve_textbox
 from pbirb_mcp.core.xpath import find_child, find_children, q
 
-
 # Per RDL XSD, the order of <Style> children includes (subset relevant here):
 #   Border, TopBorder, BottomBorder, LeftBorder, RightBorder,
 #   BackgroundColor, BackgroundGradientType, BackgroundImage,
@@ -179,9 +178,8 @@ def set_textbox_style(
     changed: list[str] = []
 
     # Box level + border (border lives inside Textbox/Style/Border).
-    if (
-        any(v is not None for v in box_props.values())
-        or any(v is not None for v in border_props.values())
+    if any(v is not None for v in box_props.values()) or any(
+        v is not None for v in border_props.values()
     ):
         outer_style = _ensure_style(textbox)
         for local, value in box_props.items():
@@ -204,9 +202,8 @@ def set_textbox_style(
                 changed.append(f"border.{local}")
 
     # Paragraph + run levels.
-    if (
-        any(v is not None for v in paragraph_props.values())
-        or any(v is not None for v in run_props.values())
+    if any(v is not None for v in paragraph_props.values()) or any(
+        v is not None for v in run_props.values()
     ):
         paragraph, textrun = _resolve_paragraph_run(textbox)
         if any(v is not None for v in paragraph_props.values()):
@@ -288,8 +285,7 @@ def set_alternating_row_color(
     detail_idx = _detail_row_index(tablix)
     if detail_idx is None:
         raise ElementNotFoundError(
-            f"tablix {tablix_name!r} has no Details group; "
-            "alternating-row-color requires one"
+            f"tablix {tablix_name!r} has no Details group; alternating-row-color requires one"
         )
 
     body = find_child(tablix, "TablixBody")

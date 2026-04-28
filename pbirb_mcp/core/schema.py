@@ -34,14 +34,12 @@ def validate_structure(tree: etree._ElementTree) -> None:
     expected_root = f"{{{RDL_NS}}}Report"
     if root.tag != expected_root:
         raise RDLValidationError(
-            f"root element must be Report in namespace {RDL_NS!r}; "
-            f"got {root.tag!r}"
+            f"root element must be Report in namespace {RDL_NS!r}; got {root.tag!r}"
         )
     missing = [name for name in REQUIRED_TOP_LEVEL_SECTIONS if find_child(root, name) is None]
     if missing:
         raise RDLValidationError(
-            "RDL document is missing required top-level sections: "
-            + ", ".join(missing)
+            "RDL document is missing required top-level sections: " + ", ".join(missing)
         )
 
 
@@ -73,6 +71,4 @@ def validate_against_xsd(tree: etree._ElementTree) -> None:
         return  # opt-in; silently skip
     if not schema.validate(tree):
         first = schema.error_log[0]
-        raise RDLValidationError(
-            f"RDL XSD validation failed at line {first.line}: {first.message}"
-        )
+        raise RDLValidationError(f"RDL XSD validation failed at line {first.line}: {first.message}")

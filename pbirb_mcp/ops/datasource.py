@@ -27,7 +27,6 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, q
 
-
 _XMLA_PREFIX = "powerbi://api.powerbi.com/v1.0/myorg/"
 
 
@@ -42,9 +41,7 @@ def _resolve_data_source(doc: RDLDocument, name: str) -> etree._Element:
     if not matches:
         raise ElementNotFoundError(f"DataSource {name!r} not found")
     if len(matches) > 1:
-        raise ElementNotFoundError(
-            f"DataSource {name!r} is ambiguous: {len(matches)} matches"
-        )
+        raise ElementNotFoundError(f"DataSource {name!r} is ambiguous: {len(matches)} matches")
     return matches[0]
 
 

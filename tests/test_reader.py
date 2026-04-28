@@ -141,9 +141,9 @@ class TestToolRegistration:
     def test_all_four_readers_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {"describe_report", "get_datasets", "get_parameters", "get_tablixes"} <= names
 
@@ -169,9 +169,9 @@ class TestToolRegistration:
     def test_input_schema_requires_path(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         describe = next(t for t in listing if t["name"] == "describe_report")
         assert describe["inputSchema"]["required"] == ["path"]
         assert describe["inputSchema"]["properties"]["path"]["type"] == "string"

@@ -19,17 +19,12 @@ Key behaviours:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
-
-# Report Builder writes self-closing tags as `<Tag />` with a space before the
-# slash; lxml emits `<Tag/>`. Attribute values are always quoted in XML, so a
-# `/>` byte sequence only ever appears as a self-closing tag terminator —
-# making this substitution safe without a real XML parse.
-_SELF_CLOSING_NORMALISE = re.compile(rb"(?<=[^ /])/>")
 
 from lxml import etree
 
@@ -38,7 +33,13 @@ from pbirb_mcp.core.schema import (
     validate_against_xsd,
     validate_structure,
 )
-from pbirb_mcp.core.xpath import RDL_NS, RD_NS
+from pbirb_mcp.core.xpath import RD_NS, RDL_NS
+
+# Report Builder writes self-closing tags as `<Tag />` with a space before the
+# slash; lxml emits `<Tag/>`. Attribute values are always quoted in XML, so a
+# `/>` byte sequence only ever appears as a self-closing tag terminator —
+# making this substitution safe without a real XML parse.
+_SELF_CLOSING_NORMALISE = re.compile(rb"(?<=[^ /])/>")
 
 PathLike = Union[str, os.PathLike]
 
@@ -54,7 +55,7 @@ class RDLDocument:
     # ---- construction --------------------------------------------------------
 
     @classmethod
-    def open(cls, path: PathLike) -> "RDLDocument":
+    def open(cls, path: PathLike) -> RDLDocument:
         path = Path(path)
         if not path.is_file():
             raise FileNotFoundError(path)
@@ -101,12 +102,10 @@ class RDLDocument:
             # declaration ourselves with double quotes — Report Builder always
             # uses <?xml version="1.0" encoding="utf-8"?> and tooling that
             # diffs by string sees single quotes (lxml's default) as drift.
-            body = etree.tostring(
-                self.tree, xml_declaration=False, encoding=self.encoding
-            )
+            body = etree.tostring(self.tree, xml_declaration=False, encoding=self.encoding)
             body = _SELF_CLOSING_NORMALISE.sub(b" />", body)
-            declaration = (
-                f'<?xml version="1.0" encoding="{self.encoding}"?>\n'.encode(self.encoding)
+            declaration = f'<?xml version="1.0" encoding="{self.encoding}"?>\n'.encode(
+                self.encoding
             )
             with open(tmp, "wb") as fh:
                 fh.write(declaration + body)
@@ -114,10 +113,8 @@ class RDLDocument:
                     fh.write(b"\n")
         except Exception:
             if tmp.exists():
-                try:
+                with contextlib.suppress(OSError):
                     tmp.unlink()
-                except OSError:
-                    pass
             raise
         os.replace(tmp, path)
         self.path = path

@@ -178,15 +178,11 @@ class TestRemoveTablixFilter:
 
     def test_invalid_filter_index_raises(self, rdl_path):
         with pytest.raises(IndexError):
-            remove_tablix_filter(
-                path=str(rdl_path), tablix_name="MainTable", filter_index=0
-            )
+            remove_tablix_filter(path=str(rdl_path), tablix_name="MainTable", filter_index=0)
 
     def test_unknown_tablix_raises(self, rdl_path):
         with pytest.raises(ElementNotFoundError):
-            remove_tablix_filter(
-                path=str(rdl_path), tablix_name="NoSuch", filter_index=0
-            )
+            remove_tablix_filter(path=str(rdl_path), tablix_name="NoSuch", filter_index=0)
 
 
 # ---- registration ---------------------------------------------------------
@@ -196,9 +192,9 @@ class TestToolRegistration:
     def test_three_filter_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {
             "add_tablix_filter",

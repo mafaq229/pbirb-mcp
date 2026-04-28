@@ -11,12 +11,11 @@ import shutil
 from pathlib import Path
 
 import pytest
-
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import RDL_NS, find_child, q
 from pbirb_mcp.ops.templates import (
     insert_chart_from_template,
     insert_tablix_from_template,
@@ -36,9 +35,7 @@ def rdl_path(tmp_path: Path) -> Path:
 
 def _body_items(rdl_path: Path):
     doc = RDLDocument.open(rdl_path)
-    items = doc.root.find(
-        f".//{{{RDL_NS}}}ReportSection/{{{RDL_NS}}}Body/{{{RDL_NS}}}ReportItems"
-    )
+    items = doc.root.find(f".//{{{RDL_NS}}}ReportSection/{{{RDL_NS}}}Body/{{{RDL_NS}}}ReportItems")
     return list(items) if items is not None else []
 
 
@@ -52,7 +49,10 @@ class TestInsertTablixTemplate:
             name="DetailTable",
             dataset_name="MainDataset",
             columns=["ProductID", "ProductName", "Amount"],
-            top="3in", left="0.5in", width="4in", height="0.5in",
+            top="3in",
+            left="0.5in",
+            width="4in",
+            height="0.5in",
         )
         assert result["name"] == "DetailTable"
         # Body now has both MainTable and DetailTable.
@@ -66,13 +66,14 @@ class TestInsertTablixTemplate:
             name="DetailTable",
             dataset_name="MainDataset",
             columns=["A", "B", "C", "D"],
-            top="3in", left="0.5in", width="4in", height="0.5in",
+            top="3in",
+            left="0.5in",
+            width="4in",
+            height="0.5in",
         )
         doc = RDLDocument.open(rdl_path)
         tablix = doc.root.find(f".//{{{RDL_NS}}}Tablix[@Name='DetailTable']")
-        cols = tablix.findall(
-            f"{q('TablixBody')}/{q('TablixColumns')}/{q('TablixColumn')}"
-        )
+        cols = tablix.findall(f"{q('TablixBody')}/{q('TablixColumns')}/{q('TablixColumn')}")
         assert len(cols) == 4
 
     def test_header_row_has_static_label_per_column(self, rdl_path):
@@ -81,13 +82,14 @@ class TestInsertTablixTemplate:
             name="DetailTable",
             dataset_name="MainDataset",
             columns=["ProductID", "ProductName"],
-            top="3in", left="0.5in", width="3in", height="0.5in",
+            top="3in",
+            left="0.5in",
+            width="3in",
+            height="0.5in",
         )
         doc = RDLDocument.open(rdl_path)
         tablix = doc.root.find(f".//{{{RDL_NS}}}Tablix[@Name='DetailTable']")
-        header_row = tablix.findall(
-            f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}"
-        )[0]
+        header_row = tablix.findall(f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}")[0]
         cells = header_row.findall(f"{q('TablixCells')}/{q('TablixCell')}")
         labels = [
             cell.find(
@@ -104,13 +106,14 @@ class TestInsertTablixTemplate:
             name="DetailTable",
             dataset_name="MainDataset",
             columns=["ProductID", "ProductName"],
-            top="3in", left="0.5in", width="3in", height="0.5in",
+            top="3in",
+            left="0.5in",
+            width="3in",
+            height="0.5in",
         )
         doc = RDLDocument.open(rdl_path)
         tablix = doc.root.find(f".//{{{RDL_NS}}}Tablix[@Name='DetailTable']")
-        detail_row = tablix.findall(
-            f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}"
-        )[1]
+        detail_row = tablix.findall(f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}")[1]
         cells = detail_row.findall(f"{q('TablixCells')}/{q('TablixCell')}")
         values = [
             cell.find(
@@ -127,7 +130,10 @@ class TestInsertTablixTemplate:
             name="DetailTable",
             dataset_name="MainDataset",
             columns=["A"],
-            top="3in", left="0.5in", width="2in", height="0.5in",
+            top="3in",
+            left="0.5in",
+            width="2in",
+            height="0.5in",
         )
         doc = RDLDocument.open(rdl_path)
         tablix = doc.root.find(f".//{{{RDL_NS}}}Tablix[@Name='DetailTable']")
@@ -140,7 +146,10 @@ class TestInsertTablixTemplate:
                 name="MainTable",  # already exists
                 dataset_name="MainDataset",
                 columns=["X"],
-                top="0in", left="0in", width="1in", height="0.5in",
+                top="0in",
+                left="0in",
+                width="1in",
+                height="0.5in",
             )
 
     def test_unknown_dataset_rejected(self, rdl_path):
@@ -150,7 +159,10 @@ class TestInsertTablixTemplate:
                 name="DetailTable",
                 dataset_name="NoSuchDataset",
                 columns=["X"],
-                top="0in", left="0in", width="1in", height="0.5in",
+                top="0in",
+                left="0in",
+                width="1in",
+                height="0.5in",
             )
 
     def test_empty_columns_rejected(self, rdl_path):
@@ -160,7 +172,10 @@ class TestInsertTablixTemplate:
                 name="DetailTable",
                 dataset_name="MainDataset",
                 columns=[],
-                top="0in", left="0in", width="1in", height="0.5in",
+                top="0in",
+                left="0in",
+                width="1in",
+                height="0.5in",
             )
 
     def test_round_trip_safe(self, rdl_path):
@@ -169,7 +184,10 @@ class TestInsertTablixTemplate:
             name="DetailTable",
             dataset_name="MainDataset",
             columns=["ProductID", "Amount"],
-            top="3in", left="0.5in", width="3in", height="0.5in",
+            top="3in",
+            left="0.5in",
+            width="3in",
+            height="0.5in",
         )
         doc = RDLDocument.open(rdl_path)
         doc.validate()
@@ -186,7 +204,10 @@ class TestInsertChartTemplate:
             dataset_name="MainDataset",
             category_field="ProductName",
             value_field="Amount",
-            top="3in", left="0.5in", width="5in", height="3in",
+            top="3in",
+            left="0.5in",
+            width="5in",
+            height="3in",
         )
         assert result["name"] == "SalesChart"
         names = [el.get("Name") for el in _body_items(rdl_path)]
@@ -199,7 +220,10 @@ class TestInsertChartTemplate:
             dataset_name="MainDataset",
             category_field="ProductName",
             value_field="Amount",
-            top="3in", left="0.5in", width="5in", height="3in",
+            top="3in",
+            left="0.5in",
+            width="5in",
+            height="3in",
         )
         doc = RDLDocument.open(rdl_path)
         chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesChart']")
@@ -212,7 +236,10 @@ class TestInsertChartTemplate:
             dataset_name="MainDataset",
             category_field="ProductName",
             value_field="Amount",
-            top="3in", left="0.5in", width="5in", height="3in",
+            top="3in",
+            left="0.5in",
+            width="5in",
+            height="3in",
         )
         doc = RDLDocument.open(rdl_path)
         chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesChart']")
@@ -230,7 +257,10 @@ class TestInsertChartTemplate:
             dataset_name="MainDataset",
             category_field="ProductName",
             value_field="Amount",
-            top="3in", left="0.5in", width="5in", height="3in",
+            top="3in",
+            left="0.5in",
+            width="5in",
+            height="3in",
         )
         doc = RDLDocument.open(rdl_path)
         chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesChart']")
@@ -251,14 +281,16 @@ class TestInsertChartTemplate:
             dataset_name="MainDataset",
             category_field="ProductName",
             value_field="Amount",
-            top="3in", left="0.5in", width="5in", height="3in",
+            top="3in",
+            left="0.5in",
+            width="5in",
+            height="3in",
         )
         doc = RDLDocument.open(rdl_path)
         chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesChart']")
         # Category member's Label was already set; assert series member's too.
         series_label = chart.find(
-            f"{q('ChartSeriesHierarchy')}/{q('ChartMembers')}/"
-            f"{q('ChartMember')}/{q('Label')}"
+            f"{q('ChartSeriesHierarchy')}/{q('ChartMembers')}/{q('ChartMember')}/{q('Label')}"
         )
         assert series_label is not None
         assert series_label.text == "Amount"
@@ -274,7 +306,10 @@ class TestInsertChartTemplate:
             dataset_name="MainDataset",
             category_field="ProductName",
             value_field="Amount",
-            top="3in", left="0.5in", width="5in", height="3in",
+            top="3in",
+            left="0.5in",
+            width="5in",
+            height="3in",
         )
         doc = RDLDocument.open(rdl_path)
         chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesChart']")
@@ -294,7 +329,10 @@ class TestInsertChartTemplate:
             dataset_name="MainDataset",
             category_field="ProductName",
             value_field="Amount",
-            top="3in", left="0.5in", width="5in", height="3in",
+            top="3in",
+            left="0.5in",
+            width="5in",
+            height="3in",
         )
         doc = RDLDocument.open(rdl_path)
         chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesChart']")
@@ -311,7 +349,10 @@ class TestInsertChartTemplate:
                 dataset_name="MainDataset",
                 category_field="ProductName",
                 value_field="Amount",
-                top="0in", left="0in", width="3in", height="2in",
+                top="0in",
+                left="0in",
+                width="3in",
+                height="2in",
             )
 
     def test_unknown_dataset_rejected(self, rdl_path):
@@ -322,7 +363,10 @@ class TestInsertChartTemplate:
                 dataset_name="NoSuchDataset",
                 category_field="ProductName",
                 value_field="Amount",
-                top="0in", left="0in", width="3in", height="2in",
+                top="0in",
+                left="0in",
+                width="3in",
+                height="2in",
             )
 
     def test_round_trip_safe(self, rdl_path):
@@ -332,7 +376,10 @@ class TestInsertChartTemplate:
             dataset_name="MainDataset",
             category_field="ProductName",
             value_field="Amount",
-            top="3in", left="0.5in", width="5in", height="3in",
+            top="3in",
+            left="0.5in",
+            width="5in",
+            height="3in",
         )
         doc = RDLDocument.open(rdl_path)
         doc.validate()
@@ -345,9 +392,9 @@ class TestToolRegistration:
     def test_template_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {
             "insert_tablix_from_template",

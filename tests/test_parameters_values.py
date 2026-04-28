@@ -9,7 +9,7 @@ import pytest
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import RDL_NS, find_child, q
 from pbirb_mcp.ops.parameters import (
     set_parameter_available_values,
     set_parameter_default_values,
@@ -44,11 +44,11 @@ class TestStaticAvailableValues:
             static_values=["2026-01-01", "2026-04-01", "2026-07-01"],
         )
         p = _param(rdl_path, "DateFrom")
-        pvs = p.findall(
-            f"{q('ValidValues')}/{q('ParameterValues')}/{q('ParameterValue')}"
-        )
+        pvs = p.findall(f"{q('ValidValues')}/{q('ParameterValues')}/{q('ParameterValue')}")
         assert [find_child(pv, "Value").text for pv in pvs] == [
-            "2026-01-01", "2026-04-01", "2026-07-01"
+            "2026-01-01",
+            "2026-04-01",
+            "2026-07-01",
         ]
 
     def test_string_entries_use_same_value_and_label(self, rdl_path):
@@ -94,9 +94,7 @@ class TestQueryAvailableValues:
             query_value_field="ProductID",
             query_label_field="ProductName",
         )
-        ref = _param(rdl_path, "DateFrom").find(
-            f"{q('ValidValues')}/{q('DataSetReference')}"
-        )
+        ref = _param(rdl_path, "DateFrom").find(f"{q('ValidValues')}/{q('DataSetReference')}")
         assert ref is not None
         assert find_child(ref, "DataSetName").text == "MainDataset"
         assert find_child(ref, "ValueField").text == "ProductID"
@@ -110,9 +108,7 @@ class TestQueryAvailableValues:
             query_dataset="MainDataset",
             query_value_field="ProductID",
         )
-        ref = _param(rdl_path, "DateFrom").find(
-            f"{q('ValidValues')}/{q('DataSetReference')}"
-        )
+        ref = _param(rdl_path, "DateFrom").find(f"{q('ValidValues')}/{q('DataSetReference')}")
         assert find_child(ref, "LabelField") is None
 
 
@@ -211,9 +207,7 @@ class TestStaticDefaultValues:
             static_values=["=Today()"],
         )
         p = _param(rdl_path, "DateFrom")
-        values = p.findall(
-            f"{q('DefaultValue')}/{q('Values')}/{q('Value')}"
-        )
+        values = p.findall(f"{q('DefaultValue')}/{q('Values')}/{q('Value')}")
         assert [v.text for v in values] == ["=Today()"]
 
     def test_multiple_static_default_values(self, rdl_path):
@@ -238,9 +232,7 @@ class TestQueryDefaultValues:
             query_dataset="MainDataset",
             query_value_field="ProductID",
         )
-        ref = _param(rdl_path, "DateFrom").find(
-            f"{q('DefaultValue')}/{q('DataSetReference')}"
-        )
+        ref = _param(rdl_path, "DateFrom").find(f"{q('DefaultValue')}/{q('DataSetReference')}")
         assert find_child(ref, "DataSetName").text == "MainDataset"
         assert find_child(ref, "ValueField").text == "ProductID"
         # DefaultValue's DataSetReference has no LabelField — that only
@@ -298,9 +290,9 @@ class TestToolRegistration:
     def test_two_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {
             "set_parameter_available_values",

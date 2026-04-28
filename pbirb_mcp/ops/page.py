@@ -25,7 +25,6 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
 
-
 _VALID_ORIENTATIONS = ("Portrait", "Landscape")
 
 # Per RDL XSD, the order of <Page> children is:
@@ -70,9 +69,7 @@ def _resolve_page(doc: RDLDocument) -> etree._Element:
     return page
 
 
-def _set_or_create_text_in_order(
-    page: etree._Element, local: str, value: str
-) -> None:
+def _set_or_create_text_in_order(page: etree._Element, local: str, value: str) -> None:
     existing = find_child(page, local)
     if existing is not None:
         existing.text = value
@@ -83,10 +80,7 @@ def _set_or_create_text_in_order(
     new_idx = _PAGE_CHILD_ORDER.index(local)
     for i, child in enumerate(list(page)):
         child_local = etree.QName(child).localname
-        if (
-            child_local in _PAGE_CHILD_ORDER
-            and _PAGE_CHILD_ORDER.index(child_local) > new_idx
-        ):
+        if child_local in _PAGE_CHILD_ORDER and _PAGE_CHILD_ORDER.index(child_local) > new_idx:
             page.insert(i, new_node)
             return
     page.append(new_node)
@@ -162,9 +156,7 @@ def set_page_setup(
 
 def set_page_orientation(path: str, orientation: str) -> dict[str, Any]:
     if orientation not in _VALID_ORIENTATIONS:
-        raise ValueError(
-            f"orientation must be one of {_VALID_ORIENTATIONS!r}; got {orientation!r}"
-        )
+        raise ValueError(f"orientation must be one of {_VALID_ORIENTATIONS!r}; got {orientation!r}")
 
     doc = RDLDocument.open(path)
     page = _resolve_page(doc)

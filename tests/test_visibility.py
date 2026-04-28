@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError
-from pbirb_mcp.core.xpath import RDL_NS, find_child, q
-from pbirb_mcp.ops.header_footer import add_header_image, add_header_textbox, set_page_header
+from pbirb_mcp.core.ids import ElementNotFoundError
+from pbirb_mcp.core.xpath import find_child, q
+from pbirb_mcp.ops.header_footer import add_header_image, set_page_header
 from pbirb_mcp.ops.visibility import set_element_visibility
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
@@ -33,9 +33,7 @@ def rdl_path(tmp_path: Path) -> Path:
 
 def _named(rdl_path: Path, name: str):
     doc = RDLDocument.open(rdl_path)
-    matches = list(
-        doc.root.xpath(".//*[@Name=$n]", n=name)
-    )
+    matches = list(doc.root.xpath(".//*[@Name=$n]", n=name))
     return matches[0] if matches else None
 
 
@@ -73,7 +71,10 @@ class TestSetElementVisibility:
             name="Logo",
             image_source="External",
             value="https://example.com/logo.png",
-            top="0in", left="0in", width="1in", height="0.5in",
+            top="0in",
+            left="0in",
+            width="1in",
+            height="0.5in",
         )
         set_element_visibility(
             path=str(rdl_path),
@@ -121,9 +122,7 @@ class TestSetElementVisibility:
             hidden_expression="false",
         )
         node = _named(rdl_path, "HeaderAmount")
-        children_locals = [
-            etree_node.tag.split("}", 1)[-1] for etree_node in list(node)
-        ]
+        children_locals = [etree_node.tag.split("}", 1)[-1] for etree_node in list(node)]
         # If both are present, Visibility must come before Style.
         if "Style" in children_locals and "Visibility" in children_locals:
             assert children_locals.index("Visibility") < children_locals.index("Style")
@@ -179,18 +178,18 @@ class TestToolRegistration:
     def test_tool_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "set_element_visibility" in names
 
     def test_input_schema_required_fields(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         tool = next(t for t in listing if t["name"] == "set_element_visibility")
         assert set(tool["inputSchema"]["required"]) == {
             "path",

@@ -1,0 +1,33 @@
+version: 2
+updates:
+  # Keep the GitHub Actions in workflows current. Action major bumps
+  # rarely break — review and merge.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "chore(actions)"
+
+  # Runtime dep is just lxml; dev deps are pytest + ruff. Mostly idle,
+  # but cheap to leave on so a CVE in any of them gets a PR within a week.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "chore(deps)"
