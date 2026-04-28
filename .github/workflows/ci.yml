@@ -24,7 +24,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:
-          enable-cache: true
+          # Cache is keyed on uv.lock by default; this repo is a library
+          # and intentionally gitignores uv.lock, so caching is disabled.
+          # Dep install (lxml + pytest + ruff) takes ~5s — not worth the
+          # brittleness of caching against pyproject.toml hashes.
+          enable-cache: false
 
       - name: Install ruff
         run: uv pip install --system "ruff>=0.6"
@@ -54,7 +58,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:
-          enable-cache: true
+          # Cache is keyed on uv.lock by default; this repo is a library
+          # and intentionally gitignores uv.lock, so caching is disabled.
+          # Dep install (lxml + pytest + ruff) takes ~5s — not worth the
+          # brittleness of caching against pyproject.toml hashes.
+          enable-cache: false
 
       - name: Install project + dev deps
         run: uv pip install --system -e ".[dev]"
