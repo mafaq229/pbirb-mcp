@@ -36,6 +36,7 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
+from pbirb_mcp.ops.styling import _detail_row_index
 from pbirb_mcp.ops.tablix import (
     _apply_sort_to_member,
     _apply_visibility_to_member,
@@ -393,17 +394,19 @@ def add_tablix_column(
 ) -> dict[str, Any]:
     """Append (or insert) a new column into a tablix.
 
-    ``column_name`` is the textbox name placed in the column's data row
-    (= the last ``<TablixRow>``). It must be unique report-wide.
-    ``expression`` is the value placed inside that textbox's ``<TextRun>``
-    (typically ``=Fields!X.Value``).
+    ``column_name`` is the textbox name placed in the column's *data*
+    row (the row whose ``<TablixMember>`` carries ``<Group Name="Details">``,
+    walked depth-first through any wrapping groups). It must be unique
+    report-wide. ``expression`` is the value placed inside that
+    textbox's ``<TextRun>`` (typically ``=Fields!X.Value``).
 
     For a tablix with ≥ 2 rows: row 0 (header) gets ``header_text``
-    (default = ``column_name``) as a literal; middle rows get blank
-    cells; the last row gets ``expression``. Cell textbox names follow
-    the pattern ``<column_name>`` for the data row and
-    ``<column_name>_<row_index>`` for non-data rows so report-wide
-    uniqueness holds given a unique ``column_name``.
+    (default = ``column_name``) as a literal; the Details row gets
+    ``expression``; every other row (group headers between row 0 and
+    Details, subtotal/footer rows after Details) gets a blank cell.
+    Tablixes with no Details group fall back to "last row = data row".
+    Cell textbox names follow ``<column_name>`` for the data-row cell
+    and ``<column_name>_<row_index>`` for non-data cells.
 
     ``position`` is a 0-indexed insertion position; default = append.
     ``width`` defaults to ``"1in"``. Both the body's ``<TablixColumn>``
@@ -465,6 +468,14 @@ def add_tablix_column(
     n_rows = len(rows)
     header_text_value = header_text if header_text is not None else column_name
 
+    # Find the data row by walking the row hierarchy for the Details leaf.
+    # This is correct after add_row_group nests the original hierarchy and
+    # after add_subtotal_row appends a footer row — the literal "last row"
+    # is the subtotal in that case, not the detail. Fall back to last-row
+    # behavior for tablixes without a Details group.
+    detail_idx = _detail_row_index(tablix)
+    data_row_idx = detail_idx if detail_idx is not None else n_rows - 1
+
     for i, row in enumerate(rows):
         cells_root = find_child(row, "TablixCells")
         if cells_root is None:
@@ -474,8 +485,7 @@ def add_tablix_column(
             # Single-row tablix: that row is the data row.
             cell_text = expression
             tb_name = column_name
-        elif i == n_rows - 1:
-            # Last row of multi-row tablix: data row.
+        elif i == data_row_idx:
             cell_text = expression
             tb_name = column_name
         elif i == 0:
@@ -483,7 +493,8 @@ def add_tablix_column(
             cell_text = header_text_value
             tb_name = f"{column_name}_{i}"
         else:
-            # Middle rows: blank.
+            # Middle rows (between header and Details) and footer rows
+            # (subtotals after Details): blank cells.
             cell_text = ""
             tb_name = f"{column_name}_{i}"
 

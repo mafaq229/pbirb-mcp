@@ -226,6 +226,72 @@ class TestAddTablixColumn:
         )
         RDLDocument.open(rdl_path).validate()
 
+    def test_data_expression_lands_in_details_row_not_last_row(self, rdl_path):
+        """After add_row_group + add_subtotal_row, the literal "last row" is
+        the subtotal footer — but the data expression must still land in the
+        Details row. Regression test for the prior ``i == n_rows - 1`` bug
+        where the expression went to the totals row and the actual data row
+        got a blank cell with a `_<idx>` suffix."""
+        from pbirb_mcp.ops.tablix import add_row_group
+        from pbirb_mcp.ops.tablix_subtotals import add_subtotal_row
+
+        # Build a tablix with: row 0 = group header, row 1 = Details, row 2 = footer.
+        add_row_group(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Region",
+            group_expression="=Fields!Region.Value",
+        )
+        add_subtotal_row(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Region",
+            aggregates=[{"column": "Amount", "expression": "=Sum(Fields!Amount.Value)"}],
+            position="footer",
+        )
+
+        # Now add a column. Expression must land in row 1 (Details), not
+        # row 2 (footer).
+        add_tablix_column(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            column_name="Discount",
+            expression="=Fields!Discount.Value",
+        )
+
+        doc = RDLDocument.open(rdl_path)
+        tablix = _tablix(doc, "MainTable")
+        rows = _body_rows(tablix)
+        # Fixture starts with 2 rows (header + Details). After add_row_group
+        # → 3 rows (group header + header + Details). After add_subtotal_row
+        # → 4 rows (group header + header + Details + footer).
+        assert len(rows) == 4
+
+        def cell_textbox_name(row, col_idx):
+            cells = _row_cells(row)
+            tb = cells[col_idx].find(f"{q('CellContents')}/{q('Textbox')}")
+            return tb.get("Name") if tb is not None else None
+
+        # The new column was appended at the end (last column).
+        last_col = len(_body_columns(tablix)) - 1
+
+        # Critical assertion: the bare "Discount" name (= data row) must be
+        # in the Details row (row 2), not the literal last row (row 3).
+        # Pre-fix this would land in row 3 and Details would get "Discount_2".
+        assert cell_textbox_name(rows[2], last_col) == "Discount"
+        # Other rows get the suffixed/blank textbox name.
+        assert cell_textbox_name(rows[0], last_col) == "Discount_0"
+        assert cell_textbox_name(rows[1], last_col) == "Discount_1"
+        assert cell_textbox_name(rows[3], last_col) == "Discount_3"
+
+        # And the <Value> in the Details cell holds the expression.
+        details_cell = _row_cells(rows[2])[last_col]
+        details_tb = details_cell.find(f"{q('CellContents')}/{q('Textbox')}")
+        value = details_tb.find(
+            f"{q('Paragraphs')}/{q('Paragraph')}/{q('TextRuns')}/{q('TextRun')}/{q('Value')}"
+        )
+        assert value.text == "=Fields!Discount.Value"
+
 
 # ---- remove_tablix_column -------------------------------------------------
 
