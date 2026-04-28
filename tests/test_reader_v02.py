@@ -226,10 +226,8 @@ class TestLayoutCoercion:
     def test_missing_top_left_coerced_to_0in_for_positioned_items(self, rdl_path):
         """When a body item has Width/Height but no Top/Left, top/left should
         come back as ``"0in"`` (RDL default) — not ``None``."""
-        from lxml import etree
-
         from pbirb_mcp.core.document import RDLDocument
-        from pbirb_mcp.core.xpath import RDL_NS, find_child, q
+        from pbirb_mcp.core.xpath import RDL_NS, find_child
 
         # Add a textbox with explicit positioning, then strip its <Top> and
         # <Left> elements to simulate a fixture where they were omitted.
@@ -260,8 +258,6 @@ class TestLayoutCoercion:
         assert out["height"] == "0.25in"
 
     def test_list_body_items_coerces_top_left(self, rdl_path):
-        from lxml import etree
-
         from pbirb_mcp.core.document import RDLDocument
         from pbirb_mcp.core.xpath import RDL_NS, find_child
 
