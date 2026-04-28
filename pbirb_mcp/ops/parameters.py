@@ -138,15 +138,32 @@ def set_parameter_available_values(
     query_value_field: Optional[str] = None,
     query_label_field: Optional[str] = None,
 ) -> dict[str, Any]:
+    """Set or clear ``<ValidValues>`` on a report parameter.
+
+    Modes:
+    - ``source='static'`` with a non-empty ``static_values`` writes the
+      value/label list.
+    - ``source='static'`` with ``static_values=[]`` (or ``None``) **clears**
+      the ``<ValidValues>`` element entirely. Mirrors the
+      ``set_parameter_prompt('')`` clear convention used elsewhere in the
+      parameter-CRUD surface.
+    - ``source='query'`` writes a ``<DataSetReference>``.
+    """
     _check_source(source)
 
     doc = RDLDocument.open(path)
     parameter = resolve_parameter(doc, name)
 
+    if source == "static" and not static_values:
+        # Clear: drop the existing <ValidValues> element if present.
+        existing = find_child(parameter, "ValidValues")
+        if existing is not None:
+            parameter.remove(existing)
+            doc.save()
+        return {"parameter": name, "source": source, "cleared": True}
+
     valid_values = etree.Element(q("ValidValues"))
     if source == "static":
-        if not static_values:
-            raise ValueError("source='static' requires static_values")
         valid_values.append(_build_static_parameter_values(static_values))
     else:
         _validate_query_args(query_dataset, query_value_field, doc)
@@ -157,7 +174,7 @@ def set_parameter_available_values(
     _set_or_replace_in_order(parameter, valid_values)
 
     doc.save()
-    return {"parameter": name, "source": source}
+    return {"parameter": name, "source": source, "cleared": False}
 
 
 # ---- set_parameter_default_values ----------------------------------------
@@ -171,15 +188,32 @@ def set_parameter_default_values(
     query_dataset: Optional[str] = None,
     query_value_field: Optional[str] = None,
 ) -> dict[str, Any]:
+    """Set or clear ``<DefaultValue>`` on a report parameter.
+
+    Modes:
+    - ``source='static'`` with a non-empty ``static_values`` writes the
+      ``<Values>`` list.
+    - ``source='static'`` with ``static_values=[]`` (or ``None``) **clears**
+      the ``<DefaultValue>`` element entirely. Mirrors the
+      ``set_parameter_prompt('')`` clear convention used elsewhere in the
+      parameter-CRUD surface.
+    - ``source='query'`` writes a ``<DataSetReference>`` with
+      ``ValueField`` only (defaults are values, not display strings).
+    """
     _check_source(source)
 
     doc = RDLDocument.open(path)
     parameter = resolve_parameter(doc, name)
 
+    if source == "static" and not static_values:
+        existing = find_child(parameter, "DefaultValue")
+        if existing is not None:
+            parameter.remove(existing)
+            doc.save()
+        return {"parameter": name, "source": source, "cleared": True}
+
     default_value = etree.Element(q("DefaultValue"))
     if source == "static":
-        if not static_values:
-            raise ValueError("source='static' requires static_values")
         values_root = etree.SubElement(default_value, q("Values"))
         for value_text in static_values:
             v = etree.SubElement(values_root, q("Value"))
@@ -195,7 +229,7 @@ def set_parameter_default_values(
     _set_or_replace_in_order(parameter, default_value)
 
     doc.save()
-    return {"parameter": name, "source": source}
+    return {"parameter": name, "source": source, "cleared": False}
 
 
 # ---- update_parameter_advanced -------------------------------------------

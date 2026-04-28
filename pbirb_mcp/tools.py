@@ -1381,11 +1381,14 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_parameter_available_values",
         description=(
-            "Set <ValidValues> on a report parameter. source='static' "
-            "writes a list of <ParameterValue> entries (each entry can "
-            "be a string or {value, label} dict); source='query' writes "
-            "a <DataSetReference> to a lookup dataset. Replaces any "
-            "existing <ValidValues> block."
+            "Set or clear <ValidValues> on a report parameter. "
+            "source='static' with a non-empty static_values writes a list "
+            "of <ParameterValue> entries (each entry can be a string or "
+            "{value, label} dict). source='static' with static_values=[] "
+            "or omitted CLEARS the <ValidValues> element entirely (mirrors "
+            "set_parameter_prompt('') and returns cleared=true). "
+            "source='query' writes a <DataSetReference> to a lookup "
+            "dataset. Replaces any existing <ValidValues> block."
         ),
         input_schema={
             "type": "object",
@@ -1409,10 +1412,14 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_parameter_default_values",
         description=(
-            "Set <DefaultValue> on a report parameter. source='static' "
-            "writes a <Values> list of expressions; source='query' writes "
-            "a <DataSetReference> with ValueField only (no LabelField — "
-            "defaults are values, not display strings). Replaces existing."
+            "Set or clear <DefaultValue> on a report parameter. "
+            "source='static' with a non-empty static_values writes a "
+            "<Values> list of expressions. source='static' with "
+            "static_values=[] or omitted CLEARS the <DefaultValue> element "
+            "entirely (mirrors set_parameter_prompt('') and returns "
+            "cleared=true). source='query' writes a <DataSetReference> "
+            "with ValueField only (no LabelField — defaults are values, "
+            "not display strings). Replaces any existing block."
         ),
         input_schema={
             "type": "object",
