@@ -20,6 +20,7 @@ from pbirb_mcp.ops import (
     reader,
     styling,
     tablix,
+    tablix_cells,
     tablix_columns,
     tablix_subtotals,
     templates,
@@ -518,6 +519,30 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_subtotals.add_subtotal_row,
+    )
+    server.register_tool(
+        name="set_cell_span",
+        description=(
+            "Set <RowSpan> and/or <ColSpan> on a tablix cell. The cell is "
+            "addressed by (row_index, column_name) where column_name is the "
+            "textbox name inside the cell. At least one of row_span / "
+            "col_span must be supplied; both must be >= 1. Pass 1 to "
+            "explicitly reset a span. Replaces existing values if present."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "row_index": {"type": "integer", "minimum": 0},
+                "column_name": {"type": "string"},
+                "row_span": {"type": ["integer", "null"], "minimum": 1},
+                "col_span": {"type": ["integer", "null"], "minimum": 1},
+            },
+            "required": ["path", "tablix_name", "row_index", "column_name"],
+            "additionalProperties": False,
+        },
+        handler=tablix_cells.set_cell_span,
     )
 
     server.register_tool(
