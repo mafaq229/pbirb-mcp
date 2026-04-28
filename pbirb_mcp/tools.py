@@ -1289,7 +1289,11 @@ def register_all_tools(server: MCPServer) -> None:
             "Build and append a basic Tablix to <Body>/<ReportItems>. One "
             "column per name in `columns`; header row gets the column "
             "name as a static label, detail row binds to "
-            "=Fields!<column>.Value. dataset_name must already exist."
+            "=Fields!<column>.Value. dataset_name must already exist. "
+            "`width` is the tablix outer width — each column defaults to "
+            "1in regardless, so for a 3-column tablix the columns sum to "
+            "3in even if you pass width=10cm. Resize columns afterwards "
+            "via direct edits or future column-width tools."
         ),
         input_schema={
             "type": "object",
