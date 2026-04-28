@@ -75,8 +75,12 @@ jobs:
         # Sanity-check the entry point is wired correctly. A wheel that
         # builds but whose console script is broken would otherwise only
         # surface in a real LLM client.
+        shell: bash
         run: |
+          set -euo pipefail
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
             | timeout 5 pbirb-mcp \
             | tee /tmp/init.json
-          grep -q '"name":"pbirb-mcp"' /tmp/init.json
+          # Structural check — survives whitespace / key-order changes that
+          # `json.dumps` defaults shift between Python versions.
+          jq -e '.result.serverInfo.name == "pbirb-mcp"' /tmp/init.json
