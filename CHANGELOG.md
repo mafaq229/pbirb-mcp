@@ -11,12 +11,21 @@ bump rules.
 
 ## [Unreleased]
 
-## [0.1.1] - 2026-04-28
+## [0.1.2] - 2026-04-28
 
-Internal infrastructure release. No tool surface changes — the 42 tools
-and their schemas from 0.1.0 are unchanged.
+First release through the new tag-triggered Trusted Publishing pipeline.
+Bundles all of Pillar A's repo-professionalization infrastructure (originally
+tagged in source as `v0.1.1`, never published to PyPI) plus Pillar B's
+`release.yml`. **No tool surface changes** — the 42 tools and their schemas
+from 0.1.0 are unchanged.
+
+> Note on numbering: `v0.1.1` was a source-only tag that was never published
+> to PyPI. `v0.1.2` is the first release cut through `release.yml` and
+> supersedes everything in `v0.1.1`. From this version forward, every
+> CHANGELOG entry corresponds 1:1 to a `pip install`-able PyPI version.
 
 ### Added
+- `.github/workflows/release.yml` — tag-triggered release pipeline. Five sequential stages: verify (tag matches `pyproject.toml` version), test (pytest matrix on Python 3.9–3.12), build (sdist + wheel via `python -m build`), publish-pypi (`pypa/gh-action-pypi-publish` via OIDC Trusted Publishing — no long-lived token), github-release (extracts the matching CHANGELOG section as the release body and attaches sdist + wheel).
 - GitHub Actions CI workflow running `pytest` on Python 3.9 / 3.10 / 3.11 / 3.12 plus a Ruff lint job.
 - Ruff configuration in `pyproject.toml` (line length 100, `E,F,W,I,UP,B,SIM` rule set; PEP 604 union rules disabled because Python 3.9 is supported).
 - Pre-commit hooks running `ruff format`, `ruff check --fix`, baseline `pre-commit-hooks` checks, and a fast `pytest -x` against the project venv.
@@ -106,6 +115,6 @@ otherwise force hand-written XML.
 - `<ChartMember>` requires a `<Label>` child, even an empty one.
 - DAX queries write `<CommandText>` only; PBI paginated reports do not carry `<CommandType>` (unlike SSRS).
 
-[Unreleased]: https://github.com/mafaq229/pbirb-mcp/compare/v0.1.1...HEAD
-[0.1.1]: https://github.com/mafaq229/pbirb-mcp/compare/v0.1.0...v0.1.1
+[Unreleased]: https://github.com/mafaq229/pbirb-mcp/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/mafaq229/pbirb-mcp/compare/v0.1.0...v0.1.2
 [0.1.0]: https://github.com/mafaq229/pbirb-mcp/releases/tag/v0.1.0
