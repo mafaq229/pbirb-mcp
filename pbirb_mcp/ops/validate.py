@@ -105,4 +105,37 @@ def validate_report(path: str) -> dict[str, Any]:
     return {"valid": not errors, "errors": errors, "xsd_used": xsd_used}
 
 
-__all__ = ["validate_report"]
+def verify_report(path: str) -> dict[str, Any]:
+    """Single-call composite: union of :func:`validate_report` and
+    :func:`pbirb_mcp.ops.lint.lint_report`.
+
+    Returns ``{valid, issues, xsd_used}``:
+
+    * ``issues`` — every ``{severity, rule, location, message,
+      suggestion?}`` from validate (rule ∈ {parse, structural, xsd}) and
+      lint (15 rules from :mod:`pbirb_mcp.ops.lint`).
+    * ``valid`` — ``True`` iff no issue carries ``severity == "error"``.
+      Warnings don't invalidate the report.
+    * ``xsd_used`` — passed through from validate.
+
+    The unified shape is what :envvar:`PBIRB_MCP_AUTO_VERIFY` (commit 34)
+    splices into mutating-tool responses.
+    """
+    # Local import dodges a load-time circular: lint imports validate
+    # would chain via ops.dataset → ops.parameters in some configs.
+    from pbirb_mcp.ops.lint import lint_report
+
+    v = validate_report(path)
+    if not v["valid"] and any(e["rule"] == "parse" for e in v["errors"]):
+        # Parse failed — lint can't do anything sane.
+        return {"valid": False, "issues": v["errors"], "xsd_used": v["xsd_used"]}
+
+    lint = lint_report(path)
+    issues: list[dict[str, Any]] = []
+    issues.extend(v["errors"])
+    issues.extend(lint["issues"])
+    has_error = any(i.get("severity") == "error" for i in issues)
+    return {"valid": not has_error, "issues": issues, "xsd_used": v["xsd_used"]}
+
+
+__all__ = ["validate_report", "verify_report"]

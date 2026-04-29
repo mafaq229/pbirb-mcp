@@ -714,6 +714,21 @@ def register_all_tools(server: MCPServer) -> None:
     )
 
     server.register_tool(
+        name="verify_report",
+        description=(
+            "One-shot static check: union of validate_report and "
+            "lint_report. Returns {valid, issues, xsd_used} where "
+            "valid is True iff no issue has severity='error'. "
+            "Warnings don't invalidate the report. Use this as the "
+            "single 'is the report OK?' tool, or set "
+            "PBIRB_MCP_AUTO_VERIFY=1 to have it run after every "
+            "mutating call."
+        ),
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=validate.verify_report,
+    )
+
+    server.register_tool(
         name="lint_report",
         description=(
             "Run static-analysis lint rules against an .rdl. Fifteen "

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from pbirb_mcp.ops.validate import validate_report
+from pbirb_mcp.ops.validate import validate_report, verify_report
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
 
@@ -70,6 +70,60 @@ class TestValidateReport:
         assert any("DataSets" in m for m in msgs)
 
 
+class TestVerifyReport:
+    def test_clean_fixture(self, rdl_path):
+        result = verify_report(str(rdl_path))
+        assert result["valid"] is True
+        assert result["issues"] == []
+        assert result["xsd_used"] is False
+
+    def test_parse_failure_short_circuits_lint(self, tmp_path):
+        bad = tmp_path / "broken.rdl"
+        bad.write_text("<not-valid")
+        result = verify_report(str(bad))
+        assert result["valid"] is False
+        assert len(result["issues"]) >= 1
+        # Parse failure should be in issues; no lint rules ran.
+        rules = {i["rule"] for i in result["issues"]}
+        assert "parse" in rules
+
+    def test_warning_only_keeps_valid_true(self, rdl_path):
+        # Add an unused DataSource — that's only a warning. valid stays True.
+        from lxml import etree
+
+        from pbirb_mcp.core.document import RDLDocument
+        from pbirb_mcp.core.xpath import q
+
+        doc = RDLDocument.open(rdl_path)
+        sources = doc.root.find(q("DataSources"))
+        new_ds = etree.SubElement(sources, q("DataSource"), Name="OrphanDS")
+        cp = etree.SubElement(new_ds, q("ConnectionProperties"))
+        etree.SubElement(cp, q("DataProvider")).text = "SQL"
+        etree.SubElement(cp, q("ConnectString")).text = "Server=x"
+        doc.save()
+        result = verify_report(str(rdl_path))
+        # warning-only — still "valid".
+        assert result["valid"] is True
+        rules = {i["rule"] for i in result["issues"]}
+        assert "unused-data-source" in rules
+
+    def test_error_severity_flips_valid_to_false(self, rdl_path):
+        # Inject a misplaced ColSpan (rule 15 is severity=error).
+        from lxml import etree
+
+        from pbirb_mcp.core.document import RDLDocument
+        from pbirb_mcp.core.xpath import q
+
+        doc = RDLDocument.open(rdl_path)
+        cell = doc.root.iter(q("TablixCell")).__next__()
+        etree.SubElement(cell, q("ColSpan")).text = "2"
+        doc.save()
+        result = verify_report(str(rdl_path))
+        assert result["valid"] is False
+        rules = {i["rule"] for i in result["issues"]}
+        assert "tablix-span-misplaced" in rules
+
+
 class TestToolRegistration:
     def test_validate_report_registered(self):
         srv = MCPServer()
@@ -79,3 +133,4 @@ class TestToolRegistration:
         )["result"]["tools"]
         names = {t["name"] for t in listing}
         assert "validate_report" in names
+        assert "verify_report" in names
