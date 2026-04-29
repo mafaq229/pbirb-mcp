@@ -1231,6 +1231,47 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=positioning.set_body_item_size,
     )
+    server.register_tool(
+        name="set_header_item_size",
+        description=(
+            "Resize a named item inside <PageHeader>. Mirrors "
+            "set_body_item_size — at least one of width / height; "
+            "missing fields untouched; idempotent ({changed: false} "
+            "when nothing differs). Closes the v0.2 parity gap where "
+            "only the body variant existed."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "width": {"type": ["string", "null"]},
+                "height": {"type": ["string", "null"]},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=positioning.set_header_item_size,
+    )
+    server.register_tool(
+        name="set_footer_item_size",
+        description=(
+            "Resize a named item inside <PageFooter>. Same shape as "
+            "set_header_item_size."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "width": {"type": ["string", "null"]},
+                "height": {"type": ["string", "null"]},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=positioning.set_footer_item_size,
+    )
 
     # ---- reader extensions (v0.2) -----------------------------------------
     server.register_tool(

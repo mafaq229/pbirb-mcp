@@ -11,12 +11,19 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RDL_NS, find_child
 from pbirb_mcp.ops.body import add_body_textbox
-from pbirb_mcp.ops.header_footer import add_header_textbox, set_page_header
+from pbirb_mcp.ops.header_footer import (
+    add_footer_textbox,
+    add_header_textbox,
+    set_page_footer,
+    set_page_header,
+)
 from pbirb_mcp.ops.positioning import (
     set_body_item_position,
     set_body_item_size,
     set_footer_item_position,
+    set_footer_item_size,
     set_header_item_position,
+    set_header_item_size,
 )
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
@@ -204,6 +211,112 @@ class TestSetBodyItemSize:
         RDLDocument.open(rdl_path).validate()
 
 
+# ---- set_header_item_size (Phase 6 commit 26) --------------------------
+
+
+class TestSetHeaderItemSize:
+    def _add_header_logo(self, rdl_path: Path):
+        set_page_header(path=str(rdl_path), height="1in")
+        add_header_textbox(
+            path=str(rdl_path),
+            name="HeaderLogo",
+            text="LOGO",
+            top="0in",
+            left="0in",
+            width="2in",
+            height="1in",
+        )
+
+    def test_resizes_header_item_width_only(self, rdl_path):
+        self._add_header_logo(rdl_path)
+        result = set_header_item_size(
+            path=str(rdl_path),
+            name="HeaderLogo",
+            width="3in",
+        )
+        assert result["container"] == "header"
+        assert result["changed"] is True
+        # Verify on disk.
+        doc = RDLDocument.open(rdl_path)
+        item = doc.root.find(f".//{{{RDL_NS}}}PageHeader//*[@Name='HeaderLogo']")
+        assert find_child(item, "Width").text == "3in"
+        # Original height preserved.
+        assert find_child(item, "Height").text == "1in"
+
+    def test_resizes_header_item_both(self, rdl_path):
+        self._add_header_logo(rdl_path)
+        set_header_item_size(
+            path=str(rdl_path),
+            name="HeaderLogo",
+            width="2.5in",
+            height="0.75in",
+        )
+        doc = RDLDocument.open(rdl_path)
+        item = doc.root.find(f".//{{{RDL_NS}}}PageHeader//*[@Name='HeaderLogo']")
+        assert find_child(item, "Width").text == "2.5in"
+        assert find_child(item, "Height").text == "0.75in"
+
+    def test_idempotent_when_unchanged(self, rdl_path):
+        self._add_header_logo(rdl_path)
+        # Already 2in × 1in.
+        before = (rdl_path).read_bytes()
+        result = set_header_item_size(
+            path=str(rdl_path),
+            name="HeaderLogo",
+            width="2in",
+            height="1in",
+        )
+        assert result["changed"] is False
+        assert (rdl_path).read_bytes() == before
+
+    def test_no_args_rejected(self, rdl_path):
+        self._add_header_logo(rdl_path)
+        with pytest.raises(ValueError, match="at least one"):
+            set_header_item_size(path=str(rdl_path), name="HeaderLogo")
+
+    def test_unknown_item_raises(self, rdl_path):
+        self._add_header_logo(rdl_path)
+        with pytest.raises(ElementNotFoundError, match="header has no named item"):
+            set_header_item_size(path=str(rdl_path), name="NoSuch", width="1in")
+
+    def test_no_header_block_raises(self, rdl_path):
+        # Fixture starts without a PageHeader; resolver must raise.
+        with pytest.raises(ElementNotFoundError, match="no <PageHeader>"):
+            set_header_item_size(path=str(rdl_path), name="X", width="1in")
+
+
+class TestSetFooterItemSize:
+    def _add_footer_textbox(self, rdl_path: Path):
+        set_page_footer(path=str(rdl_path), height="0.5in")
+        add_footer_textbox(
+            path=str(rdl_path),
+            name="FooterPageNum",
+            text="=Globals!PageNumber",
+            top="0in",
+            left="0in",
+            width="1in",
+            height="0.25in",
+        )
+
+    def test_resizes_footer_item(self, rdl_path):
+        self._add_footer_textbox(rdl_path)
+        result = set_footer_item_size(
+            path=str(rdl_path),
+            name="FooterPageNum",
+            width="2in",
+        )
+        assert result["container"] == "footer"
+        assert result["changed"] is True
+        doc = RDLDocument.open(rdl_path)
+        item = doc.root.find(f".//{{{RDL_NS}}}PageFooter//*[@Name='FooterPageNum']")
+        assert find_child(item, "Width").text == "2in"
+
+    def test_unknown_item_raises(self, rdl_path):
+        self._add_footer_textbox(rdl_path)
+        with pytest.raises(ElementNotFoundError, match="footer has no named item"):
+            set_footer_item_size(path=str(rdl_path), name="NoSuch", width="1in")
+
+
 # ---- registration --------------------------------------------------------
 
 
@@ -260,4 +373,6 @@ class TestToolRegistration:
             "set_header_item_position",
             "set_footer_item_position",
             "set_body_item_size",
+            "set_header_item_size",
+            "set_footer_item_size",
         }.issubset(server._tools.keys())
