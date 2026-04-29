@@ -58,7 +58,76 @@ _STYLE_CHILD_ORDER = (
     "PaddingRight",
     "PaddingTop",
     "PaddingBottom",
+    "WritingMode",
 )
+
+
+# Per RDL XSD, Textbox-direct children appear in this order (subset
+# relevant to the v0.3 styling extensions): CanGrow / CanShrink / KeepTogether
+# come BEFORE Paragraphs / Style. We touch only the two booleans here; the
+# helper enforces the position so the writer doesn't drift round-trip
+# byte-identity.
+_TEXTBOX_DIRECT_CHILD_ORDER = (
+    "CanGrow",
+    "CanShrink",
+    "KeepTogether",
+    "HideDuplicates",
+    "ToggleImage",
+    "DataElementName",
+    "DataElementOutput",
+    "DataElementStyle",
+    "Paragraphs",
+    "rd:DefaultName",
+    "Top",
+    "Left",
+    "Height",
+    "Width",
+    "ZIndex",
+    "Visibility",
+    "ToolTip",
+    "DocumentMapLabel",
+    "Bookmark",
+    "RepeatWith",
+    "CustomProperties",
+    "Action",
+    "Style",
+)
+
+
+def _set_or_create_textbox_direct_child(
+    textbox: etree._Element, local: str, value: str
+) -> bool:
+    """Set ``<local>value</local>`` as a direct child of ``Textbox``,
+    respecting the RDL XSD child order. Returns True iff the value
+    actually changed (used by ``changed: list[str]`` callers).
+    """
+    encoded = encode_text(value)
+    existing = find_child(textbox, local)
+    if existing is not None:
+        if existing.text == encoded:
+            return False
+        existing.text = encoded
+        return True
+    new_node = etree.Element(q(local))
+    new_node.text = encoded
+    if local in _TEXTBOX_DIRECT_CHILD_ORDER:
+        new_idx = _TEXTBOX_DIRECT_CHILD_ORDER.index(local)
+        for i, child in enumerate(list(textbox)):
+            child_local = etree.QName(child).localname
+            qualified = (
+                f"rd:{child_local}"
+                if child.tag.startswith("{http://schemas.microsoft.com/SQLServer/")
+                else child_local
+            )
+            check_local = qualified if qualified in _TEXTBOX_DIRECT_CHILD_ORDER else child_local
+            if (
+                check_local in _TEXTBOX_DIRECT_CHILD_ORDER
+                and _TEXTBOX_DIRECT_CHILD_ORDER.index(check_local) > new_idx
+            ):
+                textbox.insert(i, new_node)
+                return True
+    textbox.append(new_node)
+    return True
 
 
 def _ensure_style(parent: etree._Element) -> etree._Element:
@@ -142,10 +211,37 @@ def set_textbox_style(
     text_align: Optional[str] = None,
     vertical_align: Optional[str] = None,
     format: Optional[str] = None,
+    padding_top: Optional[str] = None,
+    padding_bottom: Optional[str] = None,
+    padding_left: Optional[str] = None,
+    padding_right: Optional[str] = None,
+    writing_mode: Optional[str] = None,
+    can_grow: Optional[bool] = None,
+    can_shrink: Optional[bool] = None,
 ) -> dict[str, Any]:
+    """Set styling properties on a named Textbox.
+
+    Property routing (per RDL XSD):
+    - **Box-level** (``Textbox/Style``): ``background_color``, ``vertical_align``,
+      ``padding_top|bottom|left|right``, ``writing_mode``.
+    - **Border** (``Textbox/Style/Border``): ``border_style|color|width``.
+    - **Paragraph** (``Textbox/Paragraphs/Paragraph/Style``): ``text_align``.
+    - **Run** (``Textbox/.../TextRun/Style``): ``font_family|size|weight``,
+      ``color``, ``format``.
+    - **Direct Textbox children** (NOT inside Style): ``can_grow``, ``can_shrink``.
+
+    Returns ``{textbox, changed: list[str]}`` with prefixed sub-paths
+    (``"box.PaddingTop"``, ``"textbox.CanGrow"``, etc.). All-None call
+    is a no-op short-circuit.
+    """
     box_props = {
         "BackgroundColor": background_color,
         "VerticalAlign": vertical_align,
+        "PaddingTop": padding_top,
+        "PaddingBottom": padding_bottom,
+        "PaddingLeft": padding_left,
+        "PaddingRight": padding_right,
+        "WritingMode": writing_mode,
     }
     paragraph_props = {
         "TextAlign": text_align,
@@ -162,12 +258,17 @@ def set_textbox_style(
         "Color": border_color,
         "Width": border_width,
     }
+    direct_textbox_props: dict[str, Optional[bool]] = {
+        "CanGrow": can_grow,
+        "CanShrink": can_shrink,
+    }
 
     nothing_to_do = (
         all(v is None for v in box_props.values())
         and all(v is None for v in paragraph_props.values())
         and all(v is None for v in run_props.values())
         and all(v is None for v in border_props.values())
+        and all(v is None for v in direct_textbox_props.values())
     )
     if nothing_to_do:
         # No-op — leave the file bytes untouched so callers can defensively
@@ -178,6 +279,16 @@ def set_textbox_style(
     textbox = resolve_textbox(doc, textbox_name)
 
     changed: list[str] = []
+
+    # Direct Textbox children — CanGrow / CanShrink — written as direct
+    # Textbox children, NOT inside Style. Per the RDL XSD they appear
+    # before <Paragraphs>.
+    for local, value in direct_textbox_props.items():
+        if value is None:
+            continue
+        text_value = "true" if value else "false"
+        if _set_or_create_textbox_direct_child(textbox, local, text_value):
+            changed.append(f"textbox.{local}")
 
     # Box level + border (border lives inside Textbox/Style/Border).
     if any(v is not None for v in box_props.values()) or any(
@@ -224,7 +335,8 @@ def set_textbox_style(
                 _set_or_create_in_style(r_style, local, value)
                 changed.append(f"run.{local}")
 
-    doc.save()
+    if changed:
+        doc.save()
     return {"textbox": textbox_name, "changed": changed}
 
 

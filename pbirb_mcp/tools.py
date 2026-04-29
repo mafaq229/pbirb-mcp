@@ -1188,11 +1188,13 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Set styling on a named Textbox. Properties route to the right "
             "nested Style node automatically: background_color, "
-            "border_*, vertical_align go on Textbox/Style; text_align on "
-            "Paragraph/Style; font_*, color, format on TextRun/Style. All "
-            "fields optional — only what's passed gets written. Cell-level "
-            "styling: every tablix cell is a Textbox with a unique name, so "
-            "use this tool with the cell's textbox name (e.g. 'HeaderAmount')."
+            "border_*, vertical_align, padding_*, writing_mode go on "
+            "Textbox/Style; text_align on Paragraph/Style; font_*, color, "
+            "format on TextRun/Style; can_grow / can_shrink go DIRECTLY "
+            "on Textbox (not inside Style). All fields optional — only "
+            "what's passed gets written. Cell-level styling: every tablix "
+            "cell is a Textbox with a unique name, so use this tool with "
+            "the cell's textbox name (e.g. 'HeaderAmount')."
         ),
         input_schema={
             "type": "object",
@@ -1230,6 +1232,34 @@ def register_all_tools(server: MCPServer) -> None:
                 "format": {
                     "type": ["string", "null"],
                     "description": "Number/date format (e.g. '#,0.00', 'C2', 'd').",
+                },
+                "padding_top": {
+                    "type": ["string", "null"],
+                    "description": "RDL size (e.g. '2pt', '0.05in').",
+                },
+                "padding_bottom": {"type": ["string", "null"]},
+                "padding_left": {"type": ["string", "null"]},
+                "padding_right": {"type": ["string", "null"]},
+                "writing_mode": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "Horizontal | Vertical | Rotate270 — text "
+                        "orientation. Useful for narrow column headers."
+                    ),
+                },
+                "can_grow": {
+                    "type": ["boolean", "null"],
+                    "description": (
+                        "Allow textbox to grow vertically when content "
+                        "exceeds the height. Direct Textbox child, not Style."
+                    ),
+                },
+                "can_shrink": {
+                    "type": ["boolean", "null"],
+                    "description": (
+                        "Allow textbox to shrink when content is shorter "
+                        "than the height. Direct Textbox child, not Style."
+                    ),
                 },
             },
             "required": ["path", "textbox_name"],

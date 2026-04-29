@@ -180,6 +180,121 @@ class TestPartialUpdate:
         assert bgs[0].text == "#222222"
 
 
+# ---- v0.3 box extensions: padding + writing_mode ------------------------
+
+
+class TestPaddingAndWritingMode:
+    def test_padding_top_lands_on_box_style(self, rdl_path):
+        result = set_textbox_style(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            padding_top="3pt",
+        )
+        assert "box.PaddingTop" in result["changed"]
+        tb = _textbox(rdl_path, "HeaderProductID")
+        node = tb.find(f"{q('Style')}/{q('PaddingTop')}")
+        assert node is not None and node.text == "3pt"
+
+    def test_all_four_paddings(self, rdl_path):
+        result = set_textbox_style(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            padding_top="2pt",
+            padding_bottom="2pt",
+            padding_left="4pt",
+            padding_right="4pt",
+        )
+        assert set(result["changed"]) == {
+            "box.PaddingTop",
+            "box.PaddingBottom",
+            "box.PaddingLeft",
+            "box.PaddingRight",
+        }
+        tb = _textbox(rdl_path, "HeaderProductID")
+        style = find_child(tb, "Style")
+        assert find_child(style, "PaddingTop").text == "2pt"
+        assert find_child(style, "PaddingBottom").text == "2pt"
+        assert find_child(style, "PaddingLeft").text == "4pt"
+        assert find_child(style, "PaddingRight").text == "4pt"
+
+    def test_writing_mode_rotate(self, rdl_path):
+        result = set_textbox_style(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            writing_mode="Rotate270",
+        )
+        assert "box.WritingMode" in result["changed"]
+        tb = _textbox(rdl_path, "HeaderProductID")
+        wm = tb.find(f"{q('Style')}/{q('WritingMode')}")
+        assert wm is not None and wm.text == "Rotate270"
+
+
+# ---- v0.3 direct-Textbox-children: can_grow / can_shrink ----------------
+
+
+class TestCanGrowCanShrink:
+    def test_can_grow_flips_existing_value(self, rdl_path):
+        # Fixture's HeaderProductID has <CanGrow>true</CanGrow> baked in
+        # by the template builder. Flipping to false is a real change.
+        result = set_textbox_style(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            can_grow=False,
+        )
+        assert "textbox.CanGrow" in result["changed"]
+        tb = _textbox(rdl_path, "HeaderProductID")
+        # CanGrow is a DIRECT child of Textbox, NOT inside Style.
+        cg = find_child(tb, "CanGrow")
+        assert cg is not None and cg.text == "false"
+        # Confirm it's NOT inside Style.
+        style = find_child(tb, "Style")
+        if style is not None:
+            assert find_child(style, "CanGrow") is None
+
+    def test_can_grow_no_op_when_already_set(self, rdl_path):
+        # Fixture's HeaderProductID has CanGrow=true. Setting to true
+        # again is a no-op short-circuit.
+        result = set_textbox_style(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            can_grow=True,
+        )
+        assert "textbox.CanGrow" not in result["changed"]
+
+    def test_can_shrink_added_when_absent(self, rdl_path):
+        # Fixture's HeaderProductID has CanGrow but no CanShrink — adding
+        # one is a real change.
+        result = set_textbox_style(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            can_shrink=False,
+        )
+        assert "textbox.CanShrink" in result["changed"]
+        tb = _textbox(rdl_path, "HeaderProductID")
+        cs = find_child(tb, "CanShrink")
+        assert cs is not None and cs.text == "false"
+
+    def test_can_grow_position_before_paragraphs(self, rdl_path):
+        """RDL XSD requires CanGrow/CanShrink/KeepTogether to come BEFORE
+        <Paragraphs>. Our writer must respect that ordering."""
+        from lxml import etree as _etree
+
+        set_textbox_style(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            can_grow=True,
+            can_shrink=True,
+        )
+        tb = _textbox(rdl_path, "HeaderProductID")
+        children_locals = [_etree.QName(c).localname for c in tb]
+        cg_idx = children_locals.index("CanGrow")
+        cs_idx = children_locals.index("CanShrink")
+        # Paragraphs index: must be greater than both CanGrow/CanShrink.
+        para_idx = children_locals.index("Paragraphs")
+        assert cg_idx < para_idx
+        assert cs_idx < para_idx
+
+
 # ---- error paths ----------------------------------------------------------
 
 
