@@ -526,6 +526,34 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=tablix.set_tablix_size,
     )
+    server.register_tool(
+        name="reorder_parameters",
+        description=(
+            "Reorder <ReportParameter> children to match the supplied "
+            "names list. names MUST be a permutation of every existing "
+            "parameter — no missing, no duplicates, no unknown names. "
+            "When a <ReportParametersLayout> exists, its CellDefinition "
+            "entries are reordered in lockstep so the parameter pane "
+            "shows fields in the new declaration order. RowIndex / "
+            "ColumnIndex are not recomputed (RB's layout grid is "
+            "independent of declaration order). Returns {order, kind, "
+            "changed: bool}; same order → no save."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+            },
+            "required": ["path", "names"],
+            "additionalProperties": False,
+        },
+        handler=parameters.reorder_parameters,
+    )
 
     server.register_tool(
         name="remove_query_parameter",

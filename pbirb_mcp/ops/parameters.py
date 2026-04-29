@@ -25,6 +25,7 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import (
+    ElementNotFoundError,
     resolve_dataset,
     resolve_parameter,
 )
@@ -903,10 +904,153 @@ def rename_parameter(
     }
 
 
+# ---- reorder_parameters --------------------------------------------------
+
+
+def reorder_parameters(
+    path: str,
+    names: list[str],
+) -> dict[str, Any]:
+    """Reorder ``<ReportParameter>`` children inside ``<ReportParameters>``
+    to match the supplied ``names`` list.
+
+    ``names`` MUST be a permutation of every existing parameter name —
+    no missing entries, no duplicates, no unknown names. The strict
+    permutation check prevents accidental partial reorders that would
+    silently lose a parameter from the report.
+
+    Layout sync: when a populated ``<ReportParametersLayout>`` block
+    exists, its ``<CellDefinition>`` entries are reordered in lockstep
+    so the parameter pane keeps showing the same fields in the new
+    declaration order. (RowIndex / ColumnIndex are NOT recomputed —
+    Report Builder's layout grid is independent of declaration order.)
+
+    Returns ``{order: list[str], kind: 'ReportParameters', changed: bool}``.
+    ``changed`` is False when ``names`` already matches the current
+    declaration order (no save).
+
+    Was deferred from v0.2 with the note "v0.3+ if needed". Lands here
+    in v0.3.0.
+    """
+    if not isinstance(names, list):
+        raise ValueError("names must be a list of parameter names")
+
+    doc = RDLDocument.open(path)
+    rdl_ns = doc.root.nsmap.get(None) or ""
+    params_root = doc.root.find(f"{{{rdl_ns}}}ReportParameters")
+    if params_root is None:
+        raise ElementNotFoundError(
+            "report has no <ReportParameters> block — nothing to reorder"
+        )
+
+    existing = [
+        p.get("Name")
+        for p in find_children(params_root, "ReportParameter")
+        if p.get("Name") is not None
+    ]
+
+    # Strict permutation check.
+    if len(names) != len(existing):
+        raise ValueError(
+            f"names must be a permutation of every existing parameter; "
+            f"got {len(names)} entries but {len(existing)} parameters exist."
+        )
+    if len(set(names)) != len(names):
+        from collections import Counter
+
+        dupes = [n for n, c in Counter(names).items() if c > 1]
+        raise ValueError(
+            f"names contains duplicate(s): {dupes!r}. Each parameter "
+            "name must appear exactly once."
+        )
+    extras = [n for n in names if n not in existing]
+    missing = [n for n in existing if n not in names]
+    if extras or missing:
+        raise ValueError(
+            "names must be a permutation of every existing parameter. "
+            f"Unknown names: {extras!r}. Missing names: {missing!r}."
+        )
+
+    if names == existing:
+        return {
+            "order": list(existing),
+            "kind": "ReportParameters",
+            "changed": False,
+        }
+
+    # Reorder the <ReportParameter> children.
+    by_name = {
+        p.get("Name"): p
+        for p in find_children(params_root, "ReportParameter")
+    }
+    for p in list(by_name.values()):
+        params_root.remove(p)
+    for name in names:
+        params_root.append(by_name[name])
+
+    # Layout sync: reorder <CellDefinition> entries in lockstep.
+    from pbirb_mcp.core.encoding import encode_text  # noqa: F401  (silence)
+
+    _reorder_layout_cells_in_doc(doc, names)
+
+    doc.save()
+    return {
+        "order": list(names),
+        "kind": "ReportParameters",
+        "changed": True,
+    }
+
+
+def _reorder_layout_cells_in_doc(doc: RDLDocument, names: list[str]) -> int:
+    """Reorder ``<CellDefinition>`` entries in
+    ``<ReportParametersLayout>/<GridLayoutDefinition>/<CellDefinitions>``
+    to match the supplied parameter ``names`` order.
+
+    Cells whose ``ParameterName`` is in ``names`` are reordered;
+    cells with no matching parameter (orphans, normally caught by
+    sync_parameter_layout) keep their relative position appended at
+    the end. Returns the number of cells touched.
+    """
+    layout_root = find_child(doc.root, "ReportParametersLayout")
+    if layout_root is None:
+        return 0
+    grid = _grid_layout_definition(layout_root)
+    if grid is None:
+        return 0
+    cells_root = _cell_definitions(grid)
+    if cells_root is None:
+        return 0
+
+    # Map each name → the first cell whose ParameterName matches it.
+    by_name: dict[str, etree._Element] = {}
+    orphans: list[etree._Element] = []
+    for cell in find_children(cells_root, "CellDefinition"):
+        pname = _cell_parameter_name(cell)
+        if pname is not None and pname in names and pname not in by_name:
+            by_name[pname] = cell
+        else:
+            orphans.append(cell)
+
+    # Detach all cells, then re-append in target order.
+    for cell in list(cells_root):
+        cells_root.remove(cell)
+
+    touched = 0
+    for name in names:
+        cell = by_name.get(name)
+        if cell is not None:
+            cells_root.append(cell)
+            touched += 1
+    for orphan in orphans:
+        cells_root.append(orphan)
+    return touched
+
+
 __all__ = [
     "add_parameter",
     "remove_parameter",
     "rename_parameter",
+    "reorder_parameters",
     "sync_parameter_layout",
     "set_parameter_available_values",
     "set_parameter_default_values",
