@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pbirb_mcp.ops import (
+    actions,
     body,
     chart,
     dataset,
@@ -553,6 +554,127 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=parameters.reorder_parameters,
+    )
+
+    # ---- actions / tooltip / document-map (Phase 5) ---------------------
+
+    _DRILLTHROUGH_PARAM_ITEM = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "value": {"type": "string"},
+        },
+        "required": ["name", "value"],
+        "additionalProperties": False,
+    }
+
+    server.register_tool(
+        name="set_textbox_action",
+        description=(
+            "Set <Textbox>/<Action> to a Hyperlink (URL), Drillthrough "
+            "(another report + optional parameters), or BookmarkLink "
+            "(jump within document). target_expression accepts literal "
+            "text or =expression. drillthrough_parameters is a list of "
+            "{name, value} dicts wired into <Drillthrough>/<Parameters>. "
+            "Idempotent: same action_type + target + parameters → "
+            "{changed: false}, no save."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "textbox_name": {"type": "string"},
+                "action_type": {
+                    "type": "string",
+                    "enum": ["Hyperlink", "Drillthrough", "BookmarkLink"],
+                },
+                "target_expression": {"type": "string"},
+                "drillthrough_parameters": {
+                    "type": "array",
+                    "items": _DRILLTHROUGH_PARAM_ITEM,
+                },
+            },
+            "required": [
+                "path",
+                "textbox_name",
+                "action_type",
+                "target_expression",
+            ],
+            "additionalProperties": False,
+        },
+        handler=actions.set_textbox_action,
+    )
+    server.register_tool(
+        name="set_image_action",
+        description=(
+            "Same shape as set_textbox_action but operates on a named "
+            "<Image>. action_type ∈ Hyperlink / Drillthrough / "
+            "BookmarkLink. Returns {image, kind, action_type, changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "image_name": {"type": "string"},
+                "action_type": {
+                    "type": "string",
+                    "enum": ["Hyperlink", "Drillthrough", "BookmarkLink"],
+                },
+                "target_expression": {"type": "string"},
+                "drillthrough_parameters": {
+                    "type": "array",
+                    "items": _DRILLTHROUGH_PARAM_ITEM,
+                },
+            },
+            "required": [
+                "path",
+                "image_name",
+                "action_type",
+                "target_expression",
+            ],
+            "additionalProperties": False,
+        },
+        handler=actions.set_image_action,
+    )
+    server.register_tool(
+        name="set_textbox_tooltip",
+        description=(
+            "Set <Textbox>/<ToolTip>. Literal text or =expression. Pass "
+            "'' to clear. Idempotent. Returns {textbox, kind, changed: "
+            "bool}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "textbox_name": {"type": "string"},
+                "text_or_expression": {"type": "string"},
+            },
+            "required": ["path", "textbox_name", "text_or_expression"],
+            "additionalProperties": False,
+        },
+        handler=actions.set_textbox_tooltip,
+    )
+    server.register_tool(
+        name="set_document_map_label",
+        description=(
+            "Set <DocumentMapLabel> on any named ReportItem (Textbox / "
+            "Image / Rectangle / Chart / Tablix / etc.). Surfaces in "
+            "the rendered report's navigable document-map / "
+            "table-of-contents pane. Pass '' to clear. Idempotent. "
+            "Returns {element, kind, changed: bool}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "element_name": {"type": "string"},
+                "label_or_expression": {"type": "string"},
+            },
+            "required": ["path", "element_name", "label_or_expression"],
+            "additionalProperties": False,
+        },
+        handler=actions.set_document_map_label,
     )
 
     server.register_tool(
