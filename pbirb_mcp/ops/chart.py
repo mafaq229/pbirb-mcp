@@ -955,6 +955,254 @@ def set_chart_data_labels(
     }
 
 
+# ---- set_chart_palette ----------------------------------------------------
+
+
+# RDL Palette enum. The values match Report Builder's "Palette" dropdown.
+_VALID_PALETTES = frozenset(
+    {
+        "Default",
+        "EarthTones",
+        "Excel",
+        "GrayScale",
+        "Light",
+        "Pastel",
+        "SemiTransparent",
+        "Berry",
+        "Chocolate",
+        "Fire",
+        "SeaGreen",
+        "BrightPastel",
+    }
+)
+
+
+# Per RDL XSD, the position of <Palette> inside <Chart>: it sits AFTER
+# the chart-content blocks (ChartCategoryHierarchy, ChartSeriesHierarchy,
+# ChartData, ChartAreas, ChartLegends, ChartTitles) but BEFORE the
+# layout fields (DataSetName, Top, Left, ...). The ordering helper
+# inserts before DataSetName when present.
+def _set_chart_palette_text(chart: etree._Element, palette_text: str) -> bool:
+    """Write or rewrite ``<Palette>`` on a chart. Returns True iff the
+    text actually changed. Empty string ``""`` removes the element."""
+    existing = find_child(chart, "Palette")
+    if palette_text == "":
+        if existing is not None:
+            chart.remove(existing)
+            return True
+        return False
+    if existing is not None:
+        if existing.text == palette_text:
+            return False
+        existing.text = palette_text
+        return True
+    new = etree.Element(q("Palette"))
+    new.text = palette_text
+    # Insert before DataSetName (always present in our writes); fall
+    # back to before the next layout child or append.
+    for anchor_local in (
+        "DataSetName",
+        "Top",
+        "Left",
+        "Height",
+        "Width",
+        "Style",
+    ):
+        anchor = find_child(chart, anchor_local)
+        if anchor is not None:
+            anchor.addprevious(new)
+            return True
+    chart.append(new)
+    return True
+
+
+def set_chart_palette(
+    path: str,
+    chart_name: str,
+    palette: str,
+) -> dict[str, Any]:
+    """Set the chart's ``<Palette>`` element.
+
+    ``palette`` ∈ Default / EarthTones / Excel / GrayScale / Light /
+    Pastel / SemiTransparent / Berry / Chocolate / Fire / SeaGreen /
+    BrightPastel. Pass ``""`` to clear (Report Builder falls back to
+    its default palette).
+
+    Returns ``{chart, kind, changed: bool}``. False when the palette
+    text was already what was requested (no save).
+    """
+    if palette != "" and palette not in _VALID_PALETTES:
+        raise ValueError(
+            f"palette {palette!r} not valid; expected one of "
+            f"{sorted(_VALID_PALETTES)} or '' to clear"
+        )
+
+    doc = RDLDocument.open(path)
+    chart = _resolve_chart(doc, chart_name)
+    changed = _set_chart_palette_text(chart, palette)
+    if changed:
+        doc.save()
+    return {
+        "chart": chart_name,
+        "kind": "Chart",
+        "changed": changed,
+    }
+
+
+# ---- set_series_color -----------------------------------------------------
+
+
+def set_series_color(
+    path: str,
+    chart_name: str,
+    series_name: str,
+    color: str,
+) -> dict[str, Any]:
+    """Write ``<Color>`` into a named series's ``<Style>`` block.
+
+    Overrides the chart palette for this single series. Pass ``""`` to
+    clear the explicit color (the series falls back to the palette).
+
+    The color value can be any RDL color string Report Builder accepts:
+    a named color (``"Red"``), a hex string (``"#FF0000"``), or an
+    expression (``"=IIf(...)"``).
+
+    Returns ``{chart, series, kind, changed: bool}``.
+    """
+    doc = RDLDocument.open(path)
+    chart = _resolve_chart(doc, chart_name)
+    sc = _series_collection(chart)
+    series = _find_series(sc, series_name)
+
+    style = find_child(series, "Style")
+    if color == "":
+        if style is None:
+            return {
+                "chart": chart_name,
+                "series": series_name,
+                "kind": "ChartSeries",
+                "changed": False,
+            }
+        existing = find_child(style, "Color")
+        if existing is None:
+            return {
+                "chart": chart_name,
+                "series": series_name,
+                "kind": "ChartSeries",
+                "changed": False,
+            }
+        style.remove(existing)
+        if len(list(style)) == 0:
+            series.remove(style)
+        doc.save()
+        return {
+            "chart": chart_name,
+            "series": series_name,
+            "kind": "ChartSeries",
+            "changed": True,
+        }
+
+    if style is None:
+        style = etree.Element(q("Style"))
+        # ChartSeries child order: Type, Subtype, EmptyPoints, Style,
+        # ChartItemInLegend, ChartDataLabel, ChartMarker, ...
+        # Insert after Subtype (always present) — that places Style
+        # in the right position relative to the children we emit.
+        anchor = find_child(series, "Subtype")
+        if anchor is None:
+            anchor = find_child(series, "Type")
+        if anchor is not None:
+            anchor.addnext(style)
+        else:
+            series.append(style)
+
+    encoded = encode_text(color)
+    existing = find_child(style, "Color")
+    if existing is not None:
+        if existing.text == encoded:
+            return {
+                "chart": chart_name,
+                "series": series_name,
+                "kind": "ChartSeries",
+                "changed": False,
+            }
+        existing.text = encoded
+    else:
+        new = etree.SubElement(style, q("Color"))
+        new.text = encoded
+
+    doc.save()
+    return {
+        "chart": chart_name,
+        "series": series_name,
+        "kind": "ChartSeries",
+        "changed": True,
+    }
+
+
+# ---- set_chart_title -----------------------------------------------------
+
+
+def _resolve_chart_title(
+    chart: etree._Element, title_name: str = "Default"
+) -> etree._Element:
+    """Resolve ``<ChartTitle Name="...">``. Raises if missing."""
+    titles_root = find_child(chart, "ChartTitles")
+    if titles_root is None:
+        raise ElementNotFoundError(
+            f"chart {chart.get('Name')!r} has no <ChartTitles>"
+        )
+    for title in find_children(titles_root, "ChartTitle"):
+        if title.get("Name") == title_name:
+            return title
+    raise ElementNotFoundError(
+        f"no ChartTitle named {title_name!r} in chart {chart.get('Name')!r}"
+    )
+
+
+def set_chart_title(
+    path: str,
+    chart_name: str,
+    text: str,
+    title_name: str = "Default",
+) -> dict[str, Any]:
+    """Update ``<ChartTitle>/<Caption>``.
+
+    ``text`` can be literal text or an ``=expression``. ``title_name``
+    defaults to ``"Default"`` (the only title the template emits).
+
+    Returns ``{chart, title, kind, changed: bool}``.
+    """
+    doc = RDLDocument.open(path)
+    chart = _resolve_chart(doc, chart_name)
+    title = _resolve_chart_title(chart, title_name)
+
+    encoded = encode_text(text)
+    caption = find_child(title, "Caption")
+    if caption is not None:
+        if caption.text == encoded:
+            return {
+                "chart": chart_name,
+                "title": title_name,
+                "kind": "ChartTitle",
+                "changed": False,
+            }
+        caption.text = encoded
+    else:
+        # Per RDL XSD, ChartTitle's Caption is the first child.
+        new = etree.Element(q("Caption"))
+        new.text = encoded
+        title.insert(0, new)
+
+    doc.save()
+    return {
+        "chart": chart_name,
+        "title": title_name,
+        "kind": "ChartTitle",
+        "changed": True,
+    }
+
+
 __all__ = [
     "add_chart_series",
     "insert_chart_from_template",
@@ -962,5 +1210,8 @@ __all__ = [
     "set_chart_axis",
     "set_chart_data_labels",
     "set_chart_legend",
+    "set_chart_palette",
     "set_chart_series_type",
+    "set_chart_title",
+    "set_series_color",
 ]

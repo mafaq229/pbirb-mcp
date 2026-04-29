@@ -24,7 +24,10 @@ from pbirb_mcp.ops.chart import (
     set_chart_axis,
     set_chart_data_labels,
     set_chart_legend,
+    set_chart_palette,
     set_chart_series_type,
+    set_chart_title,
+    set_series_color,
 )
 from pbirb_mcp.ops.reader import get_chart
 from pbirb_mcp.server import MCPServer
@@ -722,6 +725,208 @@ class TestSetChartDataLabels:
             )
 
 
+class TestSetChartPalette:
+    def test_changes_palette(self, rich_path):
+        result = set_chart_palette(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            palette="Pastel",
+        )
+        assert result["changed"] is True
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        assert c["palette"] == "Pastel"
+
+    def test_no_op_when_unchanged(self, rich_path):
+        # Fixture's palette is already EarthTones.
+        before = (rich_path).read_bytes()
+        result = set_chart_palette(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            palette="EarthTones",
+        )
+        assert result["changed"] is False
+        assert (rich_path).read_bytes() == before
+
+    def test_clear_with_empty_string(self, rich_path):
+        result = set_chart_palette(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            palette="",
+        )
+        assert result["changed"] is True
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        assert c["palette"] is None
+
+    def test_clear_idempotent_when_already_absent(self, rdl_path):
+        # Insert a chart without a palette (template-default).
+        insert_chart_from_template(
+            path=str(rdl_path),
+            name="NoPalette",
+            dataset_name="MainDataset",
+            category_field="ProductName",
+            value_field="Amount",
+            top="0in",
+            left="0in",
+            width="3in",
+            height="2in",
+        )
+        result = set_chart_palette(
+            path=str(rdl_path),
+            chart_name="NoPalette",
+            palette="",
+        )
+        assert result["changed"] is False
+
+    def test_invalid_palette_rejected(self, rich_path):
+        with pytest.raises(ValueError):
+            set_chart_palette(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                palette="NotARealPalette",
+            )
+
+    def test_round_trip_safe(self, rich_path):
+        set_chart_palette(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            palette="GrayScale",
+        )
+        RDLDocument.open(rich_path).validate()
+
+
+class TestSetSeriesColor:
+    def test_writes_color_into_style(self, rich_path):
+        result = set_series_color(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            color="#FF0000",
+        )
+        assert result["changed"] is True
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        amount = next(s for s in c["series"] if s["name"] == "Amount")
+        assert amount["color"] == "#FF0000"
+
+    def test_named_color(self, rich_path):
+        set_series_color(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Quantity",
+            color="Red",
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        qty = next(s for s in c["series"] if s["name"] == "Quantity")
+        assert qty["color"] == "Red"
+
+    def test_no_op_when_color_unchanged(self, rich_path):
+        set_series_color(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            color="#FF0000",
+        )
+        result = set_series_color(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            color="#FF0000",
+        )
+        assert result["changed"] is False
+
+    def test_clear_with_empty_string(self, rich_path):
+        set_series_color(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            color="#FF0000",
+        )
+        result = set_series_color(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            color="",
+        )
+        assert result["changed"] is True
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        amount = next(s for s in c["series"] if s["name"] == "Amount")
+        assert amount["color"] is None
+
+    def test_clear_idempotent_when_no_color_set(self, rich_path):
+        # Fresh fixture has no Color on any series.
+        result = set_series_color(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            color="",
+        )
+        assert result["changed"] is False
+
+    def test_unknown_series_rejected(self, rich_path):
+        with pytest.raises(ElementNotFoundError):
+            set_series_color(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="Ghost",
+                color="Red",
+            )
+
+    def test_round_trip_safe(self, rich_path):
+        set_series_color(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            color="#00FF00",
+        )
+        RDLDocument.open(rich_path).validate()
+
+
+class TestSetChartTitle:
+    def test_changes_caption(self, rich_path):
+        result = set_chart_title(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            text="Quarterly Sales",
+        )
+        assert result["changed"] is True
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        assert c["title"]["caption"] == "Quarterly Sales"
+
+    def test_no_op_when_unchanged(self, rich_path):
+        # Fixture title is "Sales by Product".
+        result = set_chart_title(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            text="Sales by Product",
+        )
+        assert result["changed"] is False
+
+    def test_expression_caption(self, rich_path):
+        set_chart_title(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            text="=Globals!ExecutionTime",
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        assert c["title"]["caption"] == "=Globals!ExecutionTime"
+
+    def test_unknown_title_name_rejected(self, rich_path):
+        with pytest.raises(ElementNotFoundError):
+            set_chart_title(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                title_name="Subtitle",
+                text="X",
+            )
+
+    def test_round_trip_safe(self, rich_path):
+        set_chart_title(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            text="Round-Trip Title",
+        )
+        RDLDocument.open(rich_path).validate()
+
+
 class TestBackwardCompatibleImport:
     """v0.3 moved insert_chart_from_template from ops.templates → ops.chart.
     The old import path stays valid via re-export so existing callers
@@ -788,3 +993,16 @@ class TestToolRegistration:
         )["result"]["tools"]
         names = {t["name"] for t in listing}
         assert {"set_chart_legend", "set_chart_data_labels"} <= names
+
+    def test_palette_color_title_registered(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )["result"]["tools"]
+        names = {t["name"] for t in listing}
+        assert {
+            "set_chart_palette",
+            "set_series_color",
+            "set_chart_title",
+        } <= names

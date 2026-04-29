@@ -1568,6 +1568,70 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=chart.set_chart_data_labels,
     )
+    server.register_tool(
+        name="set_chart_palette",
+        description=(
+            "Set <Palette> on a chart. palette ∈ Default / EarthTones / "
+            "Excel / GrayScale / Light / Pastel / SemiTransparent / "
+            "Berry / Chocolate / Fire / SeaGreen / BrightPastel. Pass "
+            "'' to clear (RB falls back to its built-in default palette). "
+            "Returns {chart, kind, changed: bool}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "palette": {"type": "string"},
+            },
+            "required": ["path", "chart_name", "palette"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_palette,
+    )
+    server.register_tool(
+        name="set_series_color",
+        description=(
+            "Write <Color> into a named series's <Style> block, "
+            "overriding the chart palette for just that series. color "
+            "accepts a named color ('Red'), a hex string ('#FF0000'), "
+            "or an =expression. Pass '' to clear (series falls back to "
+            "the palette). Returns {chart, series, kind, changed: bool}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+                "color": {"type": "string"},
+            },
+            "required": ["path", "chart_name", "series_name", "color"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_series_color,
+    )
+    server.register_tool(
+        name="set_chart_title",
+        description=(
+            "Update <ChartTitle>/<Caption>. text can be literal text or "
+            "an =expression. title_name defaults to 'Default' (the only "
+            "title the template emits). Returns {chart, title, kind, "
+            "changed: bool}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "text": {"type": "string"},
+                "title_name": {"type": "string", "default": "Default"},
+            },
+            "required": ["path", "chart_name", "text"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_title,
+    )
 
     _STATIC_VALUE_ITEM = {
         "oneOf": [
