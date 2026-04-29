@@ -1957,6 +1957,61 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=reader.find_textboxes_by_style,
     )
+    server.register_tool(
+        name="style_tablix_row",
+        description=(
+            "Apply the same style kwargs to every cell in a tablix row "
+            "in ONE call. Replaces the 12-individual-set_textbox_style-"
+            "calls-per-row pattern. row accepts: integer (0-based body "
+            "row index), 'header' (first leaf with KeepWithGroup=After "
+            "— the column header row), 'details' (the Details leaf "
+            "row), '<group>_header' (header row of a named row group), "
+            "'<group>_footer' (footer row when present, e.g. after "
+            "add_subtotal_row). Same style kwargs as set_textbox_style "
+            "(font_*, color, background_color, border_*, padding_*, "
+            "writing_mode, can_grow, can_shrink, etc.). Delegates "
+            "writes to set_textbox_style_bulk. Returns {tablix, row, "
+            "row_index, kind, cells, changed, skipped}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "row": {
+                    "oneOf": [
+                        {"type": "integer", "minimum": 0},
+                        {"type": "string"},
+                    ],
+                    "description": (
+                        "Integer index, or one of: 'header', 'details', "
+                        "'<group>_header', '<group>_footer'."
+                    ),
+                },
+                "font_family": {"type": ["string", "null"]},
+                "font_size": {"type": ["string", "null"]},
+                "font_weight": {"type": ["string", "null"]},
+                "color": {"type": ["string", "null"]},
+                "background_color": {"type": ["string", "null"]},
+                "border_style": {"type": ["string", "null"]},
+                "border_color": {"type": ["string", "null"]},
+                "border_width": {"type": ["string", "null"]},
+                "text_align": {"type": ["string", "null"]},
+                "vertical_align": {"type": ["string", "null"]},
+                "format": {"type": ["string", "null"]},
+                "padding_top": {"type": ["string", "null"]},
+                "padding_bottom": {"type": ["string", "null"]},
+                "padding_left": {"type": ["string", "null"]},
+                "padding_right": {"type": ["string", "null"]},
+                "writing_mode": {"type": ["string", "null"]},
+                "can_grow": {"type": ["boolean", "null"]},
+                "can_shrink": {"type": ["boolean", "null"]},
+            },
+            "required": ["path", "tablix_name", "row"],
+            "additionalProperties": False,
+        },
+        handler=styling.style_tablix_row,
+    )
 
     _BODY_TEXTBOX_SCHEMA = {
         "type": "object",
