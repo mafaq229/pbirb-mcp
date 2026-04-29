@@ -51,7 +51,7 @@ controls, and decoration tools.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from lxml import etree
 
@@ -261,6 +261,232 @@ def insert_chart_from_template(
     }
 
 
+_VALID_AXIS_KINDS = ("Category", "Value")
+
+
+# Per RDL XSD, ChartAxis child order (subset relevant to set_chart_axis):
+#   Title, Visible, Minimum, Maximum, LogScale, Interval,
+#   IntervalType, Margin, Style, ChartMajorGridLines, ...
+_CHART_AXIS_CHILD_ORDER = (
+    "Title",
+    "Visible",
+    "Minimum",
+    "Maximum",
+    "LogScale",
+    "Interval",
+    "IntervalType",
+    "Margin",
+    "ChartMajorGridLines",
+    "ChartMinorGridLines",
+    "ChartMajorTickMarks",
+    "ChartMinorTickMarks",
+    "Style",
+)
+
+
+def _resolve_chart_axis(
+    chart: etree._Element, axis_kind: str, axis_name: str = "Primary"
+) -> etree._Element:
+    """Resolve the named ``<ChartAxis>`` inside the Default ChartArea's
+    Category or Value collection. Raises ``ElementNotFoundError`` if the
+    chart's structure is malformed or the named axis isn't present.
+    """
+    if axis_kind not in _VALID_AXIS_KINDS:
+        raise ValueError(
+            f"axis must be one of {_VALID_AXIS_KINDS}; got {axis_kind!r}"
+        )
+    chart_areas = find_child(chart, "ChartAreas")
+    if chart_areas is None:
+        raise ElementNotFoundError(
+            f"chart {chart.get('Name')!r} has no <ChartAreas>"
+        )
+    chart_area = find_child(chart_areas, "ChartArea")
+    if chart_area is None:
+        raise ElementNotFoundError(
+            f"chart {chart.get('Name')!r} has no <ChartArea>"
+        )
+    axes_local = "ChartCategoryAxes" if axis_kind == "Category" else "ChartValueAxes"
+    axes_root = find_child(chart_area, axes_local)
+    if axes_root is None:
+        raise ElementNotFoundError(
+            f"chart {chart.get('Name')!r} has no <{axes_local}>"
+        )
+    for axis in find_children(axes_root, "ChartAxis"):
+        if axis.get("Name") == axis_name:
+            return axis
+    raise ElementNotFoundError(
+        f"no {axis_kind} axis named {axis_name!r} in chart "
+        f"{chart.get('Name')!r}"
+    )
+
+
+def _insert_axis_child_in_order(
+    axis: etree._Element, new_child: etree._Element
+) -> None:
+    """Insert ``new_child`` into ``axis`` respecting the schema-required
+    sibling order; replace any existing element of the same local name."""
+    new_local = etree.QName(new_child).localname
+    existing = find_child(axis, new_local)
+    if existing is not None:
+        axis.replace(existing, new_child)
+        return
+    if new_local in _CHART_AXIS_CHILD_ORDER:
+        new_idx = _CHART_AXIS_CHILD_ORDER.index(new_local)
+        for i, child in enumerate(list(axis)):
+            local = etree.QName(child).localname
+            if (
+                local in _CHART_AXIS_CHILD_ORDER
+                and _CHART_AXIS_CHILD_ORDER.index(local) > new_idx
+            ):
+                axis.insert(i, new_child)
+                return
+    axis.append(new_child)
+
+
+def _set_axis_title(axis: etree._Element, title: str) -> None:
+    """Write or rewrite ``<Title><Caption>title</Caption></Title>``.
+    Empty string clears the entire <Title> block."""
+    existing = find_child(axis, "Title")
+    if title == "":
+        if existing is not None:
+            axis.remove(existing)
+        return
+    new_title = etree.Element(q("Title"))
+    etree.SubElement(new_title, q("Caption")).text = encode_text(title)
+    if existing is not None:
+        axis.replace(existing, new_title)
+    else:
+        _insert_axis_child_in_order(axis, new_title)
+
+
+def _set_axis_format(axis: etree._Element, format_value: str) -> None:
+    """Write the axis numeric/date format. The format lives at
+    ``ChartAxis/Style/Format`` (the box-style sub-element), not as a
+    direct ChartAxis child."""
+    style = find_child(axis, "Style")
+    if style is None:
+        style = etree.Element(q("Style"))
+        _insert_axis_child_in_order(axis, style)
+    fmt = find_child(style, "Format")
+    if format_value == "":
+        if fmt is not None:
+            style.remove(fmt)
+        return
+    if fmt is None:
+        fmt = etree.SubElement(style, q("Format"))
+    fmt.text = encode_text(format_value)
+
+
+def _set_axis_simple_text(
+    axis: etree._Element, local: str, value: str
+) -> None:
+    """Common path for Minimum / Maximum / Interval / LogScale / Visible."""
+    if value == "":
+        existing = find_child(axis, local)
+        if existing is not None:
+            axis.remove(existing)
+        return
+    new_node = etree.Element(q(local))
+    new_node.text = encode_text(value)
+    _insert_axis_child_in_order(axis, new_node)
+
+
+def set_chart_axis(
+    path: str,
+    chart_name: str,
+    axis: str,
+    axis_name: str = "Primary",
+    title: Optional[str] = None,
+    format: Optional[str] = None,  # noqa: A002 - tool-facing arg name; intentional
+    min: Optional[str] = None,  # noqa: A002 - tool-facing
+    max: Optional[str] = None,  # noqa: A002 - tool-facing
+    log_scale: Optional[bool] = None,
+    interval: Optional[str] = None,
+    visible: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Configure a chart axis: title, numeric format, range, log scale,
+    interval, visibility.
+
+    ``axis`` ∈ {Category, Value}. ``axis_name`` defaults to ``Primary``
+    (the only axis the template emits today; pass an explicit name when
+    the chart has secondary axes).
+
+    Each optional field follows the canonical "None = unchanged, '' =
+    clear the element" convention. ``log_scale`` / ``visible`` accept
+    booleans; pass ``None`` to leave them unchanged.
+
+    Returns ``{chart, axis, axis_name, kind, changed: list[str]}`` —
+    empty list when nothing was actually set (no-op short-circuit, no
+    save).
+    """
+    if axis not in _VALID_AXIS_KINDS:
+        raise ValueError(
+            f"axis must be one of {_VALID_AXIS_KINDS}; got {axis!r}"
+        )
+
+    flags = {
+        "title": title,
+        "format": format,
+        "min": min,
+        "max": max,
+        "log_scale": log_scale,
+        "interval": interval,
+        "visible": visible,
+    }
+    if all(v is None for v in flags.values()):
+        return {
+            "chart": chart_name,
+            "axis": axis,
+            "axis_name": axis_name,
+            "kind": "ChartAxis",
+            "changed": [],
+        }
+
+    doc = RDLDocument.open(path)
+    chart = _resolve_chart(doc, chart_name)
+    axis_el = _resolve_chart_axis(chart, axis, axis_name)
+
+    changed: list[str] = []
+
+    if title is not None:
+        _set_axis_title(axis_el, title)
+        changed.append("Title")
+
+    if format is not None:
+        _set_axis_format(axis_el, format)
+        changed.append("Style.Format")
+
+    if min is not None:
+        _set_axis_simple_text(axis_el, "Minimum", min)
+        changed.append("Minimum")
+
+    if max is not None:
+        _set_axis_simple_text(axis_el, "Maximum", max)
+        changed.append("Maximum")
+
+    if log_scale is not None:
+        _set_axis_simple_text(axis_el, "LogScale", "true" if log_scale else "false")
+        changed.append("LogScale")
+
+    if interval is not None:
+        _set_axis_simple_text(axis_el, "Interval", interval)
+        changed.append("Interval")
+
+    if visible is not None:
+        _set_axis_simple_text(axis_el, "Visible", "true" if visible else "false")
+        changed.append("Visible")
+
+    if changed:
+        doc.save()
+    return {
+        "chart": chart_name,
+        "axis": axis,
+        "axis_name": axis_name,
+        "kind": "ChartAxis",
+        "changed": changed,
+    }
+
+
 # ---- add_chart_series -----------------------------------------------------
 
 
@@ -449,5 +675,6 @@ __all__ = [
     "add_chart_series",
     "insert_chart_from_template",
     "remove_chart_series",
+    "set_chart_axis",
     "set_chart_series_type",
 ]

@@ -21,6 +21,7 @@ from pbirb_mcp.ops.chart import (
     add_chart_series,
     insert_chart_from_template,
     remove_chart_series,
+    set_chart_axis,
     set_chart_series_type,
 )
 from pbirb_mcp.ops.reader import get_chart
@@ -435,6 +436,126 @@ class TestComboChartSurface:
         assert types == ["Bar", "Column", "Line"]
 
 
+class TestSetChartAxis:
+    def test_sets_title(self, rich_path):
+        result = set_chart_axis(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            axis="Value",
+            title="Revenue (USD)",
+        )
+        assert "Title" in result["changed"]
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        assert c["axes"]["value"][0]["title"] == "Revenue (USD)"
+
+    def test_clears_title_with_empty_string(self, rich_path):
+        # Fixture's value axis has title "Amount (USD)"; clear it.
+        set_chart_axis(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            axis="Value",
+            title="",
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        assert c["axes"]["value"][0]["title"] is None
+
+    def test_sets_format_via_style(self, rich_path):
+        set_chart_axis(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            axis="Value",
+            format="$#,0",
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        assert c["axes"]["value"][0]["format"] == "$#,0"
+
+    def test_sets_min_max_interval(self, rich_path):
+        result = set_chart_axis(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            axis="Value",
+            min="0",
+            max="1000",
+            interval="100",
+        )
+        assert set(result["changed"]) >= {"Minimum", "Maximum", "Interval"}
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        val = c["axes"]["value"][0]
+        assert val["min"] == "0"
+        assert val["max"] == "1000"
+        assert val["interval"] == "100"
+
+    def test_log_scale_visible_booleans(self, rich_path):
+        result = set_chart_axis(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            axis="Value",
+            log_scale=True,
+            visible=False,
+        )
+        assert "LogScale" in result["changed"]
+        assert "Visible" in result["changed"]
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        val = c["axes"]["value"][0]
+        assert val["log_scale"] == "true"
+        assert val["visible"] == "false"
+
+    def test_no_args_returns_empty_changed(self, rich_path):
+        before = (rich_path).read_bytes()
+        result = set_chart_axis(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            axis="Value",
+        )
+        assert result["changed"] == []
+        # No-op short-circuit: no save.
+        assert (rich_path).read_bytes() == before
+
+    def test_invalid_axis_kind_rejected(self, rich_path):
+        with pytest.raises(ValueError):
+            set_chart_axis(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                axis="Whatever",
+            )
+
+    def test_unknown_axis_name_rejected(self, rich_path):
+        with pytest.raises(ElementNotFoundError):
+            set_chart_axis(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                axis="Value",
+                axis_name="Secondary",  # not present in fixture
+                title="X",
+            )
+
+    def test_category_axis_too(self, rich_path):
+        result = set_chart_axis(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            axis="Category",
+            title="Category",
+        )
+        assert "Title" in result["changed"]
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        assert c["axes"]["category"][0]["title"] == "Category"
+
+    def test_round_trip_safe(self, rich_path):
+        set_chart_axis(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            axis="Value",
+            title="Y",
+            format="#,0.00",
+            min="0",
+            max="1000",
+            log_scale=False,
+            interval="50",
+            visible=True,
+        )
+        RDLDocument.open(rich_path).validate()
+
+
 class TestBackwardCompatibleImport:
     """v0.3 moved insert_chart_from_template from ops.templates → ops.chart.
     The old import path stays valid via re-export so existing callers
@@ -483,3 +604,12 @@ class TestToolRegistration:
             "remove_chart_series",
             "set_chart_series_type",
         } <= names
+
+    def test_set_chart_axis_registered(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )["result"]["tools"]
+        names = {t["name"] for t in listing}
+        assert "set_chart_axis" in names

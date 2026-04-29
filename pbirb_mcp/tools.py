@@ -1480,6 +1480,45 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=chart.set_chart_series_type,
     )
+    server.register_tool(
+        name="set_chart_axis",
+        description=(
+            "Configure a chart axis: title (Caption), format (numeric/"
+            "date format string in <Style>/<Format>), min/max range, "
+            "log_scale, interval, visible. axis ∈ {Category, Value}; "
+            "axis_name defaults to 'Primary' (the only axis the template "
+            "emits — pass a real name for secondary axes). "
+            "All field args are optional; pass '' to clear an element. "
+            "Returns {chart, axis, axis_name, kind, changed: list[str]} "
+            "with the affected sub-element names."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "axis": {
+                    "type": "string",
+                    "description": "Category or Value",
+                    "enum": ["Category", "Value"],
+                },
+                "axis_name": {"type": "string", "default": "Primary"},
+                "title": {"type": "string"},
+                "format": {
+                    "type": "string",
+                    "description": "Numeric/date format, e.g. '#,0.00' or 'MMM yyyy'.",
+                },
+                "min": {"type": "string"},
+                "max": {"type": "string"},
+                "log_scale": {"type": "boolean"},
+                "interval": {"type": "string"},
+                "visible": {"type": "boolean"},
+            },
+            "required": ["path", "chart_name", "axis"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_axis,
+    )
 
     _STATIC_VALUE_ITEM = {
         "oneOf": [
