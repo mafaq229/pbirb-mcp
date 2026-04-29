@@ -905,6 +905,22 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=parameters.rename_parameter,
     )
+    server.register_tool(
+        name="sync_parameter_layout",
+        description=(
+            "Bring <ReportParametersLayout>/<GridLayoutDefinition>/"
+            "<CellDefinitions> into sync with <ReportParameters>. Drops "
+            "cells whose ParameterName no longer exists; appends cells "
+            "for parameters that have no entry, placed at the next free "
+            "(row, col) slot. add_parameter / remove_parameter / "
+            "rename_parameter call this internally; the standalone tool "
+            "is for repairing legacy reports authored before v0.3.0 "
+            "where the layout drifted. No-op when the report has no "
+            "<ReportParametersLayout>. Returns {added, removed}."
+        ),
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=parameters.sync_parameter_layout,
+    )
 
     server.register_tool(
         name="set_detail_row_visibility",

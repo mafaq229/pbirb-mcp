@@ -397,6 +397,283 @@ def _all_parameter_names(doc: RDLDocument) -> list[str]:
     ]
 
 
+# ---- ReportParametersLayout sync ------------------------------------------
+
+
+def _grid_layout_definition(
+    layout_root: etree._Element,
+) -> Optional[etree._Element]:
+    """Return ``<GridLayoutDefinition>`` if present (modern RDL form)."""
+    return find_child(layout_root, "GridLayoutDefinition")
+
+
+def _cell_definitions(grid: etree._Element) -> Optional[etree._Element]:
+    return find_child(grid, "CellDefinitions")
+
+
+def _cell_parameter_name(cell: etree._Element) -> Optional[str]:
+    pn = find_child(cell, "ParameterName")
+    return pn.text if pn is not None and pn.text else None
+
+
+def _max_row_col_in_grid(grid: etree._Element) -> tuple[int, int]:
+    """Return (max_row, max_col) of any cell in the grid; (-1, -1) if empty."""
+    cells = _cell_definitions(grid)
+    if cells is None:
+        return -1, -1
+    max_row = -1
+    max_col = -1
+    for cell in find_children(cells, "CellDefinition"):
+        ri = find_child(cell, "RowIndex")
+        ci = find_child(cell, "ColumnIndex")
+        try:
+            row = int(ri.text) if ri is not None and ri.text else -1
+            col = int(ci.text) if ci is not None and ci.text else -1
+        except ValueError:
+            continue
+        if row > max_row:
+            max_row = row
+        if col > max_col:
+            max_col = col
+    return max_row, max_col
+
+
+def _build_cell_definition(
+    parameter_name: str, row_index: int, column_index: int
+) -> etree._Element:
+    """Build a <CellDefinition> with the canonical child order."""
+    cell = etree.Element(q("CellDefinition"))
+    etree.SubElement(cell, q("ColumnIndex")).text = str(column_index)
+    etree.SubElement(cell, q("RowIndex")).text = str(row_index)
+    etree.SubElement(cell, q("ParameterName")).text = parameter_name
+    return cell
+
+
+def _set_grid_dimension(grid: etree._Element, local: str, value: int) -> None:
+    """Write or update <NumberOfColumns>/<NumberOfRows> as a child of grid.
+    Per RDL XSD, NumberOfColumns and NumberOfRows precede CellDefinitions."""
+    existing = find_child(grid, local)
+    if existing is not None:
+        existing.text = str(value)
+        return
+    new = etree.Element(q(local))
+    new.text = str(value)
+    cells = find_child(grid, "CellDefinitions")
+    if cells is not None:
+        cells.addprevious(new)
+    else:
+        grid.append(new)
+
+
+def sync_parameter_layout(path: str) -> dict[str, Any]:
+    """Bring ``<ReportParametersLayout>/<GridLayoutDefinition>/<CellDefinitions>``
+    into sync with ``<ReportParameters>``.
+
+    Drops cells whose ``<ParameterName>`` no longer exists, and appends
+    cells for parameters that have no entry. New cells are placed at the
+    next free ``(row, col)`` slot — first scan for an empty column on the
+    last row, falling back to a new row if the existing rows are full.
+    Updates ``<NumberOfRows>`` and ``<NumberOfColumns>`` to fit.
+
+    Returns ``{added: [name...], removed: [name...]}``. A no-op call with
+    nothing to sync returns the empty lists and doesn't touch the file
+    bytes — safe to call defensively.
+
+    No-op for reports that don't carry a layout block at all.
+    """
+    doc = RDLDocument.open(path)
+    layout_root = find_child(doc.root, "ReportParametersLayout")
+    if layout_root is None:
+        return {"added": [], "removed": []}
+    grid = _grid_layout_definition(layout_root)
+    if grid is None:
+        # Older form without GridLayoutDefinition wrapper — ignore.
+        return {"added": [], "removed": []}
+    cells_root = _cell_definitions(grid)
+
+    declared = _all_parameter_names(doc)
+    declared_set = set(declared)
+
+    cell_names: list[Optional[str]] = []
+    if cells_root is not None:
+        for cell in find_children(cells_root, "CellDefinition"):
+            cell_names.append(_cell_parameter_name(cell))
+
+    removed: list[str] = []
+    if cells_root is not None:
+        for cell in list(cells_root):
+            pname = _cell_parameter_name(cell)
+            if pname is not None and pname not in declared_set:
+                cells_root.remove(cell)
+                removed.append(pname)
+
+    added: list[str] = []
+    if cells_root is None:
+        cells_root = etree.SubElement(grid, q("CellDefinitions"))
+    existing_in_cells = {n for n in cell_names if n is not None and n in declared_set}
+    cols_node = find_child(grid, "NumberOfColumns")
+    try:
+        ncols = int(cols_node.text) if cols_node is not None and cols_node.text else 0
+    except ValueError:
+        ncols = 0
+    if ncols <= 0:
+        ncols = 4  # Report Builder default
+
+    max_row, _max_col = _max_row_col_in_grid(grid)
+    next_row = max_row if max_row >= 0 else 0
+    # Track the highest column actually occupied on the row we'll append to.
+    cells_on_next_row: list[int] = []
+    if cells_root is not None:
+        for cell in find_children(cells_root, "CellDefinition"):
+            ri = find_child(cell, "RowIndex")
+            ci = find_child(cell, "ColumnIndex")
+            try:
+                row = int(ri.text) if ri is not None and ri.text else -1
+                col = int(ci.text) if ci is not None and ci.text else -1
+            except ValueError:
+                continue
+            if row == next_row and col >= 0:
+                cells_on_next_row.append(col)
+
+    next_col = (max(cells_on_next_row) + 1) if cells_on_next_row else 0
+
+    for pname in declared:
+        if pname in existing_in_cells:
+            continue
+        # Wrap to a new row when this row is full.
+        if next_col >= ncols:
+            next_row += 1
+            next_col = 0
+            cells_on_next_row = []
+        cells_root.append(_build_cell_definition(pname, next_row, next_col))
+        added.append(pname)
+        next_col += 1
+
+    # Update NumberOfRows / NumberOfColumns to fit.
+    final_rows = next_row + 1 if (added or cells_on_next_row) else max(0, max_row + 1)
+    rows_node = find_child(grid, "NumberOfRows")
+    try:
+        existing_rows = (
+            int(rows_node.text) if rows_node is not None and rows_node.text else 0
+        )
+    except ValueError:
+        existing_rows = 0
+    if final_rows > existing_rows:
+        _set_grid_dimension(grid, "NumberOfRows", final_rows)
+    if cols_node is None:
+        _set_grid_dimension(grid, "NumberOfColumns", ncols)
+
+    if added or removed:
+        doc.save()
+    return {"added": added, "removed": removed}
+
+
+def _sync_parameter_layout_in_doc(doc: RDLDocument) -> tuple[list[str], list[str]]:
+    """In-process variant: applies the same logic to ``doc`` without saving.
+    Used by add/remove/rename helpers that already have an open RDLDocument
+    and will save themselves once.
+
+    Returns ``(added, removed)``.
+    """
+    layout_root = find_child(doc.root, "ReportParametersLayout")
+    if layout_root is None:
+        return [], []
+    grid = _grid_layout_definition(layout_root)
+    if grid is None:
+        return [], []
+    cells_root = _cell_definitions(grid)
+
+    declared = _all_parameter_names(doc)
+    declared_set = set(declared)
+
+    removed: list[str] = []
+    if cells_root is not None:
+        for cell in list(cells_root):
+            pname = _cell_parameter_name(cell)
+            if pname is not None and pname not in declared_set:
+                cells_root.remove(cell)
+                removed.append(pname)
+
+    added: list[str] = []
+    if cells_root is None:
+        cells_root = etree.SubElement(grid, q("CellDefinitions"))
+    existing_in_cells = {
+        _cell_parameter_name(c)
+        for c in find_children(cells_root, "CellDefinition")
+        if _cell_parameter_name(c) is not None and _cell_parameter_name(c) in declared_set
+    }
+
+    cols_node = find_child(grid, "NumberOfColumns")
+    try:
+        ncols = int(cols_node.text) if cols_node is not None and cols_node.text else 0
+    except ValueError:
+        ncols = 0
+    if ncols <= 0:
+        ncols = 4
+
+    max_row, _ = _max_row_col_in_grid(grid)
+    next_row = max_row if max_row >= 0 else 0
+    cells_on_next_row: list[int] = []
+    for cell in find_children(cells_root, "CellDefinition"):
+        ri = find_child(cell, "RowIndex")
+        ci = find_child(cell, "ColumnIndex")
+        try:
+            row = int(ri.text) if ri is not None and ri.text else -1
+            col = int(ci.text) if ci is not None and ci.text else -1
+        except ValueError:
+            continue
+        if row == next_row and col >= 0:
+            cells_on_next_row.append(col)
+    next_col = (max(cells_on_next_row) + 1) if cells_on_next_row else 0
+
+    for pname in declared:
+        if pname in existing_in_cells:
+            continue
+        if next_col >= ncols:
+            next_row += 1
+            next_col = 0
+            cells_on_next_row = []
+        cells_root.append(_build_cell_definition(pname, next_row, next_col))
+        added.append(pname)
+        next_col += 1
+
+    final_rows = next_row + 1 if (added or cells_on_next_row) else max(0, max_row + 1)
+    rows_node = find_child(grid, "NumberOfRows")
+    try:
+        existing_rows = (
+            int(rows_node.text) if rows_node is not None and rows_node.text else 0
+        )
+    except ValueError:
+        existing_rows = 0
+    if final_rows > existing_rows:
+        _set_grid_dimension(grid, "NumberOfRows", final_rows)
+    if cols_node is None:
+        _set_grid_dimension(grid, "NumberOfColumns", ncols)
+
+    return added, removed
+
+
+def _rename_parameter_in_layout(doc: RDLDocument, old_name: str, new_name: str) -> int:
+    """Rewrite every ``<CellDefinition>/<ParameterName>`` matching ``old_name``
+    to ``new_name``. Returns the count of cells touched."""
+    layout_root = find_child(doc.root, "ReportParametersLayout")
+    if layout_root is None:
+        return 0
+    grid = _grid_layout_definition(layout_root)
+    if grid is None:
+        return 0
+    cells_root = _cell_definitions(grid)
+    if cells_root is None:
+        return 0
+    rewritten = 0
+    for cell in find_children(cells_root, "CellDefinition"):
+        pn = find_child(cell, "ParameterName")
+        if pn is not None and pn.text == old_name:
+            pn.text = new_name
+            rewritten += 1
+    return rewritten
+
+
 def add_parameter(
     path: str,
     name: str,
@@ -461,11 +738,14 @@ def add_parameter(
         node.text = "true" if value else "false"
         _set_or_replace_in_order(new_param, node)
 
+    layout_added, _ = _sync_parameter_layout_in_doc(doc)
+
     doc.save()
     return {
         "parameter": name,
         "type": type,
         "prompt": prompt,
+        "layout_synced": name in layout_added,
     }
 
 
@@ -532,8 +812,15 @@ def remove_parameter(
         if gp is not None:
             gp.remove(parent)
 
+    _added, layout_removed = _sync_parameter_layout_in_doc(doc)
+
     doc.save()
-    return {"parameter": name, "removed": True, "force": force}
+    return {
+        "parameter": name,
+        "removed": True,
+        "force": force,
+        "layout_synced": name in layout_removed,
+    }
 
 
 def rename_parameter(
@@ -605,11 +892,14 @@ def rename_parameter(
     for el, new_text in rewrites:
         el.text = new_text
 
+    layout_cells_rewritten = _rename_parameter_in_layout(doc, old_name, new_name)
+
     doc.save()
     return {
         "old_name": old_name,
         "new_name": new_name,
         "references_rewritten": len(rewrites),
+        "layout_cells_rewritten": layout_cells_rewritten,
     }
 
 
@@ -617,6 +907,7 @@ __all__ = [
     "add_parameter",
     "remove_parameter",
     "rename_parameter",
+    "sync_parameter_layout",
     "set_parameter_available_values",
     "set_parameter_default_values",
     "set_parameter_prompt",
