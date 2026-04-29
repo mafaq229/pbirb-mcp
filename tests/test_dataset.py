@@ -17,9 +17,11 @@ from pathlib import Path
 
 import pytest
 
+from lxml import etree
+
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.xpath import RDL_NS
+from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child
 from pbirb_mcp.ops.dataset import (
     add_query_parameter,
     remove_query_parameter,
@@ -106,6 +108,97 @@ class TestUpdateDatasetQuery:
         )
         doc = RDLDocument.open(rdl_path)
         doc.validate()  # no raise
+
+
+def _inject_designer_state(rdl_path: Path, dataset_name: str, statement_text: str):
+    """Add a <rd:DesignerState>/<Statement> block to the named DataSet's
+    <Query>, mimicking what Power BI Report Builder writes for PBIDATASET
+    queries authored via the Query Designer GUI."""
+    doc = RDLDocument.open(rdl_path)
+    ds = next(
+        d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == dataset_name
+    )
+    query = find_child(ds, "Query")
+    designer_state = etree.SubElement(query, f"{{{RD_NS}}}DesignerState")
+    statement = etree.SubElement(designer_state, f"{{{RD_NS}}}Statement")
+    statement.text = statement_text
+    doc.save()
+
+
+class TestUpdateDatasetQueryDesignerStateSync:
+    """update_dataset_query must rewrite <rd:DesignerState>/<Statement>
+    in lockstep with <CommandText>. Without this, the Query Designer GUI
+    in Report Builder shows stale DAX while the runtime executes the new
+    DAX — invisibly confusing.
+    """
+
+    def test_designer_state_statement_synced(self, rdl_path):
+        _inject_designer_state(
+            rdl_path, "MainDataset", "OLD: EVALUATE 'OldTable'"
+        )
+        result = update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body="NEW: EVALUATE 'NewTable'",
+        )
+        assert result["designer_state_synced"] is True
+
+        doc = RDLDocument.open(rdl_path)
+        ds = next(
+            d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == "MainDataset"
+        )
+        statement = ds.find(f"{{{RDL_NS}}}Query/{{{RD_NS}}}DesignerState/{{{RD_NS}}}Statement")
+        assert statement is not None
+        assert statement.text == "NEW: EVALUATE 'NewTable'"
+
+    def test_no_designer_state_returns_false(self, rdl_path):
+        # Fixture has no DesignerState — the sync flag is False.
+        result = update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body="EVALUATE 'Sales'",
+        )
+        assert result["designer_state_synced"] is False
+
+    def test_designer_state_no_statement_returns_false(self, rdl_path):
+        # Inject an empty DesignerState (no Statement child); sync stays
+        # a no-op so we don't synthesise data we don't have.
+        doc = RDLDocument.open(rdl_path)
+        ds = next(
+            d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == "MainDataset"
+        )
+        query = find_child(ds, "Query")
+        etree.SubElement(query, f"{{{RD_NS}}}DesignerState")
+        doc.save()
+
+        result = update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body="EVALUATE 'Sales'",
+        )
+        assert result["designer_state_synced"] is False
+
+    def test_no_op_dax_returns_false(self, rdl_path):
+        _inject_designer_state(rdl_path, "MainDataset", "STATIC")
+        # Same DAX value → sync is a no-op (text doesn't change).
+        result = update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body="STATIC",
+        )
+        assert result["designer_state_synced"] is False
+
+    def test_sync_routes_through_encode_text(self, rdl_path):
+        """The DesignerState rewrite must use encode_text — same idempotent
+        encoding as CommandText. Otherwise a pre-encoded DAX double-encodes."""
+        _inject_designer_state(rdl_path, "MainDataset", "old")
+        update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body='EVALUATE FILTER(\'X\', \'X\'[c] = "A &amp; B")',
+        )
+        # Disk should not contain &amp;amp;
+        assert b"&amp;amp;" not in rdl_path.read_bytes()
 
 
 # ---- add_query_parameter ---------------------------------------------------

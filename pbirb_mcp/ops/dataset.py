@@ -23,7 +23,7 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset
-from pbirb_mcp.core.xpath import find_child, find_children, q
+from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q
 
 
 def _query(dataset: etree._Element) -> etree._Element:
@@ -54,6 +54,38 @@ def _find_query_parameter(qp_root: etree._Element, name: str) -> Optional[etree.
 # ---- update_dataset_query --------------------------------------------------
 
 
+def _sync_designer_state_statement(query: etree._Element, dax_body: str) -> bool:
+    """Rewrite ``<rd:DesignerState>/<Statement>`` to mirror ``<CommandText>``.
+
+    PBIDATASET datasets carry a ``<rd:DesignerState>`` block whose
+    ``<Statement>`` child is what the Report Builder Query Designer GUI
+    displays. When ``<CommandText>`` changes but ``<Statement>`` doesn't,
+    the GUI shows stale DAX, masking the actual runtime query. This sync
+    keeps the two in step.
+
+    Returns True iff a Statement element was rewritten (used by callers
+    that surface a ``changed`` list — none today, but the helper stays
+    truthful so future callers don't have to guess).
+
+    Non-PBIDATASET datasets typically have no DesignerState; the function
+    is a no-op for those (returns False).
+    """
+    designer_state = query.find(f"{{{RD_NS}}}DesignerState")
+    if designer_state is None:
+        return False
+    statement = designer_state.find(f"{{{RD_NS}}}Statement")
+    if statement is None:
+        # Some PBIDATASET DesignerState blocks omit Statement entirely
+        # (rare, but valid). Don't synthesise one — Report Builder only
+        # populates it for queries authored via the Query Designer.
+        return False
+    new_text = encode_text(dax_body)
+    if statement.text == new_text:
+        return False
+    statement.text = new_text
+    return True
+
+
 def update_dataset_query(path: str, dataset_name: str, dax_body: str) -> dict[str, Any]:
     if not dax_body or not dax_body.strip():
         raise ValueError("dax_body must be a non-empty DAX expression")
@@ -73,9 +105,14 @@ def update_dataset_query(path: str, dataset_name: str, dax_body: str) -> dict[st
         else:
             query.insert(0, cmd)
     cmd.text = encode_text(dax_body)
+    designer_state_synced = _sync_designer_state_statement(query, dax_body)
 
     doc.save()
-    return {"dataset": dataset_name, "command_text": dax_body}
+    return {
+        "dataset": dataset_name,
+        "command_text": dax_body,
+        "designer_state_synced": designer_state_synced,
+    }
 
 
 # ---- query parameter management -------------------------------------------
