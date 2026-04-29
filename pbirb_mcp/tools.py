@@ -428,6 +428,67 @@ def register_all_tools(server: MCPServer) -> None:
         handler=dataset.remove_calculated_field,
     )
     server.register_tool(
+        name="add_dataset_field",
+        description=(
+            "Append a data-bound <Field> to a dataset's <Fields> block. "
+            "Writes <DataField>data_field</DataField> (and optional "
+            "<rd:TypeName>type_name</rd:TypeName>). Distinct from "
+            "add_calculated_field which writes <Value> for derived "
+            "fields. Use after rewriting the DAX to declare a new "
+            "column that came back from the query but isn't yet in "
+            "<Fields>. Refuses on duplicate field name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "field_name": {"type": "string"},
+                "data_field": {
+                    "type": "string",
+                    "description": (
+                        "Source column reference, e.g. 'Sales[ProductID]' "
+                        "or '[Region]' (the form depends on DAX shape)."
+                    ),
+                },
+                "type_name": {
+                    "type": ["string", "null"],
+                    "description": (
+                        ".NET type, e.g. 'System.String', "
+                        "'System.DateTime', 'System.Decimal'. Optional."
+                    ),
+                },
+            },
+            "required": ["path", "dataset_name", "field_name", "data_field"],
+            "additionalProperties": False,
+        },
+        handler=dataset.add_dataset_field,
+    )
+    server.register_tool(
+        name="refresh_dataset_fields",
+        description=(
+            "Sync a dataset's <Fields> block against the shape detected "
+            "in its DAX <CommandText>. Eliminates the manual 'open "
+            "Report Builder → right-click → Refresh Fields' step after "
+            "a query rewrite. Recognises SELECTCOLUMNS aliases and "
+            "Table[Col] tokens (SUMMARIZECOLUMNS / ad-hoc). Adds missing "
+            "fields; lists orphans without auto-removing (caller decides "
+            "what to drop). Returns {added, orphans, unchanged, "
+            "warnings}. Cheap regex-based detection — bare EVALUATE "
+            "'Table' returns a warning."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+            },
+            "required": ["path", "dataset_name"],
+            "additionalProperties": False,
+        },
+        handler=dataset.refresh_dataset_fields,
+    )
+    server.register_tool(
         name="set_image_sizing",
         description=(
             "Set <Image>/<Sizing> on a named Image. sizing ∈ AutoSize / "

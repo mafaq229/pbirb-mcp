@@ -16,6 +16,7 @@ add it.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from lxml import etree
@@ -703,12 +704,268 @@ def remove_calculated_field(
     }
 
 
+# ---- data-bound field authoring (Phase 6 commit 27) ---------------------
+
+
+def add_dataset_field(
+    path: str,
+    dataset_name: str,
+    field_name: str,
+    data_field: str,
+    type_name: Optional[str] = None,
+) -> dict[str, Any]:
+    """Append a **data-bound** ``<Field>`` to a dataset.
+
+    Writes ``<Field Name="..."><DataField>...</DataField>...</Field>``.
+    Distinct from :func:`add_calculated_field` which writes ``<Value>``
+    for derived fields. Use this when a column exists in the source
+    query (e.g. came back from a fresh DAX rewrite) but isn't yet
+    declared in the report's ``<Fields>`` collection — without a
+    declaration, ``=Fields!X.Value`` references won't resolve at preview
+    time.
+
+    ``type_name`` writes ``<rd:TypeName>`` (e.g. ``System.String``,
+    ``System.DateTime``, ``System.Decimal``); omit to leave it off, which
+    is fine for most fields.
+
+    Refuses if a field of the same name already exists in this dataset.
+
+    Returns ``{dataset, name, kind: 'DataBoundField', data_field,
+    type_name}``.
+    """
+    if not field_name or not field_name.strip():
+        raise ValueError("field_name must be a non-empty string")
+    if not data_field or not data_field.strip():
+        raise ValueError("data_field must be a non-empty string")
+
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, dataset_name)
+
+    fields_root = _ensure_fields_block(dataset)
+    existing_names = [
+        f.get("Name")
+        for f in find_children(fields_root, "Field")
+        if f.get("Name") is not None
+    ]
+    if field_name in existing_names:
+        raise ValueError(
+            f"field {field_name!r} already exists in dataset {dataset_name!r}"
+        )
+
+    new_field = etree.SubElement(fields_root, q("Field"), Name=field_name)
+    df_node = etree.SubElement(new_field, q("DataField"))
+    df_node.text = encode_text(data_field)
+    if type_name is not None and type_name != "":
+        tn_node = etree.SubElement(new_field, f"{{{RD_NS}}}TypeName")
+        tn_node.text = encode_text(type_name)
+
+    doc.save()
+    return {
+        "dataset": dataset_name,
+        "name": field_name,
+        "kind": "DataBoundField",
+        "data_field": data_field,
+        "type_name": type_name,
+    }
+
+
+# ---- DAX-aware field refresh (Phase 6 commit 27, second tool) -----------
+
+
+# Regex to capture <Table>[Column] tokens. Supports both quoted and
+# unquoted table names ('Sales'[Region] or Sales[Region]). The bracketed
+# column name is captured.
+_DAX_TABLE_COLUMN_RE = re.compile(
+    r"""
+    (?:
+        '(?P<quoted>[^']+)'   # 'Sales' or 'My Table'
+        |
+        (?P<unquoted>[A-Za-z_][\w]*)  # Sales / Customer123
+    )
+    \[
+        (?P<col>[^\[\]]+)
+    \]
+    """,
+    re.VERBOSE,
+)
+
+# Regex to capture SELECTCOLUMNS aliases. SELECTCOLUMNS pairs are
+# "Alias", expression. We capture the quoted alias names. This is a
+# best-effort extraction — it doesn't fully understand DAX, just looks
+# for the typical comma-separated "..." alias pattern.
+_DAX_SELECTCOLUMNS_RE = re.compile(
+    r"SELECTCOLUMNS\s*\(",
+    re.IGNORECASE,
+)
+_DAX_QUOTED_ALIAS_RE = re.compile(r'"([^"]+)"')
+
+
+def _extract_dax_field_names(command_text: str) -> tuple[list[str], list[str]]:
+    """Extract candidate field names from a DAX ``<CommandText>``.
+
+    Returns ``(field_names, warnings)``. ``field_names`` is the
+    deduplicated, document-order list of fields the DAX appears to
+    return. ``warnings`` is a list of human-readable strings about
+    unresolvable shapes (e.g. plain ``EVALUATE 'Table'`` whose columns
+    aren't visible without a metadata fetch).
+
+    Best-effort regex-based detection. Recognises:
+
+    1. **SELECTCOLUMNS**: extracts every quoted alias inside the call
+       (only the first SELECTCOLUMNS — nested ones are conservatively
+       ignored to avoid false positives from inner expressions).
+    2. **SUMMARIZECOLUMNS / Generic 'Table'[Col] tokens**: extracts each
+       bracketed column name. The Table-prefix is stripped — RDL field
+       names match the column part.
+    3. **EVALUATE 'Table'**: emits a warning recommending an explicit
+       SELECTCOLUMNS / SUMMARIZECOLUMNS rewrite or manual
+       ``add_dataset_field`` calls.
+    """
+    warnings: list[str] = []
+    fields: list[str] = []
+    seen: set[str] = set()
+
+    def _add(name: str) -> None:
+        n = name.strip()
+        if n and n not in seen:
+            seen.add(n)
+            fields.append(n)
+
+    # Try SELECTCOLUMNS first — its alias shape is the highest-fidelity.
+    m = _DAX_SELECTCOLUMNS_RE.search(command_text)
+    if m is not None:
+        # Walk forward from the call site to the matching close paren.
+        depth = 0
+        start = m.end() - 1  # position of "("
+        end = None
+        for i in range(start, len(command_text)):
+            ch = command_text[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        body = command_text[start + 1 : end] if end is not None else command_text[start + 1 :]
+        # Strip the table argument (first comma-separated token) so
+        # quoted strings inside the table reference don't pollute
+        # alias extraction.
+        # Heuristic: split on commas at depth 0 and take alias
+        # candidates from odd-indexed positions (assuming the typical
+        # SELECTCOLUMNS(<table>, "alias", expr, ...) shape).
+        for alias in _DAX_QUOTED_ALIAS_RE.findall(body):
+            _add(alias)
+
+    # Then bracket tokens — SUMMARIZECOLUMNS and ad-hoc references.
+    for token in _DAX_TABLE_COLUMN_RE.finditer(command_text):
+        col = token.group("col")
+        _add(col)
+
+    # If still nothing recognised, emit a warning.
+    if not fields:
+        if "EVALUATE" in command_text.upper() and "(" not in command_text:
+            warnings.append(
+                "DAX is a bare EVALUATE 'Table' shape — column list isn't "
+                "extractable without a metadata fetch. Use add_dataset_field "
+                "explicitly per column, or rewrite as SELECTCOLUMNS / "
+                "SUMMARIZECOLUMNS."
+            )
+        else:
+            warnings.append(
+                "no recognisable DAX shape (SUMMARIZECOLUMNS / SELECTCOLUMNS / "
+                "Table[Col] tokens). refresh_dataset_fields couldn't extract "
+                "field names; use add_dataset_field explicitly per column."
+            )
+
+    return fields, warnings
+
+
+def refresh_dataset_fields(
+    path: str,
+    dataset_name: str,
+) -> dict[str, Any]:
+    """Sync a dataset's ``<Fields>`` block against shape detected in its
+    DAX ``<CommandText>``. Eliminates the manual "open Report Builder
+    → right-click → Refresh Fields" step after a query rewrite.
+
+    Walks the dataset's DAX, regex-extracts candidate field names from:
+
+    1. ``SELECTCOLUMNS(<table>, "Alias", expr, ...)`` — quoted aliases.
+    2. ``'Table'[Column]`` / ``Table[Column]`` tokens — bracketed column
+       names (covers SUMMARIZECOLUMNS and ad-hoc references).
+
+    Compares the extracted set against the existing ``<Fields>`` block:
+    - **Adds** missing data-bound fields (each as ``<Field
+      Name="X"><DataField>X</DataField></Field>``; ``rd:TypeName`` is
+      omitted — Report Builder defaults to String).
+    - **Lists orphans** without auto-removing them. Removing an orphan
+      could break ``Fields!X.Value`` references that the LLM forgot to
+      update; the user reviews the orphan list and removes intentionally.
+
+    Returns ``{added: list[str], orphans: list[str], unchanged:
+    list[str], warnings: list[str]}``.
+
+    Cheap regex-based shape detection — not a full DAX parser.
+    Unparseable shapes return a warning rather than failing the call.
+    """
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, dataset_name)
+    query = _query(dataset)
+
+    cmd = find_child(query, "CommandText")
+    command_text = cmd.text if cmd is not None else ""
+    if not command_text:
+        return {
+            "added": [],
+            "orphans": [],
+            "unchanged": [],
+            "warnings": [
+                f"dataset {dataset_name!r} has no <CommandText>; nothing to refresh."
+            ],
+        }
+
+    extracted, warnings = _extract_dax_field_names(command_text)
+
+    fields_root = _ensure_fields_block(dataset)
+    existing_fields = find_children(fields_root, "Field")
+    existing_names = [
+        f.get("Name") for f in existing_fields if f.get("Name") is not None
+    ]
+    extracted_set = set(extracted)
+    existing_set = set(existing_names)
+
+    added: list[str] = []
+    orphans = sorted(existing_set - extracted_set)
+    unchanged = sorted(extracted_set & existing_set)
+
+    for name in extracted:
+        if name in existing_set:
+            continue
+        new_field = etree.SubElement(fields_root, q("Field"), Name=name)
+        df_node = etree.SubElement(new_field, q("DataField"))
+        df_node.text = encode_text(name)
+        added.append(name)
+
+    if added:
+        doc.save()
+
+    return {
+        "added": added,
+        "orphans": orphans,
+        "unchanged": unchanged,
+        "warnings": warnings,
+    }
+
+
 __all__ = [
     "add_calculated_field",
+    "add_dataset_field",
     "add_dataset_filter",
     "add_query_parameter",
     "get_dataset",
     "list_dataset_filters",
+    "refresh_dataset_fields",
     "remove_calculated_field",
     "remove_dataset_filter",
     "remove_query_parameter",

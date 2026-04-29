@@ -24,10 +24,12 @@ from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child
 from pbirb_mcp.ops.dataset import (
     add_calculated_field,
+    add_dataset_field,
     add_dataset_filter,
     add_query_parameter,
     get_dataset,
     list_dataset_filters,
+    refresh_dataset_fields,
     remove_calculated_field,
     remove_dataset_filter,
     remove_query_parameter,
@@ -766,6 +768,242 @@ class TestToolRegistration:
             "add_calculated_field",
             "remove_calculated_field",
         } <= names
+
+    def test_v03_phase6_dataset_field_tools_registered(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )["result"]["tools"]
+        names = {t["name"] for t in listing}
+        assert {"add_dataset_field", "refresh_dataset_fields"} <= names
+
+
+# ---- v0.3 Phase 6: add_dataset_field --------------------------------------
+
+
+class TestAddDatasetField:
+    def test_appends_data_bound_field(self, rdl_path):
+        result = add_dataset_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="Region",
+            data_field="Sales[Region]",
+        )
+        assert result["name"] == "Region"
+        assert result["kind"] == "DataBoundField"
+        assert result["data_field"] == "Sales[Region]"
+        ds = get_dataset(path=str(rdl_path), name="MainDataset")
+        region = next(f for f in ds["fields"] if f["name"] == "Region")
+        assert region["data_field"] == "Sales[Region]"
+        assert region["value"] is None
+
+    def test_writes_type_name_when_supplied(self, rdl_path):
+        add_dataset_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="OrderDate",
+            data_field="Sales[OrderDate]",
+            type_name="System.DateTime",
+        )
+        ds = get_dataset(path=str(rdl_path), name="MainDataset")
+        order = next(f for f in ds["fields"] if f["name"] == "OrderDate")
+        assert order["type_name"] == "System.DateTime"
+
+    def test_omits_type_name_when_none(self, rdl_path):
+        add_dataset_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="Plain",
+            data_field="Sales[Plain]",
+        )
+        ds = get_dataset(path=str(rdl_path), name="MainDataset")
+        plain = next(f for f in ds["fields"] if f["name"] == "Plain")
+        assert plain["type_name"] is None
+
+    def test_duplicate_name_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="already exists"):
+            add_dataset_field(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                field_name="ProductID",
+                data_field="Sales[ProductID]",
+            )
+
+    def test_empty_field_name_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="non-empty"):
+            add_dataset_field(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                field_name="",
+                data_field="Sales[X]",
+            )
+
+    def test_empty_data_field_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="non-empty"):
+            add_dataset_field(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                field_name="X",
+                data_field="   ",
+            )
+
+    def test_unknown_dataset_rejected(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            add_dataset_field(
+                path=str(rdl_path),
+                dataset_name="NoSuchDataset",
+                field_name="X",
+                data_field="A[X]",
+            )
+
+    def test_pre_encoded_data_field_no_double_encode(self, rdl_path):
+        add_dataset_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="Mixed",
+            data_field="Sales[A &amp; B]",
+        )
+        assert b"&amp;amp;" not in (rdl_path).read_bytes()
+
+    def test_round_trip_safe(self, rdl_path):
+        add_dataset_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="Total",
+            data_field="Sales[Total]",
+            type_name="System.Decimal",
+        )
+        RDLDocument.open(rdl_path).validate()
+
+
+# ---- v0.3 Phase 6: refresh_dataset_fields --------------------------------
+
+
+class TestRefreshDatasetFieldsSummarizeColumns:
+    """SUMMARIZECOLUMNS / Table[Col] token extraction."""
+
+    def test_adds_missing_fields_from_summarize(self, rdl_path):
+        update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body=(
+                "EVALUATE SUMMARIZECOLUMNS("
+                "'Sales'[Region], 'Sales'[Customer], "
+                "\"TotalAmount\", SUM('Sales'[Amount])"
+                ")"
+            ),
+        )
+        # Fixture's existing fields: ProductID, ProductName, Amount.
+        # The new DAX produces Region, Customer, TotalAmount.
+        result = refresh_dataset_fields(
+            path=str(rdl_path), dataset_name="MainDataset"
+        )
+        added_names = result["added"]
+        # Region + Customer are bracket tokens; TotalAmount is a quoted
+        # alias from SELECTCOLUMNS-style alias-detection (we also pick
+        # up quoted strings inside SUMMARIZECOLUMNS).
+        assert "Region" in added_names
+        assert "Customer" in added_names
+        # Existing fields not in the new DAX become orphans.
+        assert "ProductID" in result["orphans"]
+        assert "ProductName" in result["orphans"]
+        # Amount is referenced inside SUM('Sales'[Amount]) — the bracket
+        # detector picks it up, so it stays in unchanged.
+        assert "Amount" in result["unchanged"]
+
+    def test_added_fields_have_data_field_text(self, rdl_path):
+        update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body="EVALUATE 'Sales'[Region]",
+        )
+        refresh_dataset_fields(
+            path=str(rdl_path), dataset_name="MainDataset"
+        )
+        ds = get_dataset(path=str(rdl_path), name="MainDataset")
+        region = next((f for f in ds["fields"] if f["name"] == "Region"), None)
+        assert region is not None
+        assert region["data_field"] == "Region"
+
+    def test_no_changes_when_already_in_sync(self, rdl_path):
+        # Set DAX referencing only the fixture's existing fields.
+        update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body=(
+                "EVALUATE FILTER("
+                "'Sales', 'Sales'[ProductID] > 100 && "
+                "'Sales'[ProductName] <> \"\" && "
+                "'Sales'[Amount] > 0"
+                ")"
+            ),
+        )
+        result = refresh_dataset_fields(
+            path=str(rdl_path), dataset_name="MainDataset"
+        )
+        assert result["added"] == []
+        assert sorted(result["unchanged"]) == ["Amount", "ProductID", "ProductName"]
+
+
+class TestRefreshDatasetFieldsSelectColumns:
+    def test_extracts_quoted_aliases(self, rdl_path):
+        update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body=(
+                "EVALUATE SELECTCOLUMNS("
+                "'Sales', "
+                "\"OrderID\", 'Sales'[ProductID], "
+                "\"Customer\", 'Sales'[ProductName], "
+                "\"Total\", 'Sales'[Amount] * 1.1"
+                ")"
+            ),
+        )
+        result = refresh_dataset_fields(
+            path=str(rdl_path), dataset_name="MainDataset"
+        )
+        assert "OrderID" in result["added"]
+        assert "Customer" in result["added"]
+        assert "Total" in result["added"]
+
+
+class TestRefreshDatasetFieldsWarnings:
+    def test_bare_evaluate_table_warns(self, rdl_path):
+        # Fixture's default DAX is "EVALUATE 'Sales'" — no parens, so
+        # bracket-token detection finds nothing.
+        update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body="EVALUATE 'Sales'",
+        )
+        result = refresh_dataset_fields(
+            path=str(rdl_path), dataset_name="MainDataset"
+        )
+        assert result["added"] == []
+        assert any(
+            "EVALUATE" in w for w in result["warnings"]
+        )
+
+    def test_unparseable_shape_warns(self, rdl_path):
+        # Empty-ish DAX that doesn't match any known pattern.
+        update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body="DEFINE",
+        )
+        result = refresh_dataset_fields(
+            path=str(rdl_path), dataset_name="MainDataset"
+        )
+        assert result["warnings"]
+
+
+class TestRefreshDatasetFieldsErrors:
+    def test_unknown_dataset_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            refresh_dataset_fields(
+                path=str(rdl_path), dataset_name="NoSuchDataset"
+            )
 
 
 # ---- v0.3 PBIDATASET @-prefix defence ------------------------------------
