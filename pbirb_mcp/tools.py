@@ -34,6 +34,7 @@ from pbirb_mcp.ops import (
     validate,
     visibility,
 )
+from pbirb_mcp.ops import lint as _lint
 
 if TYPE_CHECKING:
     from pbirb_mcp.server import MCPServer
@@ -709,6 +710,34 @@ def register_all_tools(server: MCPServer) -> None:
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=validate.validate_report,
+    )
+
+    server.register_tool(
+        name="lint_report",
+        description=(
+            "Run static-analysis lint rules against an .rdl. Fifteen "
+            "rules cover the v0.2-session bug classes (multi-value-eq, "
+            "missing-field-reference, dangling-embedded-image, "
+            "pbidataset-at-prefix, parameter-layout-out-of-sync, "
+            "double-encoded-entities, stale-designer-state, "
+            "tablix-span-misplaced, etc.). Returns {issues, rules_run} "
+            "with each issue {severity, rule, location, message, "
+            "suggestion?}. Optional `rules` selects a subset by name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "rules": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional subset of rule names; default runs all 15.",
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=_lint.lint_report,
     )
 
     # ---- actions / tooltip / document-map (Phase 5) ---------------------
