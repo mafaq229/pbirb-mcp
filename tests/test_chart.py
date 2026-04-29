@@ -22,6 +22,8 @@ from pbirb_mcp.ops.chart import (
     insert_chart_from_template,
     remove_chart_series,
     set_chart_axis,
+    set_chart_data_labels,
+    set_chart_legend,
     set_chart_series_type,
 )
 from pbirb_mcp.ops.reader import get_chart
@@ -556,6 +558,170 @@ class TestSetChartAxis:
         RDLDocument.open(rich_path).validate()
 
 
+class TestSetChartLegend:
+    def test_sets_position(self, rich_path):
+        result = set_chart_legend(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            position="BottomCenter",
+        )
+        assert "Position" in result["changed"]
+        # Confirm via raw XML.
+        doc = RDLDocument.open(rich_path)
+        chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']")
+        legend = chart.find(f"{q('ChartLegends')}/{q('ChartLegend')}")
+        pos = find_child(legend, "Position")
+        assert pos.text == "BottomCenter"
+
+    def test_sets_hidden_when_visible_false(self, rich_path):
+        result = set_chart_legend(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            visible=False,
+        )
+        assert "Hidden" in result["changed"]
+        doc = RDLDocument.open(rich_path)
+        chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']")
+        legend = chart.find(f"{q('ChartLegends')}/{q('ChartLegend')}")
+        assert find_child(legend, "Hidden").text == "true"
+
+    def test_no_args_returns_empty_changed(self, rich_path):
+        before = (rich_path).read_bytes()
+        result = set_chart_legend(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+        )
+        assert result["changed"] == []
+        assert (rich_path).read_bytes() == before
+
+    def test_invalid_position_rejected(self, rich_path):
+        with pytest.raises(ValueError):
+            set_chart_legend(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                position="Floating",  # not in enum
+            )
+
+    def test_unknown_legend_name_rejected(self, rich_path):
+        with pytest.raises(ElementNotFoundError):
+            set_chart_legend(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                legend_name="Secondary",
+                position="TopRight",
+            )
+
+    def test_idempotent_when_position_unchanged(self, rich_path):
+        set_chart_legend(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            position="BottomCenter",
+        )
+        result = set_chart_legend(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            position="BottomCenter",
+        )
+        assert result["changed"] == []
+
+
+class TestSetChartDataLabels:
+    def test_visible_on_one_series(self, rich_path):
+        result = set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            visible=True,
+        )
+        assert result["series"] == ["Amount"]
+        assert "Visible" in result["changed"]
+        # Verify via raw XML.
+        doc = RDLDocument.open(rich_path)
+        chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']")
+        amount_series = next(
+            s
+            for s in chart.iter(f"{{{RDL_NS}}}ChartSeries")
+            if s.get("Name") == "Amount"
+        )
+        label = find_child(amount_series, "ChartDataLabel")
+        assert label is not None
+        assert find_child(label, "Visible").text == "true"
+
+    def test_visible_on_all_series_when_none(self, rich_path):
+        result = set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            visible=True,
+        )
+        # All three series in the rich fixture get touched.
+        assert sorted(result["series"]) == ["Amount", "Quantity", "Total"]
+        doc = RDLDocument.open(rich_path)
+        chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']")
+        for series in chart.iter(f"{{{RDL_NS}}}ChartSeries"):
+            label = find_child(series, "ChartDataLabel")
+            assert label is not None
+            assert find_child(label, "Visible").text == "true"
+
+    def test_format_lands_in_style(self, rich_path):
+        set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            format="$#,0",
+        )
+        doc = RDLDocument.open(rich_path)
+        chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']")
+        amount_series = next(
+            s
+            for s in chart.iter(f"{{{RDL_NS}}}ChartSeries")
+            if s.get("Name") == "Amount"
+        )
+        label = find_child(amount_series, "ChartDataLabel")
+        style = find_child(label, "Style")
+        assert find_child(style, "Format").text == "$#,0"
+
+    def test_clear_format_with_empty_string(self, rich_path):
+        set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            format="$#,0",
+        )
+        result = set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            format="",
+        )
+        assert "Style.Format" in result["changed"]
+        doc = RDLDocument.open(rich_path)
+        chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']")
+        amount_series = next(
+            s
+            for s in chart.iter(f"{{{RDL_NS}}}ChartSeries")
+            if s.get("Name") == "Amount"
+        )
+        label = find_child(amount_series, "ChartDataLabel")
+        style = find_child(label, "Style")
+        assert find_child(style, "Format") is None
+
+    def test_no_args_returns_empty_changed(self, rich_path):
+        result = set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+        )
+        assert result["changed"] == []
+
+    def test_unknown_series_rejected(self, rich_path):
+        with pytest.raises(ElementNotFoundError):
+            set_chart_data_labels(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="NoSuch",
+                visible=True,
+            )
+
+
 class TestBackwardCompatibleImport:
     """v0.3 moved insert_chart_from_template from ops.templates → ops.chart.
     The old import path stays valid via re-export so existing callers
@@ -613,3 +779,12 @@ class TestToolRegistration:
         )["result"]["tools"]
         names = {t["name"] for t in listing}
         assert "set_chart_axis" in names
+
+    def test_legend_and_labels_registered(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )["result"]["tools"]
+        names = {t["name"] for t in listing}
+        assert {"set_chart_legend", "set_chart_data_labels"} <= names

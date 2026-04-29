@@ -264,6 +264,53 @@ def insert_chart_from_template(
 _VALID_AXIS_KINDS = ("Category", "Value")
 
 
+# RDL Position enum for ChartLegend. Other valid positions exist
+# (LeftCenter, RightCenter, etc.); this list mirrors what Report Builder's
+# legend dropdown shows by default.
+_VALID_LEGEND_POSITIONS = frozenset(
+    {
+        "TopLeft",
+        "TopCenter",
+        "TopRight",
+        "LeftTop",
+        "LeftCenter",
+        "LeftBottom",
+        "RightTop",
+        "RightCenter",
+        "RightBottom",
+        "BottomLeft",
+        "BottomCenter",
+        "BottomRight",
+    }
+)
+
+
+# Per RDL XSD, ChartLegend child order (subset relevant here):
+#   Name (attr), Hidden, Position, Layout, DockOutsideChartArea, ...
+_CHART_LEGEND_CHILD_ORDER = (
+    "Hidden",
+    "Position",
+    "Layout",
+    "DockOutsideChartArea",
+    "ChartElementPosition",
+    "AutoFitTextDisabled",
+    "MinFontSize",
+    "BorderSkin",
+    "Style",
+)
+
+
+# Per RDL XSD, ChartDataLabel child order (subset):
+#   Visible, UseValueAsLabel, Position, Rotation, Style
+_CHART_DATA_LABEL_CHILD_ORDER = (
+    "Visible",
+    "UseValueAsLabel",
+    "Position",
+    "Rotation",
+    "Style",
+)
+
+
 # Per RDL XSD, ChartAxis child order (subset relevant to set_chart_axis):
 #   Title, Visible, Minimum, Maximum, LogScale, Interval,
 #   IntervalType, Margin, Style, ChartMajorGridLines, ...
@@ -671,10 +718,249 @@ def set_chart_series_type(
     }
 
 
+# ---- set_chart_legend ----------------------------------------------------
+
+
+def _resolve_chart_legend(
+    chart: etree._Element, legend_name: str = "Default"
+) -> etree._Element:
+    """Resolve the named ``<ChartLegend>``. Raises ElementNotFoundError
+    if the chart's <ChartLegends> block or the named legend is missing."""
+    legends_root = find_child(chart, "ChartLegends")
+    if legends_root is None:
+        raise ElementNotFoundError(
+            f"chart {chart.get('Name')!r} has no <ChartLegends>"
+        )
+    for legend in find_children(legends_root, "ChartLegend"):
+        if legend.get("Name") == legend_name:
+            return legend
+    raise ElementNotFoundError(
+        f"no ChartLegend named {legend_name!r} in chart {chart.get('Name')!r}"
+    )
+
+
+def _insert_legend_child_in_order(
+    legend: etree._Element, new_child: etree._Element
+) -> None:
+    new_local = etree.QName(new_child).localname
+    existing = find_child(legend, new_local)
+    if existing is not None:
+        legend.replace(existing, new_child)
+        return
+    if new_local in _CHART_LEGEND_CHILD_ORDER:
+        new_idx = _CHART_LEGEND_CHILD_ORDER.index(new_local)
+        for i, child in enumerate(list(legend)):
+            local = etree.QName(child).localname
+            if (
+                local in _CHART_LEGEND_CHILD_ORDER
+                and _CHART_LEGEND_CHILD_ORDER.index(local) > new_idx
+            ):
+                legend.insert(i, new_child)
+                return
+    legend.append(new_child)
+
+
+def set_chart_legend(
+    path: str,
+    chart_name: str,
+    legend_name: str = "Default",
+    position: Optional[str] = None,
+    visible: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Configure the named chart legend.
+
+    ``position`` ∈ TopLeft / TopCenter / TopRight / LeftTop / LeftCenter
+    / LeftBottom / RightTop / RightCenter / RightBottom / BottomLeft /
+    BottomCenter / BottomRight. ``visible=False`` writes ``<Hidden>true``;
+    ``visible=True`` writes ``<Hidden>false`` (or removes the element).
+
+    Returns ``{chart, legend, kind, changed: list[str]}`` — empty list
+    when nothing was supplied or all values match existing (no save).
+    """
+    if position is not None and position not in _VALID_LEGEND_POSITIONS:
+        raise ValueError(
+            f"position {position!r} not valid; expected one of "
+            f"{sorted(_VALID_LEGEND_POSITIONS)}"
+        )
+
+    if position is None and visible is None:
+        return {
+            "chart": chart_name,
+            "legend": legend_name,
+            "kind": "ChartLegend",
+            "changed": [],
+        }
+
+    doc = RDLDocument.open(path)
+    chart = _resolve_chart(doc, chart_name)
+    legend = _resolve_chart_legend(chart, legend_name)
+
+    changed: list[str] = []
+
+    if position is not None:
+        existing = find_child(legend, "Position")
+        if existing is None or existing.text != position:
+            new = etree.Element(q("Position"))
+            new.text = position
+            _insert_legend_child_in_order(legend, new)
+            changed.append("Position")
+
+    if visible is not None:
+        # RDL semantic: <Hidden>true</Hidden> hides; absence/false shows.
+        # Map visible=True → Hidden=false; visible=False → Hidden=true.
+        hidden_value = "false" if visible else "true"
+        existing = find_child(legend, "Hidden")
+        if existing is None or existing.text != hidden_value:
+            new = etree.Element(q("Hidden"))
+            new.text = hidden_value
+            _insert_legend_child_in_order(legend, new)
+            changed.append("Hidden")
+
+    if changed:
+        doc.save()
+    return {
+        "chart": chart_name,
+        "legend": legend_name,
+        "kind": "ChartLegend",
+        "changed": changed,
+    }
+
+
+# ---- set_chart_data_labels ----------------------------------------------
+
+
+def _ensure_series_data_label(series: etree._Element) -> etree._Element:
+    """Locate or create ``<ChartSeries>/<ChartDataLabel>``.
+
+    Per RDL XSD, ChartSeries child order: ChartDataPoints, Type, Subtype,
+    EmptyPoints, Style, ChartItemInLegend, ChartDataLabel, ChartMarker,
+    ChartEmptyPoints, LegendName, ... — ChartDataLabel comes after
+    ChartItemInLegend / Style.
+    """
+    label = find_child(series, "ChartDataLabel")
+    if label is not None:
+        return label
+    label = etree.Element(q("ChartDataLabel"))
+    # Insert immediately after ChartItemInLegend or Style if present;
+    # otherwise after Subtype (which is always present in our writes).
+    for anchor_local in ("ChartItemInLegend", "Style", "Subtype", "Type"):
+        anchor = find_child(series, anchor_local)
+        if anchor is not None:
+            anchor.addnext(label)
+            return label
+    series.append(label)
+    return label
+
+
+def _insert_data_label_child_in_order(
+    label: etree._Element, new_child: etree._Element
+) -> None:
+    new_local = etree.QName(new_child).localname
+    existing = find_child(label, new_local)
+    if existing is not None:
+        label.replace(existing, new_child)
+        return
+    if new_local in _CHART_DATA_LABEL_CHILD_ORDER:
+        new_idx = _CHART_DATA_LABEL_CHILD_ORDER.index(new_local)
+        for i, child in enumerate(list(label)):
+            local = etree.QName(child).localname
+            if (
+                local in _CHART_DATA_LABEL_CHILD_ORDER
+                and _CHART_DATA_LABEL_CHILD_ORDER.index(local) > new_idx
+            ):
+                label.insert(i, new_child)
+                return
+    label.append(new_child)
+
+
+def set_chart_data_labels(
+    path: str,
+    chart_name: str,
+    series_name: Optional[str] = None,
+    visible: Optional[bool] = None,
+    format: Optional[str] = None,  # noqa: A002
+) -> dict[str, Any]:
+    """Configure ``<ChartDataLabel>`` for one series or all series in
+    a chart.
+
+    When ``series_name`` is None, the change applies to every series.
+    Otherwise only the named series is touched.
+
+    ``visible=True`` writes ``<Visible>true</Visible>``; False writes
+    false; None leaves the element unchanged.
+
+    ``format`` writes a numeric/date format into the per-label
+    ``<Style>/<Format>`` sub-element. Pass ``''`` to clear it.
+
+    Returns ``{chart, series: list[str], kind, changed: list[str]}`` —
+    ``series`` lists the affected series names (one or many);
+    ``changed`` is the union of sub-element names touched.
+    """
+    if visible is None and format is None:
+        return {
+            "chart": chart_name,
+            "series": [series_name] if series_name else [],
+            "kind": "ChartDataLabel",
+            "changed": [],
+        }
+
+    doc = RDLDocument.open(path)
+    chart = _resolve_chart(doc, chart_name)
+    sc = _series_collection(chart)
+    if series_name is not None:
+        targets = [_find_series(sc, series_name)]
+    else:
+        targets = find_children(sc, "ChartSeries")
+
+    changed: set[str] = set()
+    affected: list[str] = []
+
+    for series in targets:
+        label = _ensure_series_data_label(series)
+
+        if visible is not None:
+            new = etree.Element(q("Visible"))
+            new.text = "true" if visible else "false"
+            existing = find_child(label, "Visible")
+            if existing is None or existing.text != new.text:
+                _insert_data_label_child_in_order(label, new)
+                changed.add("Visible")
+
+        if format is not None:
+            style = find_child(label, "Style")
+            if style is None:
+                style = etree.Element(q("Style"))
+                _insert_data_label_child_in_order(label, style)
+            fmt = find_child(style, "Format")
+            if format == "":
+                if fmt is not None:
+                    style.remove(fmt)
+                    changed.add("Style.Format")
+            else:
+                if fmt is None:
+                    fmt = etree.SubElement(style, q("Format"))
+                if fmt.text != encode_text(format):
+                    fmt.text = encode_text(format)
+                    changed.add("Style.Format")
+
+        affected.append(series.get("Name"))
+
+    if changed:
+        doc.save()
+    return {
+        "chart": chart_name,
+        "series": affected,
+        "kind": "ChartDataLabel",
+        "changed": sorted(changed),
+    }
+
+
 __all__ = [
     "add_chart_series",
     "insert_chart_from_template",
     "remove_chart_series",
     "set_chart_axis",
+    "set_chart_data_labels",
+    "set_chart_legend",
     "set_chart_series_type",
 ]

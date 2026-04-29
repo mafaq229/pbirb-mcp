@@ -1519,6 +1519,55 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=chart.set_chart_axis,
     )
+    server.register_tool(
+        name="set_chart_legend",
+        description=(
+            "Configure a chart legend: position (TopLeft / TopCenter / "
+            "TopRight / LeftTop / LeftCenter / LeftBottom / RightTop / "
+            "RightCenter / RightBottom / BottomLeft / BottomCenter / "
+            "BottomRight) and visible (writes <Hidden>true|false</Hidden>). "
+            "legend_name defaults to 'Default' (the only one the template "
+            "emits). Returns {chart, legend, kind, changed: list[str]}; "
+            "no-op short-circuit when nothing supplied."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "legend_name": {"type": "string", "default": "Default"},
+                "position": {"type": "string"},
+                "visible": {"type": "boolean"},
+            },
+            "required": ["path", "chart_name"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_legend,
+    )
+    server.register_tool(
+        name="set_chart_data_labels",
+        description=(
+            "Configure <ChartDataLabel> on one or all series in a chart. "
+            "When series_name is None, the change applies to every "
+            "series; otherwise only the named series. visible writes "
+            "<Visible>true|false</Visible>; format writes <Style>/<Format>. "
+            "Pass format='' to clear the format. Returns {chart, series, "
+            "kind, changed}; series lists affected series names."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+                "visible": {"type": "boolean"},
+                "format": {"type": "string"},
+            },
+            "required": ["path", "chart_name"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_data_labels,
+    )
 
     _STATIC_VALUE_ITEM = {
         "oneOf": [
