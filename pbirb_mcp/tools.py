@@ -475,6 +475,57 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=images.set_image_source,
     )
+    server.register_tool(
+        name="set_column_width",
+        description=(
+            "Set <Width> on a tablix's body column. column accepts a "
+            "0-based integer index OR a textbox name living in any cell "
+            "of that column (mirrors how set_cell_span / add_subtotal_row "
+            "address columns). width is an RDL size ('1.5in', '4cm', "
+            "'80pt'). Idempotent: same width → {changed: false}, no save."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "column": {
+                    "oneOf": [
+                        {"type": "integer", "minimum": 0},
+                        {"type": "string"},
+                    ],
+                    "description": "0-based column index or textbox name in any column cell.",
+                },
+                "width": {"type": "string"},
+            },
+            "required": ["path", "tablix_name", "column", "width"],
+            "additionalProperties": False,
+        },
+        handler=tablix_columns.set_column_width,
+    )
+    server.register_tool(
+        name="set_tablix_size",
+        description=(
+            "Resize a tablix by writing <Height> and / or <Width> directly. "
+            "Each arg independently optional. Use after adding header / "
+            "footer rows that change the body's natural height — v0.2's "
+            "positioning tools only cover top/left, not size. Both values "
+            "are RDL size strings. Returns {tablix, kind, changed: "
+            "list[str]} — empty list when inputs match existing."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "height": {"type": "string"},
+                "width": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=tablix.set_tablix_size,
+    )
 
     server.register_tool(
         name="remove_query_parameter",

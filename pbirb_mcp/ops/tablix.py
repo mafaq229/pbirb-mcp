@@ -604,6 +604,77 @@ def set_row_height(
     return {"tablix": tablix_name, "row_index": row_index, "height": height}
 
 
+# ---- set_tablix_size -----------------------------------------------------
+
+
+def set_tablix_size(
+    path: str,
+    name: str,
+    height: Optional[str] = None,
+    width: Optional[str] = None,
+) -> dict[str, Any]:
+    """Resize a tablix by setting its outer ``<Height>`` and / or
+    ``<Width>`` directly.
+
+    Each argument is independently optional; only the supplied fields
+    are written. v0.2's positioning tools cover top/left moves but not
+    sizing — adding a couple of header rows often required a manual
+    ``str_replace`` on the tablix's outer Height (RAG-Report session
+    feedback bug #10).
+
+    Both values are RDL size strings (``'4in'``, ``'10cm'``, etc.).
+    Empty / whitespace-only values are rejected.
+
+    Returns ``{tablix, kind, changed: list[str]}`` — empty list when
+    inputs match existing (no save).
+    """
+    if height is not None and (not height or not height.strip()):
+        raise ValueError("height must be a non-empty RDL size (e.g. '4in', '10cm')")
+    if width is not None and (not width or not width.strip()):
+        raise ValueError("width must be a non-empty RDL size (e.g. '4in', '10cm')")
+    if height is None and width is None:
+        return {"tablix": name, "kind": "Tablix", "changed": []}
+
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, name)
+    changed: list[str] = []
+
+    if height is not None:
+        h_node = find_child(tablix, "Height")
+        if h_node is None:
+            # Per RDL XSD, Height sits between Top/Left and Width/Style.
+            h_node = etree.Element(q("Height"))
+            anchor = find_child(tablix, "Width") or find_child(tablix, "Style")
+            if anchor is not None:
+                anchor.addprevious(h_node)
+            else:
+                tablix.append(h_node)
+            h_node.text = height
+            changed.append("Height")
+        elif h_node.text != height:
+            h_node.text = height
+            changed.append("Height")
+
+    if width is not None:
+        w_node = find_child(tablix, "Width")
+        if w_node is None:
+            w_node = etree.Element(q("Width"))
+            anchor = find_child(tablix, "Style")
+            if anchor is not None:
+                anchor.addprevious(w_node)
+            else:
+                tablix.append(w_node)
+            w_node.text = width
+            changed.append("Width")
+        elif w_node.text != width:
+            w_node.text = width
+            changed.append("Width")
+
+    if changed:
+        doc.save()
+    return {"tablix": name, "kind": "Tablix", "changed": changed}
+
+
 __all__ = [
     "add_row_group",
     "add_tablix_filter",
@@ -614,4 +685,5 @@ __all__ = [
     "set_group_sort",
     "set_group_visibility",
     "set_row_height",
+    "set_tablix_size",
 ]

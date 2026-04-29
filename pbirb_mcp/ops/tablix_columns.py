@@ -592,6 +592,110 @@ def remove_tablix_column(
     return {"tablix": tablix_name, "removed_column": column_name, "position": target_index}
 
 
+# ---- set_column_width ----------------------------------------------------
+
+
+def _resolve_tablix_column_index(
+    tablix: etree._Element,
+    column: int | str,
+) -> int:
+    """Resolve a column handle (0-based int OR textbox-name in a cell) to
+    its 0-based ``<TablixColumns>`` index.
+
+    Integer handles validate against the column count. String handles
+    look for any cell whose Textbox Name matches and return that cell's
+    column position. Raises ``ElementNotFoundError`` on a missing name
+    and ``IndexError`` on an out-of-range integer.
+    """
+    body = find_child(tablix, "TablixBody")
+    cols_root = find_child(body, "TablixColumns") if body is not None else None
+    cols = find_children(cols_root, "TablixColumn") if cols_root is not None else []
+
+    if isinstance(column, int):
+        if column < 0 or column >= len(cols):
+            raise IndexError(
+                f"tablix {tablix.get('Name')!r} has {len(cols)} columns; "
+                f"index {column} is out of range"
+            )
+        return column
+
+    if not isinstance(column, str):
+        raise TypeError(
+            f"column must be int or str; got {type(column).__name__}"
+        )
+
+    # String → search every row's cells for a Textbox whose Name matches.
+    rows_root = find_child(body, "TablixRows") if body is not None else None
+    rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
+    for row in rows:
+        cells_root = find_child(row, "TablixCells")
+        if cells_root is None:
+            continue
+        for col_idx, cell in enumerate(find_children(cells_root, "TablixCell")):
+            tb = cell.find(f"{q('CellContents')}/{q('Textbox')}")
+            if tb is not None and tb.get("Name") == column:
+                return col_idx
+    raise ElementNotFoundError(
+        f"no cell with textbox named {column!r} in tablix "
+        f"{tablix.get('Name')!r}; cannot resolve column index"
+    )
+
+
+def set_column_width(
+    path: str,
+    tablix_name: str,
+    column: int | str,
+    width: str,
+) -> dict[str, Any]:
+    """Set ``<Width>`` on a tablix's body column.
+
+    ``column`` accepts either a 0-based integer index OR a textbox name
+    living in any cell of that column (mirrors how
+    ``set_cell_span`` / ``add_subtotal_row`` address columns).
+
+    ``width`` is an RDL size string (``'1.5in'``, ``'4cm'``, ``'80pt'``).
+    Empty / whitespace-only values are rejected.
+
+    Idempotent: same width → ``{changed: false}``, no save.
+    Returns ``{tablix, column_index, width, kind: 'TablixColumn',
+    changed: bool}``.
+    """
+    if not width or not width.strip():
+        raise ValueError("width must be a non-empty RDL size (e.g. '1in', '2cm')")
+
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+    column_index = _resolve_tablix_column_index(tablix, column)
+
+    body = find_child(tablix, "TablixBody")
+    cols_root = find_child(body, "TablixColumns") if body is not None else None
+    cols = find_children(cols_root, "TablixColumn") if cols_root is not None else []
+    target = cols[column_index]
+
+    width_node = find_child(target, "Width")
+    if width_node is None:
+        # Defensive: TablixColumn always carries Width per RDL XSD;
+        # synthesize one if absent.
+        width_node = etree.SubElement(target, q("Width"))
+    if width_node.text == width:
+        return {
+            "tablix": tablix_name,
+            "column_index": column_index,
+            "width": width,
+            "kind": "TablixColumn",
+            "changed": False,
+        }
+    width_node.text = width
+    doc.save()
+    return {
+        "tablix": tablix_name,
+        "column_index": column_index,
+        "width": width,
+        "kind": "TablixColumn",
+        "changed": True,
+    }
+
+
 __all__ = [
     "add_column_group",
     "add_tablix_column",
@@ -599,4 +703,5 @@ __all__ = [
     "remove_tablix_column",
     "set_column_group_sort",
     "set_column_group_visibility",
+    "set_column_width",
 ]
