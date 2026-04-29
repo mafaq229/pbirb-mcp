@@ -108,10 +108,13 @@ def get_datasets(path: str) -> list[dict[str, Any]]:
         fields_root = find_child(ds, "Fields")
         if fields_root is not None:
             for f in find_children(fields_root, "Field"):
+                # Calculated fields carry <Value> instead of <DataField>;
+                # the reader surfaces both so consumers can disambiguate.
                 fields.append(
                     {
                         "name": f.get("Name"),
                         "data_field": _text(find_child(f, "DataField")),
+                        "value": _text(find_child(f, "Value")),
                         "type_name": _rd_text(f, "TypeName"),
                     }
                 )

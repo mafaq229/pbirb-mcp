@@ -362,6 +362,52 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=dataset.get_dataset,
     )
+    server.register_tool(
+        name="add_calculated_field",
+        description=(
+            "Append a calculated <Field> to the named dataset. "
+            "Calculated fields carry an expression (<Value>) instead of "
+            "a column reference (<DataField>); use them for derived "
+            "fields like Total = Amount * Quantity that aren't in the "
+            "source query but should be available via Fields!Name.Value. "
+            "Refuses if a field of the same name already exists."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "field_name": {"type": "string"},
+                "expression": {
+                    "type": "string",
+                    "description": "RDL expression, e.g. '=Fields!Amount.Value * Fields!Quantity.Value'.",
+                },
+            },
+            "required": ["path", "dataset_name", "field_name", "expression"],
+            "additionalProperties": False,
+        },
+        handler=dataset.add_calculated_field,
+    )
+    server.register_tool(
+        name="remove_calculated_field",
+        description=(
+            "Remove a calculated <Field> by name. Refuses if the field "
+            "is data-bound (carries <DataField> instead of <Value>) — "
+            "those reflect the source query's columns. Drop a data-bound "
+            "field by rewriting the dataset query via update_dataset_query."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "field_name": {"type": "string"},
+            },
+            "required": ["path", "dataset_name", "field_name"],
+            "additionalProperties": False,
+        },
+        handler=dataset.remove_calculated_field,
+    )
 
     server.register_tool(
         name="remove_query_parameter",

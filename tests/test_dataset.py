@@ -23,10 +23,12 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child
 from pbirb_mcp.ops.dataset import (
+    add_calculated_field,
     add_dataset_filter,
     add_query_parameter,
     get_dataset,
     list_dataset_filters,
+    remove_calculated_field,
     remove_dataset_filter,
     remove_query_parameter,
     update_dataset_query,
@@ -572,6 +574,146 @@ class TestGetDataset:
             get_dataset(path=str(rdl_path), name="NoSuchDataset")
 
 
+# ---- v0.3 calculated fields ----------------------------------------------
+
+
+class TestAddCalculatedField:
+    def test_appends_calculated_field(self, rdl_path):
+        result = add_calculated_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="Total",
+            expression="=Fields!Amount.Value * Fields!ProductID.Value",
+        )
+        assert result["name"] == "Total"
+        assert result["kind"] == "CalculatedField"
+        assert result["value"] == "=Fields!Amount.Value * Fields!ProductID.Value"
+        # Verify on disk via get_dataset.
+        ds = get_dataset(path=str(rdl_path), name="MainDataset")
+        total = next(f for f in ds["fields"] if f["name"] == "Total")
+        assert total["data_field"] is None
+        assert total["value"] == "=Fields!Amount.Value * Fields!ProductID.Value"
+
+    def test_get_datasets_surfaces_calculated_value(self, rdl_path):
+        # Regression: get_datasets (the multi-dataset reader) must also
+        # surface 'value' on calculated fields, not just data_field.
+        from pbirb_mcp.ops.reader import get_datasets
+
+        add_calculated_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="DoublePrice",
+            expression="=Fields!Amount.Value * 2",
+        )
+        result = get_datasets(path=str(rdl_path))
+        ds = result[0]
+        double_price = next(f for f in ds["fields"] if f["name"] == "DoublePrice")
+        assert double_price["value"] == "=Fields!Amount.Value * 2"
+        assert double_price["data_field"] is None
+        # Existing data-bound fields must still have their data_field
+        # populated and value=None.
+        product_id = next(f for f in ds["fields"] if f["name"] == "ProductID")
+        assert product_id["data_field"] == "Sales[ProductID]"
+        assert product_id["value"] is None
+
+    def test_duplicate_field_name_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="already exists"):
+            add_calculated_field(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                field_name="ProductID",  # already a data-bound field
+                expression="=1",
+            )
+
+    def test_empty_field_name_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="non-empty"):
+            add_calculated_field(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                field_name="",
+                expression="=1",
+            )
+
+    def test_empty_expression_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="non-empty"):
+            add_calculated_field(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                field_name="X",
+                expression="   ",
+            )
+
+    def test_unknown_dataset_rejected(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            add_calculated_field(
+                path=str(rdl_path),
+                dataset_name="NoSuchDataset",
+                field_name="X",
+                expression="=1",
+            )
+
+    def test_pre_encoded_expression_no_double_encode(self, rdl_path):
+        add_calculated_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="LabelExpr",
+            expression='=IIf(Fields!ProductName.Value = "A &amp; B", 1, 0)',
+        )
+        assert b"&amp;amp;" not in (rdl_path).read_bytes()
+
+    def test_round_trip_safe(self, rdl_path):
+        add_calculated_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="Computed",
+            expression="=Fields!Amount.Value + 100",
+        )
+        RDLDocument.open(rdl_path).validate()
+
+
+class TestRemoveCalculatedField:
+    def test_removes_named_calculated_field(self, rdl_path):
+        add_calculated_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="Total",
+            expression="=Fields!Amount.Value * 2",
+        )
+        result = remove_calculated_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="Total",
+        )
+        assert result["removed"] == "Total"
+        ds = get_dataset(path=str(rdl_path), name="MainDataset")
+        names = [f["name"] for f in ds["fields"]]
+        assert "Total" not in names
+
+    def test_refuses_data_bound_field(self, rdl_path):
+        with pytest.raises(ValueError, match="data-bound"):
+            remove_calculated_field(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                field_name="ProductID",  # data-bound
+            )
+
+    def test_unknown_field_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            remove_calculated_field(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                field_name="NoSuchField",
+            )
+
+    def test_unknown_dataset_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            remove_calculated_field(
+                path=str(rdl_path),
+                dataset_name="NoSuchDataset",
+                field_name="X",
+            )
+
+
 # ---- registration ---------------------------------------------------------
 
 
@@ -611,4 +753,16 @@ class TestToolRegistration:
             "add_dataset_filter",
             "remove_dataset_filter",
             "get_dataset",
+        } <= names
+
+    def test_v03_calculated_field_tools_registered(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )["result"]["tools"]
+        names = {t["name"] for t in listing}
+        assert {
+            "add_calculated_field",
+            "remove_calculated_field",
         } <= names

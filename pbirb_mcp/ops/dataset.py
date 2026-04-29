@@ -422,11 +422,138 @@ def get_dataset(path: str, name: str) -> dict[str, Any]:
     }
 
 
+# ---- calculated fields ---------------------------------------------------
+
+
+def _ensure_fields_block(dataset: etree._Element) -> etree._Element:
+    """Find or create ``<DataSet>/<Fields>`` respecting child order
+    (after ``<Query>``, before ``<Filters>``)."""
+    existing = find_child(dataset, "Fields")
+    if existing is not None:
+        return existing
+
+    block = etree.Element(q("Fields"))
+    query = find_child(dataset, "Query")
+    if query is not None:
+        query.addnext(block)
+        return block
+    # Defensive: a DataSet without a Query is malformed, but place the
+    # Fields block as the first child if so.
+    dataset.insert(0, block)
+    return block
+
+
+def add_calculated_field(
+    path: str,
+    dataset_name: str,
+    field_name: str,
+    expression: str,
+) -> dict[str, Any]:
+    """Append a ``<Field>`` with a ``<Value>`` (calculated) child to the
+    named dataset.
+
+    A calculated field carries an expression (``<Value>``) instead of a
+    column reference (``<DataField>``). Use this for derived fields like
+    ``Total = Amount * Quantity`` that don't exist in the source query
+    but should be available to consumers via ``Fields!Name.Value``.
+
+    Refuses if a field of the same name already exists in this dataset
+    (RDL semantics: field names are unique within a dataset).
+
+    Returns ``{dataset, name, kind: 'CalculatedField', value, type_name}``.
+    """
+    if not field_name or not field_name.strip():
+        raise ValueError("field_name must be a non-empty string")
+    if not expression or not expression.strip():
+        raise ValueError("expression must be a non-empty string")
+
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, dataset_name)
+
+    fields_root = _ensure_fields_block(dataset)
+    existing_names = [
+        f.get("Name")
+        for f in find_children(fields_root, "Field")
+        if f.get("Name") is not None
+    ]
+    if field_name in existing_names:
+        raise ValueError(
+            f"field {field_name!r} already exists in dataset {dataset_name!r}"
+        )
+
+    new_field = etree.SubElement(fields_root, q("Field"), Name=field_name)
+    value_node = etree.SubElement(new_field, q("Value"))
+    value_node.text = encode_text(expression)
+
+    doc.save()
+    return {
+        "dataset": dataset_name,
+        "name": field_name,
+        "kind": "CalculatedField",
+        "value": expression,
+    }
+
+
+def remove_calculated_field(
+    path: str,
+    dataset_name: str,
+    field_name: str,
+) -> dict[str, Any]:
+    """Remove a calculated ``<Field>`` (one with ``<Value>`` instead of
+    ``<DataField>``) by name.
+
+    Refuses if the named field is data-bound (has ``<DataField>`` rather
+    than ``<Value>``) — those reflect the source query's columns and
+    should not be removed via this tool. Use the data-binding workflow
+    (rewrite the dataset query) instead.
+
+    Cleans up the empty ``<Fields>`` block when removing the last field.
+    """
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, dataset_name)
+
+    fields_root = find_child(dataset, "Fields")
+    if fields_root is None:
+        raise ElementNotFoundError(
+            f"dataset {dataset_name!r} has no <Fields> block"
+        )
+
+    target: Optional[etree._Element] = None
+    for f in find_children(fields_root, "Field"):
+        if f.get("Name") == field_name:
+            target = f
+            break
+    if target is None:
+        raise ElementNotFoundError(
+            f"field {field_name!r} not found in dataset {dataset_name!r}"
+        )
+
+    if find_child(target, "DataField") is not None and find_child(target, "Value") is None:
+        raise ValueError(
+            f"field {field_name!r} is data-bound (has <DataField>, not <Value>); "
+            "remove_calculated_field only deletes calculated fields. Rewrite the "
+            "dataset query via update_dataset_query to drop a data-bound field."
+        )
+
+    fields_root.remove(target)
+    if len(find_children(fields_root, "Field")) == 0:
+        dataset.remove(fields_root)
+
+    doc.save()
+    return {
+        "dataset": dataset_name,
+        "removed": field_name,
+        "kind": "CalculatedField",
+    }
+
+
 __all__ = [
+    "add_calculated_field",
     "add_dataset_filter",
     "add_query_parameter",
     "get_dataset",
     "list_dataset_filters",
+    "remove_calculated_field",
     "remove_dataset_filter",
     "remove_query_parameter",
     "update_dataset_query",
