@@ -20,6 +20,7 @@ from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import find_child, find_children
 from pbirb_mcp.ops.embedded_images import (
     add_embedded_image,
+    get_embedded_image_data,
     list_embedded_images,
     remove_embedded_image,
 )
@@ -325,6 +326,53 @@ class TestRemoveEmbeddedImage:
         assert _embedded_block(rdl_path) is None
 
 
+# ---- v0.3 Phase 6: get_embedded_image_data ------------------------------
+
+
+class TestGetEmbeddedImageData:
+    def test_returns_base64_payload(self, rdl_path, tmp_path):
+        png = tmp_path / "logo.png"
+        png.write_bytes(_TINY_PNG)
+        add_embedded_image(
+            path=str(rdl_path),
+            name="Logo",
+            mime_type="image/png",
+            image_path=str(png),
+        )
+        result = get_embedded_image_data(path=str(rdl_path), name="Logo")
+        assert result["name"] == "Logo"
+        assert result["mime_type"] == "image/png"
+        # base64 is a non-empty string.
+        assert isinstance(result["base64"], str)
+        assert result["base64"]
+        # byte_size matches the source PNG length.
+        assert result["byte_size"] == len(_TINY_PNG)
+
+    def test_round_trip_via_decode(self, rdl_path, tmp_path):
+        import base64
+
+        png = tmp_path / "logo.png"
+        png.write_bytes(_TINY_PNG)
+        add_embedded_image(
+            path=str(rdl_path),
+            name="Logo",
+            mime_type="image/png",
+            image_path=str(png),
+        )
+        result = get_embedded_image_data(path=str(rdl_path), name="Logo")
+        # Decoding the returned base64 yields the original bytes.
+        assert base64.b64decode(result["base64"]) == _TINY_PNG
+
+    def test_unknown_image_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError, match="not found"):
+            get_embedded_image_data(path=str(rdl_path), name="NoSuch")
+
+    def test_no_embedded_block_raises(self, rdl_path):
+        # Fixture has no <EmbeddedImages> block at all.
+        with pytest.raises(ElementNotFoundError, match="not found"):
+            get_embedded_image_data(path=str(rdl_path), name="Anything")
+
+
 # ---- registration ---------------------------------------------------------
 
 
@@ -341,3 +389,12 @@ class TestToolRegistration:
             "list_embedded_images",
             "remove_embedded_image",
         } <= names
+
+    def test_get_embedded_image_data_registered(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )["result"]["tools"]
+        names = {t["name"] for t in listing}
+        assert "get_embedded_image_data" in names

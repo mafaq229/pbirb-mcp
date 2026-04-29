@@ -13,6 +13,7 @@ from pbirb_mcp.ops import (
     actions,
     body,
     chart,
+    clone,
     dataset,
     datasource,
     embedded_images,
@@ -646,6 +647,50 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=parameters.set_parameter_layout,
+    )
+    server.register_tool(
+        name="duplicate_report",
+        description=(
+            "Clone an .rdl to a new path. When regenerate_ids=true "
+            "(default), every <rd:DataSourceID> and any <rd:ReportID> "
+            "is rewritten to a fresh uuid4() so Power BI Report Builder "
+            "doesn't refuse to load the duplicate due to identity "
+            "collision. Atomic-write convention from RDLDocument.save_as. "
+            "Refuses if dst_path already exists. Returns {src, dst, "
+            "regenerated_ids: list[str]}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "src_path": {"type": "string"},
+                "dst_path": {"type": "string"},
+                "regenerate_ids": {"type": "boolean", "default": True},
+            },
+            "required": ["src_path", "dst_path"],
+            "additionalProperties": False,
+        },
+        handler=clone.duplicate_report,
+    )
+    server.register_tool(
+        name="get_embedded_image_data",
+        description=(
+            "Read an embedded image's base64 <ImageData> for porting "
+            "it to another report without re-reading from disk. Returns "
+            "{name, mime_type, base64, byte_size}. base64 is the raw "
+            "text of the ImageData element; byte_size is the decoded "
+            "size for sanity-checking. Refuses with ElementNotFoundError "
+            "if the named entry isn't in <EmbeddedImages>."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=embedded_images.get_embedded_image_data,
     )
 
     # ---- actions / tooltip / document-map (Phase 5) ---------------------
