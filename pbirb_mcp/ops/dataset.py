@@ -21,6 +21,7 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset
 from pbirb_mcp.core.xpath import find_child, find_children, q
 
@@ -71,7 +72,7 @@ def update_dataset_query(path: str, dataset_name: str, dax_body: str) -> dict[st
             anchor.addnext(cmd)
         else:
             query.insert(0, cmd)
-    cmd.text = dax_body
+    cmd.text = encode_text(dax_body)
 
     doc.save()
     return {"dataset": dataset_name, "command_text": dax_body}
@@ -96,7 +97,7 @@ def add_query_parameter(
 
     qp = etree.SubElement(qp_root, q("QueryParameter"), Name=name)
     value = etree.SubElement(qp, q("Value"))
-    value.text = value_expression
+    value.text = encode_text(value_expression)
 
     doc.save()
     return {"dataset": dataset_name, "name": name, "value": value_expression}
@@ -121,7 +122,7 @@ def update_query_parameter(
     value = find_child(qp, "Value")
     if value is None:
         value = etree.SubElement(qp, q("Value"))
-    value.text = value_expression
+    value.text = encode_text(value_expression)
 
     doc.save()
     return {"dataset": dataset_name, "name": name, "value": value_expression}

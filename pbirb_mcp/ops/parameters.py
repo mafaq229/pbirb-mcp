@@ -23,6 +23,7 @@ from typing import Any, Optional, Union
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import (
     resolve_dataset,
     resolve_parameter,
@@ -108,8 +109,8 @@ def _build_static_parameter_values(
                 f"static_values entries must be str or dict; got {type(entry).__name__}"
             )
         pv = etree.SubElement(pvs_root, q("ParameterValue"))
-        etree.SubElement(pv, q("Value")).text = value_text
-        etree.SubElement(pv, q("Label")).text = label_text
+        etree.SubElement(pv, q("Value")).text = encode_text(value_text)
+        etree.SubElement(pv, q("Label")).text = encode_text(label_text)
     return pvs_root
 
 
@@ -217,7 +218,7 @@ def set_parameter_default_values(
         values_root = etree.SubElement(default_value, q("Values"))
         for value_text in static_values:
             v = etree.SubElement(values_root, q("Value"))
-            v.text = value_text
+            v.text = encode_text(value_text)
     else:
         _validate_query_args(query_dataset, query_value_field, doc)
         # DefaultValue's DataSetReference has no LabelField — defaults are
@@ -304,7 +305,7 @@ def set_parameter_prompt(
             parameter.remove(existing)
     else:
         new = etree.Element(q("Prompt"))
-        new.text = prompt
+        new.text = encode_text(prompt)
         _set_or_replace_in_order(parameter, new)
 
     doc.save()
@@ -445,7 +446,7 @@ def add_parameter(
     dt.text = type
     if prompt is not None and prompt != "":
         pn = etree.SubElement(new_param, q("Prompt"))
-        pn.text = prompt
+        pn.text = encode_text(prompt)
     # Boolean flags — only emit if the user supplied an explicit value.
     flag_pairs = (
         ("Nullable", allow_null),

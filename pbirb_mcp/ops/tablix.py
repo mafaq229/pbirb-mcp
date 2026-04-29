@@ -22,6 +22,7 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 
@@ -127,13 +128,13 @@ def add_tablix_filter(
 
     filter_node = etree.SubElement(filters_root, q("Filter"))
     expr_node = etree.SubElement(filter_node, q("FilterExpression"))
-    expr_node.text = expression
+    expr_node.text = encode_text(expression)
     op_node = etree.SubElement(filter_node, q("Operator"))
     op_node.text = operator
     values_root = etree.SubElement(filter_node, q("FilterValues"))
     for v in values:
         v_node = etree.SubElement(values_root, q("FilterValue"))
-        v_node.text = v
+        v_node.text = encode_text(v)
 
     new_index = len(find_children(filters_root, "Filter")) - 1
     doc.save()
@@ -242,7 +243,7 @@ def _build_group_header_row(
         value = etree.SubElement(textrun, q("Value"))
         # Only the first cell shows the group expression; others stay blank
         # so the group-header row visually reads as a left-anchored caption.
-        value.text = group_expression if i == 0 else ""
+        value.text = encode_text(group_expression) if i == 0 else ""
         etree.SubElement(textrun, q("Style"))
         etree.SubElement(paragraph, q("Style"))
         default_name = etree.SubElement(tb, qrd("DefaultName"))
@@ -346,7 +347,7 @@ def add_row_group(
     group = etree.SubElement(new_outer, q("Group"), Name=group_name)
     expr_root = etree.SubElement(group, q("GroupExpressions"))
     expr_node = etree.SubElement(expr_root, q("GroupExpression"))
-    expr_node.text = group_expression
+    expr_node.text = encode_text(group_expression)
 
     inner_members = etree.SubElement(new_outer, q("TablixMembers"))
     header_leaf = etree.SubElement(inner_members, q("TablixMember"))
@@ -456,7 +457,7 @@ def _apply_sort_to_member(member: etree._Element, sort_expressions: list[str]) -
     for expr in sort_expressions:
         sort = etree.SubElement(new_block, q("SortExpression"))
         value = etree.SubElement(sort, q("Value"))
-        value.text = expr
+        value.text = encode_text(expr)
     _insert_member_child(member, new_block)
 
 
@@ -496,10 +497,10 @@ def _apply_visibility_to_member(
     """Hierarchy-agnostic core of set_group_visibility / set_column_group_visibility."""
     new_vis = etree.Element(q("Visibility"))
     hidden = etree.SubElement(new_vis, q("Hidden"))
-    hidden.text = visibility_expression
+    hidden.text = encode_text(visibility_expression)
     if toggle_textbox is not None:
         toggle = etree.SubElement(new_vis, q("ToggleItem"))
-        toggle.text = toggle_textbox
+        toggle.text = encode_text(toggle_textbox)
     _insert_member_child(member, new_vis)
 
 
@@ -554,10 +555,10 @@ def set_detail_row_visibility(
 
     new_vis = etree.Element(q("Visibility"))
     hidden = etree.SubElement(new_vis, q("Hidden"))
-    hidden.text = expression
+    hidden.text = encode_text(expression)
     if toggle_textbox is not None:
         toggle = etree.SubElement(new_vis, q("ToggleItem"))
-        toggle.text = toggle_textbox
+        toggle.text = encode_text(toggle_textbox)
 
     _insert_member_child(member, new_vis)
 

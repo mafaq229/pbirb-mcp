@@ -18,6 +18,7 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import (
     AmbiguousElementError,
     ElementNotFoundError,
@@ -69,10 +70,10 @@ def set_element_visibility(
 
     new_vis = etree.Element(q("Visibility"))
     hidden = etree.SubElement(new_vis, q("Hidden"))
-    hidden.text = hidden_expression
+    hidden.text = encode_text(hidden_expression)
     if toggle_textbox is not None:
         toggle = etree.SubElement(new_vis, q("ToggleItem"))
-        toggle.text = toggle_textbox
+        toggle.text = encode_text(toggle_textbox)
 
     existing = find_child(element, "Visibility")
     if existing is not None:

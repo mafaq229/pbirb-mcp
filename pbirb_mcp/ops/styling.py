@@ -25,6 +25,7 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix, resolve_textbox
 from pbirb_mcp.core.xpath import find_child, find_children, q
 
@@ -70,12 +71,13 @@ def _ensure_style(parent: etree._Element) -> etree._Element:
 
 
 def _set_or_create_in_style(style: etree._Element, local: str, value: str) -> None:
+    encoded = encode_text(value)
     existing = find_child(style, local)
     if existing is not None:
-        existing.text = value
+        existing.text = encoded
         return
     new_node = etree.Element(q(local))
-    new_node.text = value
+    new_node.text = encoded
     if local in _STYLE_CHILD_ORDER:
         new_idx = _STYLE_CHILD_ORDER.index(local)
         for i, child in enumerate(list(style)):
@@ -193,12 +195,13 @@ def set_textbox_style(
                 if value is None:
                     continue
                 # Border children share a small fixed sub-order.
+                encoded = encode_text(value)
                 existing = find_child(border, local)
                 if existing is not None:
-                    existing.text = value
+                    existing.text = encoded
                 else:
                     new_node = etree.SubElement(border, q(local))
-                    new_node.text = value
+                    new_node.text = encoded
                 changed.append(f"border.{local}")
 
     # Paragraph + run levels.

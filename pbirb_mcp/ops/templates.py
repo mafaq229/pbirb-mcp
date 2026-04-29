@@ -19,6 +19,7 @@ from typing import Any
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import resolve_dataset
 from pbirb_mcp.core.xpath import find_child, q, qrd
 from pbirb_mcp.ops.body import _ensure_body_report_items, _names_in, _resolve_body
@@ -40,7 +41,7 @@ def _build_cell_textbox(name: str, value_text: str) -> etree._Element:
     textruns = etree.SubElement(paragraph, q("TextRuns"))
     textrun = etree.SubElement(textruns, q("TextRun"))
     value = etree.SubElement(textrun, q("Value"))
-    value.text = value_text
+    value.text = encode_text(value_text)
     etree.SubElement(textrun, q("Style"))
     etree.SubElement(paragraph, q("Style"))
     default_name = etree.SubElement(tb, qrd("DefaultName"))
@@ -176,9 +177,9 @@ def insert_chart_from_template(
     cat_group = etree.SubElement(cat_member, q("Group"), Name=f"{name}_CategoryGroup")
     cat_expressions = etree.SubElement(cat_group, q("GroupExpressions"))
     cat_expression = etree.SubElement(cat_expressions, q("GroupExpression"))
-    cat_expression.text = f"=Fields!{category_field}.Value"
+    cat_expression.text = encode_text(f"=Fields!{category_field}.Value")
     cat_label = etree.SubElement(cat_member, q("Label"))
-    cat_label.text = f"=Fields!{category_field}.Value"
+    cat_label.text = encode_text(f"=Fields!{category_field}.Value")
 
     # ChartSeriesHierarchy — single static series. Per RDL XSD a ChartMember
     # is required to have a <Label>; an empty member fails Report Builder's
@@ -187,7 +188,7 @@ def insert_chart_from_template(
     series_hier = etree.SubElement(chart, q("ChartSeriesHierarchy"))
     series_members = etree.SubElement(series_hier, q("ChartMembers"))
     series_member = etree.SubElement(series_members, q("ChartMember"))
-    etree.SubElement(series_member, q("Label")).text = value_field
+    etree.SubElement(series_member, q("Label")).text = encode_text(value_field)
 
     # ChartData — one ChartSeries with Y = Sum(value_field).
     chart_data = etree.SubElement(chart, q("ChartData"))
@@ -197,7 +198,7 @@ def insert_chart_from_template(
     data_point = etree.SubElement(data_points, q("ChartDataPoint"))
     data_point_values = etree.SubElement(data_point, q("ChartDataPointValues"))
     y_node = etree.SubElement(data_point_values, q("Y"))
-    y_node.text = f"=Sum(Fields!{value_field}.Value)"
+    y_node.text = encode_text(f"=Sum(Fields!{value_field}.Value)")
     etree.SubElement(series, q("Type")).text = "Column"
     etree.SubElement(series, q("Subtype")).text = "Plain"
 
@@ -219,7 +220,7 @@ def insert_chart_from_template(
     etree.SubElement(legends, q("ChartLegend"), Name="Default")
     titles = etree.SubElement(chart, q("ChartTitles"))
     title = etree.SubElement(titles, q("ChartTitle"), Name="Default")
-    etree.SubElement(title, q("Caption")).text = name
+    etree.SubElement(title, q("Caption")).text = encode_text(name)
 
     # Dataset binding + layout.
     etree.SubElement(chart, q("DataSetName")).text = dataset_name

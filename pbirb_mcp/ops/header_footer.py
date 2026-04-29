@@ -21,6 +21,7 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import find_child, q, qrd
 from pbirb_mcp.ops.page import _resolve_page  # type: ignore[attr-defined]
@@ -152,7 +153,7 @@ def _build_textbox(
     textruns = etree.SubElement(paragraph, q("TextRuns"))
     textrun = etree.SubElement(textruns, q("TextRun"))
     value = etree.SubElement(textrun, q("Value"))
-    value.text = text
+    value.text = encode_text(text)
     etree.SubElement(textrun, q("Style"))
     etree.SubElement(paragraph, q("Style"))
     default_name = etree.SubElement(tb, qrd("DefaultName"))
@@ -176,7 +177,7 @@ def _build_image(
 ) -> etree._Element:
     img = etree.Element(q("Image"), Name=name)
     etree.SubElement(img, q("Source")).text = image_source
-    etree.SubElement(img, q("Value")).text = value
+    etree.SubElement(img, q("Value")).text = encode_text(value)
     etree.SubElement(img, q("Sizing")).text = "FitProportional"
     etree.SubElement(img, q("Top")).text = top
     etree.SubElement(img, q("Left")).text = left

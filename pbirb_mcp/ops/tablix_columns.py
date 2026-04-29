@@ -34,6 +34,7 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 from pbirb_mcp.ops.styling import _detail_row_index
@@ -106,7 +107,7 @@ def _build_column_header_cell(
     textruns = etree.SubElement(paragraph, q("TextRuns"))
     textrun = etree.SubElement(textruns, q("TextRun"))
     value = etree.SubElement(textrun, q("Value"))
-    value.text = cell_text
+    value.text = encode_text(cell_text)
     etree.SubElement(textrun, q("Style"))
     etree.SubElement(paragraph, q("Style"))
     default_name = etree.SubElement(tb, qrd("DefaultName"))
@@ -159,7 +160,7 @@ def add_column_group(
     group = etree.SubElement(new_outer, q("Group"), Name=group_name)
     expr_root = etree.SubElement(group, q("GroupExpressions"))
     expr_node = etree.SubElement(expr_root, q("GroupExpression"))
-    expr_node.text = group_expression
+    expr_node.text = encode_text(group_expression)
 
     inner_members = etree.SubElement(new_outer, q("TablixMembers"))
     for child in existing_children:
@@ -374,7 +375,7 @@ def _build_tablix_column_cell(
     textruns = etree.SubElement(paragraph, q("TextRuns"))
     textrun = etree.SubElement(textruns, q("TextRun"))
     value = etree.SubElement(textrun, q("Value"))
-    value.text = cell_text
+    value.text = encode_text(cell_text)
     etree.SubElement(textrun, q("Style"))
     etree.SubElement(paragraph, q("Style"))
     default_name = etree.SubElement(tb, qrd("DefaultName"))
