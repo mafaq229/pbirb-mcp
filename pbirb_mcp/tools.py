@@ -777,6 +777,26 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=reader.get_rectangle,
     )
+    server.register_tool(
+        name="get_chart",
+        description=(
+            "Return effective state of a named Chart: position, size, "
+            "dataset, palette, series list (name/type/subtype/value "
+            "expression/color), category groups (name/expression/label), "
+            "axes (category and value), legend, title, Style, Visibility. "
+            "Symmetric with get_textbox / get_image / get_rectangle."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=reader.get_chart,
+    )
 
     # ---- snapshot (v0.2 commit 14) ----------------------------------------
     server.register_tool(
