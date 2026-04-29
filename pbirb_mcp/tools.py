@@ -31,6 +31,7 @@ from pbirb_mcp.ops import (
     tablix_static,
     tablix_subtotals,
     templates,
+    validate,
     visibility,
 )
 
@@ -691,6 +692,23 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=embedded_images.get_embedded_image_data,
+    )
+
+    # ---- validation (Phase 7) -------------------------------------------
+
+    server.register_tool(
+        name="validate_report",
+        description=(
+            "Run schema/structural validation against an .rdl. Returns "
+            "{valid, errors, xsd_used}. Structural checks always run "
+            "(root element + required top-level sections); XSD validation "
+            "is opt-in (drop the Microsoft RDL 2016 XSD into "
+            "pbirb_mcp/schemas/reportdefinition.xsd to enable). Each "
+            "error is {severity, rule, location, message} so verify_report "
+            "can union with lint output."
+        ),
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=validate.validate_report,
     )
 
     # ---- actions / tooltip / document-map (Phase 5) ---------------------
