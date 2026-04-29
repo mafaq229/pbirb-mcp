@@ -1267,6 +1267,50 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=styling.set_textbox_style,
     )
+    server.register_tool(
+        name="set_textbox_runs",
+        description=(
+            "Replace a textbox's content with multiple <TextRun> children "
+            "for mixed styling within one display — e.g. '**Asset(s):** "
+            "value' with a bold prefix + regular value in a single "
+            "textbox. Each run is a dict with required 'text' and optional "
+            "font_family / font_size / font_weight / font_style / color / "
+            "format / text_decoration. Replaces the entire <Paragraphs> "
+            "subtree (single-paragraph in v0.3; multi-paragraph deferred). "
+            "Round-trip contract: get_textbox.runs[] returns the same "
+            "shape this tool writes. Idempotent — identical input is a "
+            "no-op short-circuit. Returns {textbox, kind, runs, changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "textbox_name": {"type": "string"},
+                "runs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "font_family": {"type": "string"},
+                            "font_size": {"type": "string"},
+                            "font_weight": {"type": "string"},
+                            "font_style": {"type": "string"},
+                            "color": {"type": "string"},
+                            "format": {"type": "string"},
+                            "text_decoration": {"type": "string"},
+                        },
+                        "required": ["text"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["path", "textbox_name", "runs"],
+            "additionalProperties": False,
+        },
+        handler=styling.set_textbox_runs,
+    )
 
     _BODY_TEXTBOX_SCHEMA = {
         "type": "object",

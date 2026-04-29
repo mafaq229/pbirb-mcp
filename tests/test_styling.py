@@ -21,7 +21,7 @@ import pytest
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
-from pbirb_mcp.ops.styling import set_textbox_style
+from pbirb_mcp.ops.styling import set_textbox_runs, set_textbox_style
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
 
@@ -295,6 +295,159 @@ class TestCanGrowCanShrink:
         assert cs_idx < para_idx
 
 
+# ---- v0.3 set_textbox_runs (rich text / multi-run) -----------------------
+
+
+class TestSetTextboxRuns:
+    def test_replaces_paragraphs_with_multiple_runs(self, rdl_path):
+        result = set_textbox_runs(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            runs=[
+                {"text": "Asset(s): ", "font_weight": "Bold"},
+                {"text": "0KLLu6BqeVkJ2ZLmXH20", "font_weight": "Normal"},
+            ],
+        )
+        assert result["runs"] == 2
+        assert result["changed"] == ["Paragraphs"]
+        # Re-parse and verify the run count + values.
+        tb = _textbox(rdl_path, "HeaderProductID")
+        runs = tb.findall(f"{q('Paragraphs')}/{q('Paragraph')}/{q('TextRuns')}/{q('TextRun')}")
+        assert len(runs) == 2
+        values = [r.find(q("Value")).text for r in runs]
+        assert values == ["Asset(s): ", "0KLLu6BqeVkJ2ZLmXH20"]
+
+    def test_per_run_styles_applied(self, rdl_path):
+        set_textbox_runs(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            runs=[
+                {"text": "Bold ", "font_weight": "Bold", "color": "#FF0000"},
+                {"text": "italic", "font_style": "Italic", "font_size": "9pt"},
+            ],
+        )
+        tb = _textbox(rdl_path, "HeaderProductID")
+        runs = tb.findall(f"{q('Paragraphs')}/{q('Paragraph')}/{q('TextRuns')}/{q('TextRun')}")
+        # First run: Bold + red
+        s0 = find_child(runs[0], "Style")
+        assert find_child(s0, "FontWeight").text == "Bold"
+        assert find_child(s0, "Color").text == "#FF0000"
+        # Second run: Italic + 9pt
+        s1 = find_child(runs[1], "Style")
+        assert find_child(s1, "FontStyle").text == "Italic"
+        assert find_child(s1, "FontSize").text == "9pt"
+
+    def test_single_run_replaces_existing(self, rdl_path):
+        # Fixture's HeaderProductID starts with one run holding 'ProductID'.
+        set_textbox_runs(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            runs=[{"text": "Replaced"}],
+        )
+        tb = _textbox(rdl_path, "HeaderProductID")
+        runs = tb.findall(f"{q('Paragraphs')}/{q('Paragraph')}/{q('TextRuns')}/{q('TextRun')}")
+        assert len(runs) == 1
+        assert runs[0].find(q("Value")).text == "Replaced"
+
+    def test_round_trip_via_get_textbox(self, rdl_path):
+        from pbirb_mcp.ops.reader import get_textbox
+
+        set_textbox_runs(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            runs=[
+                {"text": "A", "font_weight": "Bold"},
+                {"text": "B", "color": "#00FF00", "font_size": "10pt"},
+            ],
+        )
+        gt = get_textbox(path=str(rdl_path), name="HeaderProductID")
+        assert len(gt["runs"]) == 2
+        assert gt["runs"][0]["value"] == "A"
+        assert gt["runs"][0]["style"]["FontWeight"] == "Bold"
+        assert gt["runs"][1]["value"] == "B"
+        assert gt["runs"][1]["style"]["Color"] == "#00FF00"
+        assert gt["runs"][1]["style"]["FontSize"] == "10pt"
+
+    def test_idempotent_no_op_on_identical_input(self, rdl_path):
+        set_textbox_runs(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            runs=[{"text": "Header"}],
+        )
+        before = (rdl_path).read_bytes()
+        result = set_textbox_runs(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            runs=[{"text": "Header"}],
+        )
+        assert result["changed"] == []
+        # Idempotent → file untouched.
+        assert (rdl_path).read_bytes() == before
+
+    def test_pre_encoded_text_does_not_double_encode(self, rdl_path):
+        # Bug class regression: pass already-encoded entities; saved
+        # bytes must contain &amp; not &amp;amp;.
+        set_textbox_runs(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            runs=[{"text": "A &amp; B"}],
+        )
+        assert b"&amp;amp;" not in (rdl_path).read_bytes()
+        assert b"A &amp; B" in (rdl_path).read_bytes()
+
+    def test_empty_runs_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="non-empty"):
+            set_textbox_runs(
+                path=str(rdl_path),
+                textbox_name="HeaderProductID",
+                runs=[],
+            )
+
+    def test_non_dict_run_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="must be a dict"):
+            set_textbox_runs(
+                path=str(rdl_path),
+                textbox_name="HeaderProductID",
+                runs=["just a string"],  # type: ignore[list-item]
+            )
+
+    def test_missing_text_key_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="missing required key 'text'"):
+            set_textbox_runs(
+                path=str(rdl_path),
+                textbox_name="HeaderProductID",
+                runs=[{"font_weight": "Bold"}],
+            )
+
+    def test_unknown_run_key_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="unrecognised keys"):
+            set_textbox_runs(
+                path=str(rdl_path),
+                textbox_name="HeaderProductID",
+                runs=[{"text": "X", "garbage_key": "y"}],
+            )
+
+    def test_unknown_textbox_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            set_textbox_runs(
+                path=str(rdl_path),
+                textbox_name="NoSuchBox",
+                runs=[{"text": "X"}],
+            )
+
+    def test_round_trip_safe(self, rdl_path):
+        set_textbox_runs(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            runs=[
+                {"text": "A", "font_weight": "Bold"},
+                {"text": "B"},
+                {"text": "C", "color": "#0000FF"},
+            ],
+        )
+        RDLDocument.open(rdl_path).validate()
+
+
 # ---- error paths ----------------------------------------------------------
 
 
@@ -332,3 +485,12 @@ class TestToolRegistration:
         ]
         names = {t["name"] for t in listing}
         assert "set_textbox_style" in names
+
+    def test_set_textbox_runs_registered(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )["result"]["tools"]
+        names = {t["name"] for t in listing}
+        assert "set_textbox_runs" in names

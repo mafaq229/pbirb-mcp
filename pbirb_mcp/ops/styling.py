@@ -558,8 +558,214 @@ def set_conditional_row_color(
     }
 
 
+# ---- set_textbox_runs ----------------------------------------------------
+
+
+# Run-level style fields callers can supply via the runs[] list. Mirrors
+# reader.py::_RUN_STYLE_FIELDS so a get_textbox → set_textbox_runs round
+# trip preserves the same fields.
+_RUN_KWARG_TO_STYLE_LOCAL: tuple[tuple[str, str], ...] = (
+    ("font_family", "FontFamily"),
+    ("font_size", "FontSize"),
+    ("font_weight", "FontWeight"),
+    ("font_style", "FontStyle"),
+    ("color", "Color"),
+    ("format", "Format"),
+    ("text_decoration", "TextDecoration"),
+)
+_RECOGNISED_RUN_KEYS = frozenset(
+    ["text"] + [kwarg for kwarg, _ in _RUN_KWARG_TO_STYLE_LOCAL]
+)
+
+
+def _runs_match_specs(
+    paragraphs: etree._Element, specs: list[dict[str, Any]]
+) -> bool:
+    """Structural equality check: do the existing TextRuns under the
+    first Paragraph match the supplied specs exactly?
+
+    Compares the Value text and every recognised style field. Used by
+    set_textbox_runs to short-circuit no-op writes without serialising
+    to bytes (which is fooled by namespace-prefix drift).
+    """
+    paragraph = find_child(paragraphs, "Paragraph")
+    if paragraph is None:
+        return False
+    textruns_root = find_child(paragraph, "TextRuns")
+    if textruns_root is None:
+        return False
+    textruns = find_children(textruns_root, "TextRun")
+    if len(textruns) != len(specs):
+        return False
+    for run_el, spec in zip(textruns, specs):
+        value = find_child(run_el, "Value")
+        existing_value = value.text if value is not None else None
+        if existing_value != encode_text(str(spec["text"])):
+            return False
+        # Compare every recognised style field.
+        style = find_child(run_el, "Style")
+        for kwarg, local in _RUN_KWARG_TO_STYLE_LOCAL:
+            spec_v = spec.get(kwarg)
+            existing_v: Optional[str] = None
+            if style is not None:
+                node = find_child(style, local)
+                if node is not None:
+                    existing_v = node.text
+            if spec_v is None:
+                if existing_v is not None:
+                    return False
+            else:
+                if existing_v != encode_text(str(spec_v)):
+                    return False
+    return True
+
+
+def _build_run_style(run_spec: dict[str, str]) -> Optional[etree._Element]:
+    """Build a ``<Style>`` element for a single run spec. Returns ``None``
+    when no style fields are populated so callers can keep an empty
+    ``<Style/>`` (Report Builder's emitted shape) by inserting their own
+    placeholder."""
+    style = etree.Element(q("Style"))
+    has_any = False
+    for kwarg, local in _RUN_KWARG_TO_STYLE_LOCAL:
+        v = run_spec.get(kwarg)
+        if v is None:
+            continue
+        node = etree.SubElement(style, q(local))
+        node.text = encode_text(str(v))
+        has_any = True
+    return style if has_any else None
+
+
+def set_textbox_runs(
+    path: str,
+    textbox_name: str,
+    runs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Replace the textbox content with multiple ``<TextRun>`` children.
+
+    Use this when the textbox needs mixed styling within one display —
+    e.g. *"**Asset(s):** value"* with bold prefix + regular value in a
+    single textbox. RDL renders the runs side-by-side inside one
+    ``<Paragraph>``; for separate paragraphs, do a follow-up edit (this
+    tool stays single-paragraph for v0.3 — multi-paragraph is deferred).
+
+    Each entry in ``runs`` is a dict::
+
+        {
+          "text": str,                    # required
+          "font_family": str,             # optional
+          "font_size": str,               # optional, RDL size like '11pt'
+          "font_weight": str,             # optional ('Bold', 'Normal', ...)
+          "font_style": str,              # optional ('Italic', 'Normal', ...)
+          "color": str,                   # optional hex or named
+          "format": str,                  # optional number/date format
+          "text_decoration": str,         # optional ('Underline', etc.)
+        }
+
+    The text and every style field route through encode_text so already-
+    encoded entities don't double-encode.
+
+    Round-trip contract: get_textbox.runs[] returns the same shape this
+    tool writes (text + style sub-dict).
+
+    Returns ``{textbox, kind, runs: int, changed: list[str]}`` —
+    ``changed`` is ``["Paragraphs"]`` when the subtree was rewritten,
+    ``[]`` when input matched existing exactly (no save).
+
+    Errors:
+    - Empty ``runs`` list: rejects with ValueError; use remove_body_item
+      to drop the textbox or pass at least one run.
+    - Non-dict run entries: rejects with ValueError.
+    - Missing ``text`` key: rejects with ValueError.
+    - Unknown keys in a run entry: rejects with ValueError listing the
+      offending keys.
+    """
+    if not isinstance(runs, list) or not runs:
+        raise ValueError(
+            "runs must be a non-empty list; supply at least one run entry"
+        )
+    for i, run in enumerate(runs):
+        if not isinstance(run, dict):
+            raise ValueError(f"runs[{i}] must be a dict; got {type(run).__name__}")
+        if "text" not in run:
+            raise ValueError(f"runs[{i}] missing required key 'text'")
+        unknown = set(run.keys()) - _RECOGNISED_RUN_KEYS
+        if unknown:
+            raise ValueError(
+                f"runs[{i}] has unrecognised keys {sorted(unknown)!r}; "
+                f"valid keys are {sorted(_RECOGNISED_RUN_KEYS)!r}"
+            )
+
+    doc = RDLDocument.open(path)
+    textbox = resolve_textbox(doc, textbox_name)
+
+    # Structural no-op check: compare the incoming run specs against
+    # the textbox's existing runs before any DOM rewrite. Bytes-level
+    # comparison is fooled by namespace-prefix and whitespace drift, so
+    # walk the field set instead.
+    existing = find_child(textbox, "Paragraphs")
+    if existing is not None and _runs_match_specs(existing, runs):
+        return {
+            "textbox": textbox_name,
+            "kind": "Textbox",
+            "runs": len(runs),
+            "changed": [],
+        }
+
+    # Build the new <Paragraphs> subtree from scratch.
+    new_paragraphs = etree.Element(q("Paragraphs"))
+    paragraph = etree.SubElement(new_paragraphs, q("Paragraph"))
+    textruns = etree.SubElement(paragraph, q("TextRuns"))
+    for run_spec in runs:
+        textrun = etree.SubElement(textruns, q("TextRun"))
+        value = etree.SubElement(textrun, q("Value"))
+        value.text = encode_text(str(run_spec["text"]))
+        run_style = _build_run_style(run_spec)
+        # Always emit a <Style> child — Report Builder writes one even
+        # when empty, so absence would drift round-trip byte-identity
+        # for any textbox round-tripped through this tool.
+        if run_style is None:
+            etree.SubElement(textrun, q("Style"))
+        else:
+            textrun.append(run_style)
+    # Empty <Style/> on the Paragraph itself (RB convention).
+    etree.SubElement(paragraph, q("Style"))
+
+    # Replace or insert the Paragraphs subtree, preserving sibling order.
+    if existing is not None:
+        textbox.replace(existing, new_paragraphs)
+    else:
+        # Find the insertion point: <Paragraphs> sits between the direct
+        # boolean children (CanGrow/CanShrink/KeepTogether/...) and the
+        # rd:DefaultName / Top / Left / etc. trailing fields. Use the
+        # established _TEXTBOX_DIRECT_CHILD_ORDER lookup.
+        new_idx = _TEXTBOX_DIRECT_CHILD_ORDER.index("Paragraphs")
+        inserted = False
+        for i, child in enumerate(list(textbox)):
+            child_local = etree.QName(child).localname
+            if (
+                child_local in _TEXTBOX_DIRECT_CHILD_ORDER
+                and _TEXTBOX_DIRECT_CHILD_ORDER.index(child_local) > new_idx
+            ):
+                textbox.insert(i, new_paragraphs)
+                inserted = True
+                break
+        if not inserted:
+            textbox.append(new_paragraphs)
+
+    doc.save()
+    return {
+        "textbox": textbox_name,
+        "kind": "Textbox",
+        "runs": len(runs),
+        "changed": ["Paragraphs"],
+    }
+
+
 __all__ = [
     "set_alternating_row_color",
     "set_conditional_row_color",
+    "set_textbox_runs",
     "set_textbox_style",
 ]
