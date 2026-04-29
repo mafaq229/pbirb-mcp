@@ -857,10 +857,108 @@ def set_textbox_value(
     }
 
 
+# ---- set_textbox_style_bulk ----------------------------------------------
+
+
+def set_textbox_style_bulk(
+    path: str,
+    textbox_names: list[str],
+    *,
+    font_family: Optional[str] = None,
+    font_size: Optional[str] = None,
+    font_weight: Optional[str] = None,
+    color: Optional[str] = None,
+    background_color: Optional[str] = None,
+    border_style: Optional[str] = None,
+    border_color: Optional[str] = None,
+    border_width: Optional[str] = None,
+    text_align: Optional[str] = None,
+    vertical_align: Optional[str] = None,
+    format: Optional[str] = None,  # noqa: A002 - tool-facing
+    padding_top: Optional[str] = None,
+    padding_bottom: Optional[str] = None,
+    padding_left: Optional[str] = None,
+    padding_right: Optional[str] = None,
+    writing_mode: Optional[str] = None,
+    can_grow: Optional[bool] = None,
+    can_shrink: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Apply the same style kwargs to every named textbox in one call.
+
+    Same kwarg surface as :func:`set_textbox_style`. Iterates over each
+    name; missing names land in ``skipped`` rather than raising. Atomic
+    per-textbox: a successful textbox is saved even if a later one is
+    missing — that mirrors how individual ``set_textbox_style`` calls
+    would have behaved if invoked sequentially.
+
+    Returns ``{textboxes: [names], skipped: [names], changed: list[str]}``
+    where ``changed`` is the **union** of sub-paths affected across all
+    textboxes (e.g. ``["box.PaddingTop", "run.FontWeight"]``). Empty
+    ``textbox_names`` and all-None kwargs both short-circuit to a no-op.
+
+    Designed for the recurring "style 21+ headers + 21 data + 21 totals
+    cells the same way" loop that v0.2 forced into 63 individual tool
+    calls. RAG-Report session feedback #6.
+    """
+    if not textbox_names:
+        return {
+            "textboxes": [],
+            "skipped": [],
+            "changed": [],
+        }
+
+    style_kwargs: dict[str, Any] = {
+        "font_family": font_family,
+        "font_size": font_size,
+        "font_weight": font_weight,
+        "color": color,
+        "background_color": background_color,
+        "border_style": border_style,
+        "border_color": border_color,
+        "border_width": border_width,
+        "text_align": text_align,
+        "vertical_align": vertical_align,
+        "format": format,
+        "padding_top": padding_top,
+        "padding_bottom": padding_bottom,
+        "padding_left": padding_left,
+        "padding_right": padding_right,
+        "writing_mode": writing_mode,
+        "can_grow": can_grow,
+        "can_shrink": can_shrink,
+    }
+    if all(v is None for v in style_kwargs.values()):
+        return {
+            "textboxes": list(textbox_names),
+            "skipped": [],
+            "changed": [],
+        }
+
+    affected: list[str] = []
+    skipped: list[str] = []
+    union_changed: set[str] = set()
+    for name in textbox_names:
+        try:
+            result = set_textbox_style(path, name, **style_kwargs)
+        except ElementNotFoundError:
+            skipped.append(name)
+            continue
+        affected.append(name)
+        for entry in result.get("changed", []):
+            union_changed.add(entry)
+
+    return {
+        "textboxes": affected,
+        "skipped": skipped,
+        "changed": sorted(union_changed),
+    }
+
+
 __all__ = [
     "set_alternating_row_color",
     "set_conditional_row_color",
     "set_textbox_runs",
     "set_textbox_style",
+    "set_textbox_style_bulk",
     "set_textbox_value",
 ]

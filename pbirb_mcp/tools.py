@@ -1335,6 +1335,87 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=styling.set_textbox_value,
     )
+    server.register_tool(
+        name="set_textbox_style_bulk",
+        description=(
+            "Apply the same style kwargs to every named textbox in one "
+            "call. Same kwarg surface as set_textbox_style. Missing names "
+            "land in skipped rather than raising. Returns {textboxes, "
+            "skipped, changed} where changed is the union of sub-paths "
+            "affected across all textboxes. Pair with find_textboxes_by_"
+            "style to discover names by current style."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "textbox_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "font_family": {"type": ["string", "null"]},
+                "font_size": {"type": ["string", "null"]},
+                "font_weight": {"type": ["string", "null"]},
+                "color": {"type": ["string", "null"]},
+                "background_color": {"type": ["string", "null"]},
+                "border_style": {"type": ["string", "null"]},
+                "border_color": {"type": ["string", "null"]},
+                "border_width": {"type": ["string", "null"]},
+                "text_align": {"type": ["string", "null"]},
+                "vertical_align": {"type": ["string", "null"]},
+                "format": {"type": ["string", "null"]},
+                "padding_top": {"type": ["string", "null"]},
+                "padding_bottom": {"type": ["string", "null"]},
+                "padding_left": {"type": ["string", "null"]},
+                "padding_right": {"type": ["string", "null"]},
+                "writing_mode": {"type": ["string", "null"]},
+                "can_grow": {"type": ["boolean", "null"]},
+                "can_shrink": {"type": ["boolean", "null"]},
+            },
+            "required": ["path", "textbox_names"],
+            "additionalProperties": False,
+        },
+        handler=styling.set_textbox_style_bulk,
+    )
+    server.register_tool(
+        name="find_textboxes_by_style",
+        description=(
+            "Search for textboxes matching one or more style filters. "
+            "Filters AND together (every supplied filter must match). "
+            "Returns [{name, location, matched_fields}] where location "
+            "is best-effort 'body' / 'header' / 'footer' / "
+            "'tablix:<name>' / 'rectangle:<name>'. Returns [] when no "
+            "filters supplied. Pair with set_textbox_style_bulk for "
+            "discovery+apply patterns (e.g. 'recolor every red textbox')."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "background_color": {"type": "string"},
+                "vertical_align": {"type": "string"},
+                "writing_mode": {"type": "string"},
+                "padding_top": {"type": "string"},
+                "padding_bottom": {"type": "string"},
+                "padding_left": {"type": "string"},
+                "padding_right": {"type": "string"},
+                "border_style": {"type": "string"},
+                "border_color": {"type": "string"},
+                "border_width": {"type": "string"},
+                "text_align": {"type": "string"},
+                "font_family": {"type": "string"},
+                "font_size": {"type": "string"},
+                "font_weight": {"type": "string"},
+                "font_style": {"type": "string"},
+                "color": {"type": "string"},
+                "format": {"type": "string"},
+                "text_decoration": {"type": "string"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=reader.find_textboxes_by_style,
+    )
 
     _BODY_TEXTBOX_SCHEMA = {
         "type": "object",

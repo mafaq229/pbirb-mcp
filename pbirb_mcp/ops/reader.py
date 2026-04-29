@@ -812,8 +812,188 @@ def get_chart(path: str, name: str) -> dict[str, Any]:
     }
 
 
+# ---- find_textboxes_by_style ---------------------------------------------
+
+
+# Filter kwargs accepted by find_textboxes_by_style. Each entry maps a
+# user-facing kwarg name to (style_level, RDL local name).
+#
+# Box-level filters route to <Textbox/Style>/X; paragraph filters to
+# <Paragraph/Style>/X; run filters to the FIRST <TextRun/Style>/X.
+_FILTER_LOCATIONS: dict[str, tuple[str, str]] = {
+    "background_color": ("box", "BackgroundColor"),
+    "vertical_align": ("box", "VerticalAlign"),
+    "writing_mode": ("box", "WritingMode"),
+    "padding_top": ("box", "PaddingTop"),
+    "padding_bottom": ("box", "PaddingBottom"),
+    "padding_left": ("box", "PaddingLeft"),
+    "padding_right": ("box", "PaddingRight"),
+    "border_style": ("border", "Style"),
+    "border_color": ("border", "Color"),
+    "border_width": ("border", "Width"),
+    "text_align": ("paragraph", "TextAlign"),
+    "font_family": ("run", "FontFamily"),
+    "font_size": ("run", "FontSize"),
+    "font_weight": ("run", "FontWeight"),
+    "font_style": ("run", "FontStyle"),
+    "color": ("run", "Color"),
+    "format": ("run", "Format"),
+    "text_decoration": ("run", "TextDecoration"),
+}
+
+
+def _textbox_style_field_value(
+    textbox: etree._Element, level: str, local: str
+) -> Optional[str]:
+    """Read the effective value of one Style field on a textbox at the
+    given level (box / border / paragraph / run). Returns ``None`` when
+    absent."""
+    if level == "box":
+        style = find_child(textbox, "Style")
+        if style is None:
+            return None
+        node = find_child(style, local)
+        return node.text if node is not None and node.text is not None else None
+    if level == "border":
+        style = find_child(textbox, "Style")
+        if style is None:
+            return None
+        border = find_child(style, "Border")
+        if border is None:
+            return None
+        node = find_child(border, local)
+        return node.text if node is not None and node.text is not None else None
+    if level == "paragraph":
+        paragraphs_root = find_child(textbox, "Paragraphs")
+        if paragraphs_root is None:
+            return None
+        paragraph = find_child(paragraphs_root, "Paragraph")
+        if paragraph is None:
+            return None
+        style = find_child(paragraph, "Style")
+        if style is None:
+            return None
+        node = find_child(style, local)
+        return node.text if node is not None and node.text is not None else None
+    if level == "run":
+        paragraphs_root = find_child(textbox, "Paragraphs")
+        if paragraphs_root is None:
+            return None
+        paragraph = find_child(paragraphs_root, "Paragraph")
+        if paragraph is None:
+            return None
+        runs_root = find_child(paragraph, "TextRuns")
+        if runs_root is None:
+            return None
+        run = find_child(runs_root, "TextRun")
+        if run is None:
+            return None
+        style = find_child(run, "Style")
+        if style is None:
+            return None
+        node = find_child(style, local)
+        return node.text if node is not None and node.text is not None else None
+    return None
+
+
+def _textbox_location(textbox: etree._Element) -> str:
+    """Best-effort short string describing where a textbox lives:
+    'body' / 'header' / 'footer' / 'tablix:<TablixName>' / 'rectangle' /
+    'unknown'. Used only by find_textboxes_by_style results — not a
+    structural API."""
+    ancestor = textbox.getparent()
+    while ancestor is not None:
+        tag = etree.QName(ancestor).localname
+        if tag == "Tablix":
+            return f"tablix:{ancestor.get('Name')}"
+        if tag == "Rectangle":
+            return f"rectangle:{ancestor.get('Name')}"
+        if tag == "PageHeader":
+            return "header"
+        if tag == "PageFooter":
+            return "footer"
+        if tag == "Body":
+            return "body"
+        ancestor = ancestor.getparent()
+    return "unknown"
+
+
+def find_textboxes_by_style(
+    path: str,
+    *,
+    background_color: Optional[str] = None,
+    vertical_align: Optional[str] = None,
+    writing_mode: Optional[str] = None,
+    padding_top: Optional[str] = None,
+    padding_bottom: Optional[str] = None,
+    padding_left: Optional[str] = None,
+    padding_right: Optional[str] = None,
+    border_style: Optional[str] = None,
+    border_color: Optional[str] = None,
+    border_width: Optional[str] = None,
+    text_align: Optional[str] = None,
+    font_family: Optional[str] = None,
+    font_size: Optional[str] = None,
+    font_weight: Optional[str] = None,
+    font_style: Optional[str] = None,
+    color: Optional[str] = None,
+    format: Optional[str] = None,  # noqa: A002 - tool-facing
+    text_decoration: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Search for textboxes matching one or more style filters.
+
+    Each filter is optional; supplied filters AND together — a textbox
+    must match every supplied filter to appear in the result. Useful as
+    a discovery step before :func:`set_textbox_style_bulk`.
+
+    Returns a list of ``{name, location, matched_fields: dict[str,str]}``
+    where ``location`` is best-effort (``body`` / ``header`` / ``footer``
+    / ``tablix:<name>`` / ``rectangle:<name>`` / ``unknown``) and
+    ``matched_fields`` lists the filtered kwargs and their actual values
+    on that textbox (always equal to the supplied filter — included so
+    callers can confirm the match shape).
+
+    Returns ``[]`` when no filters are supplied (refusing to match
+    everything would be a footgun, since the caller almost certainly
+    wants to feed the result into ``set_textbox_style_bulk``).
+    """
+    filters: dict[str, str] = {}
+    for kwarg, level_local in _FILTER_LOCATIONS.items():
+        v = locals().get(kwarg)
+        if v is not None:
+            filters[kwarg] = v
+    if not filters:
+        return []
+
+    doc = RDLDocument.open(path)
+    out: list[dict[str, Any]] = []
+    for textbox in doc.root.iter(f"{{{RDL_NS}}}Textbox"):
+        name = textbox.get("Name")
+        if name is None:
+            continue
+        matched: dict[str, str] = {}
+        all_match = True
+        for kwarg, expected in filters.items():
+            level, local = _FILTER_LOCATIONS[kwarg]
+            actual = _textbox_style_field_value(textbox, level, local)
+            if actual != expected:
+                all_match = False
+                break
+            matched[kwarg] = actual
+        if all_match:
+            out.append(
+                {
+                    "name": name,
+                    "location": _textbox_location(textbox),
+                    "matched_fields": matched,
+                }
+            )
+    return out
+
+
 __all__ = [
     "describe_report",
+    "find_textboxes_by_style",
     "get_chart",
     "get_datasets",
     "get_image",

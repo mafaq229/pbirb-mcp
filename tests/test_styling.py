@@ -21,9 +21,11 @@ import pytest
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
+from pbirb_mcp.ops.reader import find_textboxes_by_style
 from pbirb_mcp.ops.styling import (
     set_textbox_runs,
     set_textbox_style,
+    set_textbox_style_bulk,
     set_textbox_value,
 )
 from pbirb_mcp.server import MCPServer
@@ -537,6 +539,150 @@ class TestSetTextboxValue:
         RDLDocument.open(rdl_path).validate()
 
 
+# ---- v0.3 set_textbox_style_bulk ----------------------------------------
+
+
+class TestSetTextboxStyleBulk:
+    def test_applies_to_every_named_textbox(self, rdl_path):
+        result = set_textbox_style_bulk(
+            path=str(rdl_path),
+            textbox_names=["HeaderProductID", "HeaderProductName", "HeaderAmount"],
+            background_color="#003366",
+            color="#FFFFFF",
+            font_weight="Bold",
+        )
+        assert sorted(result["textboxes"]) == sorted(
+            ["HeaderProductID", "HeaderProductName", "HeaderAmount"]
+        )
+        assert result["skipped"] == []
+        # Union of changed fields across the three textboxes.
+        assert "box.BackgroundColor" in result["changed"]
+        assert "run.Color" in result["changed"]
+        assert "run.FontWeight" in result["changed"]
+        # Verify the actual XML.
+        for name in ["HeaderProductID", "HeaderProductName", "HeaderAmount"]:
+            tb = _textbox(rdl_path, name)
+            assert find_child(find_child(tb, "Style"), "BackgroundColor").text == "#003366"
+
+    def test_missing_textboxes_skipped_not_raised(self, rdl_path):
+        result = set_textbox_style_bulk(
+            path=str(rdl_path),
+            textbox_names=["HeaderProductID", "DoesNotExist", "HeaderAmount"],
+            background_color="#FF0000",
+        )
+        assert sorted(result["textboxes"]) == sorted(["HeaderProductID", "HeaderAmount"])
+        assert result["skipped"] == ["DoesNotExist"]
+        # The two existing textboxes were styled.
+        for name in ["HeaderProductID", "HeaderAmount"]:
+            tb = _textbox(rdl_path, name)
+            assert find_child(find_child(tb, "Style"), "BackgroundColor").text == "#FF0000"
+
+    def test_empty_names_no_op(self, rdl_path):
+        before = (rdl_path).read_bytes()
+        result = set_textbox_style_bulk(
+            path=str(rdl_path),
+            textbox_names=[],
+            background_color="#000",
+        )
+        assert result == {"textboxes": [], "skipped": [], "changed": []}
+        assert (rdl_path).read_bytes() == before
+
+    def test_no_style_kwargs_no_op(self, rdl_path):
+        before = (rdl_path).read_bytes()
+        result = set_textbox_style_bulk(
+            path=str(rdl_path),
+            textbox_names=["HeaderProductID", "HeaderAmount"],
+        )
+        # Names recorded but no changes made.
+        assert sorted(result["textboxes"]) == sorted(["HeaderProductID", "HeaderAmount"])
+        assert result["changed"] == []
+        assert (rdl_path).read_bytes() == before
+
+
+# ---- v0.3 find_textboxes_by_style ----------------------------------------
+
+
+class TestFindTextboxesByStyle:
+    def test_finds_match_after_bulk_apply(self, rdl_path):
+        # Style three textboxes red, then search.
+        set_textbox_style_bulk(
+            path=str(rdl_path),
+            textbox_names=["HeaderProductID", "HeaderProductName"],
+            color="#FF0000",
+        )
+        results = find_textboxes_by_style(
+            path=str(rdl_path),
+            color="#FF0000",
+        )
+        names = {r["name"] for r in results}
+        assert names == {"HeaderProductID", "HeaderProductName"}
+        # Each result includes location + matched_fields.
+        for r in results:
+            assert r["matched_fields"] == {"color": "#FF0000"}
+            assert r["location"].startswith("tablix:")
+
+    def test_returns_empty_when_no_filters(self, rdl_path):
+        # No filters supplied → empty list (refusing to match all is safer).
+        assert find_textboxes_by_style(path=str(rdl_path)) == []
+
+    def test_combines_filters_with_AND(self, rdl_path):
+        set_textbox_style(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            color="#FF0000",
+            font_weight="Bold",
+        )
+        set_textbox_style(
+            path=str(rdl_path),
+            textbox_name="HeaderProductName",
+            color="#FF0000",  # red but not bold
+        )
+        # Filter on both: only HeaderProductID matches.
+        results = find_textboxes_by_style(
+            path=str(rdl_path),
+            color="#FF0000",
+            font_weight="Bold",
+        )
+        names = {r["name"] for r in results}
+        assert names == {"HeaderProductID"}
+
+    def test_box_level_filter(self, rdl_path):
+        set_textbox_style(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            background_color="#FFFF00",
+        )
+        results = find_textboxes_by_style(
+            path=str(rdl_path),
+            background_color="#FFFF00",
+        )
+        assert {r["name"] for r in results} == {"HeaderProductID"}
+
+    def test_recolor_pattern(self, rdl_path):
+        """End-to-end: find every red textbox, recolor to black except one."""
+        # Set up: 3 red textboxes.
+        set_textbox_style_bulk(
+            path=str(rdl_path),
+            textbox_names=["HeaderProductID", "HeaderProductName", "HeaderAmount"],
+            color="#FF0000",
+        )
+        # Find them and exclude one.
+        red = find_textboxes_by_style(path=str(rdl_path), color="#FF0000")
+        names_to_recolor = [r["name"] for r in red if r["name"] != "HeaderAmount"]
+        # Recolor in bulk.
+        result = set_textbox_style_bulk(
+            path=str(rdl_path),
+            textbox_names=names_to_recolor,
+            color="#000000",
+        )
+        assert "run.Color" in result["changed"]
+        # Verify final state: 1 red, 2 black.
+        red_after = find_textboxes_by_style(path=str(rdl_path), color="#FF0000")
+        black_after = find_textboxes_by_style(path=str(rdl_path), color="#000000")
+        assert {r["name"] for r in red_after} == {"HeaderAmount"}
+        assert {r["name"] for r in black_after} == {"HeaderProductID", "HeaderProductName"}
+
+
 # ---- error paths ----------------------------------------------------------
 
 
@@ -592,3 +738,12 @@ class TestToolRegistration:
         )["result"]["tools"]
         names = {t["name"] for t in listing}
         assert "set_textbox_value" in names
+
+    def test_bulk_and_find_registered(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )["result"]["tools"]
+        names = {t["name"] for t in listing}
+        assert {"set_textbox_style_bulk", "find_textboxes_by_style"} <= names
