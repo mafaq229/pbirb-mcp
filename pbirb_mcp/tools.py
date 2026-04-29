@@ -451,6 +451,30 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=images.set_image_sizing,
     )
+    server.register_tool(
+        name="set_image_source",
+        description=(
+            "Repoint an existing <Image> at a different embedded image "
+            "entry without delete-and-readd. Sets Source=Embedded and "
+            "rewrites <Value> to embedded_name. Refuses with a clear "
+            "error if embedded_name isn't in <EmbeddedImages> — leaving "
+            "a dangling reference would render as a broken image. Add "
+            "the image first via add_embedded_image. Idempotent: same "
+            "(Source, Value) pair → {changed: false}, no save. Returns "
+            "{name, kind, changed: bool}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "image_name": {"type": "string"},
+                "embedded_name": {"type": "string"},
+            },
+            "required": ["path", "image_name", "embedded_name"],
+            "additionalProperties": False,
+        },
+        handler=images.set_image_source,
+    )
 
     server.register_tool(
         name="remove_query_parameter",
