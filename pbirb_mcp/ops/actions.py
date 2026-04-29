@@ -418,7 +418,120 @@ def _action_matches(
     return False
 
 
+# ---- set_chart_series_action ---------------------------------------------
+
+
+# Per RDL XSD, ChartSeries child order (subset relevant to the action
+# write):  Hidden, Action, ChartSmartLabel, ChartDataPoints, Type,
+# Subtype, EmptyPoints, Style, ChartItemInLegend, ChartDataLabel,
+# ChartMarker, ChartEmptyPoints, LegendName, ...
+# Action sits near the front of the ChartSeries subtree (after Hidden,
+# before everything else our writers emit).
+_CHART_SERIES_CHILD_ORDER = (
+    "Hidden",
+    "Action",
+    "ChartSmartLabel",
+    "ChartDataPoints",
+    "Type",
+    "Subtype",
+    "EmptyPoints",
+    "Style",
+    "ChartItemInLegend",
+    "ChartDataLabel",
+    "ChartMarker",
+    "ChartEmptyPoints",
+    "LegendName",
+    "LegendText",
+    "HideInLegend",
+    "ValueAxisName",
+    "CategoryAxisName",
+    "ChartAreaName",
+)
+
+
+def _insert_in_chart_series_order(
+    series: etree._Element, new_child: etree._Element
+) -> None:
+    """Insert ``new_child`` into a ChartSeries respecting the
+    schema-required order. Replaces any existing element of the same
+    local name."""
+    new_local = etree.QName(new_child).localname
+    existing = find_child(series, new_local)
+    if existing is not None:
+        series.replace(existing, new_child)
+        return
+    if new_local in _CHART_SERIES_CHILD_ORDER:
+        new_idx = _CHART_SERIES_CHILD_ORDER.index(new_local)
+        for i, child in enumerate(list(series)):
+            local = etree.QName(child).localname
+            if (
+                local in _CHART_SERIES_CHILD_ORDER
+                and _CHART_SERIES_CHILD_ORDER.index(local) > new_idx
+            ):
+                series.insert(i, new_child)
+                return
+    series.append(new_child)
+
+
+def set_chart_series_action(
+    path: str,
+    chart_name: str,
+    series_name: str,
+    action_type: str,
+    target_expression: str,
+    drillthrough_parameters: Optional[list[dict[str, str]]] = None,
+) -> dict[str, Any]:
+    """Set ``<ChartSeries>/<Action>`` to a Hyperlink / Drillthrough /
+    BookmarkLink.
+
+    Same shape as :func:`set_textbox_action` and :func:`set_image_action`
+    — reuses ``_build_action_xml`` for the inner block and
+    ``_action_matches`` for the structural-equality short-circuit.
+
+    The chart series is addressed by ``(chart_name, series_name)``; the
+    same handle :func:`pbirb_mcp.ops.chart.set_chart_series_type` uses.
+    Returns ``{chart, series, kind: 'ChartSeries', action_type,
+    changed: bool}``.
+    """
+    # Import lazily to avoid circular imports (chart.py is independent
+    # of actions.py today; that stays true).
+    from pbirb_mcp.ops.chart import (
+        _find_series,
+        _resolve_chart,
+        _series_collection,
+    )
+
+    new_action = _build_action_xml(
+        action_type, target_expression, drillthrough_parameters
+    )
+
+    doc = RDLDocument.open(path)
+    chart = _resolve_chart(doc, chart_name)
+    sc = _series_collection(chart)
+    series = _find_series(sc, series_name)
+
+    existing = find_child(series, "Action")
+    if existing is not None and _action_matches(existing, new_action):
+        return {
+            "chart": chart_name,
+            "series": series_name,
+            "kind": "ChartSeries",
+            "action_type": action_type,
+            "changed": False,
+        }
+    _insert_in_chart_series_order(series, new_action)
+    doc.save()
+    return {
+        "chart": chart_name,
+        "series": series_name,
+        "kind": "ChartSeries",
+        "action_type": action_type,
+        "changed": True,
+    }
+
+
 __all__ = [
+    "set_chart_series_action",
     "set_document_map_label",
     "set_image_action",
     "set_textbox_action",

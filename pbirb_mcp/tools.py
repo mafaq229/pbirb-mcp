@@ -676,6 +676,43 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=actions.set_document_map_label,
     )
+    server.register_tool(
+        name="set_chart_series_action",
+        description=(
+            "Set <ChartSeries>/<Action> to a Hyperlink (URL), Drillthrough "
+            "(another report + optional parameters), or BookmarkLink. "
+            "Same kwarg surface as set_textbox_action / set_image_action; "
+            "the chart series is addressed by (chart_name, series_name). "
+            "Schema-aware insertion respects ChartSeries child order. "
+            "Idempotent on structural equality of the inner block."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+                "action_type": {
+                    "type": "string",
+                    "enum": ["Hyperlink", "Drillthrough", "BookmarkLink"],
+                },
+                "target_expression": {"type": "string"},
+                "drillthrough_parameters": {
+                    "type": "array",
+                    "items": _DRILLTHROUGH_PARAM_ITEM,
+                },
+            },
+            "required": [
+                "path",
+                "chart_name",
+                "series_name",
+                "action_type",
+                "target_expression",
+            ],
+            "additionalProperties": False,
+        },
+        handler=actions.set_chart_series_action,
+    )
 
     server.register_tool(
         name="remove_query_parameter",
