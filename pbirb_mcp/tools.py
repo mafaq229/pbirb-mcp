@@ -1311,6 +1311,30 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=styling.set_textbox_runs,
     )
+    server.register_tool(
+        name="set_textbox_value",
+        description=(
+            "Replace the text content of a single-run textbox. value can "
+            "be raw text or an =expression. Use this for the everyday "
+            "'change the textbox content' case (swap a literal label, "
+            "update a stale parameter reference, replace a broken "
+            "aggregate). Refuses with a redirect to set_textbox_runs when "
+            "the textbox has multiple text runs (multi-run content needs "
+            "the rich-text editor). Idempotent: identical value → "
+            "{changed: false} no-op. Returns {textbox, kind, changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "textbox_name": {"type": "string"},
+                "value": {"type": "string"},
+            },
+            "required": ["path", "textbox_name", "value"],
+            "additionalProperties": False,
+        },
+        handler=styling.set_textbox_value,
+    )
 
     _BODY_TEXTBOX_SCHEMA = {
         "type": "object",

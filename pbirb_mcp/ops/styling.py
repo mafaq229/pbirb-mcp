@@ -763,9 +763,104 @@ def set_textbox_runs(
     }
 
 
+# ---- set_textbox_value ---------------------------------------------------
+
+
+def set_textbox_value(
+    path: str,
+    textbox_name: str,
+    value: str,
+) -> dict[str, Any]:
+    """Replace the **text content** of a single-run textbox.
+
+    Use this for the everyday "change the textbox content" case — e.g.
+    swapping a literal label, updating a stale ``=Parameters!Old.Value``
+    expression to ``=Parameters!New.Value``, or replacing a broken
+    aggregate expression with a literal placeholder. ``value`` accepts
+    raw text or an ``=expression``; encoding is handled by ``encode_text``
+    so already-encoded entities don't double-encode.
+
+    Refuses with a redirect to :func:`set_textbox_runs` when the textbox
+    has more than one ``<TextRun>`` — multi-run content needs the
+    rich-text editor since this tool would otherwise silently flatten
+    the run-level styling.
+
+    Returns ``{textbox, kind, changed: bool}`` — False when ``value``
+    matched the existing run text (no save).
+    """
+    encoded = encode_text(str(value))
+
+    doc = RDLDocument.open(path)
+    textbox = resolve_textbox(doc, textbox_name)
+
+    paragraphs = find_child(textbox, "Paragraphs")
+    if paragraphs is None:
+        # No content yet — bootstrap a fresh single-run shape via
+        # _resolve_paragraph_run, then set the value.
+        paragraph, textrun = _resolve_paragraph_run(textbox)
+        value_node = find_child(textrun, "Value")
+        if value_node is None:
+            value_node = etree.SubElement(textrun, q("Value"))
+        value_node.text = encoded
+        # Make sure paragraph has its trailing empty <Style/> sibling for
+        # round-trip parity with template-built textboxes.
+        if find_child(paragraph, "Style") is None:
+            etree.SubElement(paragraph, q("Style"))
+        # And the run's empty Style child for the same reason.
+        if find_child(textrun, "Style") is None:
+            etree.SubElement(textrun, q("Style"))
+        doc.save()
+        return {
+            "textbox": textbox_name,
+            "kind": "Textbox",
+            "changed": True,
+        }
+
+    paragraph_count = len(find_children(paragraphs, "Paragraph"))
+    if paragraph_count > 1:
+        raise ValueError(
+            f"textbox {textbox_name!r} has {paragraph_count} paragraphs; "
+            "set_textbox_value only edits the first run of a single-paragraph "
+            "textbox. Use set_textbox_runs for multi-run / multi-paragraph "
+            "content."
+        )
+    paragraph = find_child(paragraphs, "Paragraph")
+    textruns_root = find_child(paragraph, "TextRuns") if paragraph is not None else None
+    textruns = find_children(textruns_root, "TextRun") if textruns_root is not None else []
+    if len(textruns) > 1:
+        raise ValueError(
+            f"textbox {textbox_name!r} has {len(textruns)} text runs; "
+            "set_textbox_value only edits a single-run textbox. Use "
+            "set_textbox_runs for multi-run content."
+        )
+    if not textruns:
+        # Single empty paragraph — bootstrap a TextRun.
+        _, textrun = _resolve_paragraph_run(textbox)
+    else:
+        textrun = textruns[0]
+
+    value_node = find_child(textrun, "Value")
+    if value_node is None:
+        value_node = etree.SubElement(textrun, q("Value"))
+    if value_node.text == encoded:
+        return {
+            "textbox": textbox_name,
+            "kind": "Textbox",
+            "changed": False,
+        }
+    value_node.text = encoded
+    doc.save()
+    return {
+        "textbox": textbox_name,
+        "kind": "Textbox",
+        "changed": True,
+    }
+
+
 __all__ = [
     "set_alternating_row_color",
     "set_conditional_row_color",
     "set_textbox_runs",
     "set_textbox_style",
+    "set_textbox_value",
 ]

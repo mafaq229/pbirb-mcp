@@ -21,7 +21,11 @@ import pytest
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
-from pbirb_mcp.ops.styling import set_textbox_runs, set_textbox_style
+from pbirb_mcp.ops.styling import (
+    set_textbox_runs,
+    set_textbox_style,
+    set_textbox_value,
+)
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
 
@@ -448,6 +452,91 @@ class TestSetTextboxRuns:
         RDLDocument.open(rdl_path).validate()
 
 
+# ---- v0.3 set_textbox_value (single-run content editor) -----------------
+
+
+class TestSetTextboxValue:
+    def test_replaces_existing_literal(self, rdl_path):
+        # Fixture's HeaderProductID Value is "ProductID".
+        result = set_textbox_value(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            value="Product ID Header",
+        )
+        assert result["changed"] is True
+        tb = _textbox(rdl_path, "HeaderProductID")
+        v = tb.find(f"{q('Paragraphs')}/{q('Paragraph')}/{q('TextRuns')}/{q('TextRun')}/{q('Value')}")
+        assert v is not None and v.text == "Product ID Header"
+
+    def test_replaces_with_expression(self, rdl_path):
+        result = set_textbox_value(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            value="=Parameters!DateFrom.Value",
+        )
+        assert result["changed"] is True
+        tb = _textbox(rdl_path, "HeaderProductID")
+        v = tb.find(f"{q('Paragraphs')}/{q('Paragraph')}/{q('TextRuns')}/{q('TextRun')}/{q('Value')}")
+        assert v is not None and v.text == "=Parameters!DateFrom.Value"
+
+    def test_idempotent_when_unchanged(self, rdl_path):
+        # Fixture's HeaderProductID Value is "Product ID".
+        before = (rdl_path).read_bytes()
+        result = set_textbox_value(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            value="Product ID",
+        )
+        assert result["changed"] is False
+        # No save when unchanged.
+        assert (rdl_path).read_bytes() == before
+
+    def test_pre_encoded_text_no_double_encode(self, rdl_path):
+        # Bug class regression: pre-encoded entity must end up as
+        # &amp; on disk, not &amp;amp;.
+        set_textbox_value(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            value="A &amp; B",
+        )
+        assert b"&amp;amp;" not in (rdl_path).read_bytes()
+        assert b"A &amp; B" in (rdl_path).read_bytes()
+
+    def test_refuses_multi_run_textbox(self, rdl_path):
+        # First create a multi-run textbox via set_textbox_runs.
+        set_textbox_runs(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            runs=[
+                {"text": "Part 1: "},
+                {"text": "Part 2"},
+            ],
+        )
+        # set_textbox_value must refuse with a clear redirect.
+        with pytest.raises(ValueError, match="set_textbox_runs"):
+            set_textbox_value(
+                path=str(rdl_path),
+                textbox_name="HeaderProductID",
+                value="Replaced",
+            )
+
+    def test_unknown_textbox_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            set_textbox_value(
+                path=str(rdl_path),
+                textbox_name="NoSuchBox",
+                value="X",
+            )
+
+    def test_round_trip_safe(self, rdl_path):
+        set_textbox_value(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            value="Round-tripped",
+        )
+        RDLDocument.open(rdl_path).validate()
+
+
 # ---- error paths ----------------------------------------------------------
 
 
@@ -494,3 +583,12 @@ class TestToolRegistration:
         )["result"]["tools"]
         names = {t["name"] for t in listing}
         assert "set_textbox_runs" in names
+
+    def test_set_textbox_value_registered(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )["result"]["tools"]
+        names = {t["name"] for t in listing}
+        assert "set_textbox_value" in names
