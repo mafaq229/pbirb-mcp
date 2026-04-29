@@ -766,3 +766,181 @@ class TestToolRegistration:
             "add_calculated_field",
             "remove_calculated_field",
         } <= names
+
+
+# ---- v0.3 PBIDATASET @-prefix defence ------------------------------------
+
+
+def _set_provider_pbidataset(rdl_path: Path):
+    """Edit the fixture's <DataProvider> to PBIDATASET so the defence
+    triggers. The fixture writes 'SQL' (AS-provider wire identifier)
+    by default, which our detector recognises via the powerbi:// in
+    ConnectString — but a real PBIDATASET-authored report uses
+    'PBIDATASET' explicitly, so we cover both shapes in tests."""
+    from lxml import etree as _etree
+
+    from pbirb_mcp.core.xpath import find_child as _fc
+    from pbirb_mcp.core.xpath import q as _q
+
+    doc = RDLDocument.open(rdl_path)
+    ds = doc.root.find(f"{{{RDL_NS}}}DataSources/{{{RDL_NS}}}DataSource")
+    cp = _fc(ds, "ConnectionProperties")
+    provider = _fc(cp, "DataProvider")
+    provider.text = "PBIDATASET"
+    doc.save()
+
+
+class TestAddQueryParameterPbiDatasetDefence:
+    def test_strips_at_prefix_for_pbidataset_provider(self, rdl_path):
+        _set_provider_pbidataset(rdl_path)
+        result = add_query_parameter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            name="@DateFrom",
+            value_expression="=Parameters!DateFrom.Value",
+        )
+        assert result["name"] == "DateFrom"  # stripped
+        assert result["normalised"] is True
+        assert "warning" in result
+        assert "PBIDATASET" in result["warning"]
+        # On disk, the QueryParameter Name attribute is bare.
+        from pbirb_mcp.ops.reader import get_datasets
+
+        ds = get_datasets(path=str(rdl_path))[0]
+        names = [p["name"] for p in ds["query_parameters"]]
+        assert names == ["DateFrom"]
+        assert "@DateFrom" not in names
+
+    def test_strips_at_prefix_for_legacy_powerbi_xmla(self, rdl_path):
+        # Default fixture has DataProvider=SQL + powerbi:// connect
+        # string — the legacy AS-provider shape our own writers emit.
+        # The detector must recognise this as PBIDATASET-equivalent.
+        result = add_query_parameter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            name="@DateFrom",
+            value_expression="=Parameters!DateFrom.Value",
+        )
+        assert result["name"] == "DateFrom"
+        assert result["normalised"] is True
+
+    def test_keeps_at_prefix_when_force(self, rdl_path):
+        _set_provider_pbidataset(rdl_path)
+        result = add_query_parameter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            name="@DateFrom",
+            value_expression="=Parameters!DateFrom.Value",
+            force_at_prefix=True,
+        )
+        assert result["name"] == "@DateFrom"
+        assert result["normalised"] is False
+        assert "warning" not in result
+
+    def test_passes_through_unchanged_for_non_pbi_dataset(self, rdl_path):
+        # Switch the provider to a non-PBI shape (no powerbi:// in the
+        # connect string).
+        from lxml import etree as _etree
+
+        from pbirb_mcp.core.xpath import find_child as _fc
+
+        doc = RDLDocument.open(rdl_path)
+        ds = doc.root.find(f"{{{RDL_NS}}}DataSources/{{{RDL_NS}}}DataSource")
+        cp = _fc(ds, "ConnectionProperties")
+        cs = _fc(cp, "ConnectString")
+        cs.text = "Data Source=localhost;Initial Catalog=Sales"
+        doc.save()
+
+        # On a non-PBIDATASET dataset, @ is preserved (SQL convention).
+        result = add_query_parameter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            name="@DateFrom",
+            value_expression="=Parameters!DateFrom.Value",
+        )
+        assert result["name"] == "@DateFrom"
+        assert result["normalised"] is False
+
+    def test_no_op_when_name_has_no_at_prefix(self, rdl_path):
+        _set_provider_pbidataset(rdl_path)
+        result = add_query_parameter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            name="DateFrom",
+            value_expression="=Parameters!DateFrom.Value",
+        )
+        assert result["name"] == "DateFrom"
+        assert result["normalised"] is False
+
+    def test_pathological_at_only_name_not_normalised(self, rdl_path):
+        # Name is just "@" — stripping would leave empty. Don't strip.
+        _set_provider_pbidataset(rdl_path)
+        result = add_query_parameter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            name="@",
+            value_expression="=1",
+        )
+        assert result["name"] == "@"
+        assert result["normalised"] is False
+
+
+class TestUpdateQueryParameterPbiDatasetDefence:
+    def test_lookup_via_at_prefix_strips(self, rdl_path):
+        _set_provider_pbidataset(rdl_path)
+        # Add as bare 'DateFrom' (the auto-strip path).
+        add_query_parameter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            name="@DateFrom",
+            value_expression="=Parameters!DateFrom.Value",
+        )
+        # Now update via "@DateFrom" — the strip kicks in, looks up
+        # 'DateFrom', updates.
+        result = update_query_parameter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            name="@DateFrom",
+            value_expression="=Today()",
+        )
+        assert result["name"] == "DateFrom"
+        assert result["normalised"] is True
+
+    def test_legacy_at_prefix_addressable(self, rdl_path):
+        # Manually inject a legacy '@DateFrom' parameter in a PBIDATASET
+        # context — simulate a v0.2-authored file.
+        from lxml import etree as _etree
+
+        from pbirb_mcp.core.xpath import find_child as _fc
+        from pbirb_mcp.core.xpath import q as _q
+
+        _set_provider_pbidataset(rdl_path)
+        doc = RDLDocument.open(rdl_path)
+        ds = next(
+            d
+            for d in doc.root.iter(f"{{{RDL_NS}}}DataSet")
+            if d.get("Name") == "MainDataset"
+        )
+        query = _fc(ds, "Query")
+        qp_root = _etree.SubElement(query, _q("QueryParameters"))
+        qp = _etree.SubElement(qp_root, _q("QueryParameter"), Name="@DateFrom")
+        _etree.SubElement(qp, _q("Value")).text = "=Parameters!DateFrom.Value"
+        doc.save()
+
+        # Update via '@DateFrom' — the normalised lookup misses, so the
+        # fallback finds the legacy '@DateFrom'.
+        result = update_query_parameter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            name="@DateFrom",
+            value_expression="=Today()",
+        )
+        # Falls back to raw lookup; no warning emitted.
+        assert result["name"] == "@DateFrom"
+        assert result["normalised"] is False
+        # Verify the rewrite landed on the legacy entry.
+        from pbirb_mcp.ops.reader import get_datasets
+
+        ds_view = get_datasets(path=str(rdl_path))[0]
+        legacy = next(p for p in ds_view["query_parameters"] if p["name"] == "@DateFrom")
+        assert legacy["value"] == "=Today()"

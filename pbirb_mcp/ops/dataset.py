@@ -23,7 +23,7 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset
-from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q
 
 
 def _query(dataset: etree._Element) -> etree._Element:
@@ -34,6 +34,99 @@ def _query(dataset: etree._Element) -> etree._Element:
         # one whose child order we'd have to guess.
         raise ValueError(f"DataSet {dataset.get('Name')!r} has no <Query> element")
     return query
+
+
+# ---- PBIDATASET-aware @-prefix detection --------------------------------
+
+
+def _is_pbidataset_dataset(doc: RDLDocument, dataset: etree._Element) -> bool:
+    """Return True iff the dataset binds to a Power BI XMLA DataSource.
+
+    Two recognised shapes:
+
+    1. ``<DataProvider>PBIDATASET</DataProvider>`` — the modern PBI
+       authoring path.
+    2. ``<DataProvider>SQL</DataProvider>`` + a ``<ConnectString>`` that
+       starts with ``Data Source=powerbi://`` — the legacy AS-provider
+       wire identifier our own ``set_datasource_connection`` emits.
+
+    PBIDATASET parameters use ``@Name`` in the DAX text but the bare
+    ``Name`` in ``<QueryParameter Name=...>``. SQL/MDX uses ``@`` in
+    both places. Detect the provider so add/update_query_parameter can
+    strip the ``@`` automatically and warn the caller.
+    """
+    query = find_child(dataset, "Query")
+    if query is None:
+        return False
+    ds_name_node = find_child(query, "DataSourceName")
+    if ds_name_node is None or not ds_name_node.text:
+        return False
+    ds_name = ds_name_node.text
+    # Resolve the matching DataSource.
+    for ds in doc.root.iter(f"{{{RDL_NS}}}DataSource"):
+        if ds.get("Name") != ds_name:
+            continue
+        cp = find_child(ds, "ConnectionProperties")
+        if cp is None:
+            return False
+        provider_node = find_child(cp, "DataProvider")
+        provider = provider_node.text if provider_node is not None else ""
+        if provider == "PBIDATASET":
+            return True
+        if provider == "SQL":
+            cs_node = find_child(cp, "ConnectString")
+            if cs_node is not None and cs_node.text and "powerbi://" in cs_node.text:
+                return True
+        return False
+    return False
+
+
+def _normalise_query_parameter_name(
+    doc: RDLDocument,
+    dataset: etree._Element,
+    name: str,
+    *,
+    force_at_prefix: bool,
+) -> tuple[str, bool, Optional[str]]:
+    """Return ``(effective_name, normalised, warning_text)``.
+
+    For PBIDATASET-bound datasets, strip a leading ``@`` from ``name`` —
+    the Query Designer GUI does this automatically; hand-edited
+    parameters that arrive with the ``@`` prefix would silently mismatch
+    the DAX reference and fail at preview time with the (cryptic)
+    ``"The query contains the 'X' parameter, which is not declared"``
+    error.
+
+    For SQL/MDX (and unknown providers), pass the name through unchanged.
+
+    ``force_at_prefix=True`` skips the strip even on PBIDATASET — for
+    callers that genuinely want the ``@`` prefix and accept the
+    consequences.
+
+    The warning string is ``None`` when no normalisation happened.
+    """
+    if force_at_prefix:
+        return name, False, None
+    if not name.startswith("@"):
+        return name, False, None
+    if not _is_pbidataset_dataset(doc, dataset):
+        return name, False, None
+    bare = name.lstrip("@")
+    if not bare:
+        # Pathological: name was just "@@" or "@". Don't strip to empty;
+        # let RDL reject it downstream with a clear error.
+        return name, False, None
+    return (
+        bare,
+        True,
+        (
+            f"PBIDATASET parameter naming: stripped the leading '@' "
+            f"from {name!r} → {bare!r}. The DAX text continues to "
+            f"reference '@{bare}' (with the '@'); only the "
+            "<QueryParameter Name=...> attribute uses the bare form. "
+            "Pass force_at_prefix=True to keep the '@' anyway."
+        ),
+    )
 
 
 def _query_parameters_root(query: etree._Element, *, create: bool) -> Optional[etree._Element]:
@@ -123,21 +216,51 @@ def add_query_parameter(
     dataset_name: str,
     name: str,
     value_expression: str,
+    force_at_prefix: bool = False,
 ) -> dict[str, Any]:
+    """Add a ``<QueryParameter>`` binding to a dataset's query.
+
+    PBIDATASET defence (RAG-Report session feedback bug #2): when the
+    dataset binds to a Power BI XMLA DataSource, a leading ``@`` on
+    ``name`` is automatically stripped (the DAX text references
+    ``@<bareName>`` regardless; only the attribute uses the bare form).
+    The response carries ``normalised: bool`` and a ``warning`` string
+    when the strip happens. Pass ``force_at_prefix=True`` to skip the
+    strip and keep the ``@`` — for the rare case where a non-DAX
+    consumer (e.g. an `RSCustomDaxFilter`) needs it.
+
+    SQL / MDX / unknown-provider datasets pass the name through
+    unchanged (those conventions DO use ``@`` in both places).
+    """
     doc = RDLDocument.open(path)
     dataset = resolve_dataset(doc, dataset_name)
+    effective_name, normalised, warning = _normalise_query_parameter_name(
+        doc, dataset, name, force_at_prefix=force_at_prefix
+    )
+
     query = _query(dataset)
     qp_root = _query_parameters_root(query, create=True)
 
-    if _find_query_parameter(qp_root, name) is not None:
-        raise ValueError(f"QueryParameter {name!r} already exists in dataset {dataset_name!r}")
+    if _find_query_parameter(qp_root, effective_name) is not None:
+        raise ValueError(
+            f"QueryParameter {effective_name!r} already exists in "
+            f"dataset {dataset_name!r}"
+        )
 
-    qp = etree.SubElement(qp_root, q("QueryParameter"), Name=name)
+    qp = etree.SubElement(qp_root, q("QueryParameter"), Name=effective_name)
     value = etree.SubElement(qp, q("Value"))
     value.text = encode_text(value_expression)
 
     doc.save()
-    return {"dataset": dataset_name, "name": name, "value": value_expression}
+    result: dict[str, Any] = {
+        "dataset": dataset_name,
+        "name": effective_name,
+        "value": value_expression,
+        "normalised": normalised,
+    }
+    if warning is not None:
+        result["warning"] = warning
+    return result
 
 
 def update_query_parameter(
@@ -145,16 +268,41 @@ def update_query_parameter(
     dataset_name: str,
     name: str,
     value_expression: str,
+    force_at_prefix: bool = False,
 ) -> dict[str, Any]:
+    """Update an existing query parameter's value expression.
+
+    PBIDATASET defence: same ``@``-prefix normalisation as
+    :func:`add_query_parameter`. Looks up by the normalised name first;
+    falls back to looking up by the raw name (so callers updating a
+    legacy ``Name="@X"`` PBIDATASET parameter that already exists on
+    disk still find it).
+    """
     doc = RDLDocument.open(path)
     dataset = resolve_dataset(doc, dataset_name)
+    effective_name, normalised, warning = _normalise_query_parameter_name(
+        doc, dataset, name, force_at_prefix=force_at_prefix
+    )
+
     query = _query(dataset)
     qp_root = _query_parameters_root(query, create=False)
     if qp_root is None:
-        raise ElementNotFoundError(f"QueryParameter {name!r} not found in dataset {dataset_name!r}")
-    qp = _find_query_parameter(qp_root, name)
+        raise ElementNotFoundError(
+            f"QueryParameter {effective_name!r} not found in dataset {dataset_name!r}"
+        )
+    # Try the normalised name first; fall back to the raw input so legacy
+    # PBIDATASET parameters that still carry the @ prefix are addressable.
+    qp = _find_query_parameter(qp_root, effective_name)
+    if qp is None and normalised:
+        qp = _find_query_parameter(qp_root, name)
+        if qp is not None:
+            effective_name = name  # don't pretend we normalised
+            normalised = False
+            warning = None
     if qp is None:
-        raise ElementNotFoundError(f"QueryParameter {name!r} not found in dataset {dataset_name!r}")
+        raise ElementNotFoundError(
+            f"QueryParameter {effective_name!r} not found in dataset {dataset_name!r}"
+        )
 
     value = find_child(qp, "Value")
     if value is None:
@@ -162,7 +310,15 @@ def update_query_parameter(
     value.text = encode_text(value_expression)
 
     doc.save()
-    return {"dataset": dataset_name, "name": name, "value": value_expression}
+    result: dict[str, Any] = {
+        "dataset": dataset_name,
+        "name": effective_name,
+        "value": value_expression,
+        "normalised": normalised,
+    }
+    if warning is not None:
+        result["warning"] = warning
+    return result
 
 
 def remove_query_parameter(path: str, dataset_name: str, name: str) -> dict[str, Any]:

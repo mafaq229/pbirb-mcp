@@ -107,8 +107,18 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_query_parameter",
         description=(
-            "Add a <QueryParameter> binding to a dataset's query. Use to wire "
-            "report parameters into DAX (e.g. =Parameters!DateFrom.Value)."
+            "Add a <QueryParameter> binding to a dataset's query. Use to "
+            "wire report parameters into DAX (e.g. "
+            "=Parameters!DateFrom.Value).\n"
+            "\n"
+            "PBIDATASET parameter naming rule: in DAX/<CommandText>, "
+            "write @MyParam (with @). In <QueryParameter Name=...>, "
+            "write MyParam (no @). SQL/MDX use @ in both places. This "
+            "tool detects the dataset's provider and AUTO-STRIPS a "
+            "leading @ from `name` for PBIDATASET datasets, returning "
+            "{normalised: true, warning: ...}. Pass force_at_prefix=true "
+            "to override (rare; needed for some RSCustomDaxFilter "
+            "patterns)."
         ),
         input_schema={
             "type": "object",
@@ -117,6 +127,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "dataset_name": {"type": "string"},
                 "name": {"type": "string"},
                 "value_expression": {"type": "string"},
+                "force_at_prefix": {"type": "boolean", "default": False},
             },
             "required": ["path", "dataset_name", "name", "value_expression"],
             "additionalProperties": False,
@@ -125,7 +136,12 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="update_query_parameter",
-        description="Change the value expression of an existing query parameter.",
+        description=(
+            "Change the value expression of an existing query parameter. "
+            "Same PBIDATASET @-prefix normalisation as add_query_parameter "
+            "applies on lookup; legacy Name='@X' parameters that already "
+            "exist on disk are addressable via either @X or X."
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -133,6 +149,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "dataset_name": {"type": "string"},
                 "name": {"type": "string"},
                 "value_expression": {"type": "string"},
+                "force_at_prefix": {"type": "boolean", "default": False},
             },
             "required": ["path", "dataset_name", "name", "value_expression"],
             "additionalProperties": False,
