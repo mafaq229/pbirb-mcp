@@ -1046,11 +1046,179 @@ def _reorder_layout_cells_in_doc(doc: RDLDocument, names: list[str]) -> int:
     return touched
 
 
+# ---- set_parameter_layout (Phase 6 commit 28) ---------------------------
+
+
+def _ensure_report_parameters_layout(
+    doc: RDLDocument,
+) -> tuple[etree._Element, etree._Element]:
+    """Find or create ``<ReportParametersLayout>`` and the inner
+    ``<GridLayoutDefinition>``. Returns ``(layout, grid)``.
+
+    ``<ReportParametersLayout>`` is a top-level child of ``<Report>``.
+    Per the RDL XSD it sits between ``<EmbeddedImages>`` (or earlier
+    sibilings) and ``<Variables>`` / ``<ReportSections>``. We insert
+    before ``<ReportSections>`` when present, since that's the most
+    universal anchor.
+    """
+    layout = find_child(doc.root, "ReportParametersLayout")
+    if layout is None:
+        layout = etree.Element(q("ReportParametersLayout"))
+        sections = doc.root.find(
+            f"{{{doc.root.nsmap.get(None) or ''}}}ReportSections"
+        )
+        if sections is not None:
+            sections.addprevious(layout)
+        else:
+            doc.root.append(layout)
+
+    grid = find_child(layout, "GridLayoutDefinition")
+    if grid is None:
+        grid = etree.SubElement(layout, q("GridLayoutDefinition"))
+
+    return layout, grid
+
+
+def set_parameter_layout(
+    path: str,
+    rows: int,
+    columns: int,
+    parameter_order: list[str],
+) -> dict[str, Any]:
+    """Author the ``<ReportParametersLayout>/<GridLayoutDefinition>``
+    grid explicitly.
+
+    Writes ``<NumberOfRows>rows</NumberOfRows>`` and
+    ``<NumberOfColumns>columns</NumberOfColumns>``, then rewrites
+    ``<CellDefinitions>`` so each name in ``parameter_order`` lands at
+    ``(row=index // columns, col=index % columns)`` in row-major order.
+
+    Strict permutation check on ``parameter_order``: must contain every
+    existing ``<ReportParameter>`` name exactly once. No missing,
+    duplicate, or unknown entries. Mirrors :func:`reorder_parameters`'s
+    permutation contract.
+
+    ``rows * columns`` must be ≥ ``len(parameter_order)``. Smaller grids
+    reject up front; larger grids leave trailing cells empty.
+
+    Auto-creates ``<ReportParametersLayout>`` and
+    ``<GridLayoutDefinition>`` when absent — Phase 0 commit 4's
+    auto-sync only fills cells, never creates the layout block out of
+    nothing. This tool is the explicit authoring path.
+
+    Idempotent: same grid + order → ``{changed: false}``, no save.
+
+    Returns ``{rows, columns, order, kind: 'ReportParametersLayout',
+    changed: bool}``.
+
+    Complements :func:`reorder_parameters` (declaration order) and
+    :func:`sync_parameter_layout` (gap-filling against the existing
+    grid).
+    """
+    if not isinstance(rows, int) or rows < 1:
+        raise ValueError(f"rows must be a positive integer; got {rows!r}")
+    if not isinstance(columns, int) or columns < 1:
+        raise ValueError(f"columns must be a positive integer; got {columns!r}")
+    if not isinstance(parameter_order, list):
+        raise ValueError("parameter_order must be a list of parameter names")
+
+    doc = RDLDocument.open(path)
+    declared = _all_parameter_names(doc)
+
+    if len(parameter_order) != len(declared):
+        raise ValueError(
+            f"parameter_order must be a permutation of every existing "
+            f"parameter; got {len(parameter_order)} entries but "
+            f"{len(declared)} parameters exist."
+        )
+    if len(set(parameter_order)) != len(parameter_order):
+        from collections import Counter
+
+        dupes = [n for n, c in Counter(parameter_order).items() if c > 1]
+        raise ValueError(
+            f"parameter_order contains duplicate(s): {dupes!r}"
+        )
+    extras = [n for n in parameter_order if n not in declared]
+    missing = [n for n in declared if n not in parameter_order]
+    if extras or missing:
+        raise ValueError(
+            "parameter_order must be a permutation of every existing "
+            f"parameter. Unknown names: {extras!r}. Missing names: "
+            f"{missing!r}."
+        )
+    if rows * columns < len(parameter_order):
+        raise ValueError(
+            f"grid {rows}×{columns} = {rows * columns} cells is too small "
+            f"for {len(parameter_order)} parameters; increase rows or columns."
+        )
+
+    layout, grid = _ensure_report_parameters_layout(doc)
+
+    # Read current state for idempotency check.
+    cols_node = find_child(grid, "NumberOfColumns")
+    rows_node = find_child(grid, "NumberOfRows")
+    cells_root = find_child(grid, "CellDefinitions")
+    current_cols = (
+        int(cols_node.text) if cols_node is not None and cols_node.text else None
+    )
+    current_rows = (
+        int(rows_node.text) if rows_node is not None and rows_node.text else None
+    )
+    current_order: list[str] = []
+    if cells_root is not None:
+        for cell in find_children(cells_root, "CellDefinition"):
+            pname = _cell_parameter_name(cell)
+            if pname is not None:
+                current_order.append(pname)
+
+    if (
+        current_cols == columns
+        and current_rows == rows
+        and current_order == list(parameter_order)
+    ):
+        return {
+            "rows": rows,
+            "columns": columns,
+            "order": list(parameter_order),
+            "kind": "ReportParametersLayout",
+            "changed": False,
+        }
+
+    # Write NumberOfColumns and NumberOfRows. Per RDL XSD child order,
+    # both precede CellDefinitions; _set_grid_dimension handles the
+    # right placement.
+    _set_grid_dimension(grid, "NumberOfColumns", columns)
+    _set_grid_dimension(grid, "NumberOfRows", rows)
+
+    # Rewrite CellDefinitions from scratch — clear and re-append in
+    # row-major order. Simpler than mutating in place; Phase 0's
+    # auto-sync covers the gap-filling case if/when this drifts.
+    if cells_root is None:
+        cells_root = etree.SubElement(grid, q("CellDefinitions"))
+    else:
+        for cell in list(cells_root):
+            cells_root.remove(cell)
+    for index, pname in enumerate(parameter_order):
+        row = index // columns
+        col = index % columns
+        cells_root.append(_build_cell_definition(pname, row, col))
+
+    doc.save()
+    return {
+        "rows": rows,
+        "columns": columns,
+        "order": list(parameter_order),
+        "kind": "ReportParametersLayout",
+        "changed": True,
+    }
+
+
 __all__ = [
     "add_parameter",
     "remove_parameter",
     "rename_parameter",
     "reorder_parameters",
+    "set_parameter_layout",
     "sync_parameter_layout",
     "set_parameter_available_values",
     "set_parameter_default_values",

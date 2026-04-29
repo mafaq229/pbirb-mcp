@@ -616,6 +616,37 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=parameters.reorder_parameters,
     )
+    server.register_tool(
+        name="set_parameter_layout",
+        description=(
+            "Author <ReportParametersLayout>/<GridLayoutDefinition> "
+            "explicitly. Writes <NumberOfRows> + <NumberOfColumns>; "
+            "rewrites <CellDefinitions> so each name in parameter_order "
+            "lands at (row=index // columns, col=index % columns). "
+            "Strict permutation check (every existing parameter exactly "
+            "once). rows*columns must be ≥ parameter count. Auto-creates "
+            "the layout block when absent. Idempotent: same grid + order "
+            "→ no save. Complements reorder_parameters (declaration "
+            "order) and sync_parameter_layout (gap-filling). Returns "
+            "{rows, columns, order, kind, changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "rows": {"type": "integer", "minimum": 1},
+                "columns": {"type": "integer", "minimum": 1},
+                "parameter_order": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+            },
+            "required": ["path", "rows", "columns", "parameter_order"],
+            "additionalProperties": False,
+        },
+        handler=parameters.set_parameter_layout,
+    )
 
     # ---- actions / tooltip / document-map (Phase 5) ---------------------
 

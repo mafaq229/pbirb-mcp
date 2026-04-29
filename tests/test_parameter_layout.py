@@ -27,6 +27,7 @@ from pbirb_mcp.ops.parameters import (
     add_parameter,
     remove_parameter,
     rename_parameter,
+    set_parameter_layout,
     sync_parameter_layout,
 )
 from pbirb_mcp.server import MCPServer
@@ -276,6 +277,219 @@ class TestEndToEndInSyncInvariant:
 # ---- registration ---------------------------------------------------------
 
 
+# ---- v0.3 Phase 6: set_parameter_layout (explicit grid authoring) -------
+
+
+def _grid_dim_from_path(rdl_path: Path, local: str) -> int | None:
+    doc = RDLDocument.open(rdl_path)
+    layout = find_child(doc.root, "ReportParametersLayout")
+    if layout is None:
+        return None
+    grid = find_child(layout, "GridLayoutDefinition")
+    if grid is None:
+        return None
+    n = find_child(grid, local)
+    if n is None or n.text is None:
+        return None
+    return int(n.text)
+
+
+def _cell_positions(rdl_path: Path) -> list[tuple[int, int, str]]:
+    """Return (row, col, parameter_name) tuples in document order."""
+    doc = RDLDocument.open(rdl_path)
+    layout = find_child(doc.root, "ReportParametersLayout")
+    if layout is None:
+        return []
+    grid = find_child(layout, "GridLayoutDefinition")
+    if grid is None:
+        return []
+    cells = find_child(grid, "CellDefinitions")
+    if cells is None:
+        return []
+    out = []
+    for cell in find_children(cells, "CellDefinition"):
+        col_node = find_child(cell, "ColumnIndex")
+        row_node = find_child(cell, "RowIndex")
+        pname_node = find_child(cell, "ParameterName")
+        out.append(
+            (
+                int(row_node.text),
+                int(col_node.text),
+                pname_node.text,
+            )
+        )
+    return out
+
+
+class TestSetParameterLayoutExplicit:
+    def test_creates_layout_block_from_scratch(self, rdl_path):
+        # Fixture has no ReportParametersLayout — auto-create it.
+        result = set_parameter_layout(
+            path=str(rdl_path),
+            rows=2,
+            columns=2,
+            parameter_order=["DateFrom", "DateTo"],
+        )
+        assert result["changed"] is True
+        assert result["rows"] == 2
+        assert result["columns"] == 2
+        assert result["order"] == ["DateFrom", "DateTo"]
+        assert _grid_dim_from_path(rdl_path, "NumberOfRows") == 2
+        assert _grid_dim_from_path(rdl_path, "NumberOfColumns") == 2
+
+    def test_row_major_placement(self, rdl_path):
+        # 4 parameters, 2 columns → row-major: DateFrom@(0,0),
+        # DateTo@(0,1), P3@(1,0), P4@(1,1).
+        add_parameter(path=str(rdl_path), name="P3", type="String")
+        add_parameter(path=str(rdl_path), name="P4", type="String")
+        set_parameter_layout(
+            path=str(rdl_path),
+            rows=2,
+            columns=2,
+            parameter_order=["DateFrom", "DateTo", "P3", "P4"],
+        )
+        positions = sorted(_cell_positions(rdl_path))
+        assert positions == [
+            (0, 0, "DateFrom"),
+            (0, 1, "DateTo"),
+            (1, 0, "P3"),
+            (1, 1, "P4"),
+        ]
+
+    def test_idempotent_when_unchanged(self, rdl_path):
+        set_parameter_layout(
+            path=str(rdl_path),
+            rows=1,
+            columns=2,
+            parameter_order=["DateFrom", "DateTo"],
+        )
+        before = (rdl_path).read_bytes()
+        result = set_parameter_layout(
+            path=str(rdl_path),
+            rows=1,
+            columns=2,
+            parameter_order=["DateFrom", "DateTo"],
+        )
+        assert result["changed"] is False
+        assert (rdl_path).read_bytes() == before
+
+    def test_grid_resize_after_add_parameter(self, rdl_path):
+        # Initially 1×2 with DateFrom and DateTo. Add a parameter and
+        # resize the grid to 2×2 with explicit ordering.
+        set_parameter_layout(
+            path=str(rdl_path),
+            rows=1,
+            columns=2,
+            parameter_order=["DateFrom", "DateTo"],
+        )
+        add_parameter(path=str(rdl_path), name="Region", type="String")
+        # Phase 0's auto-sync placed Region somewhere. Now author
+        # an explicit 2×2 grid with Region first.
+        set_parameter_layout(
+            path=str(rdl_path),
+            rows=2,
+            columns=2,
+            parameter_order=["Region", "DateFrom", "DateTo"],
+        )
+        positions = sorted(_cell_positions(rdl_path))
+        assert positions == [
+            (0, 0, "Region"),
+            (0, 1, "DateFrom"),
+            (1, 0, "DateTo"),
+        ]
+        assert _grid_dim_from_path(rdl_path, "NumberOfRows") == 2
+        assert _grid_dim_from_path(rdl_path, "NumberOfColumns") == 2
+
+    def test_partial_grid_with_trailing_empty_cells(self, rdl_path):
+        # 3×3 grid with only 2 parameters → 7 cells empty.
+        result = set_parameter_layout(
+            path=str(rdl_path),
+            rows=3,
+            columns=3,
+            parameter_order=["DateFrom", "DateTo"],
+        )
+        assert result["changed"] is True
+        assert _grid_dim_from_path(rdl_path, "NumberOfRows") == 3
+        assert _grid_dim_from_path(rdl_path, "NumberOfColumns") == 3
+        positions = _cell_positions(rdl_path)
+        assert len(positions) == 2  # only the supplied params
+
+    def test_round_trip_safe(self, rdl_path):
+        set_parameter_layout(
+            path=str(rdl_path),
+            rows=2,
+            columns=2,
+            parameter_order=["DateFrom", "DateTo"],
+        )
+        RDLDocument.open(rdl_path).validate()
+
+
+class TestSetParameterLayoutValidation:
+    def test_missing_name_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="permutation"):
+            set_parameter_layout(
+                path=str(rdl_path),
+                rows=1,
+                columns=2,
+                parameter_order=["DateFrom"],  # missing DateTo
+            )
+
+    def test_unknown_name_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="Unknown names"):
+            set_parameter_layout(
+                path=str(rdl_path),
+                rows=1,
+                columns=2,
+                parameter_order=["DateFrom", "Ghost"],
+            )
+
+    def test_duplicate_name_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="duplicate"):
+            set_parameter_layout(
+                path=str(rdl_path),
+                rows=1,
+                columns=2,
+                parameter_order=["DateFrom", "DateFrom"],
+            )
+
+    def test_grid_too_small_rejected(self, rdl_path):
+        # 2 parameters in a 1×1 grid is too small.
+        with pytest.raises(ValueError, match="too small"):
+            set_parameter_layout(
+                path=str(rdl_path),
+                rows=1,
+                columns=1,
+                parameter_order=["DateFrom", "DateTo"],
+            )
+
+    def test_zero_rows_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="positive"):
+            set_parameter_layout(
+                path=str(rdl_path),
+                rows=0,
+                columns=2,
+                parameter_order=["DateFrom", "DateTo"],
+            )
+
+    def test_zero_columns_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="positive"):
+            set_parameter_layout(
+                path=str(rdl_path),
+                rows=1,
+                columns=0,
+                parameter_order=["DateFrom", "DateTo"],
+            )
+
+    def test_non_list_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="must be a list"):
+            set_parameter_layout(
+                path=str(rdl_path),
+                rows=1,
+                columns=2,
+                parameter_order="DateFrom",  # type: ignore[arg-type]
+            )
+
+
 class TestToolRegistration:
     def test_sync_tool_registered(self):
         srv = MCPServer()
@@ -285,3 +499,12 @@ class TestToolRegistration:
         )["result"]["tools"]
         names = {t["name"] for t in listing}
         assert "sync_parameter_layout" in names
+
+    def test_set_parameter_layout_registered(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )["result"]["tools"]
+        names = {t["name"] for t in listing}
+        assert "set_parameter_layout" in names
