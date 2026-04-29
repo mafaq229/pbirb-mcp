@@ -34,6 +34,7 @@ from pbirb_mcp.ops import (
     validate,
     visibility,
 )
+from pbirb_mcp.ops import dry_run as _dry_run
 from pbirb_mcp.ops import lint as _lint
 
 if TYPE_CHECKING:
@@ -738,6 +739,41 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_lint.lint_report,
+    )
+
+    server.register_tool(
+        name="dry_run_edit",
+        description=(
+            "Apply a list of {tool, args} ops to a tempfile clone of "
+            "the report; return the unified diff and a verify "
+            "(validate + lint) report. The original file is NEVER "
+            "modified. The harness auto-injects `path` into each op's "
+            "args, so callers don't supply it. On op failure, dispatch "
+            "stops; partial diff + verify are still returned. Use this "
+            "to preview risky multi-step edits before committing."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "ops": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tool": {"type": "string"},
+                            "args": {"type": "object"},
+                        },
+                        "required": ["tool"],
+                        "additionalProperties": False,
+                    },
+                    "description": "Sequence of tool calls to dispatch against the tempfile.",
+                },
+            },
+            "required": ["path", "ops"],
+            "additionalProperties": False,
+        },
+        handler=_dry_run.dry_run_edit,
     )
 
     # ---- actions / tooltip / document-map (Phase 5) ---------------------
