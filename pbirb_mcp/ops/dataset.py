@@ -186,8 +186,248 @@ def remove_query_parameter(path: str, dataset_name: str, name: str) -> dict[str,
     return {"dataset": dataset_name, "removed": name}
 
 
+# ---- dataset-level filters ------------------------------------------------
+
+
+# Same enum as tablix.py — DRY would move it to a shared constant, but
+# the cross-module import would create a cycle (tablix imports nothing
+# from dataset today; we keep it duplicated rather than restructuring).
+_VALID_FILTER_OPERATORS = frozenset(
+    {
+        "Equal",
+        "NotEqual",
+        "GreaterThan",
+        "GreaterThanOrEqual",
+        "LessThan",
+        "LessThanOrEqual",
+        "Like",
+        "TopN",
+        "BottomN",
+        "TopPercent",
+        "BottomPercent",
+        "In",
+        "Between",
+    }
+)
+
+
+# Per RDL XSD, the <Filters> block on a DataSet sits AFTER <Fields>
+# (which itself follows <Query>) and BEFORE the rd:* metadata children.
+_DATASET_FILTERS_PRECEDED_BY = ("Fields", "Query")
+_DATASET_FILTERS_FOLLOWED_BY = (
+    "CaseSensitivity",
+    "Collation",
+    "AccentSensitivity",
+    "KanatypeSensitivity",
+    "WidthSensitivity",
+)
+
+
+def _ensure_dataset_filters_block(dataset: etree._Element) -> etree._Element:
+    """Find or create ``<DataSet>/<Filters>`` respecting the schema-mandated
+    sibling order (after Fields, before rd:* metadata). Mirrors the helper
+    in tablix.py for tablix-level filters."""
+    existing = find_child(dataset, "Filters")
+    if existing is not None:
+        return existing
+
+    block = etree.Element(q("Filters"))
+    for local in _DATASET_FILTERS_PRECEDED_BY:
+        anchor = find_child(dataset, local)
+        if anchor is not None:
+            anchor.addnext(block)
+            return block
+    for local in _DATASET_FILTERS_FOLLOWED_BY:
+        anchor = find_child(dataset, local)
+        if anchor is not None:
+            anchor.addprevious(block)
+            return block
+    dataset.append(block)
+    return block
+
+
+def _filter_to_dict(filter_node: etree._Element) -> dict[str, Any]:
+    """Return a JSON-friendly read-back shape for one ``<Filter>``."""
+    expr = find_child(filter_node, "FilterExpression")
+    op = find_child(filter_node, "Operator")
+    values_root = find_child(filter_node, "FilterValues")
+    values: list[str] = []
+    if values_root is not None:
+        for v in find_children(values_root, "FilterValue"):
+            values.append(v.text or "")
+    return {
+        "expression": expr.text if expr is not None else None,
+        "operator": op.text if op is not None else None,
+        "values": values,
+    }
+
+
+def list_dataset_filters(path: str, dataset_name: str) -> list[dict[str, Any]]:
+    """List dataset-level ``<Filter>`` entries in document order. The
+    list index is the stable handle for :func:`remove_dataset_filter`."""
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, dataset_name)
+    filters_root = find_child(dataset, "Filters")
+    if filters_root is None:
+        return []
+    return [_filter_to_dict(f) for f in find_children(filters_root, "Filter")]
+
+
+def add_dataset_filter(
+    path: str,
+    dataset_name: str,
+    expression: str,
+    operator: str,
+    values: list[str],
+) -> dict[str, Any]:
+    """Append a ``<Filter>`` to the dataset's ``<Filters>`` block.
+
+    Operator must be one of the RDL 2016 FilterOperator enum values
+    (Equal, NotEqual, GreaterThan, GreaterThanOrEqual, LessThan,
+    LessThanOrEqual, Like, In, Between, TopN, BottomN, TopPercent,
+    BottomPercent). values must be non-empty.
+
+    DataSet-level filters apply to every consumer of the dataset (every
+    Tablix / Chart bound to it). For per-tablix filtering use
+    :func:`add_tablix_filter` instead.
+    """
+    if operator not in _VALID_FILTER_OPERATORS:
+        raise ValueError(
+            f"unknown filter operator {operator!r}; valid operators are: "
+            f"{sorted(_VALID_FILTER_OPERATORS)}"
+        )
+    if not values:
+        raise ValueError("at least one filter value is required")
+
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, dataset_name)
+    filters_root = _ensure_dataset_filters_block(dataset)
+
+    filter_node = etree.SubElement(filters_root, q("Filter"))
+    expr_node = etree.SubElement(filter_node, q("FilterExpression"))
+    expr_node.text = encode_text(expression)
+    op_node = etree.SubElement(filter_node, q("Operator"))
+    op_node.text = operator
+    values_root = etree.SubElement(filter_node, q("FilterValues"))
+    for v in values:
+        v_node = etree.SubElement(values_root, q("FilterValue"))
+        v_node.text = encode_text(v)
+
+    new_index = len(find_children(filters_root, "Filter")) - 1
+    doc.save()
+    return {
+        "dataset": dataset_name,
+        "index": new_index,
+        "expression": expression,
+        "operator": operator,
+        "values": list(values),
+    }
+
+
+def remove_dataset_filter(
+    path: str,
+    dataset_name: str,
+    filter_index: int,
+) -> dict[str, Any]:
+    """Remove a dataset-level filter by its 0-based index in the
+    document order returned by :func:`list_dataset_filters`."""
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, dataset_name)
+    filters_root = find_child(dataset, "Filters")
+    filters = find_children(filters_root, "Filter") if filters_root is not None else []
+    if not filters or filter_index < 0 or filter_index >= len(filters):
+        raise IndexError(
+            f"dataset {dataset_name!r} has no filter at index {filter_index}"
+        )
+
+    target = filters[filter_index]
+    filters_root.remove(target)
+    if len(find_children(filters_root, "Filter")) == 0:
+        filters_root.getparent().remove(filters_root)
+
+    doc.save()
+    return {"dataset": dataset_name, "removed_index": filter_index}
+
+
+# ---- get_dataset ---------------------------------------------------------
+
+
+def _field_to_dict(field: etree._Element) -> dict[str, Any]:
+    """Read-back shape for one ``<Field>``: name, data_field, value
+    (when calculated), type_name."""
+    df = find_child(field, "DataField")
+    val = find_child(field, "Value")
+    type_name_node = field.find(f"{{{RD_NS}}}TypeName")
+    return {
+        "name": field.get("Name"),
+        "data_field": df.text if df is not None else None,
+        "value": val.text if val is not None else None,
+        "type_name": (
+            type_name_node.text if type_name_node is not None else None
+        ),
+    }
+
+
+def get_dataset(path: str, name: str) -> dict[str, Any]:
+    """Single-DataSet read-back (parity with the other v0.3 read-back
+    tools). Returns dataset name, data source binding, command text,
+    fields (with both data_field and value to surface calculated
+    fields), query parameters, dataset-level filters, and any
+    rd:DesignerState marker."""
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, name)
+    query = find_child(dataset, "Query")
+    command_text = None
+    data_source = None
+    query_parameters: list[dict[str, Any]] = []
+    designer_state_present = False
+    if query is not None:
+        cmd = find_child(query, "CommandText")
+        ds_name = find_child(query, "DataSourceName")
+        command_text = cmd.text if cmd is not None else None
+        data_source = ds_name.text if ds_name is not None else None
+        qp_root = find_child(query, "QueryParameters")
+        if qp_root is not None:
+            for qp in find_children(qp_root, "QueryParameter"):
+                qp_value = find_child(qp, "Value")
+                query_parameters.append(
+                    {
+                        "name": qp.get("Name"),
+                        "value": qp_value.text if qp_value is not None else None,
+                    }
+                )
+        designer_state_present = (
+            query.find(f"{{{RD_NS}}}DesignerState") is not None
+        )
+
+    fields: list[dict[str, Any]] = []
+    fields_root = find_child(dataset, "Fields")
+    if fields_root is not None:
+        for f in find_children(fields_root, "Field"):
+            fields.append(_field_to_dict(f))
+
+    filters: list[dict[str, Any]] = []
+    filters_root = find_child(dataset, "Filters")
+    if filters_root is not None:
+        filters = [_filter_to_dict(f) for f in find_children(filters_root, "Filter")]
+
+    return {
+        "name": dataset.get("Name"),
+        "data_source": data_source,
+        "command_text": command_text,
+        "fields": fields,
+        "query_parameters": query_parameters,
+        "filters": filters,
+        "designer_state_present": designer_state_present,
+    }
+
+
 __all__ = [
+    "add_dataset_filter",
     "add_query_parameter",
+    "get_dataset",
+    "list_dataset_filters",
+    "remove_dataset_filter",
     "remove_query_parameter",
     "update_dataset_query",
     "update_query_parameter",

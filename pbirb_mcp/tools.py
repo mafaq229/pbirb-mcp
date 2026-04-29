@@ -265,6 +265,103 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=datasource.rename_data_source,
     )
+    server.register_tool(
+        name="list_dataset_filters",
+        description=(
+            "List dataset-level filters in document order. Returns "
+            "[{expression, operator, values}]; index in the list is the "
+            "stable handle for remove_dataset_filter. DataSet filters "
+            "apply to every consumer of the dataset (every Tablix / "
+            "Chart bound to it); use list_tablix_filters for per-tablix "
+            "filtering."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+            },
+            "required": ["path", "dataset_name"],
+            "additionalProperties": False,
+        },
+        handler=dataset.list_dataset_filters,
+    )
+    server.register_tool(
+        name="add_dataset_filter",
+        description=(
+            "Append a <Filter> to the named dataset's <Filters> block. "
+            "operator ∈ Equal / NotEqual / GreaterThan / LessThan / "
+            "GreaterThanOrEqual / LessThanOrEqual / Like / In / Between "
+            "/ TopN / BottomN / TopPercent / BottomPercent. values must "
+            "be non-empty (single-value filters use a one-element list). "
+            "Returns the new filter's index for later removal."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "expression": {
+                    "type": "string",
+                    "description": "FilterExpression — usually a Fields! reference.",
+                },
+                "operator": {"type": "string"},
+                "values": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+            },
+            "required": [
+                "path",
+                "dataset_name",
+                "expression",
+                "operator",
+                "values",
+            ],
+            "additionalProperties": False,
+        },
+        handler=dataset.add_dataset_filter,
+    )
+    server.register_tool(
+        name="remove_dataset_filter",
+        description=(
+            "Remove a dataset-level filter by its 0-based document-order "
+            "index. Cleans up the empty <Filters> block when removing the "
+            "last entry."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "filter_index": {"type": "integer", "minimum": 0},
+            },
+            "required": ["path", "dataset_name", "filter_index"],
+            "additionalProperties": False,
+        },
+        handler=dataset.remove_dataset_filter,
+    )
+    server.register_tool(
+        name="get_dataset",
+        description=(
+            "Single-DataSet read-back (parity with get_textbox / "
+            "get_image / get_rectangle / get_chart / get_data_source). "
+            "Returns dataset name, data_source, command_text, fields "
+            "(with both data_field and value), query_parameters, "
+            "filters, and designer_state_present."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=dataset.get_dataset,
+    )
 
     server.register_tool(
         name="remove_query_parameter",

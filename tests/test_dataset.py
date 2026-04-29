@@ -23,7 +23,11 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child
 from pbirb_mcp.ops.dataset import (
+    add_dataset_filter,
     add_query_parameter,
+    get_dataset,
+    list_dataset_filters,
+    remove_dataset_filter,
     remove_query_parameter,
     update_dataset_query,
     update_query_parameter,
@@ -341,6 +345,233 @@ class TestRemoveQueryParameter:
             )
 
 
+# ---- v0.3 dataset filters ------------------------------------------------
+
+
+class TestAddDatasetFilter:
+    def test_creates_filters_block(self, rdl_path):
+        result = add_dataset_filter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            expression="=Fields!ProductID.Value",
+            operator="GreaterThan",
+            values=["100"],
+        )
+        assert result["index"] == 0
+        assert result["operator"] == "GreaterThan"
+        # Verify on disk.
+        filters = list_dataset_filters(path=str(rdl_path), dataset_name="MainDataset")
+        assert len(filters) == 1
+        assert filters[0]["expression"] == "=Fields!ProductID.Value"
+        assert filters[0]["operator"] == "GreaterThan"
+        assert filters[0]["values"] == ["100"]
+
+    def test_appends_to_existing(self, rdl_path):
+        add_dataset_filter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            expression="=Fields!ProductID.Value",
+            operator="GreaterThan",
+            values=["100"],
+        )
+        result = add_dataset_filter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            expression="=Fields!ProductName.Value",
+            operator="Like",
+            values=["A%"],
+        )
+        assert result["index"] == 1
+        filters = list_dataset_filters(path=str(rdl_path), dataset_name="MainDataset")
+        assert len(filters) == 2
+
+    def test_invalid_operator_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="unknown filter operator"):
+            add_dataset_filter(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                expression="=Fields!X.Value",
+                operator="NotAnOperator",
+                values=["x"],
+            )
+
+    def test_empty_values_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="at least one filter value"):
+            add_dataset_filter(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                expression="=Fields!X.Value",
+                operator="Equal",
+                values=[],
+            )
+
+    def test_unknown_dataset_rejected(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            add_dataset_filter(
+                path=str(rdl_path),
+                dataset_name="NoSuchDataset",
+                expression="=Fields!X.Value",
+                operator="Equal",
+                values=["x"],
+            )
+
+    def test_pre_encoded_value_no_double_encode(self, rdl_path):
+        # Bug class regression: pre-encoded entity must end up as
+        # &amp; on disk, not &amp;amp;.
+        add_dataset_filter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            expression="=Fields!ProductName.Value",
+            operator="Equal",
+            values=["A &amp; B"],
+        )
+        assert b"&amp;amp;" not in (rdl_path).read_bytes()
+
+    def test_round_trip_safe(self, rdl_path):
+        add_dataset_filter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            expression="=Fields!ProductID.Value",
+            operator="In",
+            values=["1", "2", "3"],
+        )
+        RDLDocument.open(rdl_path).validate()
+
+
+class TestRemoveDatasetFilter:
+    def test_removes_by_index(self, rdl_path):
+        for i in range(3):
+            add_dataset_filter(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                expression=f"=Fields!F{i}.Value",
+                operator="Equal",
+                values=[str(i)],
+            )
+        remove_dataset_filter(
+            path=str(rdl_path), dataset_name="MainDataset", filter_index=1
+        )
+        filters = list_dataset_filters(path=str(rdl_path), dataset_name="MainDataset")
+        assert [f["expression"] for f in filters] == [
+            "=Fields!F0.Value",
+            "=Fields!F2.Value",
+        ]
+
+    def test_removes_empty_block_when_last_filter_removed(self, rdl_path):
+        add_dataset_filter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            expression="=Fields!X.Value",
+            operator="Equal",
+            values=["x"],
+        )
+        remove_dataset_filter(
+            path=str(rdl_path), dataset_name="MainDataset", filter_index=0
+        )
+        # The <Filters> block itself should be gone.
+        doc = RDLDocument.open(rdl_path)
+        ds = next(
+            d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == "MainDataset"
+        )
+        from pbirb_mcp.core.xpath import find_child as _fc
+
+        assert _fc(ds, "Filters") is None
+
+    def test_out_of_range_raises(self, rdl_path):
+        with pytest.raises(IndexError):
+            remove_dataset_filter(
+                path=str(rdl_path), dataset_name="MainDataset", filter_index=99
+            )
+
+
+class TestListDatasetFilters:
+    def test_empty_when_no_filters(self, rdl_path):
+        assert list_dataset_filters(path=str(rdl_path), dataset_name="MainDataset") == []
+
+    def test_returns_in_document_order(self, rdl_path):
+        add_dataset_filter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            expression="=Fields!First.Value",
+            operator="Equal",
+            values=["1"],
+        )
+        add_dataset_filter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            expression="=Fields!Second.Value",
+            operator="Equal",
+            values=["2"],
+        )
+        filters = list_dataset_filters(path=str(rdl_path), dataset_name="MainDataset")
+        assert [f["expression"] for f in filters] == [
+            "=Fields!First.Value",
+            "=Fields!Second.Value",
+        ]
+
+
+# ---- v0.3 get_dataset ----------------------------------------------------
+
+
+class TestGetDataset:
+    def test_returns_full_shape(self, rdl_path):
+        # Add a query parameter and a filter so the read-back has content.
+        add_query_parameter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            name="DateFrom",
+            value_expression="=Parameters!DateFrom.Value",
+        )
+        add_dataset_filter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            expression="=Fields!ProductID.Value",
+            operator="GreaterThan",
+            values=["100"],
+        )
+        result = get_dataset(path=str(rdl_path), name="MainDataset")
+        assert result["name"] == "MainDataset"
+        assert result["data_source"] == "PowerBIDataset"
+        assert result["command_text"] == "EVALUATE 'Sales'"
+        assert len(result["fields"]) == 3  # ProductID, ProductName, Amount
+        assert result["query_parameters"] == [
+            {"name": "DateFrom", "value": "=Parameters!DateFrom.Value"}
+        ]
+        assert result["filters"][0]["operator"] == "GreaterThan"
+        assert result["designer_state_present"] is False
+
+    def test_field_shape_includes_value_for_calculated_fields(self, rdl_path):
+        # Add a calculated field manually (commit 17 will introduce the
+        # tool; for now, prove the reader surfaces <Value>).
+        from lxml import etree as _etree
+
+        from pbirb_mcp.core.xpath import find_child as _fc
+        from pbirb_mcp.core.xpath import q as _q
+
+        doc = RDLDocument.open(rdl_path)
+        ds = next(
+            d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == "MainDataset"
+        )
+        fields_root = _fc(ds, "Fields")
+        new_field = _etree.SubElement(fields_root, _q("Field"), Name="Total")
+        _etree.SubElement(new_field, _q("Value")).text = (
+            "=Fields!Amount.Value * Fields!ProductID.Value"
+        )
+        doc.save()
+
+        result = get_dataset(path=str(rdl_path), name="MainDataset")
+        total = next(f for f in result["fields"] if f["name"] == "Total")
+        assert total["data_field"] is None
+        assert (
+            total["value"]
+            == "=Fields!Amount.Value * Fields!ProductID.Value"
+        )
+
+    def test_unknown_dataset_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            get_dataset(path=str(rdl_path), name="NoSuchDataset")
+
+
 # ---- registration ---------------------------------------------------------
 
 
@@ -367,3 +598,17 @@ class TestToolRegistration:
         ]
         tool = next(t for t in listing if t["name"] == "update_dataset_query")
         assert set(tool["inputSchema"]["required"]) == {"path", "dataset_name", "dax_body"}
+
+    def test_v03_dataset_filter_tools_registered(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )["result"]["tools"]
+        names = {t["name"] for t in listing}
+        assert {
+            "list_dataset_filters",
+            "add_dataset_filter",
+            "remove_dataset_filter",
+            "get_dataset",
+        } <= names
