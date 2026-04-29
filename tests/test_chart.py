@@ -16,18 +16,32 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.xpath import RDL_NS, find_child, q
-from pbirb_mcp.ops.chart import insert_chart_from_template
+from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
+from pbirb_mcp.ops.chart import (
+    add_chart_series,
+    insert_chart_from_template,
+    remove_chart_series,
+    set_chart_series_type,
+)
+from pbirb_mcp.ops.reader import get_chart
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pbi_paginated_minimal.rdl"
+FIXTURE_RICH = Path(__file__).parent / "fixtures" / "pbi_chart_rich.rdl"
 
 
 @pytest.fixture
 def rdl_path(tmp_path: Path) -> Path:
     dest = tmp_path / "report.rdl"
     shutil.copy(FIXTURE, dest)
+    return dest
+
+
+@pytest.fixture
+def rich_path(tmp_path: Path) -> Path:
+    dest = tmp_path / "report.rdl"
+    shutil.copy(FIXTURE_RICH, dest)
     return dest
 
 
@@ -223,6 +237,204 @@ class TestInsertChartTemplate:
         doc.validate()
 
 
+class TestAddChartSeries:
+    def test_appends_series(self, rich_path):
+        result = add_chart_series(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Discount",
+            value_field="ProductID",
+        )
+        assert result["name"] == "Discount"
+        assert result["kind"] == "ChartSeries"
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        assert "Discount" in [s["name"] for s in c["series"]]
+
+    def test_default_type_and_subtype(self, rich_path):
+        add_chart_series(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Q1",
+            value_field="Amount",
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        q1 = next(s for s in c["series"] if s["name"] == "Q1")
+        assert q1["type"] == "Column"
+        assert q1["subtype"] == "Plain"
+
+    def test_explicit_type_subtype(self, rich_path):
+        add_chart_series(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Trend",
+            value_field="Amount",
+            series_type="Line",
+            series_subtype="Smooth",
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        trend = next(s for s in c["series"] if s["name"] == "Trend")
+        assert trend["type"] == "Line"
+        assert trend["subtype"] == "Smooth"
+
+    def test_value_expression_uses_sum(self, rich_path):
+        add_chart_series(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Latest",
+            value_field="Amount",
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        latest = next(s for s in c["series"] if s["name"] == "Latest")
+        assert latest["value_expression"] == "=Sum(Fields!Amount.Value)"
+
+    def test_duplicate_series_name_rejected(self, rich_path):
+        with pytest.raises(ValueError):
+            add_chart_series(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="Amount",  # already exists
+                value_field="ProductID",
+            )
+
+    def test_unknown_chart_rejected(self, rich_path):
+        with pytest.raises(ElementNotFoundError):
+            add_chart_series(
+                path=str(rich_path),
+                chart_name="NoSuchChart",
+                series_name="X",
+                value_field="Amount",
+            )
+
+    def test_invalid_type_rejected(self, rich_path):
+        with pytest.raises(ValueError):
+            add_chart_series(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="X",
+                value_field="Amount",
+                series_type="NotARealType",
+            )
+
+    def test_round_trip_safe(self, rich_path):
+        add_chart_series(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Z",
+            value_field="Amount",
+        )
+        RDLDocument.open(rich_path).validate()
+
+
+class TestRemoveChartSeries:
+    def test_removes_named(self, rich_path):
+        result = remove_chart_series(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Quantity",
+        )
+        assert result["removed"] == "Quantity"
+        assert "Quantity" not in result["remaining"]
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        assert "Quantity" not in [s["name"] for s in c["series"]]
+
+    def test_refuses_to_remove_last_series(self, rdl_path):
+        # Insert a chart with the template (1 series only).
+        insert_chart_from_template(
+            path=str(rdl_path),
+            name="OneSeries",
+            dataset_name="MainDataset",
+            category_field="ProductName",
+            value_field="Amount",
+            top="0in",
+            left="0in",
+            width="3in",
+            height="2in",
+        )
+        with pytest.raises(ValueError, match="last series"):
+            remove_chart_series(
+                path=str(rdl_path),
+                chart_name="OneSeries",
+                series_name="Amount",
+            )
+
+    def test_unknown_series_rejected(self, rich_path):
+        with pytest.raises(ElementNotFoundError):
+            remove_chart_series(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="NoSuch",
+            )
+
+
+class TestSetChartSeriesType:
+    def test_changes_type_and_subtype(self, rich_path):
+        result = set_chart_series_type(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            series_type="Bar",
+            series_subtype="Stacked",
+        )
+        assert "Type" in result["changed"]
+        assert "Subtype" in result["changed"]
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        amount = next(s for s in c["series"] if s["name"] == "Amount")
+        assert amount["type"] == "Bar"
+        assert amount["subtype"] == "Stacked"
+
+    def test_no_op_when_unchanged(self, rich_path):
+        # Total is already Bar/Stacked in the fixture.
+        result = set_chart_series_type(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Total",
+            series_type="Bar",
+            series_subtype="Stacked",
+        )
+        assert result["changed"] == []
+
+    def test_changed_omits_unmodified_field(self, rich_path):
+        # Total is Bar/Stacked. Change only subtype to Plain.
+        result = set_chart_series_type(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Total",
+            series_type="Bar",       # unchanged
+            series_subtype="Plain",  # changed
+        )
+        assert "Type" not in result["changed"]
+        assert "Subtype" in result["changed"]
+
+    def test_invalid_type_rejected(self, rich_path):
+        with pytest.raises(ValueError):
+            set_chart_series_type(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="Amount",
+                series_type="NotReal",
+            )
+
+    def test_unknown_series_rejected(self, rich_path):
+        with pytest.raises(ElementNotFoundError):
+            set_chart_series_type(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="Ghost",
+                series_type="Bar",
+            )
+
+
+class TestComboChartSurface:
+    """Verify that mixed series types coexist — the combo-chart pattern
+    that motivates set_chart_series_type and add_chart_series."""
+
+    def test_three_distinct_series_types(self, rich_path):
+        # Fixture already has Column, Line, Bar/Stacked.
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        types = sorted({s["type"] for s in c["series"]})
+        assert types == ["Bar", "Column", "Line"]
+
+
 class TestBackwardCompatibleImport:
     """v0.3 moved insert_chart_from_template from ops.templates → ops.chart.
     The old import path stays valid via re-export so existing callers
@@ -258,3 +470,16 @@ class TestToolRegistration:
         )["result"]["tools"]
         names = {t["name"] for t in listing}
         assert "insert_chart_from_template" in names
+
+    def test_series_crud_tools_registered(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )["result"]["tools"]
+        names = {t["name"] for t in listing}
+        assert {
+            "add_chart_series",
+            "remove_chart_series",
+            "set_chart_series_type",
+        } <= names

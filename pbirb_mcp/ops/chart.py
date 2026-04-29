@@ -57,9 +57,96 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
-from pbirb_mcp.core.ids import resolve_dataset
-from pbirb_mcp.core.xpath import find_child, q
+from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError, resolve_dataset
+from pbirb_mcp.core.xpath import RDL_NS, XPATH_NS, find_child, find_children, q
 from pbirb_mcp.ops.body import _ensure_body_report_items, _names_in, _resolve_body
+
+
+# RDL ChartSeriesType + Subtype enumeration (covers the common shapes;
+# extend if a real session needs Funnel / Pyramid / Polar / Range etc.).
+_VALID_SERIES_TYPES = frozenset(
+    {
+        "Column",
+        "Bar",
+        "Line",
+        "Area",
+        "Pie",
+        "Doughnut",
+        "Range",
+        "Scatter",
+        "Bubble",
+        "Stock",
+        "Polar",
+        "Radar",
+        "Funnel",
+        "Pyramid",
+    }
+)
+_VALID_SERIES_SUBTYPES = frozenset(
+    {
+        "Plain",
+        "Stacked",
+        "PercentStacked",
+        "Smooth",
+        "Exploded",
+        "SmoothLine",
+        "100",
+        "Line",
+        "Spline",
+    }
+)
+
+
+def _resolve_chart(doc: RDLDocument, name: str) -> etree._Element:
+    """Find a ``<Chart Name="...">`` anywhere in the report (body, header,
+    footer, rectangle children). Raises ``ElementNotFoundError`` on miss
+    and ``AmbiguousElementError`` on duplicate-name."""
+    matches = list(
+        doc.root.xpath(
+            f".//*[local-name()='Chart' and @Name=$n]",
+            namespaces=XPATH_NS,
+            n=name,
+        )
+    )
+    if not matches:
+        raise ElementNotFoundError(f"no Chart named {name!r}")
+    if len(matches) > 1:
+        raise AmbiguousElementError(
+            f"Chart name {name!r} matches {len(matches)} elements"
+        )
+    return matches[0]
+
+
+def _series_collection(chart: etree._Element) -> etree._Element:
+    """Return the ``<ChartSeriesCollection>`` for ``chart``. Defensive: a
+    well-formed chart always has one (the template emits it), but this
+    raises a clear error if it's missing rather than NPEing."""
+    cd = find_child(chart, "ChartData")
+    if cd is None:
+        raise ElementNotFoundError(
+            f"chart {chart.get('Name')!r} has no <ChartData>"
+        )
+    sc = find_child(cd, "ChartSeriesCollection")
+    if sc is None:
+        raise ElementNotFoundError(
+            f"chart {chart.get('Name')!r} has no <ChartSeriesCollection>"
+        )
+    return sc
+
+
+def _series_names(series_collection: etree._Element) -> list[str]:
+    return [s.get("Name") for s in find_children(series_collection, "ChartSeries")]
+
+
+def _find_series(
+    series_collection: etree._Element, series_name: str
+) -> etree._Element:
+    for s in find_children(series_collection, "ChartSeries"):
+        if s.get("Name") == series_name:
+            return s
+    raise ElementNotFoundError(
+        f"no ChartSeries named {series_name!r} (present: {_series_names(series_collection)})"
+    )
 
 
 def _all_named_items(doc: RDLDocument) -> set[str]:
@@ -174,4 +261,193 @@ def insert_chart_from_template(
     }
 
 
-__all__ = ["insert_chart_from_template"]
+# ---- add_chart_series -----------------------------------------------------
+
+
+def _build_chart_series(
+    series_name: str,
+    value_field: str,
+    series_type: str = "Column",
+    series_subtype: str = "Plain",
+) -> etree._Element:
+    """Construct a single ``<ChartSeries>`` with the canonical shape.
+
+    Mirrors the structure :func:`insert_chart_from_template` builds for
+    the initial series, so a chart with N series via this tool reads
+    consistently via :func:`get_chart`.
+    """
+    series = etree.Element(q("ChartSeries"), Name=series_name)
+    data_points = etree.SubElement(series, q("ChartDataPoints"))
+    data_point = etree.SubElement(data_points, q("ChartDataPoint"))
+    values = etree.SubElement(data_point, q("ChartDataPointValues"))
+    y_node = etree.SubElement(values, q("Y"))
+    y_node.text = encode_text(f"=Sum(Fields!{value_field}.Value)")
+    etree.SubElement(series, q("Type")).text = series_type
+    etree.SubElement(series, q("Subtype")).text = series_subtype
+    return series
+
+
+def add_chart_series(
+    path: str,
+    chart_name: str,
+    series_name: str,
+    value_field: str,
+    series_type: str = "Column",
+    series_subtype: str = "Plain",
+) -> dict[str, Any]:
+    """Append a new ``<ChartSeries>`` to the named chart.
+
+    The series is built with ``Y = Sum(Fields!<value_field>.Value)`` —
+    same shape :func:`insert_chart_from_template` emits for the first
+    series. Override after the fact via :func:`set_chart_series_type`
+    or by editing the data point values.
+
+    Refuses if ``series_name`` already exists in the chart.
+    """
+    if series_type not in _VALID_SERIES_TYPES:
+        raise ValueError(
+            f"series_type {series_type!r} not valid; "
+            f"expected one of {sorted(_VALID_SERIES_TYPES)}"
+        )
+    if series_subtype not in _VALID_SERIES_SUBTYPES:
+        raise ValueError(
+            f"series_subtype {series_subtype!r} not valid; "
+            f"expected one of {sorted(_VALID_SERIES_SUBTYPES)}"
+        )
+
+    doc = RDLDocument.open(path)
+    chart = _resolve_chart(doc, chart_name)
+    sc = _series_collection(chart)
+
+    if series_name in _series_names(sc):
+        raise ValueError(
+            f"chart {chart_name!r} already has a series named {series_name!r}"
+        )
+
+    sc.append(
+        _build_chart_series(
+            series_name=series_name,
+            value_field=value_field,
+            series_type=series_type,
+            series_subtype=series_subtype,
+        )
+    )
+    doc.save()
+    return {
+        "chart": chart_name,
+        "name": series_name,
+        "kind": "ChartSeries",
+        "type": series_type,
+        "subtype": series_subtype,
+        "value_field": value_field,
+    }
+
+
+# ---- remove_chart_series --------------------------------------------------
+
+
+def remove_chart_series(
+    path: str,
+    chart_name: str,
+    series_name: str,
+) -> dict[str, Any]:
+    """Remove a ``<ChartSeries>`` by name. Refuses if removing it would
+    leave the chart with zero series — RB renders a chart with no series
+    as an empty box, which is rarely the user's intent. Use
+    :func:`add_chart_series` first if you really want to swap series.
+    """
+    doc = RDLDocument.open(path)
+    chart = _resolve_chart(doc, chart_name)
+    sc = _series_collection(chart)
+    target = _find_series(sc, series_name)
+
+    remaining = [s for s in find_children(sc, "ChartSeries") if s is not target]
+    if not remaining:
+        raise ValueError(
+            f"refusing to remove the last series in chart {chart_name!r}; "
+            "add another series first or remove the chart entirely "
+            "via remove_body_item."
+        )
+
+    sc.remove(target)
+    doc.save()
+    return {
+        "chart": chart_name,
+        "removed": series_name,
+        "remaining": [s.get("Name") for s in remaining],
+    }
+
+
+# ---- set_chart_series_type ------------------------------------------------
+
+
+def set_chart_series_type(
+    path: str,
+    chart_name: str,
+    series_name: str,
+    series_type: str,
+    series_subtype: str = "Plain",
+) -> dict[str, Any]:
+    """Update the ``<Type>`` and ``<Subtype>`` of a named series.
+
+    Combo-chart pattern: the chart can hold series of mixed types — a
+    Bar series + a Line series in the same chart renders as a combo
+    bar+line. Set each series's type independently with this tool.
+
+    ``series_type`` ∈ Column / Bar / Line / Area / Pie / Doughnut /
+    Range / Scatter / Bubble / Stock / Polar / Radar / Funnel / Pyramid.
+
+    ``series_subtype`` ∈ Plain / Stacked / PercentStacked / Smooth /
+    Exploded / SmoothLine / 100 / Line / Spline.
+
+    Returns ``{chart, series, changed: list[str]}`` — empty list when the
+    inputs match the existing values (no-op short-circuit, no save).
+    """
+    if series_type not in _VALID_SERIES_TYPES:
+        raise ValueError(
+            f"series_type {series_type!r} not valid; "
+            f"expected one of {sorted(_VALID_SERIES_TYPES)}"
+        )
+    if series_subtype not in _VALID_SERIES_SUBTYPES:
+        raise ValueError(
+            f"series_subtype {series_subtype!r} not valid; "
+            f"expected one of {sorted(_VALID_SERIES_SUBTYPES)}"
+        )
+
+    doc = RDLDocument.open(path)
+    chart = _resolve_chart(doc, chart_name)
+    sc = _series_collection(chart)
+    series = _find_series(sc, series_name)
+
+    type_node = find_child(series, "Type")
+    subtype_node = find_child(series, "Subtype")
+    changed: list[str] = []
+
+    if type_node is None:
+        type_node = etree.SubElement(series, q("Type"))
+    if type_node.text != series_type:
+        type_node.text = series_type
+        changed.append("Type")
+
+    if subtype_node is None:
+        subtype_node = etree.SubElement(series, q("Subtype"))
+    if subtype_node.text != series_subtype:
+        subtype_node.text = series_subtype
+        changed.append("Subtype")
+
+    if changed:
+        doc.save()
+    return {
+        "chart": chart_name,
+        "series": series_name,
+        "kind": "ChartSeries",
+        "changed": changed,
+    }
+
+
+__all__ = [
+    "add_chart_series",
+    "insert_chart_from_template",
+    "remove_chart_series",
+    "set_chart_series_type",
+]

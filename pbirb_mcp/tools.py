@@ -1400,6 +1400,86 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=chart.insert_chart_from_template,
     )
+    server.register_tool(
+        name="add_chart_series",
+        description=(
+            "Append a new <ChartSeries> to a named chart. value_field is "
+            "the dataset field whose Sum becomes the Y expression "
+            "(=Sum(Fields!<value_field>.Value)). series_type defaults to "
+            "Column; combine series of different types in one chart for "
+            "combo charts (e.g. Bar + Line). series_subtype defaults to "
+            "Plain. Refuses if series_name already exists."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+                "value_field": {"type": "string"},
+                "series_type": {
+                    "type": "string",
+                    "description": (
+                        "Column / Bar / Line / Area / Pie / Doughnut / "
+                        "Range / Scatter / Bubble / Stock / Polar / Radar "
+                        "/ Funnel / Pyramid"
+                    ),
+                },
+                "series_subtype": {
+                    "type": "string",
+                    "description": (
+                        "Plain / Stacked / PercentStacked / Smooth / "
+                        "Exploded / SmoothLine / 100 / Line / Spline"
+                    ),
+                },
+            },
+            "required": ["path", "chart_name", "series_name", "value_field"],
+            "additionalProperties": False,
+        },
+        handler=chart.add_chart_series,
+    )
+    server.register_tool(
+        name="remove_chart_series",
+        description=(
+            "Remove a named <ChartSeries> from a chart. Refuses to remove "
+            "the last remaining series (use remove_body_item to drop the "
+            "whole chart instead). Returns {chart, removed, remaining}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+            },
+            "required": ["path", "chart_name", "series_name"],
+            "additionalProperties": False,
+        },
+        handler=chart.remove_chart_series,
+    )
+    server.register_tool(
+        name="set_chart_series_type",
+        description=(
+            "Update <Type> and <Subtype> on a named ChartSeries. Combo "
+            "charts work by setting different types per series in the "
+            "same chart (e.g. one Bar series and one Line series). "
+            "Returns {chart, series, kind, changed: list[str]} — empty "
+            "when inputs match existing values (no-op short-circuit)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+                "series_type": {"type": "string"},
+                "series_subtype": {"type": "string", "default": "Plain"},
+            },
+            "required": ["path", "chart_name", "series_name", "series_type"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_series_type,
+    )
 
     _STATIC_VALUE_ITEM = {
         "oneOf": [
