@@ -172,6 +172,99 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=datasource.set_datasource_connection,
     )
+    server.register_tool(
+        name="list_data_sources",
+        description=(
+            "Return a rich list of every <DataSource> in the report — "
+            "name, data_provider, connect_string, integrated_security, "
+            "shared_reference, security_type, data_source_id. "
+            "describe_report.data_sources returns names only; this tool "
+            "is the authoring-friendly read."
+        ),
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=datasource.list_data_sources,
+    )
+    server.register_tool(
+        name="get_data_source",
+        description=(
+            "Single-DataSource read-back (parity with get_textbox / "
+            "get_image / get_rectangle / get_chart). Returns the same "
+            "shape as one entry of list_data_sources."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=datasource.get_data_source,
+    )
+    server.register_tool(
+        name="add_data_source",
+        description=(
+            "Create a new <DataSource> for a Power BI XMLA endpoint. "
+            "workspace_url accepts a bare workspace name or a full "
+            "powerbi:// URL. Generates a fresh rd:DataSourceID GUID. "
+            "Refuses if a DataSource of the same name already exists."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "workspace_url": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "integrated_security": {"type": "boolean", "default": True},
+            },
+            "required": ["path", "name", "workspace_url", "dataset_name"],
+            "additionalProperties": False,
+        },
+        handler=datasource.add_data_source,
+    )
+    server.register_tool(
+        name="remove_data_source",
+        description=(
+            "Remove a named <DataSource>. Refuses by default if any "
+            "DataSet/Query/DataSourceName or DataSource/"
+            "DataSourceReference still references it; the error lists "
+            "the offending locators. Pass force=True to remove anyway."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=datasource.remove_data_source,
+    )
+    server.register_tool(
+        name="rename_data_source",
+        description=(
+            "Rename a <DataSource> and rewrite every reference: "
+            "DataSet/Query/DataSourceName entries AND any "
+            "DataSource/DataSourceReference shared-source links. "
+            "Atomic: stages all matches before committing. Errors if "
+            "new_name already exists or equals old_name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_name": {"type": "string"},
+                "new_name": {"type": "string"},
+            },
+            "required": ["path", "old_name", "new_name"],
+            "additionalProperties": False,
+        },
+        handler=datasource.rename_data_source,
+    )
 
     server.register_tool(
         name="remove_query_parameter",
