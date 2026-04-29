@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from pbirb_mcp.ops import (
     body,
+    chart,
     dataset,
     datasource,
     embedded_images,
@@ -1377,7 +1378,7 @@ def register_all_tools(server: MCPServer) -> None:
             ],
             "additionalProperties": False,
         },
-        handler=templates.insert_chart_from_template,
+        handler=chart.insert_chart_from_template,
     )
 
     _STATIC_VALUE_ITEM = {
