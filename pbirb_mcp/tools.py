@@ -16,6 +16,7 @@ from pbirb_mcp.ops import (
     datasource,
     embedded_images,
     header_footer,
+    images,
     page,
     parameters,
     positioning,
@@ -424,6 +425,31 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=dataset.remove_calculated_field,
+    )
+    server.register_tool(
+        name="set_image_sizing",
+        description=(
+            "Set <Image>/<Sizing> on a named Image. sizing ∈ AutoSize / "
+            "Fit / FitProportional / Clip. AutoSize renders at native "
+            "size (box grows to fit); Fit stretches to fill (ignores "
+            "aspect ratio); FitProportional preserves aspect ratio; "
+            "Clip renders at native size, clipped to the box. "
+            "Idempotent: same value → {changed: false}, no save."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "image_name": {"type": "string"},
+                "sizing": {
+                    "type": "string",
+                    "enum": ["AutoSize", "Fit", "FitProportional", "Clip"],
+                },
+            },
+            "required": ["path", "image_name", "sizing"],
+            "additionalProperties": False,
+        },
+        handler=images.set_image_sizing,
     )
 
     server.register_tool(
