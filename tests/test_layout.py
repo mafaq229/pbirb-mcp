@@ -17,6 +17,7 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_group
 from pbirb_mcp.core.xpath import find_child, q
 from pbirb_mcp.ops.layout import (
+    add_list,
     add_rectangle,
     set_group_page_break,
     set_keep_together,
@@ -716,6 +717,160 @@ class TestAddRectangle:
         assert names == {"A", "B"}
 
 
+# ---- add_list -----------------------------------------------------------
+
+
+def _tablix(path: Path, name: str) -> etree._Element | None:
+    doc = RDLDocument.open(path)
+    matches = doc.root.xpath(
+        f".//r:Tablix[@Name=$n]", namespaces={"r": _RDL}, n=name
+    )
+    return matches[0] if matches else None
+
+
+class TestAddList:
+    def test_creates_list_at_position(self, rdl_path):
+        result = add_list(
+            path=str(rdl_path),
+            name="MyList",
+            dataset_name="MainDataset",
+            top="3in",
+            left="0.5in",
+            width="2in",
+            height="1in",
+        )
+        assert result == {
+            "name": "MyList",
+            "kind": "Tablix",
+            "dataset": "MainDataset",
+            "rectangle": "MyList_Rect",
+        }
+        tablix = _tablix(rdl_path, "MyList")
+        assert tablix is not None
+        assert find_child(tablix, "DataSetName").text == "MainDataset"
+        assert find_child(tablix, "Top").text == "3in"
+
+    def test_inner_rectangle_present(self, rdl_path):
+        add_list(
+            path=str(rdl_path),
+            name="MyList",
+            dataset_name="MainDataset",
+            top="3in",
+            left="0.5in",
+            width="2in",
+            height="1in",
+        )
+        rect = _rectangle(rdl_path, "MyList_Rect")
+        assert rect is not None
+        # Rectangle lives inside the Tablix's single cell.
+        # Walk: Tablix/TablixBody/TablixRows/TablixRow/TablixCells/TablixCell/CellContents/Rectangle
+        ancestor_names = []
+        cur = rect.getparent()
+        while cur is not None:
+            ancestor_names.append(etree.QName(cur.tag).localname)
+            cur = cur.getparent()
+        assert "TablixCell" in ancestor_names
+        assert "Tablix" in ancestor_names
+
+    def test_single_row_single_column(self, rdl_path):
+        add_list(
+            path=str(rdl_path),
+            name="MyList",
+            dataset_name="MainDataset",
+            top="3in",
+            left="0.5in",
+            width="2in",
+            height="1in",
+        )
+        tablix = _tablix(rdl_path, "MyList")
+        body_node = find_child(tablix, "TablixBody")
+        cols = find_child(body_node, "TablixColumns")
+        rows = find_child(body_node, "TablixRows")
+        assert len(cols.findall(q("TablixColumn"))) == 1
+        assert len(rows.findall(q("TablixRow"))) == 1
+
+    def test_details_group_named_with_list_prefix(self, rdl_path):
+        # Group Name should be "<list_name>_Details" for collision-safe
+        # multi-list reports.
+        add_list(
+            path=str(rdl_path),
+            name="MyList",
+            dataset_name="MainDataset",
+            top="3in",
+            left="0.5in",
+            width="2in",
+            height="1in",
+        )
+        tablix = _tablix(rdl_path, "MyList")
+        rh = find_child(tablix, "TablixRowHierarchy")
+        members = rh.find(q("TablixMembers"))
+        groups = members.iter(q("Group"))
+        names = [g.get("Name") for g in groups]
+        assert names == ["MyList_Details"]
+
+    def test_two_lists_dont_collide(self, rdl_path):
+        add_list(
+            path=str(rdl_path),
+            name="ListA",
+            dataset_name="MainDataset",
+            top="3in",
+            left="0.5in",
+            width="2in",
+            height="1in",
+        )
+        add_list(
+            path=str(rdl_path),
+            name="ListB",
+            dataset_name="MainDataset",
+            top="4.5in",
+            left="0.5in",
+            width="2in",
+            height="1in",
+        )
+        # Both lists exist; rectangles named distinctly.
+        assert _tablix(rdl_path, "ListA") is not None
+        assert _tablix(rdl_path, "ListB") is not None
+        assert _rectangle(rdl_path, "ListA_Rect") is not None
+        assert _rectangle(rdl_path, "ListB_Rect") is not None
+
+    def test_refuses_duplicate_name(self, rdl_path):
+        with pytest.raises(ValueError, match="already exists"):
+            add_list(
+                path=str(rdl_path),
+                name="MainTable",  # already exists in fixture
+                dataset_name="MainDataset",
+                top="3in",
+                left="0.5in",
+                width="2in",
+                height="1in",
+            )
+
+    def test_refuses_unknown_dataset(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            add_list(
+                path=str(rdl_path),
+                name="MyList",
+                dataset_name="NoSuchDataset",
+                top="3in",
+                left="0.5in",
+                width="2in",
+                height="1in",
+            )
+
+    def test_round_trip_safe(self, rdl_path):
+        add_list(
+            path=str(rdl_path),
+            name="MyList",
+            dataset_name="MainDataset",
+            top="3in",
+            left="0.5in",
+            width="2in",
+            height="1in",
+        )
+        # Re-open + structural validate must pass.
+        RDLDocument.open(rdl_path).validate()
+
+
 # ---- registration ------------------------------------------------------
 
 
@@ -740,3 +895,4 @@ class TestToolRegistration:
         )["result"]["tools"]
         names = {t["name"] for t in listing}
         assert "add_rectangle" in names
+        assert "add_list" in names

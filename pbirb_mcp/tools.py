@@ -1048,6 +1048,34 @@ def register_all_tools(server: MCPServer) -> None:
         handler=_layout.add_rectangle,
     )
 
+    server.register_tool(
+        name="add_list",
+        description=(
+            "Add a List (single-cell repeating Tablix) bound to a "
+            "dataset. RDL has no distinct <List> element — Report "
+            "Builder's List is a Tablix with one column, one detail "
+            "row, and a Rectangle inside the cell. Items placed in "
+            "the rectangle repeat once per dataset row. The inner "
+            "rectangle is named '<name>_Rect' for subsequent lookup. "
+            "Returns {name, kind: 'Tablix', dataset, rectangle}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "top": {"type": "string"},
+                "left": {"type": "string"},
+                "width": {"type": "string"},
+                "height": {"type": "string"},
+            },
+            "required": ["path", "name", "dataset_name", "top", "left", "width", "height"],
+            "additionalProperties": False,
+        },
+        handler=_layout.add_list,
+    )
+
     # ---- actions / tooltip / document-map (Phase 5) ---------------------
 
     _DRILLTHROUGH_PARAM_ITEM = {

@@ -27,7 +27,7 @@ from typing import Any
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.ids import ElementNotFoundError, resolve_group
+from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_group
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, q
 from pbirb_mcp.ops.body import _ensure_body_report_items, _names_in, _resolve_body
 from pbirb_mcp.ops.page import _SIZE_RE, _TO_INCHES
@@ -510,7 +510,97 @@ def add_rectangle(
     }
 
 
+# ---- add_list (Phase 11 commit 42) --------------------------------------
+
+
+def add_list(
+    path: str,
+    name: str,
+    dataset_name: str,
+    top: str,
+    left: str,
+    width: str,
+    height: str,
+) -> dict[str, Any]:
+    """Add a List (single-cell repeating Tablix) bound to ``dataset_name``.
+
+    RDL doesn't have a distinct ``<List>`` element — what Report Builder
+    surfaces as a List is a Tablix with one column, one detail row, and
+    a Rectangle inside the single cell. Items the user later places
+    inside the rectangle repeat once per dataset row.
+
+    Returns ``{name, kind: 'Tablix', dataset, rectangle: <name>_Rect}``.
+    The inner Rectangle's name is ``<name>_Rect`` for stable subsequent
+    reference (callers can look it up by that name when adding inner
+    items via ``set_textbox_value`` / ``add_body_textbox`` etc.).
+
+    Refuses on duplicate name. Refuses if ``dataset_name`` isn't a real
+    dataset.
+    """
+    doc = RDLDocument.open(path)
+    resolve_dataset(doc, dataset_name)  # raises if absent
+    body = _resolve_body(doc)
+    items = _ensure_body_report_items(body)
+    if name in _names_in(items):
+        raise ValueError(f"body item named {name!r} already exists; pick a unique name")
+
+    rect_name = f"{name}_Rect"
+
+    tablix = etree.Element(q("Tablix"), Name=name)
+
+    # ---- TablixBody ----
+    tbody = etree.SubElement(tablix, q("TablixBody"))
+    cols = etree.SubElement(tbody, q("TablixColumns"))
+    col = etree.SubElement(cols, q("TablixColumn"))
+    etree.SubElement(col, q("Width")).text = width
+    rows = etree.SubElement(tbody, q("TablixRows"))
+    row = etree.SubElement(rows, q("TablixRow"))
+    etree.SubElement(row, q("Height")).text = height
+    cells = etree.SubElement(row, q("TablixCells"))
+    cell = etree.SubElement(cells, q("TablixCell"))
+    contents = etree.SubElement(cell, q("CellContents"))
+    inner = etree.SubElement(contents, q("Rectangle"), Name=rect_name)
+    etree.SubElement(inner, q("KeepTogether")).text = "true"
+    inner_style = etree.SubElement(inner, q("Style"))
+    inner_border = etree.SubElement(inner_style, q("Border"))
+    etree.SubElement(inner_border, q("Style")).text = "None"
+
+    # ---- TablixColumnHierarchy ----
+    col_h = etree.SubElement(tablix, q("TablixColumnHierarchy"))
+    col_members = etree.SubElement(col_h, q("TablixMembers"))
+    etree.SubElement(col_members, q("TablixMember"))
+
+    # ---- TablixRowHierarchy ----
+    row_h = etree.SubElement(tablix, q("TablixRowHierarchy"))
+    row_members = etree.SubElement(row_h, q("TablixMembers"))
+    details_member = etree.SubElement(row_members, q("TablixMember"))
+    # Group Name uses the same convention insert_tablix_from_template uses
+    # ("Details") but suffixed with the list name to avoid collisions when
+    # multiple lists exist in one report.
+    etree.SubElement(details_member, q("Group"), Name=f"{name}_Details")
+
+    # ---- footer fields ----
+    etree.SubElement(tablix, q("DataSetName")).text = dataset_name
+    etree.SubElement(tablix, q("Top")).text = top
+    etree.SubElement(tablix, q("Left")).text = left
+    etree.SubElement(tablix, q("Height")).text = height
+    etree.SubElement(tablix, q("Width")).text = width
+    style = etree.SubElement(tablix, q("Style"))
+    border = etree.SubElement(style, q("Border"))
+    etree.SubElement(border, q("Style")).text = "None"
+
+    items.append(tablix)
+    doc.save()
+    return {
+        "name": name,
+        "kind": "Tablix",
+        "dataset": dataset_name,
+        "rectangle": rect_name,
+    }
+
+
 __all__ = [
+    "add_list",
     "add_rectangle",
     "set_group_page_break",
     "set_keep_together",
