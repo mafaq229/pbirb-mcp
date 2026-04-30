@@ -35,6 +35,7 @@ from pbirb_mcp.ops import (
     visibility,
 )
 from pbirb_mcp.ops import dry_run as _dry_run
+from pbirb_mcp.ops import escape as _escape
 from pbirb_mcp.ops import expressions as _expressions
 from pbirb_mcp.ops import layout as _layout
 from pbirb_mcp.ops import lint as _lint
@@ -1106,6 +1107,61 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_layout.add_line,
+    )
+
+    # ---- xpath escape hatch (Phase 12 commit 45) ------------------------
+
+    server.register_tool(
+        name="raw_xml_view",
+        description=(
+            "Read-only XPath query against the report. Returns matched "
+            "elements as serialised XML strings. XPath context is "
+            "<Report> (the root); 'r:' is bound to the RDL namespace, "
+            "'rd:' to the rd namespace. Examples: "
+            "\"r:DataSources/r:DataSource[@Name='X']\" / "
+            "\".//r:Textbox[@Name='X']/r:Style\". Returns [] when "
+            "nothing matches; raises on malformed xpath."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "xpath": {"type": "string"},
+            },
+            "required": ["path", "xpath"],
+            "additionalProperties": False,
+        },
+        handler=_escape.raw_xml_view,
+    )
+
+    server.register_tool(
+        name="raw_xml_replace",
+        description=(
+            "Replace the single element matched by xpath with new "
+            "content. content is parsed with RDL as the default "
+            "namespace and 'rd:' bound, so bare names like "
+            "<Textbox><Value>x</Value></Textbox> work without explicit "
+            "xmlns. Refuses on zero matches, multiple matches, or if "
+            "the xpath targets the <Report> root. Saves atomically. "
+            "Returns {xpath, kind, changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "xpath": {"type": "string"},
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "XML for the replacement element. Exactly one "
+                        "top-level element."
+                    ),
+                },
+            },
+            "required": ["path", "xpath", "content"],
+            "additionalProperties": False,
+        },
+        handler=_escape.raw_xml_replace,
     )
 
     # ---- actions / tooltip / document-map (Phase 5) ---------------------
