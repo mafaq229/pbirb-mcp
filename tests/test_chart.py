@@ -552,6 +552,10 @@ class TestSetChartAxis:
         assert val["interval"] == "100"
 
     def test_log_scale_visible_booleans(self, rich_path):
+        # ChartAxis/Visible and ChartAxis/LogScale are RDL XSD
+        # BooleanLocalizableType — case-sensitive enum {True, False}
+        # with capital first letter. Lowercase 'true'/'false' is
+        # rejected by Report Builder with "true is not a valid value".
         result = set_chart_axis(
             path=str(rich_path),
             chart_name="SalesByProduct",
@@ -563,8 +567,8 @@ class TestSetChartAxis:
         assert "Visible" in result["changed"]
         c = get_chart(path=str(rich_path), name="SalesByProduct")
         val = c["axes"]["value"][0]
-        assert val["log_scale"] == "true"
-        assert val["visible"] == "false"
+        assert val["log_scale"] == "True"
+        assert val["visible"] == "False"
 
     def test_no_args_returns_empty_changed(self, rich_path):
         before = (rich_path).read_bytes()

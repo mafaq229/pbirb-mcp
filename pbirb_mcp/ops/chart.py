@@ -525,7 +525,11 @@ def set_chart_axis(
         changed.append("Maximum")
 
     if log_scale is not None:
-        _set_axis_simple_text(axis_el, "LogScale", "true" if log_scale else "false")
+        # ChartAxis/LogScale is a BooleanLocalizableType — case-sensitive
+        # enum {True, False}. Lowercase 'true'/'false' is rejected by RB
+        # with "true is not a valid value." This differs from
+        # BooleanExpressionType used on most other ReportItem booleans.
+        _set_axis_simple_text(axis_el, "LogScale", "True" if log_scale else "False")
         changed.append("LogScale")
 
     if interval is not None:
@@ -533,7 +537,8 @@ def set_chart_axis(
         changed.append("Interval")
 
     if visible is not None:
-        _set_axis_simple_text(axis_el, "Visible", "true" if visible else "false")
+        # Same BooleanLocalizableType story as LogScale above.
+        _set_axis_simple_text(axis_el, "Visible", "True" if visible else "False")
         changed.append("Visible")
 
     if changed:
