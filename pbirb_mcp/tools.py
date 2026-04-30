@@ -35,6 +35,7 @@ from pbirb_mcp.ops import (
     visibility,
 )
 from pbirb_mcp.ops import dry_run as _dry_run
+from pbirb_mcp.ops import expressions as _expressions
 from pbirb_mcp.ops import lint as _lint
 
 if TYPE_CHECKING:
@@ -812,6 +813,24 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_dry_run.dry_run_edit,
+    )
+
+    server.register_tool(
+        name="get_expression_reference",
+        description=(
+            "Return a static cheat-sheet of common RDL expression "
+            "patterns: globals, parameters, fields, aggregates, "
+            "conditionals, strings, dates. Each entry is {name, syntax, "
+            "example, description}. Call this when authoring a textbox "
+            "value or filter expression instead of guessing — and note "
+            "the explicit encoding hint for the `&` concat operator."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        handler=_expressions.get_expression_reference,
     )
 
     # ---- actions / tooltip / document-map (Phase 5) ---------------------
