@@ -1991,7 +1991,10 @@ def register_all_tools(server: MCPServer) -> None:
         name="add_header_textbox",
         description=(
             "Add a Textbox to <PageHeader>/<ReportItems>. text accepts "
-            "static strings or RDL expressions (=Parameters!DateFrom.Value)."
+            "static strings or RDL expressions (=Parameters!DateFrom.Value). "
+            "Pass raw text — encoding is handled; don't pre-encode XML "
+            "entities (use `&` not `&amp;`, including for the VB.NET "
+            "string-concat operator in expressions)."
         ),
         input_schema=_TEXTBOX_SCHEMA,
         handler=header_footer.add_header_textbox,
@@ -2130,7 +2133,10 @@ def register_all_tools(server: MCPServer) -> None:
             "subtree (single-paragraph in v0.3; multi-paragraph deferred). "
             "Round-trip contract: get_textbox.runs[] returns the same "
             "shape this tool writes. Idempotent — identical input is a "
-            "no-op short-circuit. Returns {textbox, kind, runs, changed}."
+            "no-op short-circuit. Returns {textbox, kind, runs, changed}. "
+            "Pass raw text in each run's `text` — encoding is handled; "
+            "don't pre-encode XML entities (use `&` not `&amp;`, "
+            "including for the VB.NET string-concat operator)."
         ),
         input_schema={
             "type": "object",
@@ -2172,7 +2178,10 @@ def register_all_tools(server: MCPServer) -> None:
             "aggregate). Refuses with a redirect to set_textbox_runs when "
             "the textbox has multiple text runs (multi-run content needs "
             "the rich-text editor). Idempotent: identical value → "
-            "{changed: false} no-op. Returns {textbox, kind, changed}."
+            "{changed: false} no-op. Returns {textbox, kind, changed}. "
+            "Pass raw text — encoding is handled; don't pre-encode XML "
+            "entities (use `&` not `&amp;`, including for the VB.NET "
+            "string-concat operator in expressions)."
         ),
         input_schema={
             "type": "object",
@@ -2372,7 +2381,10 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Add a Textbox to <Body>/<ReportItems>. text accepts static "
             "strings or RDL expressions (e.g. =Globals!ReportName). "
-            "Coexists with the existing tablix; rejects names already in use."
+            "Coexists with the existing tablix; rejects names already in use. "
+            "Pass raw text — encoding is handled; don't pre-encode XML "
+            "entities (use `&` not `&amp;`, including for the VB.NET "
+            "string-concat operator in expressions)."
         ),
         input_schema=_BODY_TEXTBOX_SCHEMA,
         handler=body.add_body_textbox,
