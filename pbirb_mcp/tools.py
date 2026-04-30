@@ -36,6 +36,7 @@ from pbirb_mcp.ops import (
 )
 from pbirb_mcp.ops import dry_run as _dry_run
 from pbirb_mcp.ops import expressions as _expressions
+from pbirb_mcp.ops import layout as _layout
 from pbirb_mcp.ops import lint as _lint
 
 if TYPE_CHECKING:
@@ -906,6 +907,58 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_expressions.iif_format,
+    )
+
+    # ---- pagination (Phase 10) ------------------------------------------
+
+    server.register_tool(
+        name="set_group_page_break",
+        description=(
+            "Set <BreakLocation> on a tablix group's page-break rule. "
+            "location ∈ {None, Start, End, StartAndEnd, Between}. "
+            "Passing 'None' removes the <PageBreak> element (the "
+            "canonical 'no break' shape). Idempotent. Returns "
+            "{tablix, group, kind: 'Group', location, changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "location": {
+                    "type": "string",
+                    "enum": list(_layout._VALID_BREAK_LOCATIONS),
+                },
+            },
+            "required": ["path", "tablix_name", "group_name", "location"],
+            "additionalProperties": False,
+        },
+        handler=_layout.set_group_page_break,
+    )
+
+    server.register_tool(
+        name="set_repeat_on_new_page",
+        description=(
+            "Set <TablixMember>/<RepeatOnNewPage> on the member that "
+            "wraps the named group. Most common use: repeat a group "
+            "header row at the top of every page the group spans. "
+            "Setting repeat=False removes the element (False is "
+            "default). Returns {tablix, group, kind: 'TablixMember', "
+            "repeat, changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "repeat": {"type": "boolean"},
+            },
+            "required": ["path", "tablix_name", "group_name", "repeat"],
+            "additionalProperties": False,
+        },
+        handler=_layout.set_repeat_on_new_page,
     )
 
     # ---- actions / tooltip / document-map (Phase 5) ---------------------
