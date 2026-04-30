@@ -17,6 +17,7 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_group
 from pbirb_mcp.core.xpath import find_child, q
 from pbirb_mcp.ops.layout import (
+    add_line,
     add_list,
     add_rectangle,
     set_group_page_break,
@@ -871,6 +872,115 @@ class TestAddList:
         RDLDocument.open(rdl_path).validate()
 
 
+# ---- add_line -----------------------------------------------------------
+
+
+def _line(path: Path, name: str) -> etree._Element | None:
+    doc = RDLDocument.open(path)
+    matches = doc.root.xpath(
+        f".//r:Line[@Name=$n]", namespaces={"r": _RDL}, n=name
+    )
+    return matches[0] if matches else None
+
+
+class TestAddLine:
+    def test_creates_horizontal_line(self, rdl_path):
+        result = add_line(
+            path=str(rdl_path),
+            name="Sep",
+            top="3in",
+            left="0.5in",
+            width="5in",
+            height="0in",
+        )
+        assert result == {"name": "Sep", "kind": "Line"}
+        line = _line(rdl_path, "Sep")
+        assert line is not None
+        assert find_child(line, "Top").text == "3in"
+        assert find_child(line, "Width").text == "5in"
+        assert find_child(line, "Height").text == "0in"
+
+    def test_creates_vertical_line(self, rdl_path):
+        add_line(
+            path=str(rdl_path),
+            name="VBar",
+            top="2in",
+            left="3in",
+            width="0in",
+            height="4in",
+        )
+        line = _line(rdl_path, "VBar")
+        assert find_child(line, "Width").text == "0in"
+        assert find_child(line, "Height").text == "4in"
+
+    def test_default_style_is_solid_black(self, rdl_path):
+        add_line(
+            path=str(rdl_path),
+            name="Sep",
+            top="3in",
+            left="0.5in",
+            width="5in",
+            height="0in",
+        )
+        line = _line(rdl_path, "Sep")
+        border = find_child(find_child(line, "Style"), "Border")
+        assert find_child(border, "Color").text == "#000000"
+        assert find_child(border, "Style").text == "Solid"
+        assert find_child(border, "Width").text == "1pt"
+
+    def test_custom_color_thickness_and_style(self, rdl_path):
+        add_line(
+            path=str(rdl_path),
+            name="Sep",
+            top="3in",
+            left="0.5in",
+            width="5in",
+            height="0in",
+            color="#ff0000",
+            line_thickness="2pt",
+            line_style="Dashed",
+        )
+        line = _line(rdl_path, "Sep")
+        border = find_child(find_child(line, "Style"), "Border")
+        assert find_child(border, "Color").text == "#ff0000"
+        assert find_child(border, "Width").text == "2pt"
+        assert find_child(border, "Style").text == "Dashed"
+
+    def test_unknown_line_style_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="unknown line_style"):
+            add_line(
+                path=str(rdl_path),
+                name="Sep",
+                top="3in",
+                left="0.5in",
+                width="5in",
+                height="0in",
+                line_style="Wavy",
+            )
+
+    def test_refuses_duplicate_name(self, rdl_path):
+        with pytest.raises(ValueError, match="already exists"):
+            add_line(
+                path=str(rdl_path),
+                name="MainTable",
+                top="3in",
+                left="0.5in",
+                width="5in",
+                height="0in",
+            )
+
+    def test_round_trip_safe(self, rdl_path):
+        add_line(
+            path=str(rdl_path),
+            name="Sep",
+            top="3in",
+            left="0.5in",
+            width="5in",
+            height="0in",
+        )
+        RDLDocument.open(rdl_path).validate()
+
+
 # ---- registration ------------------------------------------------------
 
 
@@ -896,3 +1006,4 @@ class TestToolRegistration:
         names = {t["name"] for t in listing}
         assert "add_rectangle" in names
         assert "add_list" in names
+        assert "add_line" in names

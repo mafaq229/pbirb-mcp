@@ -599,7 +599,83 @@ def add_list(
     }
 
 
+# ---- add_line (Phase 11 commit 43) --------------------------------------
+
+
+# RDL 2016 BorderStyle enumeration.
+_VALID_LINE_STYLES = (
+    "None",
+    "Dotted",
+    "Dashed",
+    "Solid",
+    "Double",
+    "Groove",
+    "Ridge",
+    "Inset",
+    "WindowInset",
+    "Outset",
+)
+
+
+def add_line(
+    path: str,
+    name: str,
+    top: str,
+    left: str,
+    width: str,
+    height: str,
+    color: str = "#000000",
+    line_thickness: str = "1pt",
+    line_style: str = "Solid",
+) -> dict[str, Any]:
+    """Add a ``<Line>`` to ``<Body>/<ReportItems>``.
+
+    RDL Line semantics: ``<Top>`` / ``<Left>`` is the start point;
+    ``<Width>`` / ``<Height>`` is the offset (vector) to the end point.
+    A horizontal line has ``height='0in'``; a vertical line has
+    ``width='0in'``; a diagonal has both nonzero.
+
+    Styling lives on ``<Style>/<Border>``: ``color`` is the stroke
+    colour, ``line_thickness`` is the stroke width (``'1pt'``,
+    ``'2pt'``, etc.), and ``line_style`` ∈
+    {None, Dotted, Dashed, Solid, Double, Groove, Ridge, Inset,
+    WindowInset, Outset}.
+
+    Refuses on duplicate name or unknown ``line_style``. Returns
+    ``{name, kind: 'Line'}``.
+    """
+    if line_style not in _VALID_LINE_STYLES:
+        raise ValueError(
+            f"unknown line_style {line_style!r}; valid values: "
+            f"{list(_VALID_LINE_STYLES)}"
+        )
+
+    doc = RDLDocument.open(path)
+    body = _resolve_body(doc)
+    items = _ensure_body_report_items(body)
+    if name in _names_in(items):
+        raise ValueError(f"body item named {name!r} already exists; pick a unique name")
+
+    line = etree.Element(q("Line"), Name=name)
+    # Per RDL XSD Line child order: Style, Top, Left, Height, Width,
+    # ZIndex, Visibility, ToolTip, Bookmark, ...
+    style = etree.SubElement(line, q("Style"))
+    border = etree.SubElement(style, q("Border"))
+    etree.SubElement(border, q("Color")).text = color
+    etree.SubElement(border, q("Style")).text = line_style
+    etree.SubElement(border, q("Width")).text = line_thickness
+    etree.SubElement(line, q("Top")).text = top
+    etree.SubElement(line, q("Left")).text = left
+    etree.SubElement(line, q("Height")).text = height
+    etree.SubElement(line, q("Width")).text = width
+
+    items.append(line)
+    doc.save()
+    return {"name": name, "kind": "Line"}
+
+
 __all__ = [
+    "add_line",
     "add_list",
     "add_rectangle",
     "set_group_page_break",

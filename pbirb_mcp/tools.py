@@ -1076,6 +1076,38 @@ def register_all_tools(server: MCPServer) -> None:
         handler=_layout.add_list,
     )
 
+    server.register_tool(
+        name="add_line",
+        description=(
+            "Add a <Line> to <Body>/<ReportItems>. RDL Line semantics: "
+            "top/left is the start point; width/height is the offset "
+            "(vector) to the end point — horizontal line uses "
+            "height='0in', vertical uses width='0in'. Optional color, "
+            "line_thickness ('1pt' default), line_style "
+            "(Solid/Dashed/Dotted/Double/etc.). Returns {name, kind: 'Line'}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "top": {"type": "string"},
+                "left": {"type": "string"},
+                "width": {"type": "string"},
+                "height": {"type": "string"},
+                "color": {"type": "string"},
+                "line_thickness": {"type": "string"},
+                "line_style": {
+                    "type": "string",
+                    "enum": list(_layout._VALID_LINE_STYLES),
+                },
+            },
+            "required": ["path", "name", "top", "left", "width", "height"],
+            "additionalProperties": False,
+        },
+        handler=_layout.add_line,
+    )
+
     # ---- actions / tooltip / document-map (Phase 5) ---------------------
 
     _DRILLTHROUGH_PARAM_ITEM = {
