@@ -180,9 +180,39 @@ def _sync_designer_state_statement(query: etree._Element, dax_body: str) -> bool
     return True
 
 
-def update_dataset_query(path: str, dataset_name: str, dax_body: str) -> dict[str, Any]:
+_VALID_ALIAS_STRATEGIES = (None, "preserve_field_names")
+
+
+def update_dataset_query(
+    path: str,
+    dataset_name: str,
+    dax_body: str,
+    alias_strategy: Optional[str] = None,
+) -> dict[str, Any]:
+    """Rewrite a dataset's ``<CommandText>`` (and ``<rd:DesignerState>``).
+
+    ``alias_strategy`` (Phase 8 commit 35):
+
+    * ``None`` (default) — only ``<CommandText>`` and DesignerState are
+      touched; existing ``<Field>/<DataField>`` cells are left as-is.
+    * ``"preserve_field_names"`` — after the rewrite, parse the new DAX
+      and zip its column list **positionally** against existing
+      data-bound fields (those with ``<DataField>``; calculated fields
+      are skipped). Each Field's ``<DataField>`` is rewritten to the
+      corresponding new column. Field NAMES are preserved so existing
+      ``Fields!X.Value`` references in expressions keep resolving.
+
+      Count mismatches are reported as warnings — extra fields and
+      extra columns are both surfaced rather than silently dropped or
+      auto-appended (the user picks how to fix).
+    """
     if not dax_body or not dax_body.strip():
         raise ValueError("dax_body must be a non-empty DAX expression")
+    if alias_strategy not in _VALID_ALIAS_STRATEGIES:
+        raise ValueError(
+            f"unknown alias_strategy {alias_strategy!r}; valid values: "
+            f"{[s for s in _VALID_ALIAS_STRATEGIES]}"
+        )
 
     doc = RDLDocument.open(path)
     dataset = resolve_dataset(doc, dataset_name)
@@ -201,12 +231,77 @@ def update_dataset_query(path: str, dataset_name: str, dax_body: str) -> dict[st
     cmd.text = encode_text(dax_body)
     designer_state_synced = _sync_designer_state_statement(query, dax_body)
 
-    doc.save()
-    return {
+    result: dict[str, Any] = {
         "dataset": dataset_name,
         "command_text": dax_body,
         "designer_state_synced": designer_state_synced,
     }
+
+    if alias_strategy == "preserve_field_names":
+        new_columns, dax_warnings = _extract_dax_field_names(dax_body)
+        mapped, warnings = _remap_data_fields_positional(dataset, new_columns)
+        result["alias_strategy"] = "preserve_field_names"
+        result["mapped"] = mapped
+        # Surface DAX-shape warnings alongside mapping warnings; they're
+        # the same class of "couldn't auto-resolve" concern.
+        result["warnings"] = list(dax_warnings) + warnings
+
+    doc.save()
+    return result
+
+
+def _remap_data_fields_positional(
+    dataset: etree._Element, new_columns: list[str]
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Zip a dataset's data-bound ``<Field>`` entries against the new
+    DAX column list and rewrite each ``<DataField>`` to the matching
+    new column. Calculated fields (``<Value>`` instead of ``<DataField>``)
+    are skipped — they're derived, not directly bound.
+
+    Returns ``(mapped, warnings)``:
+
+    * ``mapped`` — list of ``{name, old, new}`` for each Field whose
+      DataField was rewritten (only entries where old != new).
+    * ``warnings`` — count-mismatch and unmapped messages.
+    """
+    fields_block = find_child(dataset, "Fields")
+    data_fields: list[etree._Element] = []
+    if fields_block is not None:
+        for f in find_children(fields_block, "Field"):
+            df = find_child(f, "DataField")
+            if df is not None:
+                data_fields.append(f)
+
+    mapped: list[dict[str, str]] = []
+    warnings: list[str] = []
+    n_fields = len(data_fields)
+    n_cols = len(new_columns)
+    n_pairs = min(n_fields, n_cols)
+
+    for i in range(n_pairs):
+        field = data_fields[i]
+        df = find_child(field, "DataField")
+        old = df.text or ""
+        new = new_columns[i]
+        if old != new:
+            df.text = encode_text(new)
+            mapped.append({"name": field.get("Name") or "", "old": old, "new": new})
+
+    if n_fields > n_cols:
+        for f in data_fields[n_cols:]:
+            warnings.append(
+                f"existing Field {f.get('Name')!r} unmapped — new DAX has only "
+                f"{n_cols} column(s); pass alias_strategy=None to keep its DataField as-is, "
+                "or remove the Field."
+            )
+    if n_cols > n_fields:
+        for col in new_columns[n_fields:]:
+            warnings.append(
+                f"new DAX column {col!r} has no Field — call add_dataset_field "
+                "or refresh_dataset_fields to add bindings."
+            )
+
+    return mapped, warnings
 
 
 # ---- query parameter management -------------------------------------------

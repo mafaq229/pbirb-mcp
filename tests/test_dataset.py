@@ -133,6 +133,133 @@ def _inject_designer_state(rdl_path: Path, dataset_name: str, statement_text: st
     doc.save()
 
 
+class TestUpdateDatasetQueryAliasStrategy:
+    """Phase 8 commit 35 — preserve_field_names positional remap.
+
+    The fixture ships with three data-bound fields (ProductID,
+    ProductName, Amount) backed by Sales[ProductID] / [ProductName] /
+    [Amount]. A DAX rewrite that changes the source table or column
+    names should re-aim each <DataField> while keeping each
+    <Field Name="..."> stable.
+    """
+
+    def test_default_strategy_leaves_fields_unchanged(self, rdl_path):
+        before = get_datasets(str(rdl_path))[0]["fields"]
+        update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body="EVALUATE SUMMARIZECOLUMNS('Items'[ItemID], 'Items'[ItemName], 'Items'[Total])",
+        )
+        after = get_datasets(str(rdl_path))[0]["fields"]
+        assert before == after  # no remap when alias_strategy is None
+
+    def test_preserve_field_names_remaps_data_fields(self, rdl_path):
+        result = update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body=(
+                "EVALUATE SUMMARIZECOLUMNS("
+                "'Items'[ItemID], 'Items'[ItemName], 'Items'[Total])"
+            ),
+            alias_strategy="preserve_field_names",
+        )
+        assert result["alias_strategy"] == "preserve_field_names"
+        assert len(result["mapped"]) == 3
+        # Field NAMES are unchanged; DataFields point at the new columns.
+        fields = get_datasets(str(rdl_path))[0]["fields"]
+        names = [f["name"] for f in fields]
+        data_fields = [f["data_field"] for f in fields]
+        assert names == ["ProductID", "ProductName", "Amount"]
+        assert data_fields == ["ItemID", "ItemName", "Total"]
+
+    def test_count_mismatch_more_fields_than_columns_warns(self, rdl_path):
+        result = update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            # New DAX has only one column.
+            dax_body="EVALUATE SUMMARIZECOLUMNS('Items'[Only])",
+            alias_strategy="preserve_field_names",
+        )
+        # Only the first field gets remapped.
+        assert len(result["mapped"]) == 1
+        # Two warnings — one per unmapped existing field.
+        unmapped_warnings = [
+            w for w in result["warnings"] if "unmapped" in w
+        ]
+        assert len(unmapped_warnings) == 2
+
+    def test_count_mismatch_more_columns_than_fields_warns(self, rdl_path):
+        result = update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body=(
+                "EVALUATE SUMMARIZECOLUMNS("
+                "'Items'[A], 'Items'[B], 'Items'[C], 'Items'[D], 'Items'[E])"
+            ),
+            alias_strategy="preserve_field_names",
+        )
+        # All three existing fields remap; D and E warn.
+        assert len(result["mapped"]) == 3
+        no_field_warnings = [
+            w for w in result["warnings"] if "no Field" in w
+        ]
+        assert len(no_field_warnings) == 2
+
+    def test_calculated_fields_skipped(self, rdl_path):
+        # Add a calculated field, then run preserve_field_names.
+        add_calculated_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="Doubled",
+            expression="=Fields!Amount.Value * 2",
+        )
+        result = update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body=(
+                "EVALUATE SUMMARIZECOLUMNS("
+                "'Items'[ItemID], 'Items'[ItemName], 'Items'[Total])"
+            ),
+            alias_strategy="preserve_field_names",
+        )
+        # Calculated field is not in the data-bound list — only 3 mapped.
+        assert len(result["mapped"]) == 3
+        fields = get_datasets(str(rdl_path))[0]["fields"]
+        calc = [f for f in fields if f["name"] == "Doubled"][0]
+        assert calc.get("value") == "=Fields!Amount.Value * 2"
+
+    def test_unknown_alias_strategy_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="unknown alias_strategy"):
+            update_dataset_query(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                dax_body="EVALUATE 'Items'",
+                alias_strategy="bogus",
+            )
+
+    def test_no_op_dax_with_strategy_returns_empty_mapped(self, rdl_path):
+        # Same shape as the existing fixture's DAX — DataFields end up
+        # remapped to the bare column names ("ProductID", etc.) which
+        # IS a change vs the existing "Sales[ProductID]" form.
+        # That's expected: the regex extracts column names without the
+        # table prefix.
+        result = update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body=(
+                "EVALUATE SUMMARIZECOLUMNS("
+                "'Sales'[ProductID], 'Sales'[ProductName], 'Sales'[Amount])"
+            ),
+            alias_strategy="preserve_field_names",
+        )
+        # All three remapped from "Sales[X]" to "X".
+        assert {m["new"] for m in result["mapped"]} == {
+            "ProductID",
+            "ProductName",
+            "Amount",
+        }
+
+
 class TestUpdateDatasetQueryDesignerStateSync:
     """update_dataset_query must rewrite <rd:DesignerState>/<Statement>
     in lockstep with <CommandText>. Without this, the Query Designer GUI

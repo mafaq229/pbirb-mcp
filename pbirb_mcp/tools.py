@@ -93,7 +93,11 @@ def register_all_tools(server: MCPServer) -> None:
         name="update_dataset_query",
         description=(
             "Replace the DAX command text of a named dataset. The full DAX "
-            "expression is accepted verbatim; empty bodies are rejected."
+            "expression is accepted verbatim; empty bodies are rejected. "
+            "Optional alias_strategy='preserve_field_names' positionally "
+            "rewrites <DataField> cells to the new DAX columns while "
+            "keeping existing <Field Name> identifiers — so "
+            "Fields!X.Value references in expressions keep resolving."
         ),
         input_schema={
             "type": "object",
@@ -103,6 +107,14 @@ def register_all_tools(server: MCPServer) -> None:
                 "dax_body": {
                     "type": "string",
                     "description": "Full DAX (e.g. EVALUATE TOPN(10, 'Sales')).",
+                },
+                "alias_strategy": {
+                    "type": ["string", "null"],
+                    "enum": [None, "preserve_field_names"],
+                    "description": (
+                        "When 'preserve_field_names', positionally remap "
+                        "<DataField> cells to the new DAX column list."
+                    ),
                 },
             },
             "required": ["path", "dataset_name", "dax_body"],
