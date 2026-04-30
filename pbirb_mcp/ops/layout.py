@@ -29,6 +29,8 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_group
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, q
+from pbirb_mcp.ops.body import _ensure_body_report_items, _names_in, _resolve_body
+from pbirb_mcp.ops.page import _SIZE_RE, _TO_INCHES
 from pbirb_mcp.ops.tablix import _insert_member_child
 
 
@@ -386,7 +388,130 @@ def _kwg_result(tablix: str, group: str, value: str, changed: bool) -> dict:
     }
 
 
+# ---- add_rectangle (Phase 11 commit 41) ---------------------------------
+
+
+def _parse_size(s: str) -> tuple[float, str]:
+    """Parse an RDL size string into ``(value, unit)``. Reuses the regex
+    + unit set from :mod:`pbirb_mcp.ops.page`."""
+    m = _SIZE_RE.match(s or "")
+    if not m:
+        raise ValueError(
+            f"invalid RDL size {s!r}; expected '<number><unit>' "
+            f"with unit in (in, cm, mm, pt, pc)"
+        )
+    return float(m.group(1)), m.group(2)
+
+
+def _format_size(value: float, unit: str) -> str:
+    """Render ``value`` with ``unit``. Integer values render without a
+    decimal point to match Report Builder's emitted shape."""
+    if value == int(value):
+        return f"{int(value)}{unit}"
+    # Up to 5 decimal places, trailing zeros stripped — same convention
+    # Report Builder uses for fractional inches.
+    return f"{value:.5f}".rstrip("0").rstrip(".") + unit
+
+
+def _coord_subtract(child_coord: str, container_coord: str) -> str:
+    """Return ``child - container`` as an RDL size string. When both
+    use the same unit, arithmetic stays in that unit; otherwise both
+    are converted to the container's unit before subtracting.
+    """
+    cv, cu = _parse_size(child_coord)
+    rv, ru = _parse_size(container_coord)
+    if cu == ru:
+        return _format_size(cv - rv, cu)
+    cv_in = cv * _TO_INCHES[cu]
+    rv_in = rv * _TO_INCHES[ru]
+    return _format_size((cv_in - rv_in) / _TO_INCHES[ru], ru)
+
+
+def add_rectangle(
+    path: str,
+    name: str,
+    top: str,
+    left: str,
+    width: str,
+    height: str,
+    contained_items: list[str] | None = None,
+) -> dict[str, Any]:
+    """Add a ``<Rectangle Name=name>`` to ``<Body>/<ReportItems>``.
+
+    When ``contained_items`` is empty (or not supplied), the rectangle
+    is created empty — no ``<ReportItems>`` child. Callers can move
+    items in later or use this as a visual frame.
+
+    When ``contained_items`` lists one or more names of existing body
+    items (Tablix / Textbox / Image / Chart / etc.), each is **moved**
+    from ``<Body>/<ReportItems>`` into the rectangle's
+    ``<ReportItems>``, and its ``<Top>`` / ``<Left>`` are recalculated
+    so the on-screen position is preserved (rectangle-local coords =
+    body-coords − rectangle-coords).
+
+    Refuses if any named item isn't found in ``<Body>/<ReportItems>``,
+    or if a name collision exists at the body level.
+
+    Returns ``{name, kind: 'Rectangle', moved: list[str]}``.
+    """
+    contained_items = list(contained_items or [])
+
+    doc = RDLDocument.open(path)
+    body = _resolve_body(doc)
+    items = _ensure_body_report_items(body)
+
+    if name in _names_in(items):
+        raise ValueError(f"body item named {name!r} already exists; pick a unique name")
+
+    # Resolve every contained item up front — fail before mutating the tree.
+    if contained_items:
+        present = _names_in(items)
+        missing = [n for n in contained_items if n not in present]
+        if missing:
+            raise ElementNotFoundError(
+                f"cannot move into rectangle — items not in <Body>/<ReportItems>: {missing}"
+            )
+
+    rect = etree.Element(q("Rectangle"), Name=name)
+
+    if contained_items:
+        rect_items = etree.SubElement(rect, q("ReportItems"))
+        # Find each child by name, recompute its position, move it.
+        for item_name in contained_items:
+            for child in list(items):
+                if child.get("Name") != item_name:
+                    continue
+                child_top = find_child(child, "Top")
+                child_left = find_child(child, "Left")
+                if child_top is not None and child_top.text:
+                    child_top.text = _coord_subtract(child_top.text, top)
+                if child_left is not None and child_left.text:
+                    child_left.text = _coord_subtract(child_left.text, left)
+                items.remove(child)
+                rect_items.append(child)
+                break
+
+    # Per RDL XSD Rectangle child order — positional/style at the end.
+    etree.SubElement(rect, q("KeepTogether")).text = "true"
+    etree.SubElement(rect, q("Top")).text = top
+    etree.SubElement(rect, q("Left")).text = left
+    etree.SubElement(rect, q("Height")).text = height
+    etree.SubElement(rect, q("Width")).text = width
+    style = etree.SubElement(rect, q("Style"))
+    border = etree.SubElement(style, q("Border"))
+    etree.SubElement(border, q("Style")).text = "None"
+
+    items.append(rect)
+    doc.save()
+    return {
+        "name": name,
+        "kind": "Rectangle",
+        "moved": list(contained_items),
+    }
+
+
 __all__ = [
+    "add_rectangle",
     "set_group_page_break",
     "set_keep_together",
     "set_keep_with_group",

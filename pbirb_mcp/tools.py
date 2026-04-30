@@ -1010,6 +1010,44 @@ def register_all_tools(server: MCPServer) -> None:
         handler=_layout.set_keep_with_group,
     )
 
+    # ---- layout containers (Phase 11) -----------------------------------
+
+    server.register_tool(
+        name="add_rectangle",
+        description=(
+            "Add a <Rectangle> to <Body>/<ReportItems>. With no "
+            "contained_items the rectangle is empty (a visual frame). "
+            "With contained_items=[name1, name2, ...], each named "
+            "body item is MOVED into the rectangle's <ReportItems> "
+            "and its <Top>/<Left> recalculated so the on-screen "
+            "position is preserved. Refuses on duplicate name or "
+            "if any contained_item isn't in <Body>/<ReportItems>. "
+            "Returns {name, kind: 'Rectangle', moved}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "top": {"type": "string"},
+                "left": {"type": "string"},
+                "width": {"type": "string"},
+                "height": {"type": "string"},
+                "contained_items": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Names of existing body items to move into the "
+                        "rectangle. Empty list / omitted → empty rectangle."
+                    ),
+                },
+            },
+            "required": ["path", "name", "top", "left", "width", "height"],
+            "additionalProperties": False,
+        },
+        handler=_layout.add_rectangle,
+    )
+
     # ---- actions / tooltip / document-map (Phase 5) ---------------------
 
     _DRILLTHROUGH_PARAM_ITEM = {

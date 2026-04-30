@@ -17,6 +17,7 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_group
 from pbirb_mcp.core.xpath import find_child, q
 from pbirb_mcp.ops.layout import (
+    add_rectangle,
     set_group_page_break,
     set_keep_together,
     set_keep_with_group,
@@ -529,6 +530,192 @@ class TestSetKeepWithGroup:
         assert children.index("RepeatOnNewPage") < children.index("Group")
 
 
+# ---- add_rectangle ------------------------------------------------------
+
+
+_RDL = "http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition"
+
+
+def _body_report_items(path: Path) -> etree._Element:
+    doc = RDLDocument.open(path)
+    body = doc.root.find(f".//{{{_RDL}}}Body")
+    return body.find(q("ReportItems"))
+
+
+def _rectangle(path: Path, name: str) -> etree._Element | None:
+    doc = RDLDocument.open(path)
+    matches = doc.root.xpath(
+        f".//r:Rectangle[@Name=$n]", namespaces={"r": _RDL}, n=name
+    )
+    return matches[0] if matches else None
+
+
+class TestAddRectangle:
+    def test_creates_empty_rectangle(self, rdl_path):
+        result = add_rectangle(
+            path=str(rdl_path),
+            name="EmptyFrame",
+            top="3in",
+            left="0.5in",
+            width="2in",
+            height="1in",
+        )
+        assert result == {
+            "name": "EmptyFrame",
+            "kind": "Rectangle",
+            "moved": [],
+        }
+        rect = _rectangle(rdl_path, "EmptyFrame")
+        assert rect is not None
+        # Empty rectangle: no <ReportItems> child.
+        assert find_child(rect, "ReportItems") is None
+        assert find_child(rect, "Top").text == "3in"
+        assert find_child(rect, "Width").text == "2in"
+
+    def test_refuses_duplicate_name(self, rdl_path):
+        # MainTable already exists in the fixture's body.
+        with pytest.raises(ValueError, match="already exists"):
+            add_rectangle(
+                path=str(rdl_path),
+                name="MainTable",
+                top="3in",
+                left="0.5in",
+                width="2in",
+                height="1in",
+            )
+
+    def test_refuses_unknown_contained_item(self, rdl_path):
+        with pytest.raises(ElementNotFoundError, match="not in"):
+            add_rectangle(
+                path=str(rdl_path),
+                name="Frame",
+                top="3in",
+                left="0.5in",
+                width="2in",
+                height="1in",
+                contained_items=["NoSuchThing"],
+            )
+
+    def test_moves_named_item_into_rectangle(self, rdl_path):
+        # Add a body textbox first, then wrap it in a rectangle.
+        from pbirb_mcp.ops.body import add_body_textbox
+
+        add_body_textbox(
+            path=str(rdl_path),
+            name="Inner",
+            text="x",
+            top="3.5in",
+            left="1in",
+            width="1in",
+            height="0.3in",
+        )
+        # Body had MainTable + Inner. After wrapping, body has
+        # MainTable + Frame; Frame contains Inner.
+        result = add_rectangle(
+            path=str(rdl_path),
+            name="Frame",
+            top="3in",
+            left="0.5in",
+            width="2in",
+            height="1in",
+            contained_items=["Inner"],
+        )
+        assert result["moved"] == ["Inner"]
+        body_items = _body_report_items(rdl_path)
+        body_names = {c.get("Name") for c in body_items}
+        assert body_names == {"MainTable", "Frame"}
+        # Inner now lives inside Frame's <ReportItems>.
+        rect = _rectangle(rdl_path, "Frame")
+        rect_items = find_child(rect, "ReportItems")
+        assert rect_items is not None
+        rect_names = {c.get("Name") for c in rect_items}
+        assert rect_names == {"Inner"}
+
+    def test_recalculates_child_top_left_to_local_coords(self, rdl_path):
+        from pbirb_mcp.ops.body import add_body_textbox
+
+        # Inner at body coord (3.5in, 1in). Frame at (3in, 0.5in).
+        # Local coord should become (0.5in, 0.5in).
+        add_body_textbox(
+            path=str(rdl_path),
+            name="Inner",
+            text="x",
+            top="3.5in",
+            left="1in",
+            width="1in",
+            height="0.3in",
+        )
+        add_rectangle(
+            path=str(rdl_path),
+            name="Frame",
+            top="3in",
+            left="0.5in",
+            width="2in",
+            height="1in",
+            contained_items=["Inner"],
+        )
+        rect = _rectangle(rdl_path, "Frame")
+        inner = rect.find(q("ReportItems")).find(q("Textbox"))
+        assert find_child(inner, "Top").text == "0.5in"
+        assert find_child(inner, "Left").text == "0.5in"
+
+    def test_position_preserved_when_units_differ(self, rdl_path):
+        # Manually inject a body textbox using points (rare but valid).
+        from pbirb_mcp.ops.body import add_body_textbox
+
+        add_body_textbox(
+            path=str(rdl_path),
+            name="Inner",
+            text="x",
+            top="216pt",  # 3in
+            left="72pt",  # 1in
+            width="1in",
+            height="0.3in",
+        )
+        add_rectangle(
+            path=str(rdl_path),
+            name="Frame",
+            top="2in",
+            left="0.5in",
+            width="2in",
+            height="1in",
+            contained_items=["Inner"],
+        )
+        rect = _rectangle(rdl_path, "Frame")
+        inner = rect.find(q("ReportItems")).find(q("Textbox"))
+        # Frame's unit is "in", so Inner's coords are converted.
+        # 216pt - 2in = 3in - 2in = 1in
+        # 72pt  - 0.5in = 1in - 0.5in = 0.5in
+        assert find_child(inner, "Top").text == "1in"
+        assert find_child(inner, "Left").text == "0.5in"
+
+    def test_multiple_items_moved(self, rdl_path):
+        from pbirb_mcp.ops.body import add_body_textbox
+
+        for i, n in enumerate(("A", "B")):
+            add_body_textbox(
+                path=str(rdl_path),
+                name=n,
+                text=n,
+                top=f"{3 + i * 0.5}in",
+                left="1in",
+                width="1in",
+                height="0.3in",
+            )
+        add_rectangle(
+            path=str(rdl_path),
+            name="Frame",
+            top="3in",
+            left="0.5in",
+            width="2in",
+            height="2in",
+            contained_items=["A", "B"],
+        )
+        rect = _rectangle(rdl_path, "Frame")
+        names = {c.get("Name") for c in rect.find(q("ReportItems"))}
+        assert names == {"A", "B"}
+
+
 # ---- registration ------------------------------------------------------
 
 
@@ -544,3 +731,12 @@ class TestToolRegistration:
         assert "set_repeat_on_new_page" in names
         assert "set_keep_together" in names
         assert "set_keep_with_group" in names
+
+    def test_layout_container_tools_registered(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )["result"]["tools"]
+        names = {t["name"] for t in listing}
+        assert "add_rectangle" in names
