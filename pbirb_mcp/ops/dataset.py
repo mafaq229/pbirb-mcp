@@ -947,6 +947,7 @@ def _extract_dax_field_names(command_text: str) -> tuple[list[str], list[str]]:
             fields.append(n)
 
     # Try SELECTCOLUMNS first — its alias shape is the highest-fidelity.
+    selectcolumns_matched = False
     m = _DAX_SELECTCOLUMNS_RE.search(command_text)
     if m is not None:
         # Walk forward from the call site to the matching close paren.
@@ -971,11 +972,20 @@ def _extract_dax_field_names(command_text: str) -> tuple[list[str], list[str]]:
         # SELECTCOLUMNS(<table>, "alias", expr, ...) shape).
         for alias in _DAX_QUOTED_ALIAS_RE.findall(body):
             _add(alias)
+            selectcolumns_matched = True
 
     # Then bracket tokens — SUMMARIZECOLUMNS and ad-hoc references.
-    for token in _DAX_TABLE_COLUMN_RE.finditer(command_text):
-        col = token.group("col")
-        _add(col)
+    # **Skip when SELECTCOLUMNS provided aliases**: the bracketed tokens
+    # inside SELECTCOLUMNS pairs are SOURCE columns, not result-set
+    # field names. Mixing them in over-counts on shapes like:
+    #   SELECTCOLUMNS('Foo', "Bar", 'Foo'[Bar (raw)], "Baz", 'Foo'[Baz])
+    # where the quoted aliases ("Bar", "Baz") are the right answer and
+    # the bracketed source columns ("Bar (raw)", "Baz") would otherwise
+    # also be added as phantom fields.
+    if not selectcolumns_matched:
+        for token in _DAX_TABLE_COLUMN_RE.finditer(command_text):
+            col = token.group("col")
+            _add(col)
 
     # If still nothing recognised, emit a warning.
     if not fields:

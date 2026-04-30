@@ -1124,6 +1124,41 @@ class TestRefreshDatasetFieldsWarnings:
         )
         assert result["warnings"]
 
+    def test_selectcolumns_does_not_pull_source_columns(self, rdl_path):
+        # Regression: a live MCP smoke-test on a real XMLA-backed report
+        # had DAX shaped like:
+        #   SELECTCOLUMNS('Sales', "Distance__Km_", 'Sales'[Distance (Km)],
+        #                          "DDO", 'Sales'[DDO])
+        # The refresher used to add BOTH the alias names ("Distance__Km_",
+        # "DDO") AND the bracketed source-column names ("Distance (Km)") —
+        # producing phantom fields on the real fixture. The aliases are
+        # the result-set field names; the bracketed tokens are source
+        # references and must not pollute <Fields>.
+        update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body=(
+                "EVALUATE SELECTCOLUMNS('Sales', "
+                "\"Distance__Km_\", 'Sales'[Distance (Km)], "
+                "\"DDO\", 'Sales'[DDO])"
+            ),
+        )
+        result = refresh_dataset_fields(
+            path=str(rdl_path), dataset_name="MainDataset"
+        )
+        added = result["added"]
+        # Only the quoted aliases should be added.
+        assert "Distance__Km_" in added
+        assert "DDO" in added
+        # Source columns must NOT appear.
+        assert "Distance (Km)" not in added
+        # The bracketed 'Sales'[DDO] form bare 'DDO' is the one we want
+        # via alias, not via bracket extraction.
+        # Sanity: no SELECTCOLUMNS run on this DAX should ever surface
+        # parens/spaces (those are source-column hallmarks).
+        for f in added:
+            assert "(" not in f, f"phantom source-column field {f!r}"
+
 
 class TestRefreshDatasetFieldsErrors:
     def test_unknown_dataset_raises(self, rdl_path):
