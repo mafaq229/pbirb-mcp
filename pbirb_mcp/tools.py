@@ -329,7 +329,11 @@ def register_all_tools(server: MCPServer) -> None:
             "GreaterThanOrEqual / LessThanOrEqual / Like / In / Between "
             "/ TopN / BottomN / TopPercent / BottomPercent. values must "
             "be non-empty (single-value filters use a one-element list). "
-            "Returns the new filter's index for later removal."
+            "Returns the new filter's index for later removal. Optional "
+            "field_format wraps the expression as Format(<body>, fmt) "
+            "to coerce typed fields for string-parameter comparison. "
+            "Response includes warnings for field/parameter type "
+            "mismatches detected via best-effort cross-check."
         ),
         input_schema={
             "type": "object",
@@ -345,6 +349,13 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": "array",
                     "items": {"type": "string"},
                     "minItems": 1,
+                },
+                "field_format": {
+                    "type": "string",
+                    "description": (
+                        "Optional format string (e.g. 'MMM, yyyy') wrapping "
+                        "the expression as Format(<body>, '<fmt>')."
+                    ),
                 },
             },
             "required": [
@@ -1003,7 +1014,11 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Append a <Filter> to a tablix. Operator must be one of the RDL "
             "2016 enumeration (Equal, NotEqual, GreaterThan, In, Between, ...). "
-            "Returns the new filter's index for follow-up calls."
+            "Returns the new filter's index for follow-up calls. Optional "
+            "field_format wraps the expression as Format(<body>, fmt) to "
+            "coerce typed fields for string-parameter comparison. The "
+            "response includes warnings for cross-checked field/parameter "
+            "type mismatches."
         ),
         input_schema={
             "type": "object",
@@ -1016,6 +1031,13 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": "array",
                     "items": {"type": "string"},
                     "minItems": 1,
+                },
+                "field_format": {
+                    "type": "string",
+                    "description": (
+                        "Optional format string (e.g. 'MMM, yyyy') wrapping "
+                        "the expression as Format(<body>, '<fmt>')."
+                    ),
                 },
             },
             "required": ["path", "tablix_name", "expression", "operator", "values"],

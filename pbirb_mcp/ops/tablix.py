@@ -23,8 +23,9 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
-from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
+from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_tablix
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
+from pbirb_mcp.ops.filter_types import type_mismatch_warnings, wrap_with_format
 
 # RDL 2016 FilterOperator enumeration.
 _VALID_OPERATORS = frozenset(
@@ -114,7 +115,21 @@ def add_tablix_filter(
     expression: str,
     operator: str,
     values: list[str],
+    field_format: Optional[str] = None,
 ) -> dict[str, Any]:
+    """Append a ``<Filter>`` to a tablix's ``<Filters>`` block.
+
+    ``field_format`` (Phase 8 commit 36): when provided, the filter
+    expression is wrapped as ``=Format(<body>, "<field_format>")``.
+    Closes the date-vs-string mismatch class — e.g. filter on a
+    DateTime field with a ``"MMM, yyyy"``-typed String parameter
+    without hand-writing the Format() call.
+
+    Type-aware warnings are emitted in the response when a
+    ``Fields!X.Value`` reference in the expression is cross-checked
+    against a ``Parameters!Y.Value`` in the values and their declared
+    types differ. Best-effort, silent when either side isn't readable.
+    """
     if operator not in _VALID_OPERATORS:
         raise ValueError(
             f"unknown filter operator {operator!r}; valid operators are: {sorted(_VALID_OPERATORS)}"
@@ -122,13 +137,32 @@ def add_tablix_filter(
     if not values:
         raise ValueError("at least one filter value is required")
 
+    effective_expression = (
+        wrap_with_format(expression, field_format) if field_format else expression
+    )
+
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
+
+    # Resolve the bound dataset for the type-mismatch check. Tablix
+    # binding lives at <Tablix>/<DataSetName>; missing means we skip
+    # the check (no dataset, no field types).
+    warnings: list[str] = []
+    ds_name_node = find_child(tablix, "DataSetName")
+    if ds_name_node is not None and ds_name_node.text:
+        try:
+            dataset = resolve_dataset(doc, ds_name_node.text)
+            warnings = type_mismatch_warnings(
+                doc.root, dataset, effective_expression, values
+            )
+        except Exception:  # noqa: BLE001 — ElementNotFoundError is fine to swallow
+            warnings = []
+
     filters_root = _ensure_filters_block(tablix)
 
     filter_node = etree.SubElement(filters_root, q("Filter"))
     expr_node = etree.SubElement(filter_node, q("FilterExpression"))
-    expr_node.text = encode_text(expression)
+    expr_node.text = encode_text(effective_expression)
     op_node = etree.SubElement(filter_node, q("Operator"))
     op_node.text = operator
     values_root = etree.SubElement(filter_node, q("FilterValues"))
@@ -141,9 +175,11 @@ def add_tablix_filter(
     return {
         "tablix": tablix_name,
         "index": new_index,
-        "expression": expression,
+        "expression": effective_expression,
         "operator": operator,
         "values": list(values),
+        "formatted": field_format is not None,
+        "warnings": warnings,
     }
 
 

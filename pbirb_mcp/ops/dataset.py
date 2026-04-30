@@ -25,6 +25,7 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q
+from pbirb_mcp.ops.filter_types import type_mismatch_warnings, wrap_with_format
 
 
 def _query(dataset: etree._Element) -> etree._Element:
@@ -531,6 +532,7 @@ def add_dataset_filter(
     expression: str,
     operator: str,
     values: list[str],
+    field_format: Optional[str] = None,
 ) -> dict[str, Any]:
     """Append a ``<Filter>`` to the dataset's ``<Filters>`` block.
 
@@ -542,6 +544,15 @@ def add_dataset_filter(
     DataSet-level filters apply to every consumer of the dataset (every
     Tablix / Chart bound to it). For per-tablix filtering use
     :func:`add_tablix_filter` instead.
+
+    ``field_format`` (Phase 8 commit 36): when provided, the filter
+    expression is wrapped as ``=Format(<body>, "<field_format>")`` to
+    coerce a typed field into a string for comparison against a String
+    parameter — closes the date-vs-string mismatch class.
+
+    Type-aware warnings cross-check ``Fields!X.Value`` references in
+    the expression against ``Parameters!Y.Value`` references in the
+    values; mismatches surface as ``warnings`` in the response.
     """
     if operator not in _VALID_FILTER_OPERATORS:
         raise ValueError(
@@ -551,13 +562,20 @@ def add_dataset_filter(
     if not values:
         raise ValueError("at least one filter value is required")
 
+    effective_expression = (
+        wrap_with_format(expression, field_format) if field_format else expression
+    )
+
     doc = RDLDocument.open(path)
     dataset = resolve_dataset(doc, dataset_name)
+    warnings = type_mismatch_warnings(
+        doc.root, dataset, effective_expression, values
+    )
     filters_root = _ensure_dataset_filters_block(dataset)
 
     filter_node = etree.SubElement(filters_root, q("Filter"))
     expr_node = etree.SubElement(filter_node, q("FilterExpression"))
-    expr_node.text = encode_text(expression)
+    expr_node.text = encode_text(effective_expression)
     op_node = etree.SubElement(filter_node, q("Operator"))
     op_node.text = operator
     values_root = etree.SubElement(filter_node, q("FilterValues"))
@@ -570,9 +588,11 @@ def add_dataset_filter(
     return {
         "dataset": dataset_name,
         "index": new_index,
-        "expression": expression,
+        "expression": effective_expression,
         "operator": operator,
         "values": list(values),
+        "formatted": field_format is not None,
+        "warnings": warnings,
     }
 
 
