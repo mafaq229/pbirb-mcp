@@ -627,6 +627,28 @@ class TestSetChartLegend:
         )
         assert result["changed"] == []
 
+    def test_get_chart_visible_inverts_hidden(self, rich_path):
+        # Regression: a live MCP smoke-test revealed that
+        # set_chart_legend(visible=True) wrote <Hidden>false</Hidden>
+        # correctly, but get_chart echoed the raw <Hidden> text under
+        # the field name 'visible' — flipping the contract. Fix lives
+        # in reader._chart_legend_dict; this test guards both ends.
+        set_chart_legend(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            visible=True,
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        assert c["legend"]["visible"] == "true"
+
+        set_chart_legend(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            visible=False,
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        assert c["legend"]["visible"] == "false"
+
 
 class TestSetChartDataLabels:
     def test_visible_on_one_series(self, rich_path):

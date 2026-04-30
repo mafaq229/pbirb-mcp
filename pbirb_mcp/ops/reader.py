@@ -800,12 +800,21 @@ def _chart_legend_dict(chart: etree._Element) -> Optional[dict[str, Any]]:
     legend = find_child(legends_root, "ChartLegend")
     if legend is None:
         return None
+    # set_chart_legend writes <Hidden>true|false</Hidden> as the inverse
+    # of `visible` (visible=True → Hidden=false). Echo the inverse on
+    # read so the field name matches the writer's input arg semantics:
+    # set_chart_legend(visible=true) ⇒ get_chart().legend.visible == "true".
+    hidden_text = _text(find_child(legend, "Hidden"))
+    if hidden_text is None:
+        visible_text: Optional[str] = None
+    else:
+        visible_text = "false" if hidden_text.strip().lower() == "true" else "true"
     return {
         "name": legend.get("Name"),
         "position": _text(find_child(legend, "DockOutsideChartArea")) or _text(
             find_child(legend, "Position")
         ),
-        "visible": _text(find_child(legend, "Hidden")),
+        "visible": visible_text,
     }
 
 
