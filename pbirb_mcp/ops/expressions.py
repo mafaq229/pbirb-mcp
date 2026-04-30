@@ -1,14 +1,20 @@
-"""RDL expression reference (Phase 9 commit 37).
+"""RDL expression reference + aggregate emitters (Phase 9).
 
-:func:`get_expression_reference` returns a static cheat-sheet of common
-RDL expression patterns shaped ``{category: [{name, syntax, example,
-description}]}``. The intent is that an LLM authoring a textbox value
-or filter expression can call this once instead of guessing — and the
-catalogue explicitly calls out the encoding gotcha (``&`` not
-``&amp;`` for the concat operator).
+Two related surfaces:
 
-Phase 9 commit 38 adds :func:`count_where` / :func:`sum_where` /
-:func:`iif_format` emitters in this same module.
+* :func:`get_expression_reference` — static cheat-sheet of common RDL
+  expression patterns shaped ``{category: [{name, syntax, example,
+  description}]}``. The intent is that an LLM authoring a textbox
+  value or filter expression calls this once instead of guessing —
+  and the catalogue explicitly calls out the encoding gotcha (``&``
+  not ``&amp;`` for the concat operator).
+
+* :func:`count_where` / :func:`sum_where` / :func:`iif_format` — pure
+  string-building emitters for the recurring ``Sum(IIf(cond, 1, 0))``
+  / ``Sum(IIf(cond, X, 0))`` / ``IIf(cond, T, F)`` patterns. Each
+  returns a complete top-level RDL expression with leading ``=``.
+  No I/O, no validation — the user can paste the result into
+  ``set_textbox_value`` or pass it to ``add_dataset_filter`` directly.
 """
 
 from __future__ import annotations
@@ -276,4 +282,61 @@ def get_expression_reference() -> dict[str, Any]:
     return {cat: [dict(entry) for entry in entries] for cat, entries in _REFERENCE.items()}
 
 
-__all__ = ["get_expression_reference"]
+# ---- aggregate-expression emitters (Phase 9 commit 38) ------------------
+
+
+def count_where(condition: str) -> str:
+    """Emit ``=Sum(IIf(<condition>, 1, 0))`` — the SSRS conditional
+    count idiom.
+
+    No field argument: the count-rows-matching-condition pattern
+    doesn't reference a field directly. ``condition`` is any RDL
+    expression body (no leading ``=``).
+
+    Returns a complete top-level RDL expression with leading ``=``
+    suitable for ``set_textbox_value``, a tablix cell ``<Value>``,
+    or any other RDL expression sink.
+    """
+    if not isinstance(condition, str) or not condition.strip():
+        raise ValueError("condition must be a non-empty expression body")
+    return f"=Sum(IIf({condition}, 1, 0))"
+
+
+def sum_where(field_expression: str, condition: str) -> str:
+    """Emit ``=Sum(IIf(<condition>, <field_expression>, 0))`` — the
+    SSRS conditional sum idiom.
+
+    ``field_expression`` is the value to sum (typically
+    ``Fields!X.Value`` or an expression body). ``condition`` is any
+    RDL expression body (no leading ``=``).
+    """
+    if not isinstance(field_expression, str) or not field_expression.strip():
+        raise ValueError("field_expression must be a non-empty expression body")
+    if not isinstance(condition, str) or not condition.strip():
+        raise ValueError("condition must be a non-empty expression body")
+    return f"=Sum(IIf({condition}, {field_expression}, 0))"
+
+
+def iif_format(condition: str, true_value: str, false_value: str) -> str:
+    """Emit ``=IIf(<condition>, <true_value>, <false_value>)``.
+
+    All three arguments are RDL expression bodies (no leading ``=``).
+    String literals must already be quoted, e.g.
+    ``iif_format("Fields!Active.Value", '"Yes"', '"No"')``.
+    """
+    for label, val in (
+        ("condition", condition),
+        ("true_value", true_value),
+        ("false_value", false_value),
+    ):
+        if not isinstance(val, str) or not val.strip():
+            raise ValueError(f"{label} must be a non-empty expression body")
+    return f"=IIf({condition}, {true_value}, {false_value})"
+
+
+__all__ = [
+    "get_expression_reference",
+    "count_where",
+    "sum_where",
+    "iif_format",
+]

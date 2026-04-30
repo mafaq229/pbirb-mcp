@@ -833,6 +833,81 @@ def register_all_tools(server: MCPServer) -> None:
         handler=_expressions.get_expression_reference,
     )
 
+    server.register_tool(
+        name="count_where",
+        description=(
+            "Emit =Sum(IIf(<condition>, 1, 0)) — the SSRS conditional-count "
+            "idiom. condition is an RDL expression body (no leading '='). "
+            "Returns a complete top-level expression suitable for "
+            "set_textbox_value or any RDL <Value> sink."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "condition": {
+                    "type": "string",
+                    "description": (
+                        "RDL expression body, e.g. "
+                        "'Fields!Status.Value = \"Active\"'."
+                    ),
+                },
+            },
+            "required": ["condition"],
+            "additionalProperties": False,
+        },
+        handler=_expressions.count_where,
+    )
+
+    server.register_tool(
+        name="sum_where",
+        description=(
+            "Emit =Sum(IIf(<condition>, <field_expression>, 0)) — the SSRS "
+            "conditional-sum idiom. Both args are expression bodies "
+            "(no leading '=')."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "field_expression": {
+                    "type": "string",
+                    "description": (
+                        "Value to sum, e.g. 'Fields!Amount.Value'."
+                    ),
+                },
+                "condition": {
+                    "type": "string",
+                    "description": (
+                        "RDL expression body, e.g. "
+                        "'Fields!Status.Value = \"Active\"'."
+                    ),
+                },
+            },
+            "required": ["field_expression", "condition"],
+            "additionalProperties": False,
+        },
+        handler=_expressions.sum_where,
+    )
+
+    server.register_tool(
+        name="iif_format",
+        description=(
+            "Emit =IIf(<condition>, <true_value>, <false_value>). All three "
+            "args are expression bodies (no leading '='); string literals "
+            "must already be quoted, e.g. true_value='\"Yes\"'."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "condition": {"type": "string"},
+                "true_value": {"type": "string"},
+                "false_value": {"type": "string"},
+            },
+            "required": ["condition", "true_value", "false_value"],
+            "additionalProperties": False,
+        },
+        handler=_expressions.iif_format,
+    )
+
     # ---- actions / tooltip / document-map (Phase 5) ---------------------
 
     _DRILLTHROUGH_PARAM_ITEM = {
