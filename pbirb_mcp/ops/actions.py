@@ -489,15 +489,17 @@ def _action_matches(
 # ---- set_chart_series_action ---------------------------------------------
 
 
-# Per RDL XSD, ChartSeries child order (subset relevant to the action
-# write):  Hidden, Action, ChartSmartLabel, ChartDataPoints, Type,
-# Subtype, EmptyPoints, Style, ChartItemInLegend, ChartDataLabel,
-# ChartMarker, ChartEmptyPoints, LegendName, ...
-# Action sits near the front of the ChartSeries subtree (after Hidden,
-# before everything else our writers emit).
+# Per RDL 2016 XSD, ChartSeries child order (subset relevant to our
+# writers): Hidden, ChartSmartLabel, ChartDataPoints, Type, Subtype,
+# EmptyPoints, Style, ChartItemInLegend, ChartDataLabel, ChartMarker,
+# ChartEmptyPoints, LegendName, ...
+#
+# **ActionInfo / Action are NOT children of ChartSeries** in RDL 2016 —
+# RB rejects both with "has invalid child element 'ActionInfo'". The
+# action lives one level deeper, on the series's template
+# <ChartDataPoint> inside <ChartDataPoints>.
 _CHART_SERIES_CHILD_ORDER = (
     "Hidden",
-    "ActionInfo",
     "ChartSmartLabel",
     "ChartDataPoints",
     "Type",
@@ -515,6 +517,70 @@ _CHART_SERIES_CHILD_ORDER = (
     "CategoryAxisName",
     "ChartAreaName",
 )
+
+
+# Per RDL 2016 XSD, ChartDataPoint child order:
+#   ChartDataPointValues, Style, ChartMarker, ChartDataLabel,
+#   ActionInfo, CustomProperties, ChartItemInLegend,
+#   DataElementName, DataElementOutput
+# ActionInfo sits after ChartDataLabel and before CustomProperties.
+_CHART_DATA_POINT_CHILD_ORDER = (
+    "ChartDataPointValues",
+    "Style",
+    "ChartMarker",
+    "ChartDataLabel",
+    "ActionInfo",
+    "CustomProperties",
+    "ChartItemInLegend",
+    "DataElementName",
+    "DataElementOutput",
+)
+
+
+def _insert_in_chart_data_point_order(
+    data_point: etree._Element, new_child: etree._Element
+) -> None:
+    """Insert ``new_child`` into a ChartDataPoint respecting the
+    schema-required order. Replaces any existing element of the same
+    local name."""
+    new_local = etree.QName(new_child).localname
+    existing = find_child(data_point, new_local)
+    if existing is not None:
+        data_point.replace(existing, new_child)
+        return
+    if new_local in _CHART_DATA_POINT_CHILD_ORDER:
+        new_idx = _CHART_DATA_POINT_CHILD_ORDER.index(new_local)
+        for i, child in enumerate(list(data_point)):
+            local = etree.QName(child).localname
+            if (
+                local in _CHART_DATA_POINT_CHILD_ORDER
+                and _CHART_DATA_POINT_CHILD_ORDER.index(local) > new_idx
+            ):
+                data_point.insert(i, new_child)
+                return
+    data_point.append(new_child)
+
+
+def _series_template_data_point(
+    series: etree._Element,
+) -> etree._Element:
+    """Return the series's first ``<ChartDataPoint>`` (the template
+    that gets rendered per data row). Raises if the structure is
+    missing — every real chart series has one.
+    """
+    cdps = find_child(series, "ChartDataPoints")
+    if cdps is None:
+        raise ValueError(
+            f"ChartSeries {series.get('Name')!r} has no <ChartDataPoints> "
+            "block; can't host an action without a data-point template."
+        )
+    cdp = find_child(cdps, "ChartDataPoint")
+    if cdp is None:
+        raise ValueError(
+            f"ChartSeries {series.get('Name')!r} has empty "
+            "<ChartDataPoints>; expected one template <ChartDataPoint>."
+        )
+    return cdp
 
 
 def _insert_in_chart_series_order(
@@ -549,15 +615,27 @@ def set_chart_series_action(
     target_expression: str,
     drillthrough_parameters: Optional[list[dict[str, str]]] = None,
 ) -> dict[str, Any]:
-    """Set ``<ChartSeries>/<Action>`` to a Hyperlink / Drillthrough /
-    BookmarkLink.
+    """Set the click-through action for a chart series's data points.
 
-    Same shape as :func:`set_textbox_action` and :func:`set_image_action`
-    — reuses ``_build_action_xml`` for the inner block and
-    ``_action_matches`` for the structural-equality short-circuit.
+    Per RDL 2016 schema, ``<ActionInfo>`` is **not** a child of
+    ``<ChartSeries>``; it lives on the series's template
+    ``<ChartDataPoint>`` (the first ChartDataPoint inside
+    ``<ChartDataPoints>``). RB rejects ActionInfo at the series level
+    with ``has invalid child element 'ActionInfo'``.
 
-    The chart series is addressed by ``(chart_name, series_name)``; the
-    same handle :func:`pbirb_mcp.ops.chart.set_chart_series_type` uses.
+    This setter:
+
+    * resolves the series via ``(chart_name, series_name)`` (same
+      handle :func:`pbirb_mcp.ops.chart.set_chart_series_type` uses),
+    * walks into the series's template ChartDataPoint,
+    * writes ``<ActionInfo>/<Actions>/<Action>`` there per the RDL 2016
+      ChartDataPoint XSD ordering (after ChartDataLabel, before
+      CustomProperties),
+    * migrates any legacy bare ``<Action>`` or wrong-host
+      ``<ActionInfo>`` sitting at the ChartSeries level (pre-v0.3.1
+      shape) by removing them — re-running the setter on an upgraded
+      report self-heals it.
+
     Returns ``{chart, series, kind: 'ChartSeries', action_type,
     changed: bool}``.
     """
@@ -577,9 +655,15 @@ def set_chart_series_action(
     chart = _resolve_chart(doc, chart_name)
     sc = _series_collection(chart)
     series = _find_series(sc, series_name)
+    data_point = _series_template_data_point(series)
 
-    existing = find_child(series, "ActionInfo")
-    legacy_present = find_child(series, "Action") is not None
+    # Migrate any pre-v0.3.1 wrong-host shapes on the SERIES level
+    # before writing the canonical ActionInfo on the data point.
+    legacy_series_action = find_child(series, "Action")
+    legacy_series_info = find_child(series, "ActionInfo")
+    legacy_present = legacy_series_action is not None or legacy_series_info is not None
+
+    existing = find_child(data_point, "ActionInfo")
     if (
         existing is not None
         and not legacy_present
@@ -592,8 +676,12 @@ def set_chart_series_action(
             "action_type": action_type,
             "changed": False,
         }
-    _drop_legacy_bare_action(series)
-    _insert_in_chart_series_order(series, new_action_info)
+
+    if legacy_series_action is not None:
+        series.remove(legacy_series_action)
+    if legacy_series_info is not None:
+        series.remove(legacy_series_info)
+    _insert_in_chart_data_point_order(data_point, new_action_info)
     doc.save()
     return {
         "chart": chart_name,

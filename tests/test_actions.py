@@ -275,6 +275,48 @@ class TestLegacyBareActionMigration:
         link = find_child(_inner_action(tb), "Hyperlink")
         assert link.text == "https://new.example"
 
+    def test_chart_series_legacy_actioninfo_dropped_on_rewrite(self, chart_path):
+        # First-pass v0.3.1 wrote <ActionInfo> directly on ChartSeries,
+        # which RB still rejects (it's only valid on ChartDataPoint).
+        # Inject the wrong-host shape AND legacy bare <Action>; rewriting
+        # via the fixed setter must drop both from the ChartSeries level
+        # and write ActionInfo on the template ChartDataPoint instead.
+        from pbirb_mcp.core.xpath import q as _q
+
+        doc = RDLDocument.open(chart_path)
+        s = doc.root.find(
+            f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']/"
+            f"{{{RDL_NS}}}ChartData/{{{RDL_NS}}}ChartSeriesCollection/"
+            f"{{{RDL_NS}}}ChartSeries"
+        )
+        # Bare <Action> on ChartSeries (pre-v0.3.1).
+        legacy_action = etree.SubElement(s, _q("Action"))
+        etree.SubElement(legacy_action, _q("Hyperlink")).text = "https://stale.example"
+        # Wrong-host <ActionInfo> on ChartSeries (first-pass v0.3.1).
+        legacy_info = etree.SubElement(s, _q("ActionInfo"))
+        legacy_actions = etree.SubElement(legacy_info, _q("Actions"))
+        legacy_inner = etree.SubElement(legacy_actions, _q("Action"))
+        etree.SubElement(legacy_inner, _q("Hyperlink")).text = "https://staler.example"
+        doc.save()
+
+        set_chart_series_action(
+            path=str(chart_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            action_type="Hyperlink",
+            target_expression="https://new.example",
+        )
+
+        s = _series(chart_path, "SalesByProduct", "Amount")
+        series_locals = [etree.QName(c).localname for c in s]
+        # Both legacy shapes scrubbed from ChartSeries.
+        assert "Action" not in series_locals
+        assert "ActionInfo" not in series_locals
+        # ActionInfo is on the template ChartDataPoint with the new value.
+        action = _series_data_point_inner_action(s)
+        link = find_child(action, "Hyperlink")
+        assert link.text == "https://new.example"
+
     def test_image_legacy_action_dropped_on_rewrite(self, rdl_path):
         from pbirb_mcp.core.xpath import q as _q
 
@@ -524,6 +566,22 @@ def _series(chart_path: Path, chart_name: str, series_name: str) -> etree._Eleme
     )
 
 
+def _series_data_point_inner_action(series: etree._Element) -> etree._Element:
+    """Walk a ChartSeries to its template ChartDataPoint's inner Action.
+
+    Per RDL 2016 schema, ActionInfo lives on
+    ``<ChartDataPoints>/<ChartDataPoint>/<ActionInfo>/<Actions>/<Action>``,
+    NOT directly under ChartSeries. RB rejects the wrong-host shape.
+    """
+    cdps = find_child(series, "ChartDataPoints")
+    if cdps is None:
+        return None
+    cdp = find_child(cdps, "ChartDataPoint")
+    if cdp is None:
+        return None
+    return _inner_action(cdp)
+
+
 class TestSetChartSeriesAction:
     def test_writes_hyperlink_on_series(self, chart_path):
         result = set_chart_series_action(
@@ -539,7 +597,10 @@ class TestSetChartSeriesAction:
         assert result["action_type"] == "Hyperlink"
         assert result["changed"] is True
         s = _series(chart_path, "SalesByProduct", "Amount")
-        action = _inner_action(s)
+        # ActionInfo lives on the template ChartDataPoint, not the series.
+        assert find_child(s, "ActionInfo") is None
+        assert find_child(s, "Action") is None
+        action = _series_data_point_inner_action(s)
         link = find_child(action, "Hyperlink")
         assert link is not None
         assert link.text == "https://example.com/{0}"
@@ -556,7 +617,7 @@ class TestSetChartSeriesAction:
             ],
         )
         s = _series(chart_path, "SalesByProduct", "Amount")
-        action = _inner_action(s)
+        action = _series_data_point_inner_action(s)
         drill = find_child(action, "Drillthrough")
         assert find_child(drill, "ReportName").text == "ProductDetail"
         param = drill.find(f"{q('Parameters')}/{q('Parameter')}")
@@ -597,7 +658,7 @@ class TestSetChartSeriesAction:
             target_expression="amount-anchor",
         )
         s = _series(chart_path, "SalesByProduct", "Amount")
-        action = _inner_action(s)
+        action = _series_data_point_inner_action(s)
         assert find_child(action, "Hyperlink") is None
         assert find_child(action, "BookmarkLink").text == "amount-anchor"
 
@@ -632,9 +693,9 @@ class TestSetChartSeriesAction:
             )
 
     def test_action_placement_respects_schema_order(self, chart_path):
-        # ActionInfo sits before Type/Subtype in ChartSeries (and before
-        # Style etc.). No bare <Action> directly under ChartSeries —
-        # Report Builder rejects that wire shape.
+        # Per RDL 2016 schema, neither Action nor ActionInfo is a child
+        # of ChartSeries. The action lives one level deeper, on the
+        # template <ChartDataPoint> inside <ChartDataPoints>.
         set_chart_series_action(
             path=str(chart_path),
             chart_name="SalesByProduct",
@@ -643,15 +704,21 @@ class TestSetChartSeriesAction:
             target_expression="https://example.com",
         )
         s = _series(chart_path, "SalesByProduct", "Amount")
-        children_locals = [etree.QName(c).localname for c in s]
-        assert "Action" not in children_locals
-        action_info_idx = children_locals.index("ActionInfo")
-        # Confirm ActionInfo came before Type if both present.
-        if "Type" in children_locals:
-            assert action_info_idx < children_locals.index("Type")
-        # Style isn't always present; only assert when it is.
-        if "Style" in children_locals:
-            assert action_info_idx < children_locals.index("Style")
+        series_locals = [etree.QName(c).localname for c in s]
+        assert "Action" not in series_locals
+        assert "ActionInfo" not in series_locals
+        # ActionInfo IS present on the template ChartDataPoint.
+        cdps = find_child(s, "ChartDataPoints")
+        cdp = find_child(cdps, "ChartDataPoint")
+        cdp_locals = [etree.QName(c).localname for c in cdp]
+        assert "ActionInfo" in cdp_locals
+        # Per ChartDataPoint XSD, ActionInfo sits between ChartDataLabel
+        # and CustomProperties (or before, when no preceding optionals
+        # are present). At minimum it must come AFTER ChartDataPointValues.
+        if "ChartDataPointValues" in cdp_locals:
+            assert cdp_locals.index("ActionInfo") > cdp_locals.index(
+                "ChartDataPointValues"
+            )
 
     def test_round_trip_safe(self, chart_path):
         set_chart_series_action(
