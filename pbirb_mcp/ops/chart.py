@@ -311,23 +311,28 @@ _CHART_DATA_LABEL_CHILD_ORDER = (
 )
 
 
-# Per RDL XSD, ChartAxis child order (subset relevant to set_chart_axis):
-#   Title, Visible, Minimum, Maximum, LogScale, Interval,
-#   IntervalType, Margin, Style, ChartMajorGridLines, ...
+# Per RDL 2016 XSD, ChartAxis child order (subset relevant to
+# set_chart_axis): Visible, Style, ChartAxisTitle, Margin, Interval,
+# IntervalType, ChartMajorGridLines, ChartMinorGridLines, ...
+# Reverse, CrossAt, Location, ..., Minimum, Maximum, LogScale.
+#
+# **`Title` is NOT a valid ChartAxis child** — the title element is
+# `ChartAxisTitle`. Pre-v0.3.1 set_chart_axis emitted bare <Title>
+# which RB rejected with "has invalid child element 'Title'".
 _CHART_AXIS_CHILD_ORDER = (
-    "Title",
     "Visible",
-    "Minimum",
-    "Maximum",
-    "LogScale",
+    "Style",
+    "ChartAxisTitle",
+    "Margin",
     "Interval",
     "IntervalType",
-    "Margin",
     "ChartMajorGridLines",
     "ChartMinorGridLines",
     "ChartMajorTickMarks",
     "ChartMinorTickMarks",
-    "Style",
+    "Minimum",
+    "Maximum",
+    "LogScale",
 )
 
 
@@ -391,14 +396,22 @@ def _insert_axis_child_in_order(
 
 
 def _set_axis_title(axis: etree._Element, title: str) -> None:
-    """Write or rewrite ``<Title><Caption>title</Caption></Title>``.
-    Empty string clears the entire <Title> block."""
-    existing = find_child(axis, "Title")
+    """Write or rewrite
+    ``<ChartAxisTitle><Caption>title</Caption></ChartAxisTitle>``.
+
+    Empty string clears the title block. Migrates pre-v0.3.1 reports
+    that have a bare ``<Title>`` element by removing it (RB rejects
+    that name on a ChartAxis).
+    """
+    legacy = find_child(axis, "Title")
+    if legacy is not None:
+        axis.remove(legacy)
+    existing = find_child(axis, "ChartAxisTitle")
     if title == "":
         if existing is not None:
             axis.remove(existing)
         return
-    new_title = etree.Element(q("Title"))
+    new_title = etree.Element(q("ChartAxisTitle"))
     etree.SubElement(new_title, q("Caption")).text = encode_text(title)
     if existing is not None:
         axis.replace(existing, new_title)

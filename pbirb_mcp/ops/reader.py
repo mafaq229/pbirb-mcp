@@ -767,8 +767,13 @@ def _chart_series_dict(series: etree._Element) -> dict[str, Any]:
 def _chart_axis_dict(axis: etree._Element) -> dict[str, Any]:
     """Read-back shape for ``<ChartAxis>``: name + title + min/max/format
     pulled out of the canonical sub-elements emitted by
-    :func:`set_chart_axis` in v0.3.0."""
-    title_node = find_child(axis, "Title")
+    :func:`set_chart_axis`. The title element is ``<ChartAxisTitle>``
+    in RDL 2016; pre-v0.3.1 mistakenly wrote ``<Title>`` which RB
+    rejects, so we read both names for backward-compat with files
+    written before the migration ran."""
+    title_node = find_child(axis, "ChartAxisTitle")
+    if title_node is None:
+        title_node = find_child(axis, "Title")
     title_caption = (
         _text(find_child(title_node, "Caption")) if title_node is not None else None
     )

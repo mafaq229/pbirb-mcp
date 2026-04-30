@@ -464,6 +464,67 @@ class TestSetChartAxis:
         c = get_chart(path=str(rich_path), name="SalesByProduct")
         assert c["axes"]["value"][0]["title"] is None
 
+    def test_title_writes_chartaxistitle_not_bare_title(self, rich_path):
+        # Per RDL 2016 schema, the title element on a ChartAxis is
+        # <ChartAxisTitle>, NOT <Title>. RB rejects bare <Title> with
+        # "has invalid child element 'Title'". Pre-v0.3.1 emitted the
+        # wrong name.
+        set_chart_axis(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            axis="Value",
+            title="Revenue",
+        )
+        # Walk to the axis element and inspect children directly.
+        doc = RDLDocument.open(rich_path)
+        axis_el = doc.root.find(
+            f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']/"
+            f"{{{RDL_NS}}}ChartAreas/{{{RDL_NS}}}ChartArea/"
+            f"{{{RDL_NS}}}ChartValueAxes/{{{RDL_NS}}}ChartAxis"
+        )
+        children_locals = [etree.QName(c).localname for c in axis_el]
+        assert "ChartAxisTitle" in children_locals
+        assert "Title" not in children_locals
+
+    def test_legacy_title_element_migrates_on_rewrite(self, rich_path):
+        # Inject a legacy <Title> element directly under the axis (the
+        # buggy pre-v0.3.1 shape). On rewrite, the setter must REMOVE
+        # the bad element and emit <ChartAxisTitle> instead.
+        from pbirb_mcp.core.xpath import q as _q
+
+        doc = RDLDocument.open(rich_path)
+        axis_el = doc.root.find(
+            f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']/"
+            f"{{{RDL_NS}}}ChartAreas/{{{RDL_NS}}}ChartArea/"
+            f"{{{RDL_NS}}}ChartValueAxes/{{{RDL_NS}}}ChartAxis"
+        )
+        # Drop any existing ChartAxisTitle then inject the legacy shape.
+        for old in list(axis_el):
+            if etree.QName(old).localname in ("ChartAxisTitle", "Title"):
+                axis_el.remove(old)
+        legacy = etree.SubElement(axis_el, _q("Title"))
+        etree.SubElement(legacy, _q("Caption")).text = "Stale Title"
+        doc.save()
+
+        set_chart_axis(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            axis="Value",
+            title="New Title",
+        )
+
+        doc = RDLDocument.open(rich_path)
+        axis_el = doc.root.find(
+            f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']/"
+            f"{{{RDL_NS}}}ChartAreas/{{{RDL_NS}}}ChartArea/"
+            f"{{{RDL_NS}}}ChartValueAxes/{{{RDL_NS}}}ChartAxis"
+        )
+        children_locals = [etree.QName(c).localname for c in axis_el]
+        assert "Title" not in children_locals
+        assert "ChartAxisTitle" in children_locals
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        assert c["axes"]["value"][0]["title"] == "New Title"
+
     def test_sets_format_via_style(self, rich_path):
         set_chart_axis(
             path=str(rich_path),
