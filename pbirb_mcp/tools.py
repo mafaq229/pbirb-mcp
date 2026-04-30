@@ -2571,6 +2571,30 @@ def register_all_tools(server: MCPServer) -> None:
         handler=reader.find_textboxes_by_style,
     )
     server.register_tool(
+        name="find_textbox_by_value",
+        description=(
+            "Find every Textbox whose <Value> text matches a Python "
+            "regex pattern. Searches Body / PageHeader / PageFooter. "
+            "A textbox with multiple matching runs surfaces once per "
+            "match. Returns [{textbox, value, region}]. Useful for "
+            "finding stale =Parameters!Old.Value references after "
+            "rename_parameter, or any cross-cutting expression edit."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "pattern": {
+                    "type": "string",
+                    "description": "Python regex (re.search); not RDL/SQL glob.",
+                },
+            },
+            "required": ["path", "pattern"],
+            "additionalProperties": False,
+        },
+        handler=reader.find_textbox_by_value,
+    )
+    server.register_tool(
         name="style_tablix_row",
         description=(
             "Apply the same style kwargs to every cell in a tablix row "

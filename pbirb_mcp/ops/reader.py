@@ -11,12 +11,14 @@ deprecation cycle.
 
 from __future__ import annotations
 
+import base64
+import re
 from typing import Any, Optional
 
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children
+from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q, qrd
 
 
 def _text(node: Optional[etree._Element]) -> Optional[str]:
@@ -29,6 +31,99 @@ def _rd_text(parent: etree._Element, local: str) -> Optional[str]:
 
 
 # ---- describe_report -------------------------------------------------------
+
+
+def _parameter_layout_summary(root: etree._Element) -> Optional[dict[str, Any]]:
+    """Return ``{rows, columns, cell_count, parameters_count, in_sync}``
+    for ``<ReportParametersLayout>``. ``None`` when no layout block is
+    present (the typical no-layout case is silent — the LLM doesn't see
+    a phantom block)."""
+    layout = find_child(root, "ReportParametersLayout")
+    if layout is None:
+        return None
+    grid = find_child(layout, "GridLayoutDefinition")
+    rows_node = find_child(grid, "NumberOfRows") if grid is not None else None
+    cols_node = find_child(grid, "NumberOfColumns") if grid is not None else None
+    cells_root = find_child(grid, "CellDefinitions") if grid is not None else None
+    cell_count = (
+        len(find_children(cells_root, "CellDefinition")) if cells_root is not None else 0
+    )
+    params_block = find_child(root, "ReportParameters")
+    parameters_count = (
+        len(find_children(params_block, "ReportParameter")) if params_block is not None else 0
+    )
+    return {
+        "rows": int(rows_node.text) if rows_node is not None and rows_node.text else 0,
+        "columns": int(cols_node.text) if cols_node is not None and cols_node.text else 0,
+        "cell_count": cell_count,
+        "parameters_count": parameters_count,
+        "in_sync": cell_count == parameters_count,
+    }
+
+
+def _embedded_images_summary(root: etree._Element) -> list[dict[str, Any]]:
+    """Return ``[{name, mime_type, byte_size}]`` for every
+    ``<EmbeddedImage>``. ``byte_size`` is the decoded length — base64
+    text is not echoed back here (use ``get_embedded_image_data`` for
+    that)."""
+    block = find_child(root, "EmbeddedImages")
+    if block is None:
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in find_children(block, "EmbeddedImage"):
+        mime = find_child(entry, "MIMEType")
+        data = find_child(entry, "ImageData")
+        b64 = data.text if data is not None and data.text else ""
+        try:
+            byte_size = len(base64.b64decode(b64, validate=False))
+        except Exception:  # noqa: BLE001
+            byte_size = 0
+        out.append(
+            {
+                "name": entry.get("Name"),
+                "mime_type": mime.text if mime is not None else None,
+                "byte_size": byte_size,
+            }
+        )
+    return out
+
+
+def _dataset_query_parameters_summary(root: etree._Element) -> list[dict[str, Any]]:
+    """Return ``[{dataset, name, value}]`` for every
+    ``<DataSet>/<Query>/<QueryParameters>/<QueryParameter>``. Helps the
+    LLM see at a glance which DAX parameter bindings exist (and catch
+    PBIDATASET ``@``-prefix mismatches on first read)."""
+    out: list[dict[str, Any]] = []
+    for ds in root.iter(q("DataSet")):
+        query = find_child(ds, "Query")
+        if query is None:
+            continue
+        qps = find_child(query, "QueryParameters")
+        if qps is None:
+            continue
+        for qp in find_children(qps, "QueryParameter"):
+            value = find_child(qp, "Value")
+            out.append(
+                {
+                    "dataset": ds.get("Name"),
+                    "name": qp.get("Name"),
+                    "value": value.text if value is not None else None,
+                }
+            )
+    return out
+
+
+def _designer_state_present(root: etree._Element) -> bool:
+    """``True`` iff any ``<DataSet>/<Query>/<rd:DesignerState>`` exists.
+    Useful for detecting PBI Query Designer-authored datasets — those
+    benefit from ``update_dataset_query``'s DesignerState sync."""
+    for ds in root.iter(q("DataSet")):
+        query = find_child(ds, "Query")
+        if query is None:
+            continue
+        if query.find(qrd("DesignerState")) is not None:
+            return True
+    return False
 
 
 def describe_report(path: str) -> dict[str, Any]:
@@ -64,6 +159,14 @@ def describe_report(path: str) -> dict[str, Any]:
         "header_items": _list_items_in(header_node),
         "footer_items": _list_items_in(footer_node),
         "page": page,
+        # v0.3 (Phase 12 commit 44): visibility into the blocks the LLM
+        # had to scan separately before — parameter-layout sync state,
+        # embedded-image inventory, dataset-level query-parameter
+        # bindings, and PBI DesignerState presence.
+        "parameter_layout": _parameter_layout_summary(root),
+        "embedded_images": _embedded_images_summary(root),
+        "dataset_query_parameters": _dataset_query_parameters_summary(root),
+        "designer_state_present": _designer_state_present(root),
     }
 
 
@@ -994,8 +1097,66 @@ def find_textboxes_by_style(
     return out
 
 
+# ---- find_textbox_by_value (Phase 12 commit 44) -------------------------
+
+
+def find_textbox_by_value(path: str, pattern: str) -> list[dict[str, Any]]:
+    """Return every ``Textbox`` whose ``<Value>`` text matches ``pattern``
+    (a Python regex, not RDL/SQL glob).
+
+    Searches the value text of each ``<TextRun>`` in every textbox under
+    ``<Body>`` / ``<PageHeader>`` / ``<PageFooter>``. A textbox with
+    multiple matching runs surfaces once per matching run.
+
+    Returns ``[{textbox, value, region}]`` where ``region`` is one of
+    ``Body``, ``PageHeader``, ``PageFooter`` (the nearest top-level
+    ancestor).
+
+    Useful for finding stale ``=Parameters!Old.Value`` references after
+    ``rename_parameter``, or any other cross-cutting expression edit.
+    """
+    try:
+        regex = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(f"invalid regex pattern {pattern!r}: {exc}") from exc
+
+    doc = RDLDocument.open(path)
+    out: list[dict[str, Any]] = []
+
+    for tb in doc.root.iter(q("Textbox")):
+        name = tb.get("Name")
+        if not name:
+            continue
+        # Walk all <Value> elements under this textbox's <Paragraphs>.
+        for value in tb.iter(q("Value")):
+            text = value.text or ""
+            if not regex.search(text):
+                continue
+            out.append(
+                {
+                    "textbox": name,
+                    "value": text,
+                    "region": _region_of(tb),
+                }
+            )
+    return out
+
+
+def _region_of(elem: etree._Element) -> str:
+    """Return the nearest ``Body`` / ``PageHeader`` / ``PageFooter`` /
+    ``CellContents`` ancestor's local name, or ``unknown``."""
+    cur = elem.getparent()
+    while cur is not None:
+        local = etree.QName(cur.tag).localname
+        if local in ("Body", "PageHeader", "PageFooter"):
+            return local
+        cur = cur.getparent()
+    return "unknown"
+
+
 __all__ = [
     "describe_report",
+    "find_textbox_by_value",
     "find_textboxes_by_style",
     "get_chart",
     "get_datasets",
