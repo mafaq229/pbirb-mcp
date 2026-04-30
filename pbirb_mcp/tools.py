@@ -961,6 +961,55 @@ def register_all_tools(server: MCPServer) -> None:
         handler=_layout.set_repeat_on_new_page,
     )
 
+    server.register_tool(
+        name="set_keep_together",
+        description=(
+            "Set <KeepTogether> on a named Tablix / Rectangle / Chart / "
+            "Textbox / Map / Gauge. Tells the renderer 'don't split "
+            "this across pages if you can help it'. Best-effort — "
+            "items larger than a page are still split. keep=False "
+            "removes the element. Refuses for Image / Line / Subreport "
+            "and other kinds where the RDL XSD doesn't allow it."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "keep": {"type": "boolean"},
+            },
+            "required": ["path", "name", "keep"],
+            "additionalProperties": False,
+        },
+        handler=_layout.set_keep_together,
+    )
+
+    server.register_tool(
+        name="set_keep_with_group",
+        description=(
+            "Set <TablixMember>/<KeepWithGroup> on the member that "
+            "wraps the named group. value ∈ {None, Before, After}. "
+            "Typical use: a column-header row's member with 'After' "
+            "to glue it to the data rows that follow. value='None' "
+            "removes the element."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "value": {
+                    "type": "string",
+                    "enum": list(_layout._VALID_KEEP_WITH_GROUP),
+                },
+            },
+            "required": ["path", "tablix_name", "group_name", "value"],
+            "additionalProperties": False,
+        },
+        handler=_layout.set_keep_with_group,
+    )
+
     # ---- actions / tooltip / document-map (Phase 5) ---------------------
 
     _DRILLTHROUGH_PARAM_ITEM = {

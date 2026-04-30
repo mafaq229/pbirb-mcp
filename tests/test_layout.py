@@ -16,7 +16,12 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_group
 from pbirb_mcp.core.xpath import find_child, q
-from pbirb_mcp.ops.layout import set_group_page_break, set_repeat_on_new_page
+from pbirb_mcp.ops.layout import (
+    set_group_page_break,
+    set_keep_together,
+    set_keep_with_group,
+    set_repeat_on_new_page,
+)
 from pbirb_mcp.ops.tablix import add_row_group
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
@@ -298,6 +303,232 @@ class TestSetRepeatOnNewPage:
         assert children.index("RepeatOnNewPage") < children.index("Group")
 
 
+# ---- set_keep_together --------------------------------------------------
+
+
+def _read_keep_together(path: Path, item_name: str) -> str | None:
+    doc = RDLDocument.open(path)
+    matches = doc.root.xpath(
+        ".//r:ReportItems/r:*[@Name=$n]",
+        namespaces={"r": doc.root.nsmap[None] if None in doc.root.nsmap else "http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition"},
+        n=item_name,
+    )
+    if not matches:
+        return None
+    kt = find_child(matches[0], "KeepTogether")
+    return kt.text if kt is not None else None
+
+
+class TestSetKeepTogether:
+    def test_writes_true_on_tablix(self, rdl_path):
+        result = set_keep_together(
+            path=str(rdl_path), name="MainTable", keep=True
+        )
+        assert result == {
+            "name": "MainTable",
+            "kind": "Tablix",
+            "keep": True,
+            "changed": True,
+        }
+        assert _read_keep_together(rdl_path, "MainTable") == "true"
+
+    def test_inserted_before_tablix_body(self, rdl_path):
+        # KeepTogether must come before TablixCorner / TablixBody per
+        # RDL 2016 XSD.
+        set_keep_together(path=str(rdl_path), name="MainTable", keep=True)
+        doc = RDLDocument.open(rdl_path)
+        tablix = doc.root.xpath(
+            ".//r:Tablix[@Name='MainTable']", namespaces={"r": "http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition"}
+        )[0]
+        children = [etree.QName(c.tag).localname for c in tablix]
+        assert children.index("KeepTogether") < children.index("TablixBody")
+
+    def test_writes_true_on_textbox(self, rdl_path):
+        # add_body_textbox bootstraps with KeepTogether=true already
+        # (the canonical Report Builder shape), so toggle off then on
+        # to exercise both the existing-element and insertion paths.
+        from pbirb_mcp.ops.body import add_body_textbox
+
+        add_body_textbox(
+            path=str(rdl_path),
+            name="MyBodyText",
+            text="Hello",
+            top="3in",
+            left="0.5in",
+            width="2in",
+            height="0.3in",
+        )
+        # Off → removes the element.
+        off = set_keep_together(
+            path=str(rdl_path), name="MyBodyText", keep=False
+        )
+        assert off["kind"] == "Textbox"
+        assert off["changed"] is True
+        # On → re-inserts via _set_textbox_direct_child.
+        on = set_keep_together(
+            path=str(rdl_path), name="MyBodyText", keep=True
+        )
+        assert on["kind"] == "Textbox"
+        assert on["changed"] is True
+
+    def test_false_removes_element(self, rdl_path):
+        set_keep_together(path=str(rdl_path), name="MainTable", keep=True)
+        result = set_keep_together(
+            path=str(rdl_path), name="MainTable", keep=False
+        )
+        assert result["changed"] is True
+        assert _read_keep_together(rdl_path, "MainTable") is None
+
+    def test_false_on_clean_is_noop(self, rdl_path):
+        result = set_keep_together(
+            path=str(rdl_path), name="MainTable", keep=False
+        )
+        assert result["changed"] is False
+
+    def test_idempotent_true(self, rdl_path):
+        set_keep_together(path=str(rdl_path), name="MainTable", keep=True)
+        result = set_keep_together(
+            path=str(rdl_path), name="MainTable", keep=True
+        )
+        assert result["changed"] is False
+
+    def test_unknown_name_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            set_keep_together(path=str(rdl_path), name="NoSuchItem", keep=True)
+
+    def test_image_refused(self, rdl_path):
+        # Add a body Image (KeepTogether is not in the Image XSD).
+        from pbirb_mcp.ops.body import add_body_image
+
+        add_body_image(
+            path=str(rdl_path),
+            name="MyImage",
+            image_source="External",
+            value="http://example.com/x.png",
+            top="0in",
+            left="0in",
+            width="1in",
+            height="1in",
+        )
+        with pytest.raises(ValueError, match="does not support"):
+            set_keep_together(path=str(rdl_path), name="MyImage", keep=True)
+
+
+# ---- set_keep_with_group ------------------------------------------------
+
+
+def _read_keep_with_group(path: Path, tablix: str, group: str) -> str | None:
+    doc = RDLDocument.open(path)
+    g = resolve_group(doc, tablix, group)
+    kwg = find_child(g.getparent(), "KeepWithGroup")
+    return kwg.text if kwg is not None else None
+
+
+class TestSetKeepWithGroup:
+    def test_writes_after(self, rdl_with_region_group):
+        result = set_keep_with_group(
+            path=str(rdl_with_region_group),
+            tablix_name="MainTable",
+            group_name="Region",
+            value="After",
+        )
+        assert result == {
+            "tablix": "MainTable",
+            "group": "Region",
+            "kind": "TablixMember",
+            "value": "After",
+            "changed": True,
+        }
+        assert _read_keep_with_group(rdl_with_region_group, "MainTable", "Region") == "After"
+
+    def test_writes_before(self, rdl_with_region_group):
+        result = set_keep_with_group(
+            path=str(rdl_with_region_group),
+            tablix_name="MainTable",
+            group_name="Region",
+            value="Before",
+        )
+        assert _read_keep_with_group(rdl_with_region_group, "MainTable", "Region") == "Before"
+
+    def test_replaces_existing(self, rdl_with_region_group):
+        set_keep_with_group(
+            path=str(rdl_with_region_group),
+            tablix_name="MainTable",
+            group_name="Region",
+            value="After",
+        )
+        result = set_keep_with_group(
+            path=str(rdl_with_region_group),
+            tablix_name="MainTable",
+            group_name="Region",
+            value="Before",
+        )
+        assert result["changed"] is True
+        assert _read_keep_with_group(rdl_with_region_group, "MainTable", "Region") == "Before"
+
+    def test_none_removes_block(self, rdl_with_region_group):
+        set_keep_with_group(
+            path=str(rdl_with_region_group),
+            tablix_name="MainTable",
+            group_name="Region",
+            value="After",
+        )
+        result = set_keep_with_group(
+            path=str(rdl_with_region_group),
+            tablix_name="MainTable",
+            group_name="Region",
+            value="None",
+        )
+        assert result["changed"] is True
+        assert _read_keep_with_group(rdl_with_region_group, "MainTable", "Region") is None
+
+    def test_idempotent(self, rdl_with_region_group):
+        set_keep_with_group(
+            path=str(rdl_with_region_group),
+            tablix_name="MainTable",
+            group_name="Region",
+            value="After",
+        )
+        result = set_keep_with_group(
+            path=str(rdl_with_region_group),
+            tablix_name="MainTable",
+            group_name="Region",
+            value="After",
+        )
+        assert result["changed"] is False
+
+    def test_unknown_value_rejected(self, rdl_with_region_group):
+        with pytest.raises(ValueError, match="unknown KeepWithGroup"):
+            set_keep_with_group(
+                path=str(rdl_with_region_group),
+                tablix_name="MainTable",
+                group_name="Region",
+                value="Sideways",
+            )
+
+    def test_member_child_order_respected(self, rdl_with_region_group):
+        # KeepWithGroup must come before Group (and before
+        # RepeatOnNewPage if present, since the schema order is
+        # KeepWithGroup, RepeatOnNewPage, FixedData, Group, ...).
+        set_repeat_on_new_page(
+            path=str(rdl_with_region_group),
+            tablix_name="MainTable",
+            group_name="Region",
+            repeat=True,
+        )
+        set_keep_with_group(
+            path=str(rdl_with_region_group),
+            tablix_name="MainTable",
+            group_name="Region",
+            value="After",
+        )
+        doc = RDLDocument.open(rdl_with_region_group)
+        g = resolve_group(doc, "MainTable", "Region")
+        children = [etree.QName(c.tag).localname for c in g.getparent()]
+        assert children.index("KeepWithGroup") < children.index("RepeatOnNewPage")
+        assert children.index("RepeatOnNewPage") < children.index("Group")
+
+
 # ---- registration ------------------------------------------------------
 
 
@@ -311,3 +542,5 @@ class TestToolRegistration:
         names = {t["name"] for t in listing}
         assert "set_group_page_break" in names
         assert "set_repeat_on_new_page" in names
+        assert "set_keep_together" in names
+        assert "set_keep_with_group" in names
