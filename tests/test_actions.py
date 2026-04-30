@@ -59,6 +59,24 @@ def _image(rdl_path: Path, name: str) -> etree._Element:
     return doc.root.find(f".//{{{RDL_NS}}}Image[@Name='{name}']")
 
 
+def _inner_action(item: etree._Element) -> etree._Element:
+    """Walk a ReportItem (or ChartSeries) to its inner ``<Action>``.
+
+    The wire shape since v0.3.1 is
+    ``<ActionInfo>/<Actions>/<Action>`` — Report Builder rejects a
+    bare ``<Action>``. Returns the first Action inside the
+    ActionInfo/Actions chain, or None when no ActionInfo exists.
+    """
+    info = find_child(item, "ActionInfo")
+    if info is None:
+        return None
+    actions_root = find_child(info, "Actions")
+    if actions_root is None:
+        return None
+    inner = find_children(actions_root, "Action")
+    return inner[0] if inner else None
+
+
 # ---- set_textbox_action --------------------------------------------------
 
 
@@ -73,7 +91,7 @@ class TestSetTextboxActionHyperlink:
         assert result["action_type"] == "Hyperlink"
         assert result["changed"] is True
         tb = _textbox(rdl_path, "HeaderProductID")
-        action = find_child(tb, "Action")
+        action = _inner_action(tb)
         link = find_child(action, "Hyperlink")
         assert link is not None
         assert link.text == "https://example.com"
@@ -109,7 +127,7 @@ class TestSetTextboxActionHyperlink:
             target_expression="anchor1",
         )
         tb = _textbox(rdl_path, "HeaderProductID")
-        action = find_child(tb, "Action")
+        action = _inner_action(tb)
         # Old Hyperlink is gone; BookmarkLink replaces.
         assert find_child(action, "Hyperlink") is None
         assert find_child(action, "BookmarkLink").text == "anchor1"
@@ -139,7 +157,8 @@ class TestSetTextboxActionDrillthrough:
         )
         assert result["action_type"] == "Drillthrough"
         tb = _textbox(rdl_path, "HeaderProductID")
-        drill = tb.find(f"{q('Action')}/{q('Drillthrough')}")
+        action = _inner_action(tb)
+        drill = find_child(action, "Drillthrough")
         assert find_child(drill, "ReportName").text == "DetailReport"
         params = drill.findall(f"{q('Parameters')}/{q('Parameter')}")
         assert len(params) == 2
@@ -156,7 +175,8 @@ class TestSetTextboxActionDrillthrough:
             target_expression="DetailReport",
         )
         tb = _textbox(rdl_path, "HeaderProductID")
-        drill = tb.find(f"{q('Action')}/{q('Drillthrough')}")
+        action = _inner_action(tb)
+        drill = find_child(action, "Drillthrough")
         assert find_child(drill, "ReportName").text == "DetailReport"
         # No <Parameters> when no parameters supplied.
         assert find_child(drill, "Parameters") is None
@@ -222,9 +242,74 @@ class TestSetTextboxActionDrillthrough:
             )
 
 
+class TestLegacyBareActionMigration:
+    """Pre-v0.3.1 setters wrote a bare ``<Action>`` directly under a
+    ReportItem / ChartSeries. Report Builder rejects that wire shape
+    with ``has invalid child element 'Action'``. A repeat call after
+    upgrading must DROP the legacy bare Action and write the canonical
+    ``<ActionInfo>/<Actions>/<Action>`` envelope, leaving the file
+    RB-loadable.
+    """
+
+    def test_textbox_legacy_action_dropped_on_rewrite(self, rdl_path):
+        # Manually inject the buggy shape that pre-v0.3.1 emitted.
+        from pbirb_mcp.core.xpath import q as _q
+
+        doc = RDLDocument.open(rdl_path)
+        tb = doc.root.find(f".//{{{RDL_NS}}}Textbox[@Name='HeaderProductID']")
+        legacy = etree.SubElement(tb, _q("Action"))
+        etree.SubElement(legacy, _q("Hyperlink")).text = "https://stale.example"
+        doc.save()
+
+        # Re-write via the fixed setter — should remove legacy + add ActionInfo.
+        set_textbox_action(
+            path=str(rdl_path),
+            textbox_name="HeaderProductID",
+            action_type="Hyperlink",
+            target_expression="https://new.example",
+        )
+        tb = _textbox(rdl_path, "HeaderProductID")
+        children_locals = [etree.QName(c).localname for c in tb]
+        assert "Action" not in children_locals
+        assert "ActionInfo" in children_locals
+        link = find_child(_inner_action(tb), "Hyperlink")
+        assert link.text == "https://new.example"
+
+    def test_image_legacy_action_dropped_on_rewrite(self, rdl_path):
+        from pbirb_mcp.core.xpath import q as _q
+
+        add_body_image(
+            path=str(rdl_path),
+            name="LegacyLogo",
+            image_source="External",
+            value="http://x/img.png",
+            top="0in", left="0in", width="2in", height="1in",
+        )
+        # Inject the buggy shape.
+        doc = RDLDocument.open(rdl_path)
+        img = doc.root.find(f".//{{{RDL_NS}}}Image[@Name='LegacyLogo']")
+        legacy = etree.SubElement(img, _q("Action"))
+        etree.SubElement(legacy, _q("Hyperlink")).text = "https://stale.example"
+        doc.save()
+
+        set_image_action(
+            path=str(rdl_path),
+            image_name="LegacyLogo",
+            action_type="Hyperlink",
+            target_expression="https://new.example",
+        )
+        img = _image(rdl_path, "LegacyLogo")
+        children_locals = [etree.QName(c).localname for c in img]
+        assert "Action" not in children_locals
+        assert "ActionInfo" in children_locals
+
+
 class TestActionPlacement:
-    def test_action_placed_before_style(self, rdl_path):
-        # Per RDL XSD, Action precedes Style on a Textbox.
+    def test_actioninfo_placed_before_style(self, rdl_path):
+        # Per RDL 2016 schema, ActionInfo (the Action wrapper) sits
+        # before Style on a Textbox. Bare <Action> directly under a
+        # ReportItem makes Report Builder reject the file with
+        # "has invalid child element 'Action'".
         set_textbox_action(
             path=str(rdl_path),
             textbox_name="HeaderProductID",
@@ -233,9 +318,11 @@ class TestActionPlacement:
         )
         tb = _textbox(rdl_path, "HeaderProductID")
         children_locals = [etree.QName(c).localname for c in tb]
-        action_idx = children_locals.index("Action")
+        # No bare <Action> at the ReportItem level.
+        assert "Action" not in children_locals
+        action_info_idx = children_locals.index("ActionInfo")
         style_idx = children_locals.index("Style")
-        assert action_idx < style_idx
+        assert action_info_idx < style_idx
 
 
 # ---- set_image_action ---------------------------------------------------
@@ -262,7 +349,9 @@ class TestSetImageAction:
         assert result["image"] == "Logo"
         assert result["kind"] == "Image"
         img = _image(rdl_path, "Logo")
-        link = img.find(f"{q('Action')}/{q('Hyperlink')}")
+        action = _inner_action(img)
+        link = find_child(action, "Hyperlink")
+        assert link is not None
         assert link.text == "https://example.com"
 
     def test_unknown_image_raises(self, rdl_path):
@@ -450,7 +539,8 @@ class TestSetChartSeriesAction:
         assert result["action_type"] == "Hyperlink"
         assert result["changed"] is True
         s = _series(chart_path, "SalesByProduct", "Amount")
-        link = s.find(f"{q('Action')}/{q('Hyperlink')}")
+        action = _inner_action(s)
+        link = find_child(action, "Hyperlink")
         assert link is not None
         assert link.text == "https://example.com/{0}"
 
@@ -466,7 +556,8 @@ class TestSetChartSeriesAction:
             ],
         )
         s = _series(chart_path, "SalesByProduct", "Amount")
-        drill = s.find(f"{q('Action')}/{q('Drillthrough')}")
+        action = _inner_action(s)
+        drill = find_child(action, "Drillthrough")
         assert find_child(drill, "ReportName").text == "ProductDetail"
         param = drill.find(f"{q('Parameters')}/{q('Parameter')}")
         assert param.get("Name") == "ProductID"
@@ -506,7 +597,7 @@ class TestSetChartSeriesAction:
             target_expression="amount-anchor",
         )
         s = _series(chart_path, "SalesByProduct", "Amount")
-        action = find_child(s, "Action")
+        action = _inner_action(s)
         assert find_child(action, "Hyperlink") is None
         assert find_child(action, "BookmarkLink").text == "amount-anchor"
 
@@ -541,8 +632,9 @@ class TestSetChartSeriesAction:
             )
 
     def test_action_placement_respects_schema_order(self, chart_path):
-        # Action sits before Type/Subtype in ChartSeries (and before
-        # Style etc.).
+        # ActionInfo sits before Type/Subtype in ChartSeries (and before
+        # Style etc.). No bare <Action> directly under ChartSeries —
+        # Report Builder rejects that wire shape.
         set_chart_series_action(
             path=str(chart_path),
             chart_name="SalesByProduct",
@@ -552,13 +644,14 @@ class TestSetChartSeriesAction:
         )
         s = _series(chart_path, "SalesByProduct", "Amount")
         children_locals = [etree.QName(c).localname for c in s]
-        action_idx = children_locals.index("Action")
-        # Confirm Action came before Type if both present.
+        assert "Action" not in children_locals
+        action_info_idx = children_locals.index("ActionInfo")
+        # Confirm ActionInfo came before Type if both present.
         if "Type" in children_locals:
-            assert action_idx < children_locals.index("Type")
+            assert action_info_idx < children_locals.index("Type")
         # Style isn't always present; only assert when it is.
         if "Style" in children_locals:
-            assert action_idx < children_locals.index("Style")
+            assert action_info_idx < children_locals.index("Style")
 
     def test_round_trip_safe(self, chart_path):
         set_chart_series_action(

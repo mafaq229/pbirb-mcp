@@ -3,21 +3,22 @@
 RDL ReportItems (Textbox / Image / Rectangle / Chart / ChartSeries)
 support three sibling-of-Style mechanisms for interactivity:
 
-- ``<Action>``: navigate to a URL (Hyperlink), drill through to another
-  report (Drillthrough), or jump to a Bookmark within this report
-  (BookmarkLink). Exactly one of the three sub-elements is allowed.
+- ``<ActionInfo>``: container for one or more ``<Action>`` entries
+  (Hyperlink / Drillthrough / BookmarkLink). Wire shape is
+  ``<ActionInfo><Actions><Action>…</Action></Actions></ActionInfo>``;
+  Report Builder rejects a bare ``<Action>`` directly under a
+  ReportItem with ``has invalid child element 'Action'``.
 - ``<ToolTip>``: a string or expression rendered when the user hovers.
 - ``<DocumentMapLabel>``: a string / expression that appears in the
   rendered report's "document map" (the navigable table-of-contents
   pane).
 
-Per RDL XSD, on a Textbox the relevant trailing-child order is::
-
-    ... ToolTip, DocumentMapLabel, Bookmark, RepeatWith,
-        CustomProperties, Action, Style
-
-This module respects that order via :func:`_insert_in_item_order` so
-inserts don't drift round-trip byte-identity.
+This module respects the RDL 2016 trailing-child order via
+:func:`_insert_in_item_order` so inserts don't drift round-trip
+byte-identity. Earlier v0.3.0 setters emitted a bare ``<Action>`` —
+fixed in v0.3.1; the setters here also migrate any legacy bare
+``<Action>`` they find on the same ReportItem during write so
+upgraded reports stop tripping RB's deserialization.
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ _REPORT_ITEM_TRAILING_CHILD_ORDER = (
     "Bookmark",
     "RepeatWith",
     "CustomProperties",
-    "Action",
+    "ActionInfo",
     "Style",
 )
 
@@ -140,6 +141,40 @@ def _build_action_xml(
     return action
 
 
+def _build_action_info_xml(
+    action_type: str,
+    target_expression: str,
+    drillthrough_parameters: Optional[list[dict[str, str]]] = None,
+) -> etree._Element:
+    """Wrap :func:`_build_action_xml` in the RDL 2016 wire shape:
+    ``<ActionInfo><Actions><Action>…</Action></Actions></ActionInfo>``.
+
+    Report Builder rejects a bare ``<Action>`` directly under a
+    ReportItem; only the wrapped form passes deserialization.
+    """
+    inner_action = _build_action_xml(
+        action_type, target_expression, drillthrough_parameters
+    )
+    action_info = etree.Element(q("ActionInfo"))
+    actions_root = etree.SubElement(action_info, q("Actions"))
+    actions_root.append(inner_action)
+    return action_info
+
+
+def _drop_legacy_bare_action(item: etree._Element) -> bool:
+    """Remove any direct ``<Action>`` child from a ReportItem (or
+    ChartSeries). Pre-v0.3.1 setters emitted ``<Action>`` directly
+    instead of ``<ActionInfo>/<Actions>/<Action>``; on subsequent
+    writes the new setter migrates the file by dropping the bare
+    Action and inserting a fresh ActionInfo. Returns True iff a
+    legacy node was found and removed."""
+    legacy = find_child(item, "Action")
+    if legacy is None:
+        return False
+    item.remove(legacy)
+    return True
+
+
 # ---- ReportItem resolver --------------------------------------------------
 
 
@@ -228,22 +263,28 @@ def set_textbox_action(
     structural — same action_type + target + drillthrough_parameters
     short-circuits without saving.
     """
-    new_action = _build_action_xml(
+    new_action_info = _build_action_info_xml(
         action_type, target_expression, drillthrough_parameters
     )
 
     doc = RDLDocument.open(path)
     textbox = resolve_textbox(doc, textbox_name)
 
-    existing = find_child(textbox, "Action")
-    if existing is not None and _action_matches(existing, new_action):
+    existing = find_child(textbox, "ActionInfo")
+    legacy_present = find_child(textbox, "Action") is not None
+    if (
+        existing is not None
+        and not legacy_present
+        and _action_info_matches(existing, new_action_info)
+    ):
         return {
             "textbox": textbox_name,
             "kind": "Textbox",
             "action_type": action_type,
             "changed": False,
         }
-    _insert_in_item_order(textbox, new_action)
+    _drop_legacy_bare_action(textbox)
+    _insert_in_item_order(textbox, new_action_info)
     doc.save()
     return {
         "textbox": textbox_name,
@@ -261,21 +302,27 @@ def set_image_action(
     drillthrough_parameters: Optional[list[dict[str, str]]] = None,
 ) -> dict[str, Any]:
     """Same shape as :func:`set_textbox_action` but on a named Image."""
-    new_action = _build_action_xml(
+    new_action_info = _build_action_info_xml(
         action_type, target_expression, drillthrough_parameters
     )
     doc = RDLDocument.open(path)
     image = _resolve_image(doc, image_name)
 
-    existing = find_child(image, "Action")
-    if existing is not None and _action_matches(existing, new_action):
+    existing = find_child(image, "ActionInfo")
+    legacy_present = find_child(image, "Action") is not None
+    if (
+        existing is not None
+        and not legacy_present
+        and _action_info_matches(existing, new_action_info)
+    ):
         return {
             "image": image_name,
             "kind": "Image",
             "action_type": action_type,
             "changed": False,
         }
-    _insert_in_item_order(image, new_action)
+    _drop_legacy_bare_action(image)
+    _insert_in_item_order(image, new_action_info)
     doc.save()
     return {
         "image": image_name,
@@ -364,6 +411,27 @@ def set_document_map_label(
 # ---- helpers --------------------------------------------------------------
 
 
+def _action_info_matches(
+    existing: etree._Element, new_action_info: etree._Element
+) -> bool:
+    """Structural equality check on two ``<ActionInfo>`` subtrees.
+
+    Walks ``ActionInfo/Actions/Action`` on each side and delegates to
+    :func:`_action_matches` for the inner-Action comparison. Returns
+    False if either side has zero or multiple Action children — we
+    only emit single-Action ActionInfo blocks today.
+    """
+    e_actions = find_child(existing, "Actions")
+    n_actions = find_child(new_action_info, "Actions")
+    if e_actions is None or n_actions is None:
+        return False
+    e_list = find_children(e_actions, "Action")
+    n_list = find_children(n_actions, "Action")
+    if len(e_list) != 1 or len(n_list) != 1:
+        return False
+    return _action_matches(e_list[0], n_list[0])
+
+
 def _action_matches(
     existing: etree._Element, new_action: etree._Element
 ) -> bool:
@@ -429,7 +497,7 @@ def _action_matches(
 # before everything else our writers emit).
 _CHART_SERIES_CHILD_ORDER = (
     "Hidden",
-    "Action",
+    "ActionInfo",
     "ChartSmartLabel",
     "ChartDataPoints",
     "Type",
@@ -501,7 +569,7 @@ def set_chart_series_action(
         _series_collection,
     )
 
-    new_action = _build_action_xml(
+    new_action_info = _build_action_info_xml(
         action_type, target_expression, drillthrough_parameters
     )
 
@@ -510,8 +578,13 @@ def set_chart_series_action(
     sc = _series_collection(chart)
     series = _find_series(sc, series_name)
 
-    existing = find_child(series, "Action")
-    if existing is not None and _action_matches(existing, new_action):
+    existing = find_child(series, "ActionInfo")
+    legacy_present = find_child(series, "Action") is not None
+    if (
+        existing is not None
+        and not legacy_present
+        and _action_info_matches(existing, new_action_info)
+    ):
         return {
             "chart": chart_name,
             "series": series_name,
@@ -519,7 +592,8 @@ def set_chart_series_action(
             "action_type": action_type,
             "changed": False,
         }
-    _insert_in_chart_series_order(series, new_action)
+    _drop_legacy_bare_action(series)
+    _insert_in_chart_series_order(series, new_action_info)
     doc.save()
     return {
         "chart": chart_name,
