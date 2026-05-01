@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "pbirb-mcp"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.3.0"
 
 # Tool-name prefixes treated as mutating for auto-verify routing. All RDL-
 # state-changing tools in the codebase start with one of these. Read-only
