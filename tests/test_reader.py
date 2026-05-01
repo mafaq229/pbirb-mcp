@@ -192,9 +192,7 @@ class TestFindTextboxByValue:
             width="2in",
             height="0.3in",
         )
-        out = find_textbox_by_value(
-            path=str(rdl_path), pattern=r"Parameters!\w+\.Value"
-        )
+        out = find_textbox_by_value(path=str(rdl_path), pattern=r"Parameters!\w+\.Value")
         names = {entry["textbox"] for entry in out}
         assert "ParamEcho" in names
 
@@ -207,9 +205,9 @@ class TestFindTextboxByValueRegistration:
     def test_tool_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "find_textbox_by_value" in names
 

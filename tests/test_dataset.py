@@ -16,7 +16,6 @@ import shutil
 from pathlib import Path
 
 import pytest
-
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
@@ -123,9 +122,7 @@ def _inject_designer_state(rdl_path: Path, dataset_name: str, statement_text: st
     <Query>, mimicking what Power BI Report Builder writes for PBIDATASET
     queries authored via the Query Designer GUI."""
     doc = RDLDocument.open(rdl_path)
-    ds = next(
-        d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == dataset_name
-    )
+    ds = next(d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == dataset_name)
     query = find_child(ds, "Query")
     designer_state = etree.SubElement(query, f"{{{RD_NS}}}DesignerState")
     statement = etree.SubElement(designer_state, f"{{{RD_NS}}}Statement")
@@ -158,8 +155,7 @@ class TestUpdateDatasetQueryAliasStrategy:
             path=str(rdl_path),
             dataset_name="MainDataset",
             dax_body=(
-                "EVALUATE SUMMARIZECOLUMNS("
-                "'Items'[ItemID], 'Items'[ItemName], 'Items'[Total])"
+                "EVALUATE SUMMARIZECOLUMNS('Items'[ItemID], 'Items'[ItemName], 'Items'[Total])"
             ),
             alias_strategy="preserve_field_names",
         )
@@ -183,9 +179,7 @@ class TestUpdateDatasetQueryAliasStrategy:
         # Only the first field gets remapped.
         assert len(result["mapped"]) == 1
         # Two warnings — one per unmapped existing field.
-        unmapped_warnings = [
-            w for w in result["warnings"] if "unmapped" in w
-        ]
+        unmapped_warnings = [w for w in result["warnings"] if "unmapped" in w]
         assert len(unmapped_warnings) == 2
 
     def test_count_mismatch_more_columns_than_fields_warns(self, rdl_path):
@@ -200,9 +194,7 @@ class TestUpdateDatasetQueryAliasStrategy:
         )
         # All three existing fields remap; D and E warn.
         assert len(result["mapped"]) == 3
-        no_field_warnings = [
-            w for w in result["warnings"] if "no Field" in w
-        ]
+        no_field_warnings = [w for w in result["warnings"] if "no Field" in w]
         assert len(no_field_warnings) == 2
 
     def test_calculated_fields_skipped(self, rdl_path):
@@ -217,8 +209,7 @@ class TestUpdateDatasetQueryAliasStrategy:
             path=str(rdl_path),
             dataset_name="MainDataset",
             dax_body=(
-                "EVALUATE SUMMARIZECOLUMNS("
-                "'Items'[ItemID], 'Items'[ItemName], 'Items'[Total])"
+                "EVALUATE SUMMARIZECOLUMNS('Items'[ItemID], 'Items'[ItemName], 'Items'[Total])"
             ),
             alias_strategy="preserve_field_names",
         )
@@ -268,9 +259,7 @@ class TestUpdateDatasetQueryDesignerStateSync:
     """
 
     def test_designer_state_statement_synced(self, rdl_path):
-        _inject_designer_state(
-            rdl_path, "MainDataset", "OLD: EVALUATE 'OldTable'"
-        )
+        _inject_designer_state(rdl_path, "MainDataset", "OLD: EVALUATE 'OldTable'")
         result = update_dataset_query(
             path=str(rdl_path),
             dataset_name="MainDataset",
@@ -330,7 +319,7 @@ class TestUpdateDatasetQueryDesignerStateSync:
         update_dataset_query(
             path=str(rdl_path),
             dataset_name="MainDataset",
-            dax_body='EVALUATE FILTER(\'X\', \'X\'[c] = "A &amp; B")',
+            dax_body="EVALUATE FILTER('X', 'X'[c] = \"A &amp; B\")",
         )
         # Disk should not contain &amp;amp;
         assert b"&amp;amp;" not in rdl_path.read_bytes()
@@ -579,9 +568,7 @@ class TestRemoveDatasetFilter:
                 operator="Equal",
                 values=[str(i)],
             )
-        remove_dataset_filter(
-            path=str(rdl_path), dataset_name="MainDataset", filter_index=1
-        )
+        remove_dataset_filter(path=str(rdl_path), dataset_name="MainDataset", filter_index=1)
         filters = list_dataset_filters(path=str(rdl_path), dataset_name="MainDataset")
         assert [f["expression"] for f in filters] == [
             "=Fields!F0.Value",
@@ -596,9 +583,7 @@ class TestRemoveDatasetFilter:
             operator="Equal",
             values=["x"],
         )
-        remove_dataset_filter(
-            path=str(rdl_path), dataset_name="MainDataset", filter_index=0
-        )
+        remove_dataset_filter(path=str(rdl_path), dataset_name="MainDataset", filter_index=0)
         # The <Filters> block itself should be gone.
         doc = RDLDocument.open(rdl_path)
         ds = next(
@@ -610,9 +595,7 @@ class TestRemoveDatasetFilter:
 
     def test_out_of_range_raises(self, rdl_path):
         with pytest.raises(IndexError):
-            remove_dataset_filter(
-                path=str(rdl_path), dataset_name="MainDataset", filter_index=99
-            )
+            remove_dataset_filter(path=str(rdl_path), dataset_name="MainDataset", filter_index=99)
 
 
 class TestListDatasetFilters:
@@ -685,18 +668,15 @@ class TestGetDataset:
         )
         fields_root = _fc(ds, "Fields")
         new_field = _etree.SubElement(fields_root, _q("Field"), Name="Total")
-        _etree.SubElement(new_field, _q("Value")).text = (
-            "=Fields!Amount.Value * Fields!ProductID.Value"
-        )
+        _etree.SubElement(
+            new_field, _q("Value")
+        ).text = "=Fields!Amount.Value * Fields!ProductID.Value"
         doc.save()
 
         result = get_dataset(path=str(rdl_path), name="MainDataset")
         total = next(f for f in result["fields"] if f["name"] == "Total")
         assert total["data_field"] is None
-        assert (
-            total["value"]
-            == "=Fields!Amount.Value * Fields!ProductID.Value"
-        )
+        assert total["value"] == "=Fields!Amount.Value * Fields!ProductID.Value"
 
     def test_unknown_dataset_raises(self, rdl_path):
         with pytest.raises(ElementNotFoundError):
@@ -873,9 +853,9 @@ class TestToolRegistration:
     def test_v03_dataset_filter_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {
             "list_dataset_filters",
@@ -887,9 +867,9 @@ class TestToolRegistration:
     def test_v03_calculated_field_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {
             "add_calculated_field",
@@ -899,9 +879,9 @@ class TestToolRegistration:
     def test_v03_phase6_dataset_field_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {"add_dataset_field", "refresh_dataset_fields"} <= names
 
@@ -1023,9 +1003,7 @@ class TestRefreshDatasetFieldsSummarizeColumns:
         )
         # Fixture's existing fields: ProductID, ProductName, Amount.
         # The new DAX produces Region, Customer, TotalAmount.
-        result = refresh_dataset_fields(
-            path=str(rdl_path), dataset_name="MainDataset"
-        )
+        result = refresh_dataset_fields(path=str(rdl_path), dataset_name="MainDataset")
         added_names = result["added"]
         # Region + Customer are bracket tokens; TotalAmount is a quoted
         # alias from SELECTCOLUMNS-style alias-detection (we also pick
@@ -1045,9 +1023,7 @@ class TestRefreshDatasetFieldsSummarizeColumns:
             dataset_name="MainDataset",
             dax_body="EVALUATE 'Sales'[Region]",
         )
-        refresh_dataset_fields(
-            path=str(rdl_path), dataset_name="MainDataset"
-        )
+        refresh_dataset_fields(path=str(rdl_path), dataset_name="MainDataset")
         ds = get_dataset(path=str(rdl_path), name="MainDataset")
         region = next((f for f in ds["fields"] if f["name"] == "Region"), None)
         assert region is not None
@@ -1066,9 +1042,7 @@ class TestRefreshDatasetFieldsSummarizeColumns:
                 ")"
             ),
         )
-        result = refresh_dataset_fields(
-            path=str(rdl_path), dataset_name="MainDataset"
-        )
+        result = refresh_dataset_fields(path=str(rdl_path), dataset_name="MainDataset")
         assert result["added"] == []
         assert sorted(result["unchanged"]) == ["Amount", "ProductID", "ProductName"]
 
@@ -1087,9 +1061,7 @@ class TestRefreshDatasetFieldsSelectColumns:
                 ")"
             ),
         )
-        result = refresh_dataset_fields(
-            path=str(rdl_path), dataset_name="MainDataset"
-        )
+        result = refresh_dataset_fields(path=str(rdl_path), dataset_name="MainDataset")
         assert "OrderID" in result["added"]
         assert "Customer" in result["added"]
         assert "Total" in result["added"]
@@ -1104,13 +1076,9 @@ class TestRefreshDatasetFieldsWarnings:
             dataset_name="MainDataset",
             dax_body="EVALUATE 'Sales'",
         )
-        result = refresh_dataset_fields(
-            path=str(rdl_path), dataset_name="MainDataset"
-        )
+        result = refresh_dataset_fields(path=str(rdl_path), dataset_name="MainDataset")
         assert result["added"] == []
-        assert any(
-            "EVALUATE" in w for w in result["warnings"]
-        )
+        assert any("EVALUATE" in w for w in result["warnings"])
 
     def test_unparseable_shape_warns(self, rdl_path):
         # Empty-ish DAX that doesn't match any known pattern.
@@ -1119,9 +1087,7 @@ class TestRefreshDatasetFieldsWarnings:
             dataset_name="MainDataset",
             dax_body="DEFINE",
         )
-        result = refresh_dataset_fields(
-            path=str(rdl_path), dataset_name="MainDataset"
-        )
+        result = refresh_dataset_fields(path=str(rdl_path), dataset_name="MainDataset")
         assert result["warnings"]
 
     def test_selectcolumns_does_not_pull_source_columns(self, rdl_path):
@@ -1143,9 +1109,7 @@ class TestRefreshDatasetFieldsWarnings:
                 "\"DDO\", 'Sales'[DDO])"
             ),
         )
-        result = refresh_dataset_fields(
-            path=str(rdl_path), dataset_name="MainDataset"
-        )
+        result = refresh_dataset_fields(path=str(rdl_path), dataset_name="MainDataset")
         added = result["added"]
         # Only the quoted aliases should be added.
         assert "Distance__Km_" in added
@@ -1163,9 +1127,7 @@ class TestRefreshDatasetFieldsWarnings:
 class TestRefreshDatasetFieldsErrors:
     def test_unknown_dataset_raises(self, rdl_path):
         with pytest.raises(ElementNotFoundError):
-            refresh_dataset_fields(
-                path=str(rdl_path), dataset_name="NoSuchDataset"
-            )
+            refresh_dataset_fields(path=str(rdl_path), dataset_name="NoSuchDataset")
 
 
 # ---- v0.3 PBIDATASET @-prefix defence ------------------------------------
@@ -1177,10 +1139,8 @@ def _set_provider_pbidataset(rdl_path: Path):
     by default, which our detector recognises via the powerbi:// in
     ConnectString — but a real PBIDATASET-authored report uses
     'PBIDATASET' explicitly, so we cover both shapes in tests."""
-    from lxml import etree as _etree
 
     from pbirb_mcp.core.xpath import find_child as _fc
-    from pbirb_mcp.core.xpath import q as _q
 
     doc = RDLDocument.open(rdl_path)
     ds = doc.root.find(f"{{{RDL_NS}}}DataSources/{{{RDL_NS}}}DataSource")
@@ -1240,7 +1200,6 @@ class TestAddQueryParameterPbiDatasetDefence:
     def test_passes_through_unchanged_for_non_pbi_dataset(self, rdl_path):
         # Switch the provider to a non-PBI shape (no powerbi:// in the
         # connect string).
-        from lxml import etree as _etree
 
         from pbirb_mcp.core.xpath import find_child as _fc
 
@@ -1317,9 +1276,7 @@ class TestUpdateQueryParameterPbiDatasetDefence:
         _set_provider_pbidataset(rdl_path)
         doc = RDLDocument.open(rdl_path)
         ds = next(
-            d
-            for d in doc.root.iter(f"{{{RDL_NS}}}DataSet")
-            if d.get("Name") == "MainDataset"
+            d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == "MainDataset"
         )
         query = _fc(ds, "Query")
         qp_root = _etree.SubElement(query, _q("QueryParameters"))

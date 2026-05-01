@@ -58,9 +58,8 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError, resolve_dataset
-from pbirb_mcp.core.xpath import RDL_NS, XPATH_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import XPATH_NS, find_child, find_children, q
 from pbirb_mcp.ops.body import _ensure_body_report_items, _names_in, _resolve_body
-
 
 # RDL ChartSeriesType + Subtype enumeration (covers the common shapes;
 # extend if a real session needs Funnel / Pyramid / Polar / Range etc.).
@@ -103,7 +102,7 @@ def _resolve_chart(doc: RDLDocument, name: str) -> etree._Element:
     and ``AmbiguousElementError`` on duplicate-name."""
     matches = list(
         doc.root.xpath(
-            f".//*[local-name()='Chart' and @Name=$n]",
+            ".//*[local-name()='Chart' and @Name=$n]",
             namespaces=XPATH_NS,
             n=name,
         )
@@ -111,9 +110,7 @@ def _resolve_chart(doc: RDLDocument, name: str) -> etree._Element:
     if not matches:
         raise ElementNotFoundError(f"no Chart named {name!r}")
     if len(matches) > 1:
-        raise AmbiguousElementError(
-            f"Chart name {name!r} matches {len(matches)} elements"
-        )
+        raise AmbiguousElementError(f"Chart name {name!r} matches {len(matches)} elements")
     return matches[0]
 
 
@@ -123,14 +120,10 @@ def _series_collection(chart: etree._Element) -> etree._Element:
     raises a clear error if it's missing rather than NPEing."""
     cd = find_child(chart, "ChartData")
     if cd is None:
-        raise ElementNotFoundError(
-            f"chart {chart.get('Name')!r} has no <ChartData>"
-        )
+        raise ElementNotFoundError(f"chart {chart.get('Name')!r} has no <ChartData>")
     sc = find_child(cd, "ChartSeriesCollection")
     if sc is None:
-        raise ElementNotFoundError(
-            f"chart {chart.get('Name')!r} has no <ChartSeriesCollection>"
-        )
+        raise ElementNotFoundError(f"chart {chart.get('Name')!r} has no <ChartSeriesCollection>")
     return sc
 
 
@@ -138,9 +131,7 @@ def _series_names(series_collection: etree._Element) -> list[str]:
     return [s.get("Name") for s in find_children(series_collection, "ChartSeries")]
 
 
-def _find_series(
-    series_collection: etree._Element, series_name: str
-) -> etree._Element:
+def _find_series(series_collection: etree._Element, series_name: str) -> etree._Element:
     for s in find_children(series_collection, "ChartSeries"):
         if s.get("Name") == series_name:
             return s
@@ -344,37 +335,26 @@ def _resolve_chart_axis(
     chart's structure is malformed or the named axis isn't present.
     """
     if axis_kind not in _VALID_AXIS_KINDS:
-        raise ValueError(
-            f"axis must be one of {_VALID_AXIS_KINDS}; got {axis_kind!r}"
-        )
+        raise ValueError(f"axis must be one of {_VALID_AXIS_KINDS}; got {axis_kind!r}")
     chart_areas = find_child(chart, "ChartAreas")
     if chart_areas is None:
-        raise ElementNotFoundError(
-            f"chart {chart.get('Name')!r} has no <ChartAreas>"
-        )
+        raise ElementNotFoundError(f"chart {chart.get('Name')!r} has no <ChartAreas>")
     chart_area = find_child(chart_areas, "ChartArea")
     if chart_area is None:
-        raise ElementNotFoundError(
-            f"chart {chart.get('Name')!r} has no <ChartArea>"
-        )
+        raise ElementNotFoundError(f"chart {chart.get('Name')!r} has no <ChartArea>")
     axes_local = "ChartCategoryAxes" if axis_kind == "Category" else "ChartValueAxes"
     axes_root = find_child(chart_area, axes_local)
     if axes_root is None:
-        raise ElementNotFoundError(
-            f"chart {chart.get('Name')!r} has no <{axes_local}>"
-        )
+        raise ElementNotFoundError(f"chart {chart.get('Name')!r} has no <{axes_local}>")
     for axis in find_children(axes_root, "ChartAxis"):
         if axis.get("Name") == axis_name:
             return axis
     raise ElementNotFoundError(
-        f"no {axis_kind} axis named {axis_name!r} in chart "
-        f"{chart.get('Name')!r}"
+        f"no {axis_kind} axis named {axis_name!r} in chart {chart.get('Name')!r}"
     )
 
 
-def _insert_axis_child_in_order(
-    axis: etree._Element, new_child: etree._Element
-) -> None:
+def _insert_axis_child_in_order(axis: etree._Element, new_child: etree._Element) -> None:
     """Insert ``new_child`` into ``axis`` respecting the schema-required
     sibling order; replace any existing element of the same local name."""
     new_local = etree.QName(new_child).localname
@@ -386,10 +366,7 @@ def _insert_axis_child_in_order(
         new_idx = _CHART_AXIS_CHILD_ORDER.index(new_local)
         for i, child in enumerate(list(axis)):
             local = etree.QName(child).localname
-            if (
-                local in _CHART_AXIS_CHILD_ORDER
-                and _CHART_AXIS_CHILD_ORDER.index(local) > new_idx
-            ):
+            if local in _CHART_AXIS_CHILD_ORDER and _CHART_AXIS_CHILD_ORDER.index(local) > new_idx:
                 axis.insert(i, new_child)
                 return
     axis.append(new_child)
@@ -437,9 +414,7 @@ def _set_axis_format(axis: etree._Element, format_value: str) -> None:
     fmt.text = encode_text(format_value)
 
 
-def _set_axis_simple_text(
-    axis: etree._Element, local: str, value: str
-) -> None:
+def _set_axis_simple_text(axis: etree._Element, local: str, value: str) -> None:
     """Common path for Minimum / Maximum / Interval / LogScale / Visible."""
     if value == "":
         existing = find_child(axis, local)
@@ -480,9 +455,7 @@ def set_chart_axis(
     save).
     """
     if axis not in _VALID_AXIS_KINDS:
-        raise ValueError(
-            f"axis must be one of {_VALID_AXIS_KINDS}; got {axis!r}"
-        )
+        raise ValueError(f"axis must be one of {_VALID_AXIS_KINDS}; got {axis!r}")
 
     flags = {
         "title": title,
@@ -597,8 +570,7 @@ def add_chart_series(
     """
     if series_type not in _VALID_SERIES_TYPES:
         raise ValueError(
-            f"series_type {series_type!r} not valid; "
-            f"expected one of {sorted(_VALID_SERIES_TYPES)}"
+            f"series_type {series_type!r} not valid; expected one of {sorted(_VALID_SERIES_TYPES)}"
         )
     if series_subtype not in _VALID_SERIES_SUBTYPES:
         raise ValueError(
@@ -611,9 +583,7 @@ def add_chart_series(
     sc = _series_collection(chart)
 
     if series_name in _series_names(sc):
-        raise ValueError(
-            f"chart {chart_name!r} already has a series named {series_name!r}"
-        )
+        raise ValueError(f"chart {chart_name!r} already has a series named {series_name!r}")
 
     sc.append(
         _build_chart_series(
@@ -696,8 +666,7 @@ def set_chart_series_type(
     """
     if series_type not in _VALID_SERIES_TYPES:
         raise ValueError(
-            f"series_type {series_type!r} not valid; "
-            f"expected one of {sorted(_VALID_SERIES_TYPES)}"
+            f"series_type {series_type!r} not valid; expected one of {sorted(_VALID_SERIES_TYPES)}"
         )
     if series_subtype not in _VALID_SERIES_SUBTYPES:
         raise ValueError(
@@ -739,16 +708,12 @@ def set_chart_series_type(
 # ---- set_chart_legend ----------------------------------------------------
 
 
-def _resolve_chart_legend(
-    chart: etree._Element, legend_name: str = "Default"
-) -> etree._Element:
+def _resolve_chart_legend(chart: etree._Element, legend_name: str = "Default") -> etree._Element:
     """Resolve the named ``<ChartLegend>``. Raises ElementNotFoundError
     if the chart's <ChartLegends> block or the named legend is missing."""
     legends_root = find_child(chart, "ChartLegends")
     if legends_root is None:
-        raise ElementNotFoundError(
-            f"chart {chart.get('Name')!r} has no <ChartLegends>"
-        )
+        raise ElementNotFoundError(f"chart {chart.get('Name')!r} has no <ChartLegends>")
     for legend in find_children(legends_root, "ChartLegend"):
         if legend.get("Name") == legend_name:
             return legend
@@ -757,9 +722,7 @@ def _resolve_chart_legend(
     )
 
 
-def _insert_legend_child_in_order(
-    legend: etree._Element, new_child: etree._Element
-) -> None:
+def _insert_legend_child_in_order(legend: etree._Element, new_child: etree._Element) -> None:
     new_local = etree.QName(new_child).localname
     existing = find_child(legend, new_local)
     if existing is not None:
@@ -797,8 +760,7 @@ def set_chart_legend(
     """
     if position is not None and position not in _VALID_LEGEND_POSITIONS:
         raise ValueError(
-            f"position {position!r} not valid; expected one of "
-            f"{sorted(_VALID_LEGEND_POSITIONS)}"
+            f"position {position!r} not valid; expected one of {sorted(_VALID_LEGEND_POSITIONS)}"
         )
 
     if position is None and visible is None:
@@ -870,9 +832,7 @@ def _ensure_series_data_label(series: etree._Element) -> etree._Element:
     return label
 
 
-def _insert_data_label_child_in_order(
-    label: etree._Element, new_child: etree._Element
-) -> None:
+def _insert_data_label_child_in_order(label: etree._Element, new_child: etree._Element) -> None:
     new_local = etree.QName(new_child).localname
     existing = find_child(label, new_local)
     if existing is not None:
@@ -1161,21 +1121,15 @@ def set_series_color(
 # ---- set_chart_title -----------------------------------------------------
 
 
-def _resolve_chart_title(
-    chart: etree._Element, title_name: str = "Default"
-) -> etree._Element:
+def _resolve_chart_title(chart: etree._Element, title_name: str = "Default") -> etree._Element:
     """Resolve ``<ChartTitle Name="...">``. Raises if missing."""
     titles_root = find_child(chart, "ChartTitles")
     if titles_root is None:
-        raise ElementNotFoundError(
-            f"chart {chart.get('Name')!r} has no <ChartTitles>"
-        )
+        raise ElementNotFoundError(f"chart {chart.get('Name')!r} has no <ChartTitles>")
     for title in find_children(titles_root, "ChartTitle"):
         if title.get("Name") == title_name:
             return title
-    raise ElementNotFoundError(
-        f"no ChartTitle named {title_name!r} in chart {chart.get('Name')!r}"
-    )
+    raise ElementNotFoundError(f"no ChartTitle named {title_name!r} in chart {chart.get('Name')!r}")
 
 
 def set_chart_title(

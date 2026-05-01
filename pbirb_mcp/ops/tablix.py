@@ -152,9 +152,7 @@ def add_tablix_filter(
     if ds_name_node is not None and ds_name_node.text:
         try:
             dataset = resolve_dataset(doc, ds_name_node.text)
-            warnings = type_mismatch_warnings(
-                doc.root, dataset, effective_expression, values
-            )
+            warnings = type_mismatch_warnings(doc.root, dataset, effective_expression, values)
         except Exception:  # noqa: BLE001 — ElementNotFoundError is fine to swallow
             warnings = []
 

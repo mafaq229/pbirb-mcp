@@ -174,9 +174,6 @@ class TestListDataSources:
 
     def test_empty_when_no_data_sources(self, tmp_path):
         # Build a minimal report with no DataSources block.
-        from lxml import etree as _etree
-
-        from pbirb_mcp.core.xpath import RDL_NS as _RDL_NS
 
         # Easier: copy fixture and remove the DataSources block.
         dst = tmp_path / "no_ds.rdl"
@@ -280,9 +277,7 @@ class TestRemoveDataSource:
             remove_data_source(path=str(multi_path), name="PowerBIDataset")
 
     def test_force_removes_anyway(self, multi_path):
-        result = remove_data_source(
-            path=str(multi_path), name="PowerBIDataset", force=True
-        )
+        result = remove_data_source(path=str(multi_path), name="PowerBIDataset", force=True)
         assert result["removed"] == "PowerBIDataset"
         assert result["force"] is True
         names = [d["name"] for d in list_data_sources(path=str(multi_path))]
@@ -313,9 +308,7 @@ class TestRenameDataSource:
         # Verify the rewrite landed.
         doc = RDLDocument.open(multi_path)
         lookup_set = next(
-            ds
-            for ds in doc.root.iter(f"{{{RDL_NS}}}DataSet")
-            if ds.get("Name") == "LookupSet"
+            ds for ds in doc.root.iter(f"{{{RDL_NS}}}DataSet") if ds.get("Name") == "LookupSet"
         )
         ref = lookup_set.find(f"{{{RDL_NS}}}Query/{{{RDL_NS}}}DataSourceName")
         assert ref.text == "LookupRenamed"
@@ -334,16 +327,12 @@ class TestRenameDataSource:
         # Verify both rewrites landed.
         doc = RDLDocument.open(multi_path)
         main_ds = next(
-            ds
-            for ds in doc.root.iter(f"{{{RDL_NS}}}DataSet")
-            if ds.get("Name") == "MainDataset"
+            ds for ds in doc.root.iter(f"{{{RDL_NS}}}DataSet") if ds.get("Name") == "MainDataset"
         )
         ref1 = main_ds.find(f"{{{RDL_NS}}}Query/{{{RDL_NS}}}DataSourceName")
         assert ref1.text == "PowerBIRenamed"
         shared = next(
-            ds
-            for ds in doc.root.iter(f"{{{RDL_NS}}}DataSource")
-            if ds.get("Name") == "SharedRef"
+            ds for ds in doc.root.iter(f"{{{RDL_NS}}}DataSource") if ds.get("Name") == "SharedRef"
         )
         ref2 = find_child(shared, "DataSourceReference")
         assert ref2.text == "PowerBIRenamed"
@@ -396,9 +385,9 @@ class TestToolRegistration:
     def test_v03_crud_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {
             "list_data_sources",

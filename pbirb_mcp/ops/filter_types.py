@@ -25,7 +25,7 @@ from typing import Optional
 
 from lxml import etree
 
-from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import RD_NS, find_child, find_children
 
 # Maps RDL parameter <DataType> to the canonical "shape group". An
 # rd:TypeName is bucketed via :func:`_canonical_typename_group`, then
@@ -56,8 +56,14 @@ def _canonical_typename_group(rd_typename: str) -> Optional[str]:
     if bare_l == "string":
         return "string"
     if bare_l in (
-        "int16", "int32", "int64", "byte", "sbyte",
-        "uint16", "uint32", "uint64",
+        "int16",
+        "int32",
+        "int64",
+        "byte",
+        "sbyte",
+        "uint16",
+        "uint32",
+        "uint64",
     ):
         return "integer"
     if bare_l in ("double", "single", "decimal"):
@@ -91,9 +97,7 @@ def wrap_with_format(expression: str, field_format: str) -> str:
     return f'{leading_eq}Format({body}, "{safe_format}")'
 
 
-def _resolve_field_typename(
-    dataset: etree._Element, field_name: str
-) -> Optional[str]:
+def _resolve_field_typename(dataset: etree._Element, field_name: str) -> Optional[str]:
     """Return the ``rd:TypeName`` text for a named ``<Field>`` in the
     dataset, or ``None`` if not found / not declared."""
     fields_block = find_child(dataset, "Fields")
@@ -107,9 +111,7 @@ def _resolve_field_typename(
     return None
 
 
-def _resolve_parameter_datatype(
-    root: etree._Element, param_name: str
-) -> Optional[str]:
+def _resolve_parameter_datatype(root: etree._Element, param_name: str) -> Optional[str]:
     """Return the ``<DataType>`` text for a named ``<ReportParameter>``,
     or ``None`` if not declared."""
     params_block = find_child(root, "ReportParameters")

@@ -17,7 +17,7 @@ import pytest
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.xpath import RD_NS, RDL_NS, q, qrd
+from pbirb_mcp.core.xpath import RDL_NS, q, qrd
 from pbirb_mcp.ops.lint import ALL_RULES, lint_report
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
@@ -112,9 +112,7 @@ class TestMultiValueEq:
         )
         assert rp is not None, "fixture should have DateFrom"
         etree.SubElement(rp, q("MultiValue")).text = "true"
-        _add_textbox_with_value(
-            doc, "BadCmp", "=Fields!X.Value = Parameters!DateFrom.Value"
-        )
+        _add_textbox_with_value(doc, "BadCmp", "=Fields!X.Value = Parameters!DateFrom.Value")
         _save(doc)
         result = lint_report(str(rdl_path), rules=["multi-value-eq"])
         assert _rule_count(result, "multi-value-eq") == 1
@@ -268,9 +266,7 @@ class TestDanglingEmbeddedImage:
 
 class TestDanglingDataSourceReference:
     def test_clean(self, rdl_path):
-        result = lint_report(
-            str(rdl_path), rules=["dangling-data-source-reference"]
-        )
+        result = lint_report(str(rdl_path), rules=["dangling-data-source-reference"])
         assert result["issues"] == []
 
     def test_fires_for_unknown_data_source_in_dataset(self, rdl_path):
@@ -279,9 +275,7 @@ class TestDanglingDataSourceReference:
         ds_name_node = ds.find(q("Query")).find(q("DataSourceName"))
         ds_name_node.text = "GhostDataSource"
         _save(doc)
-        result = lint_report(
-            str(rdl_path), rules=["dangling-data-source-reference"]
-        )
+        result = lint_report(str(rdl_path), rules=["dangling-data-source-reference"])
         assert _rule_count(result, "dangling-data-source-reference") == 1
         assert "GhostDataSource" in result["issues"][0]["message"]
 
@@ -296,7 +290,7 @@ class TestDanglingAction:
 
     def test_fires_on_empty_drillthrough(self, rdl_path):
         doc = RDLDocument.open(rdl_path)
-        tb = _add_textbox_with_value(doc, "ActTb", "=\"x\"")
+        tb = _add_textbox_with_value(doc, "ActTb", '="x"')
         # ActionInfo/Actions/Action/Drillthrough/ReportName
         action_info = etree.SubElement(tb, q("ActionInfo"))
         actions = etree.SubElement(action_info, q("Actions"))
@@ -351,8 +345,8 @@ def _inject_parameter_layout(doc: RDLDocument, cell_count: int) -> None:
     helpers (whose own behaviour we're not testing here).
     """
     from pbirb_mcp.ops.parameters import (
-        _build_cell_definition,
         _all_parameter_names,
+        _build_cell_definition,
     )
 
     layout = etree.SubElement(doc.root, q("ReportParametersLayout"))
@@ -374,9 +368,7 @@ class TestParameterLayoutOutOfSync:
         param_count = len(doc.root.find(q("ReportParameters")))
         _inject_parameter_layout(doc, param_count)
         _save(doc)
-        result = lint_report(
-            str(rdl_path), rules=["parameter-layout-out-of-sync"]
-        )
+        result = lint_report(str(rdl_path), rules=["parameter-layout-out-of-sync"])
         assert result["issues"] == []
 
     def test_fires_when_counts_diverge(self, rdl_path):
@@ -385,9 +377,7 @@ class TestParameterLayoutOutOfSync:
         param_count = len(doc.root.find(q("ReportParameters")))
         _inject_parameter_layout(doc, param_count - 1)
         _save(doc)
-        result = lint_report(
-            str(rdl_path), rules=["parameter-layout-out-of-sync"]
-        )
+        result = lint_report(str(rdl_path), rules=["parameter-layout-out-of-sync"])
         assert _rule_count(result, "parameter-layout-out-of-sync") == 1
 
 
@@ -412,7 +402,6 @@ class TestDoubleEncodedEntities:
         )
         # Direct injection: append a TextRun with a double-encoded body.
         # Use any existing Paragraph/TextRuns insertion point.
-        injection_target = "<Paragraphs>"
         injected = (
             "<Paragraphs><Paragraph><TextRuns><TextRun><Value>"
             "Foo &amp;amp; Bar"
@@ -476,8 +465,8 @@ class TestToolRegistration:
     def test_lint_report_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "lint_report" in names

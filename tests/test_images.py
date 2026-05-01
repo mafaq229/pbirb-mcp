@@ -69,9 +69,7 @@ class TestSetImageSizing:
             height="1in",
         )
         # Default is FitProportional; flip to Clip.
-        result = set_image_sizing(
-            path=str(rdl_path), image_name="Logo", sizing="Clip"
-        )
+        result = set_image_sizing(path=str(rdl_path), image_name="Logo", sizing="Clip")
         assert result["name"] == "Logo"
         assert result["kind"] == "Image"
         assert result["changed"] is True
@@ -91,23 +89,17 @@ class TestSetImageSizing:
         )
         # Default is FitProportional. Setting again is a no-op.
         before = (rdl_path).read_bytes()
-        result = set_image_sizing(
-            path=str(rdl_path), image_name="Logo", sizing="FitProportional"
-        )
+        result = set_image_sizing(path=str(rdl_path), image_name="Logo", sizing="FitProportional")
         assert result["changed"] is False
         assert (rdl_path).read_bytes() == before
 
     def test_invalid_sizing_rejected(self, rdl_path):
         with pytest.raises(ValueError, match="not valid"):
-            set_image_sizing(
-                path=str(rdl_path), image_name="Logo", sizing="StretchPlease"
-            )
+            set_image_sizing(path=str(rdl_path), image_name="Logo", sizing="StretchPlease")
 
     def test_unknown_image_rejected(self, rdl_path):
         with pytest.raises(ElementNotFoundError):
-            set_image_sizing(
-                path=str(rdl_path), image_name="NoSuchImage", sizing="Fit"
-            )
+            set_image_sizing(path=str(rdl_path), image_name="NoSuchImage", sizing="Fit")
 
     def test_round_trip_safe(self, rdl_path):
         add_body_image(
@@ -182,9 +174,7 @@ class TestSetImageSource:
             height="1in",
         )
         before = (rdl_path).read_bytes()
-        result = set_image_source(
-            path=str(rdl_path), image_name="HeaderLogo", embedded_name="Logo"
-        )
+        result = set_image_source(path=str(rdl_path), image_name="HeaderLogo", embedded_name="Logo")
         assert result["changed"] is False
         assert (rdl_path).read_bytes() == before
 
@@ -206,9 +196,7 @@ class TestSetImageSource:
             width="2in",
             height="1in",
         )
-        with pytest.raises(
-            ElementNotFoundError, match="not found in <EmbeddedImages>"
-        ):
+        with pytest.raises(ElementNotFoundError, match="not found in <EmbeddedImages>"):
             set_image_source(
                 path=str(rdl_path),
                 image_name="HeaderLogo",
@@ -281,17 +269,17 @@ class TestToolRegistration:
     def test_set_image_sizing_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "set_image_sizing" in names
 
     def test_set_image_source_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "set_image_source" in names

@@ -51,9 +51,7 @@ class TestGetExpressionReference:
         # explicitly call this out so a future LLM doesn't hit
         # BC30451 ''amp' is not declared'.
         ref = get_expression_reference()
-        concat = next(
-            e for e in ref["strings"] if e["name"] == "Concatenation"
-        )
+        concat = next(e for e in ref["strings"] if e["name"] == "Concatenation")
         assert "&amp;" in concat["description"]
         assert "BC30451" in concat["description"]
 
@@ -65,7 +63,9 @@ class TestGetExpressionReference:
     def test_returned_dict_is_isolated_copy(self):
         # Mutating the returned dict must not affect subsequent calls.
         ref1 = get_expression_reference()
-        ref1["globals"].append({"name": "Mutated", "syntax": "x", "example": "x", "description": "x"})
+        ref1["globals"].append(
+            {"name": "Mutated", "syntax": "x", "example": "x", "description": "x"}
+        )
         ref2 = get_expression_reference()
         names = {e["name"] for e in ref2["globals"]}
         assert "Mutated" not in names
@@ -94,13 +94,8 @@ class TestCountWhere:
 
 class TestSumWhere:
     def test_emits_canonical_pattern(self):
-        out = sum_where(
-            "Fields!Amount.Value", 'Fields!Status.Value = "Active"'
-        )
-        assert out == (
-            '=Sum(IIf(Fields!Status.Value = "Active", '
-            "Fields!Amount.Value, 0))"
-        )
+        out = sum_where("Fields!Amount.Value", 'Fields!Status.Value = "Active"')
+        assert out == ('=Sum(IIf(Fields!Status.Value = "Active", Fields!Amount.Value, 0))')
 
     def test_empty_field_rejected(self):
         with pytest.raises(ValueError, match="field_expression"):
@@ -122,10 +117,7 @@ class TestIIfFormat:
             'Format(Fields!X.Value, "C2")',
             '"-"',
         )
-        assert out == (
-            '=IIf(Fields!X.Value > 100, '
-            'Format(Fields!X.Value, "C2"), "-")'
-        )
+        assert out == ('=IIf(Fields!X.Value > 100, Format(Fields!X.Value, "C2"), "-")')
 
     def test_empty_args_rejected(self):
         with pytest.raises(ValueError, match="condition"):
@@ -140,18 +132,18 @@ class TestToolRegistration:
     def test_get_expression_reference_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "get_expression_reference" in names
 
     def test_emitter_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {"count_where", "sum_where", "iif_format"} <= names
 
@@ -183,9 +175,7 @@ class TestToolRegistration:
                 "method": "tools/call",
                 "params": {
                     "name": "count_where",
-                    "arguments": {
-                        "condition": 'Fields!Status.Value = "Active"'
-                    },
+                    "arguments": {"condition": 'Fields!Status.Value = "Active"'},
                 },
             }
         )
@@ -193,6 +183,4 @@ class TestToolRegistration:
 
         text = resp["result"]["content"][0]["text"]
         # The emitter returns a string; server JSON-encodes that.
-        assert json.loads(text) == (
-            '=Sum(IIf(Fields!Status.Value = "Active", 1, 0))'
-        )
+        assert json.loads(text) == ('=Sum(IIf(Fields!Status.Value = "Active", 1, 0))')

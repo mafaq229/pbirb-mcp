@@ -148,9 +148,7 @@ class TestAutoVerifyOn:
         assert "error_type" in payload
         assert "verify" not in payload
 
-    def test_verify_surfaces_lint_issues_after_mutation(
-        self, server, rdl_path, monkeypatch
-    ):
+    def test_verify_surfaces_lint_issues_after_mutation(self, server, rdl_path, monkeypatch):
         # Adding an unused DataSource fires unused-data-source warning.
         monkeypatch.setenv("PBIRB_MCP_AUTO_VERIFY", "1")
         out = _call(

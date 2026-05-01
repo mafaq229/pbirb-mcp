@@ -187,9 +187,7 @@ class TestSetTextboxActionDrillthrough:
             textbox_name="HeaderProductID",
             action_type="Drillthrough",
             target_expression="DetailReport",
-            drillthrough_parameters=[
-                {"name": "ProductID", "value": "=Fields!ProductID.Value"}
-            ],
+            drillthrough_parameters=[{"name": "ProductID", "value": "=Fields!ProductID.Value"}],
         )
         before = (rdl_path).read_bytes()
         result = set_textbox_action(
@@ -197,9 +195,7 @@ class TestSetTextboxActionDrillthrough:
             textbox_name="HeaderProductID",
             action_type="Drillthrough",
             target_expression="DetailReport",
-            drillthrough_parameters=[
-                {"name": "ProductID", "value": "=Fields!ProductID.Value"}
-            ],
+            drillthrough_parameters=[{"name": "ProductID", "value": "=Fields!ProductID.Value"}],
         )
         assert result["changed"] is False
         assert (rdl_path).read_bytes() == before
@@ -325,7 +321,10 @@ class TestLegacyBareActionMigration:
             name="LegacyLogo",
             image_source="External",
             value="http://x/img.png",
-            top="0in", left="0in", width="2in", height="1in",
+            top="0in",
+            left="0in",
+            width="2in",
+            height="1in",
         )
         # Inject the buggy shape.
         doc = RDLDocument.open(rdl_path)
@@ -508,7 +507,7 @@ class TestSetDocumentMapLabel:
         result = set_document_map_label(
             path=str(rdl_path),
             element_name="MainTable",
-            label_or_expression="=\"Sales (\" & Format(Now(), \"yyyy-MM-dd\") & \")\"",
+            label_or_expression='="Sales (" & Format(Now(), "yyyy-MM-dd") & ")"',
         )
         assert result["kind"] == "Tablix"
         doc = RDLDocument.open(rdl_path)
@@ -561,9 +560,7 @@ def _series(chart_path: Path, chart_name: str, series_name: str) -> etree._Eleme
     doc = RDLDocument.open(chart_path)
     chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='{chart_name}']")
     sc = chart.find(f"{q('ChartData')}/{q('ChartSeriesCollection')}")
-    return next(
-        s for s in find_children(sc, "ChartSeries") if s.get("Name") == series_name
-    )
+    return next(s for s in find_children(sc, "ChartSeries") if s.get("Name") == series_name)
 
 
 def _series_data_point_inner_action(series: etree._Element) -> etree._Element:
@@ -716,9 +713,7 @@ class TestSetChartSeriesAction:
         # and CustomProperties (or before, when no preceding optionals
         # are present). At minimum it must come AFTER ChartDataPointValues.
         if "ChartDataPointValues" in cdp_locals:
-            assert cdp_locals.index("ActionInfo") > cdp_locals.index(
-                "ChartDataPointValues"
-            )
+            assert cdp_locals.index("ActionInfo") > cdp_locals.index("ChartDataPointValues")
 
     def test_round_trip_safe(self, chart_path):
         set_chart_series_action(
@@ -741,9 +736,9 @@ class TestToolRegistration:
     def test_action_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {
             "set_textbox_action",
@@ -755,8 +750,8 @@ class TestToolRegistration:
     def test_chart_series_action_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "set_chart_series_action" in names

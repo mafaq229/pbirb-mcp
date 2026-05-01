@@ -94,9 +94,7 @@ _TEXTBOX_DIRECT_CHILD_ORDER = (
 )
 
 
-def _set_or_create_textbox_direct_child(
-    textbox: etree._Element, local: str, value: str
-) -> bool:
+def _set_or_create_textbox_direct_child(textbox: etree._Element, local: str, value: str) -> bool:
     """Set ``<local>value</local>`` as a direct child of ``Textbox``,
     respecting the RDL XSD child order. Returns True iff the value
     actually changed (used by ``changed: list[str]`` callers).
@@ -573,14 +571,10 @@ _RUN_KWARG_TO_STYLE_LOCAL: tuple[tuple[str, str], ...] = (
     ("format", "Format"),
     ("text_decoration", "TextDecoration"),
 )
-_RECOGNISED_RUN_KEYS = frozenset(
-    ["text"] + [kwarg for kwarg, _ in _RUN_KWARG_TO_STYLE_LOCAL]
-)
+_RECOGNISED_RUN_KEYS = frozenset(["text"] + [kwarg for kwarg, _ in _RUN_KWARG_TO_STYLE_LOCAL])
 
 
-def _runs_match_specs(
-    paragraphs: etree._Element, specs: list[dict[str, Any]]
-) -> bool:
+def _runs_match_specs(paragraphs: etree._Element, specs: list[dict[str, Any]]) -> bool:
     """Structural equality check: do the existing TextRuns under the
     first Paragraph match the supplied specs exactly?
 
@@ -682,9 +676,7 @@ def set_textbox_runs(
       offending keys.
     """
     if not isinstance(runs, list) or not runs:
-        raise ValueError(
-            "runs must be a non-empty list; supply at least one run entry"
-        )
+        raise ValueError("runs must be a non-empty list; supply at least one run entry")
     for i, run in enumerate(runs):
         if not isinstance(run, dict):
             raise ValueError(f"runs[{i}] must be a dict; got {type(run).__name__}")
@@ -1129,14 +1121,11 @@ def _resolve_row_index(tablix: etree._Element, row: object) -> int:
     if isinstance(row, int):
         if row < 0 or row >= len(rows):
             raise IndexError(
-                f"tablix {tablix.get('Name')!r} has {len(rows)} rows; "
-                f"index {row} is out of range"
+                f"tablix {tablix.get('Name')!r} has {len(rows)} rows; index {row} is out of range"
             )
         return row
     if not isinstance(row, str):
-        raise TypeError(
-            f"row must be int or str; got {type(row).__name__}"
-        )
+        raise TypeError(f"row must be int or str; got {type(row).__name__}")
 
     if row == "details":
         idx = _detail_row_index(tablix)
@@ -1161,8 +1150,7 @@ def _resolve_row_index(tablix: etree._Element, row: object) -> int:
         idx = _group_row_index(tablix, group, "header")
         if idx is None:
             raise ElementNotFoundError(
-                f"tablix {tablix.get('Name')!r} has no header row for "
-                f"group {group!r}"
+                f"tablix {tablix.get('Name')!r} has no header row for group {group!r}"
             )
         return idx
     if row.endswith("_footer") and len(row) > len("_footer"):

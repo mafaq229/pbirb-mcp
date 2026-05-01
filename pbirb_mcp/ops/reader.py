@@ -45,9 +45,7 @@ def _parameter_layout_summary(root: etree._Element) -> Optional[dict[str, Any]]:
     rows_node = find_child(grid, "NumberOfRows") if grid is not None else None
     cols_node = find_child(grid, "NumberOfColumns") if grid is not None else None
     cells_root = find_child(grid, "CellDefinitions") if grid is not None else None
-    cell_count = (
-        len(find_children(cells_root, "CellDefinition")) if cells_root is not None else 0
-    )
+    cell_count = len(find_children(cells_root, "CellDefinition")) if cells_root is not None else 0
     params_block = find_child(root, "ReportParameters")
     parameters_count = (
         len(find_children(params_block, "ReportParameter")) if params_block is not None else 0
@@ -744,9 +742,7 @@ def _chart_series_dict(series: etree._Element) -> dict[str, Any]:
     style color when set explicitly via ``<Style>/<Color>``.
     """
     data_points = find_child(series, "ChartDataPoints")
-    point = (
-        find_child(data_points, "ChartDataPoint") if data_points is not None else None
-    )
+    point = find_child(data_points, "ChartDataPoint") if data_points is not None else None
     values = find_child(point, "ChartDataPointValues") if point is not None else None
     y = find_child(values, "Y") if values is not None else None
     x = find_child(values, "X") if values is not None else None
@@ -774,9 +770,7 @@ def _chart_axis_dict(axis: etree._Element) -> dict[str, Any]:
     title_node = find_child(axis, "ChartAxisTitle")
     if title_node is None:
         title_node = find_child(axis, "Title")
-    title_caption = (
-        _text(find_child(title_node, "Caption")) if title_node is not None else None
-    )
+    title_caption = _text(find_child(title_node, "Caption")) if title_node is not None else None
     min_node = find_child(axis, "Minimum")
     max_node = find_child(axis, "Maximum")
     interval = find_child(axis, "Interval")
@@ -816,9 +810,8 @@ def _chart_legend_dict(chart: etree._Element) -> Optional[dict[str, Any]]:
         visible_text = "false" if hidden_text.strip().lower() == "true" else "true"
     return {
         "name": legend.get("Name"),
-        "position": _text(find_child(legend, "DockOutsideChartArea")) or _text(
-            find_child(legend, "Position")
-        ),
+        "position": _text(find_child(legend, "DockOutsideChartArea"))
+        or _text(find_child(legend, "Position")),
         "visible": visible_text,
     }
 
@@ -894,9 +887,7 @@ def get_chart(path: str, name: str) -> dict[str, Any]:
         raise ElementNotFoundError(f"no Chart named {name!r}")
 
     # Series collection.
-    series_collection = chart.find(
-        f"{{{RDL_NS}}}ChartData/{{{RDL_NS}}}ChartSeriesCollection"
-    )
+    series_collection = chart.find(f"{{{RDL_NS}}}ChartData/{{{RDL_NS}}}ChartSeriesCollection")
     series_list: list[dict[str, Any]] = []
     if series_collection is not None:
         for s in find_children(series_collection, "ChartSeries"):
@@ -962,9 +953,7 @@ _FILTER_LOCATIONS: dict[str, tuple[str, str]] = {
 }
 
 
-def _textbox_style_field_value(
-    textbox: etree._Element, level: str, local: str
-) -> Optional[str]:
+def _textbox_style_field_value(textbox: etree._Element, level: str, local: str) -> Optional[str]:
     """Read the effective value of one Style field on a textbox at the
     given level (box / border / paragraph / run). Returns ``None`` when
     absent."""
@@ -1078,7 +1067,7 @@ def find_textboxes_by_style(
     wants to feed the result into ``set_textbox_style_bulk``).
     """
     filters: dict[str, str] = {}
-    for kwarg, level_local in _FILTER_LOCATIONS.items():
+    for kwarg in _FILTER_LOCATIONS:
         v = locals().get(kwarg)
         if v is not None:
             filters[kwarg] = v

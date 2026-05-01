@@ -55,7 +55,7 @@ from typing import Any, Callable
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q
 from pbirb_mcp.ops.dataset import _is_pbidataset_dataset
 
 Issue = dict[str, Any]
@@ -117,10 +117,17 @@ def _iter_expression_nodes(root: etree._Element):
     positives are tolerable because the rule body filters by content
     (``=``-prefix, ``Fields!``, ``Parameters!``, etc.).
     """
-    for tag in ("Value", "FilterExpression", "GroupExpression", "SortExpression",
-                "ToolTip", "Label", "Hidden", "InitialToggleState"):
-        for elem in root.iter(q(tag)):
-            yield elem
+    for tag in (
+        "Value",
+        "FilterExpression",
+        "GroupExpression",
+        "SortExpression",
+        "ToolTip",
+        "Label",
+        "Hidden",
+        "InitialToggleState",
+    ):
+        yield from root.iter(q(tag))
 
 
 # ---- rule 1: multi-value-eq --------------------------------------------
@@ -149,12 +156,8 @@ def _rule_multi_value_eq(doc: RDLDocument) -> list[Issue]:
     # the RIGHT (`= Parameters!X.Value`). `=(?!=)` keeps `==` out, but
     # the LHS form must also reject the leading `=` that starts every
     # RDL expression — handled by requiring a non-`=`-anchored prefix.
-    pattern_left = re.compile(
-        r"Parameters!(" + names_alt + r")\.Value\s*=(?!=)"
-    )
-    pattern_right = re.compile(
-        r"(?<!=)=\s*Parameters!(" + names_alt + r")\.Value"
-    )
+    pattern_left = re.compile(r"Parameters!(" + names_alt + r")\.Value\s*=(?!=)")
+    pattern_right = re.compile(r"(?<!=)=\s*Parameters!(" + names_alt + r")\.Value")
     issues: list[Issue] = []
     seen: set[tuple[str, str]] = set()
     for elem in _iter_expression_nodes(doc.root):
@@ -182,7 +185,7 @@ def _rule_multi_value_eq(doc: RDLDocument) -> list[Issue]:
                         ),
                         "suggestion": (
                             f"use IN: ``Fields!X.Value IN (Parameters!{m.group(1)}.Value)`` "
-                            f"or JOIN(Parameters!{m.group(1)}.Value, \",\")"
+                            f'or JOIN(Parameters!{m.group(1)}.Value, ",")'
                         ),
                     }
                 )
@@ -193,9 +196,7 @@ def _rule_multi_value_eq(doc: RDLDocument) -> list[Issue]:
 
 
 def _rule_unused_data_source(doc: RDLDocument) -> list[Issue]:
-    sources = {
-        ds.get("Name"): ds for ds in doc.root.iter(q("DataSource")) if ds.get("Name")
-    }
+    sources = {ds.get("Name"): ds for ds in doc.root.iter(q("DataSource")) if ds.get("Name")}
     if not sources:
         return []
     referenced: set[str] = set()
@@ -222,9 +223,7 @@ def _rule_unused_data_set(doc: RDLDocument) -> list[Issue]:
     datasets_block = find_child(doc.root, "DataSets")
     if datasets_block is None:
         return []
-    datasets = {
-        d.get("Name"): d for d in find_children(datasets_block, "DataSet") if d.get("Name")
-    }
+    datasets = {d.get("Name"): d for d in find_children(datasets_block, "DataSet") if d.get("Name")}
     if not datasets:
         return []
     referenced: set[str] = set()
@@ -350,9 +349,7 @@ def _rule_page_number_out_of_chrome(doc: RDLDocument) -> list[Issue]:
                 "severity": "error",
                 "rule": "page-number-out-of-chrome",
                 "location": _ancestor_chain(elem),
-                "message": (
-                    f"Globals!{m.group(1)} only resolves inside <PageHeader>/<PageFooter>"
-                ),
+                "message": (f"Globals!{m.group(1)} only resolves inside <PageHeader>/<PageFooter>"),
                 "suggestion": "move the textbox to the page header/footer",
             }
         )
@@ -468,9 +465,7 @@ def _rule_dangling_data_source_reference(doc: RDLDocument) -> list[Issue]:
                     f"DataSet {ds.get('Name')!r} references DataSource {ref.text!r}, "
                     "which isn't declared"
                 ),
-                "suggestion": (
-                    "add the DataSource via add_data_source or update the reference"
-                ),
+                "suggestion": ("add the DataSource via add_data_source or update the reference"),
             }
         )
     return issues

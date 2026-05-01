@@ -340,8 +340,7 @@ def add_query_parameter(
 
     if _find_query_parameter(qp_root, effective_name) is not None:
         raise ValueError(
-            f"QueryParameter {effective_name!r} already exists in "
-            f"dataset {dataset_name!r}"
+            f"QueryParameter {effective_name!r} already exists in dataset {dataset_name!r}"
         )
 
     qp = etree.SubElement(qp_root, q("QueryParameter"), Name=effective_name)
@@ -568,9 +567,7 @@ def add_dataset_filter(
 
     doc = RDLDocument.open(path)
     dataset = resolve_dataset(doc, dataset_name)
-    warnings = type_mismatch_warnings(
-        doc.root, dataset, effective_expression, values
-    )
+    warnings = type_mismatch_warnings(doc.root, dataset, effective_expression, values)
     filters_root = _ensure_dataset_filters_block(dataset)
 
     filter_node = etree.SubElement(filters_root, q("Filter"))
@@ -608,9 +605,7 @@ def remove_dataset_filter(
     filters_root = find_child(dataset, "Filters")
     filters = find_children(filters_root, "Filter") if filters_root is not None else []
     if not filters or filter_index < 0 or filter_index >= len(filters):
-        raise IndexError(
-            f"dataset {dataset_name!r} has no filter at index {filter_index}"
-        )
+        raise IndexError(f"dataset {dataset_name!r} has no filter at index {filter_index}")
 
     target = filters[filter_index]
     filters_root.remove(target)
@@ -634,9 +629,7 @@ def _field_to_dict(field: etree._Element) -> dict[str, Any]:
         "name": field.get("Name"),
         "data_field": df.text if df is not None else None,
         "value": val.text if val is not None else None,
-        "type_name": (
-            type_name_node.text if type_name_node is not None else None
-        ),
+        "type_name": (type_name_node.text if type_name_node is not None else None),
     }
 
 
@@ -668,9 +661,7 @@ def get_dataset(path: str, name: str) -> dict[str, Any]:
                         "value": qp_value.text if qp_value is not None else None,
                     }
                 )
-        designer_state_present = (
-            query.find(f"{{{RD_NS}}}DesignerState") is not None
-        )
+        designer_state_present = query.find(f"{{{RD_NS}}}DesignerState") is not None
 
     fields: list[dict[str, Any]] = []
     fields_root = find_child(dataset, "Fields")
@@ -744,14 +735,10 @@ def add_calculated_field(
 
     fields_root = _ensure_fields_block(dataset)
     existing_names = [
-        f.get("Name")
-        for f in find_children(fields_root, "Field")
-        if f.get("Name") is not None
+        f.get("Name") for f in find_children(fields_root, "Field") if f.get("Name") is not None
     ]
     if field_name in existing_names:
-        raise ValueError(
-            f"field {field_name!r} already exists in dataset {dataset_name!r}"
-        )
+        raise ValueError(f"field {field_name!r} already exists in dataset {dataset_name!r}")
 
     new_field = etree.SubElement(fields_root, q("Field"), Name=field_name)
     value_node = etree.SubElement(new_field, q("Value"))
@@ -786,9 +773,7 @@ def remove_calculated_field(
 
     fields_root = find_child(dataset, "Fields")
     if fields_root is None:
-        raise ElementNotFoundError(
-            f"dataset {dataset_name!r} has no <Fields> block"
-        )
+        raise ElementNotFoundError(f"dataset {dataset_name!r} has no <Fields> block")
 
     target: Optional[etree._Element] = None
     for f in find_children(fields_root, "Field"):
@@ -796,9 +781,7 @@ def remove_calculated_field(
             target = f
             break
     if target is None:
-        raise ElementNotFoundError(
-            f"field {field_name!r} not found in dataset {dataset_name!r}"
-        )
+        raise ElementNotFoundError(f"field {field_name!r} not found in dataset {dataset_name!r}")
 
     if find_child(target, "DataField") is not None and find_child(target, "Value") is None:
         raise ValueError(
@@ -858,14 +841,10 @@ def add_dataset_field(
 
     fields_root = _ensure_fields_block(dataset)
     existing_names = [
-        f.get("Name")
-        for f in find_children(fields_root, "Field")
-        if f.get("Name") is not None
+        f.get("Name") for f in find_children(fields_root, "Field") if f.get("Name") is not None
     ]
     if field_name in existing_names:
-        raise ValueError(
-            f"field {field_name!r} already exists in dataset {dataset_name!r}"
-        )
+        raise ValueError(f"field {field_name!r} already exists in dataset {dataset_name!r}")
 
     new_field = etree.SubElement(fields_root, q("Field"), Name=field_name)
     df_node = etree.SubElement(new_field, q("DataField"))
@@ -1045,18 +1024,14 @@ def refresh_dataset_fields(
             "added": [],
             "orphans": [],
             "unchanged": [],
-            "warnings": [
-                f"dataset {dataset_name!r} has no <CommandText>; nothing to refresh."
-            ],
+            "warnings": [f"dataset {dataset_name!r} has no <CommandText>; nothing to refresh."],
         }
 
     extracted, warnings = _extract_dax_field_names(command_text)
 
     fields_root = _ensure_fields_block(dataset)
     existing_fields = find_children(fields_root, "Field")
-    existing_names = [
-        f.get("Name") for f in existing_fields if f.get("Name") is not None
-    ]
+    existing_names = [f.get("Name") for f in existing_fields if f.get("Name") is not None]
     extracted_set = set(extracted)
     existing_set = set(existing_names)
 

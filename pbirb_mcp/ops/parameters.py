@@ -554,9 +554,7 @@ def sync_parameter_layout(path: str) -> dict[str, Any]:
     final_rows = next_row + 1 if (added or cells_on_next_row) else max(0, max_row + 1)
     rows_node = find_child(grid, "NumberOfRows")
     try:
-        existing_rows = (
-            int(rows_node.text) if rows_node is not None and rows_node.text else 0
-        )
+        existing_rows = int(rows_node.text) if rows_node is not None and rows_node.text else 0
     except ValueError:
         existing_rows = 0
     if final_rows > existing_rows:
@@ -641,9 +639,7 @@ def _sync_parameter_layout_in_doc(doc: RDLDocument) -> tuple[list[str], list[str
     final_rows = next_row + 1 if (added or cells_on_next_row) else max(0, max_row + 1)
     rows_node = find_child(grid, "NumberOfRows")
     try:
-        existing_rows = (
-            int(rows_node.text) if rows_node is not None and rows_node.text else 0
-        )
+        existing_rows = int(rows_node.text) if rows_node is not None and rows_node.text else 0
     except ValueError:
         existing_rows = 0
     if final_rows > existing_rows:
@@ -939,9 +935,7 @@ def reorder_parameters(
     rdl_ns = doc.root.nsmap.get(None) or ""
     params_root = doc.root.find(f"{{{rdl_ns}}}ReportParameters")
     if params_root is None:
-        raise ElementNotFoundError(
-            "report has no <ReportParameters> block — nothing to reorder"
-        )
+        raise ElementNotFoundError("report has no <ReportParameters> block — nothing to reorder")
 
     existing = [
         p.get("Name")
@@ -960,8 +954,7 @@ def reorder_parameters(
 
         dupes = [n for n, c in Counter(names).items() if c > 1]
         raise ValueError(
-            f"names contains duplicate(s): {dupes!r}. Each parameter "
-            "name must appear exactly once."
+            f"names contains duplicate(s): {dupes!r}. Each parameter name must appear exactly once."
         )
     extras = [n for n in names if n not in existing]
     missing = [n for n in existing if n not in names]
@@ -979,10 +972,7 @@ def reorder_parameters(
         }
 
     # Reorder the <ReportParameter> children.
-    by_name = {
-        p.get("Name"): p
-        for p in find_children(params_root, "ReportParameter")
-    }
+    by_name = {p.get("Name"): p for p in find_children(params_root, "ReportParameter")}
     for p in list(by_name.values()):
         params_root.remove(p)
     for name in names:
@@ -1064,9 +1054,7 @@ def _ensure_report_parameters_layout(
     layout = find_child(doc.root, "ReportParametersLayout")
     if layout is None:
         layout = etree.Element(q("ReportParametersLayout"))
-        sections = doc.root.find(
-            f"{{{doc.root.nsmap.get(None) or ''}}}ReportSections"
-        )
+        sections = doc.root.find(f"{{{doc.root.nsmap.get(None) or ''}}}ReportSections")
         if sections is not None:
             sections.addprevious(layout)
         else:
@@ -1135,9 +1123,7 @@ def set_parameter_layout(
         from collections import Counter
 
         dupes = [n for n, c in Counter(parameter_order).items() if c > 1]
-        raise ValueError(
-            f"parameter_order contains duplicate(s): {dupes!r}"
-        )
+        raise ValueError(f"parameter_order contains duplicate(s): {dupes!r}")
     extras = [n for n in parameter_order if n not in declared]
     missing = [n for n in declared if n not in parameter_order]
     if extras or missing:
@@ -1158,12 +1144,8 @@ def set_parameter_layout(
     cols_node = find_child(grid, "NumberOfColumns")
     rows_node = find_child(grid, "NumberOfRows")
     cells_root = find_child(grid, "CellDefinitions")
-    current_cols = (
-        int(cols_node.text) if cols_node is not None and cols_node.text else None
-    )
-    current_rows = (
-        int(rows_node.text) if rows_node is not None and rows_node.text else None
-    )
+    current_cols = int(cols_node.text) if cols_node is not None and cols_node.text else None
+    current_rows = int(rows_node.text) if rows_node is not None and rows_node.text else None
     current_order: list[str] = []
     if cells_root is not None:
         for cell in find_children(cells_root, "CellDefinition"):
@@ -1171,11 +1153,7 @@ def set_parameter_layout(
             if pname is not None:
                 current_order.append(pname)
 
-    if (
-        current_cols == columns
-        and current_rows == rows
-        and current_order == list(parameter_order)
-    ):
+    if current_cols == columns and current_rows == rows and current_order == list(parameter_order):
         return {
             "rows": rows,
             "columns": columns,

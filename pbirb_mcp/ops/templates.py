@@ -150,7 +150,6 @@ def insert_tablix_from_template(
 # with any caller importing it from this module.
 from pbirb_mcp.ops.chart import insert_chart_from_template  # noqa: E402, F401
 
-
 __all__ = [
     "insert_chart_from_template",
     "insert_tablix_from_template",

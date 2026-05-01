@@ -58,11 +58,7 @@ def raw_xml_view(path: str, xpath: str) -> list[str]:
     """
     doc = RDLDocument.open(path)
     matches = _evaluate(doc, xpath)
-    return [
-        etree.tostring(m, encoding="unicode")
-        for m in matches
-        if isinstance(m, etree._Element)
-    ]
+    return [etree.tostring(m, encoding="unicode") for m in matches if isinstance(m, etree._Element)]
 
 
 def raw_xml_replace(path: str, xpath: str, content: str) -> dict[str, Any]:
@@ -99,17 +95,12 @@ def raw_xml_replace(path: str, xpath: str, content: str) -> dict[str, Any]:
     if not isinstance(target, etree._Element):
         raise ValueError(f"xpath {xpath!r} matched a non-element node")
     if target is doc.root:
-        raise ValueError(
-            "refusing to replace the <Report> root — that would corrupt "
-            "the document"
-        )
+        raise ValueError("refusing to replace the <Report> root — that would corrupt the document")
 
     # Parse content with RDL as the default namespace + rd: bound. Wrap
     # in a synthetic envelope so the user can write bare element names
     # without declaring xmlns themselves.
-    wrapper_xml = (
-        f'<wrapper xmlns="{RDL_NS}" xmlns:rd="{RD_NS}">{content}</wrapper>'
-    )
+    wrapper_xml = f'<wrapper xmlns="{RDL_NS}" xmlns:rd="{RD_NS}">{content}</wrapper>'
     try:
         wrapper = etree.fromstring(wrapper_xml)
     except etree.XMLSyntaxError as exc:
@@ -119,9 +110,7 @@ def raw_xml_replace(path: str, xpath: str, content: str) -> dict[str, Any]:
     if not children:
         raise ValueError("content must contain exactly one XML element; got zero")
     if len(children) > 1:
-        raise ValueError(
-            f"content must contain exactly one XML element; got {len(children)}"
-        )
+        raise ValueError(f"content must contain exactly one XML element; got {len(children)}")
     new_node = children[0]
 
     parent = target.getparent()

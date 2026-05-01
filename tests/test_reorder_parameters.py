@@ -53,10 +53,7 @@ def _layout_cell_names(rdl_path: Path) -> list[str]:
     cells = find_child(grid, "CellDefinitions")
     if cells is None:
         return []
-    return [
-        find_child(c, "ParameterName").text
-        for c in find_children(cells, "CellDefinition")
-    ]
+    return [find_child(c, "ParameterName").text for c in find_children(cells, "CellDefinition")]
 
 
 def _inject_layout(rdl_path: Path):
@@ -83,18 +80,14 @@ def _inject_layout(rdl_path: Path):
 class TestReorderParametersHappyPath:
     def test_reorder_swaps_two(self, rdl_path):
         # Fixture has DateFrom, DateTo in that order.
-        result = reorder_parameters(
-            path=str(rdl_path), names=["DateTo", "DateFrom"]
-        )
+        result = reorder_parameters(path=str(rdl_path), names=["DateTo", "DateFrom"])
         assert result["changed"] is True
         assert result["order"] == ["DateTo", "DateFrom"]
         assert _parameter_names(rdl_path) == ["DateTo", "DateFrom"]
 
     def test_idempotent_when_unchanged(self, rdl_path):
         before = (rdl_path).read_bytes()
-        result = reorder_parameters(
-            path=str(rdl_path), names=["DateFrom", "DateTo"]
-        )
+        result = reorder_parameters(path=str(rdl_path), names=["DateFrom", "DateTo"])
         assert result["changed"] is False
         assert (rdl_path).read_bytes() == before
 
@@ -108,9 +101,7 @@ class TestReorderParametersHappyPath:
         assert _parameter_names(rdl_path) == ["Region", "DateFrom", "DateTo"]
 
     def test_round_trip_safe(self, rdl_path):
-        reorder_parameters(
-            path=str(rdl_path), names=["DateTo", "DateFrom"]
-        )
+        reorder_parameters(path=str(rdl_path), names=["DateTo", "DateFrom"])
         RDLDocument.open(rdl_path).validate()
 
 
@@ -156,7 +147,6 @@ class TestReorderPermutationCheck:
 
     def test_missing_report_parameters_rejected(self, tmp_path):
         # Build a fixture with no ReportParameters block.
-        from lxml import etree as _etree
 
         from pbirb_mcp.core.xpath import find_child as _fc
 
@@ -180,18 +170,14 @@ class TestReorderLayoutSync:
         _inject_layout(rdl_path)
         # Initial cell order matches declaration order.
         assert _layout_cell_names(rdl_path) == ["DateFrom", "DateTo"]
-        reorder_parameters(
-            path=str(rdl_path), names=["DateTo", "DateFrom"]
-        )
+        reorder_parameters(path=str(rdl_path), names=["DateTo", "DateFrom"])
         assert _parameter_names(rdl_path) == ["DateTo", "DateFrom"]
         # CellDefinitions reordered too.
         assert _layout_cell_names(rdl_path) == ["DateTo", "DateFrom"]
 
     def test_layout_absent_no_op_for_layout(self, rdl_path):
         # Without a layout block, reorder still works on parameters.
-        reorder_parameters(
-            path=str(rdl_path), names=["DateTo", "DateFrom"]
-        )
+        reorder_parameters(path=str(rdl_path), names=["DateTo", "DateFrom"])
         assert _parameter_names(rdl_path) == ["DateTo", "DateFrom"]
 
 
@@ -202,8 +188,8 @@ class TestToolRegistration:
     def test_reorder_parameters_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "reorder_parameters" in names

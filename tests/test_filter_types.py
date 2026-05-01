@@ -16,7 +16,7 @@ import pytest
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.xpath import RD_NS, q, qrd
+from pbirb_mcp.core.xpath import q, qrd
 from pbirb_mcp.ops.dataset import add_dataset_filter
 from pbirb_mcp.ops.filter_types import wrap_with_format
 from pbirb_mcp.ops.tablix import add_tablix_filter

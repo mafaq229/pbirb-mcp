@@ -147,12 +147,8 @@ def _data_source_to_dict(ds: etree._Element) -> dict[str, Any]:
         "connect_string": connect_string,
         "integrated_security": integrated_security,
         "shared_reference": shared_reference,
-        "security_type": (
-            security_type_node.text if security_type_node is not None else None
-        ),
-        "data_source_id": (
-            data_source_id_node.text if data_source_id_node is not None else None
-        ),
+        "security_type": (security_type_node.text if security_type_node is not None else None),
+        "data_source_id": (data_source_id_node.text if data_source_id_node is not None else None),
     }
 
 
@@ -258,16 +254,12 @@ def _scan_data_source_references(doc: RDLDocument, name: str) -> list[str]:
             continue
         ref = find_child(query, "DataSourceName")
         if ref is not None and ref.text == name:
-            locators.append(
-                f"DataSet[Name={dataset.get('Name')!r}]/Query/DataSourceName"
-            )
+            locators.append(f"DataSet[Name={dataset.get('Name')!r}]/Query/DataSourceName")
     # Shared DataSource reference: <DataSource>/<DataSourceReference>.
     for ds in doc.root.iter(f"{{{RDL_NS}}}DataSource"):
         ref = find_child(ds, "DataSourceReference")
         if ref is not None and ref.text == name:
-            locators.append(
-                f"DataSource[Name={ds.get('Name')!r}]/DataSourceReference"
-            )
+            locators.append(f"DataSource[Name={ds.get('Name')!r}]/DataSourceReference")
     return locators
 
 
@@ -337,9 +329,7 @@ def rename_data_source(
 
     existing = [d.get("Name") for d in root.iter(f"{{{RDL_NS}}}DataSource")]
     if new_name in existing:
-        raise ValueError(
-            f"DataSource named {new_name!r} already exists; cannot rename onto it."
-        )
+        raise ValueError(f"DataSource named {new_name!r} already exists; cannot rename onto it.")
 
     target = _resolve_data_source(doc, old_name)
 

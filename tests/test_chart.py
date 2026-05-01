@@ -16,7 +16,7 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import RDL_NS, find_child, q
 from pbirb_mcp.ops.chart import (
     add_chart_series,
     insert_chart_from_template,
@@ -405,7 +405,7 @@ class TestSetChartSeriesType:
             path=str(rich_path),
             chart_name="SalesByProduct",
             series_name="Total",
-            series_type="Bar",       # unchanged
+            series_type="Bar",  # unchanged
             series_subtype="Plain",  # changed
         )
         assert "Type" not in result["changed"]
@@ -729,9 +729,7 @@ class TestSetChartDataLabels:
         doc = RDLDocument.open(rich_path)
         chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']")
         amount_series = next(
-            s
-            for s in chart.iter(f"{{{RDL_NS}}}ChartSeries")
-            if s.get("Name") == "Amount"
+            s for s in chart.iter(f"{{{RDL_NS}}}ChartSeries") if s.get("Name") == "Amount"
         )
         label = find_child(amount_series, "ChartDataLabel")
         assert label is not None
@@ -762,9 +760,7 @@ class TestSetChartDataLabels:
         doc = RDLDocument.open(rich_path)
         chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']")
         amount_series = next(
-            s
-            for s in chart.iter(f"{{{RDL_NS}}}ChartSeries")
-            if s.get("Name") == "Amount"
+            s for s in chart.iter(f"{{{RDL_NS}}}ChartSeries") if s.get("Name") == "Amount"
         )
         label = find_child(amount_series, "ChartDataLabel")
         style = find_child(label, "Style")
@@ -787,9 +783,7 @@ class TestSetChartDataLabels:
         doc = RDLDocument.open(rich_path)
         chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']")
         amount_series = next(
-            s
-            for s in chart.iter(f"{{{RDL_NS}}}ChartSeries")
-            if s.get("Name") == "Amount"
+            s for s in chart.iter(f"{{{RDL_NS}}}ChartSeries") if s.get("Name") == "Amount"
         )
         label = find_child(amount_series, "ChartDataLabel")
         style = find_child(label, "Style")
@@ -1020,8 +1014,8 @@ class TestBackwardCompatibleImport:
     don't break."""
 
     def test_re_export_via_templates(self, rdl_path):
-        from pbirb_mcp.ops.templates import insert_chart_from_template as via_templates
         from pbirb_mcp.ops.chart import insert_chart_from_template as via_chart
+        from pbirb_mcp.ops.templates import insert_chart_from_template as via_templates
 
         assert via_templates is via_chart
 
@@ -1044,18 +1038,18 @@ class TestToolRegistration:
     def test_chart_tool_still_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "insert_chart_from_template" in names
 
     def test_series_crud_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {
             "add_chart_series",
@@ -1066,27 +1060,27 @@ class TestToolRegistration:
     def test_set_chart_axis_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "set_chart_axis" in names
 
     def test_legend_and_labels_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {"set_chart_legend", "set_chart_data_labels"} <= names
 
     def test_palette_color_title_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {
             "set_chart_palette",

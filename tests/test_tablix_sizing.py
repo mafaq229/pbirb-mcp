@@ -15,7 +15,7 @@ import pytest
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children
 from pbirb_mcp.ops.tablix import set_tablix_size
 from pbirb_mcp.ops.tablix_columns import set_column_width
 from pbirb_mcp.server import MCPServer
@@ -186,21 +186,15 @@ class TestSetTablixSize:
         # Set known size then re-set.
         set_tablix_size(path=str(rdl_path), name="MainTable", height="2in")
         before = (rdl_path).read_bytes()
-        result = set_tablix_size(
-            path=str(rdl_path), name="MainTable", height="2in"
-        )
+        result = set_tablix_size(path=str(rdl_path), name="MainTable", height="2in")
         assert result["changed"] == []
         assert (rdl_path).read_bytes() == before
 
     def test_partial_change_only_lists_changed_fields(self, rdl_path):
         # First set both; then re-set only width with same height to
         # confirm only the changed field appears.
-        set_tablix_size(
-            path=str(rdl_path), name="MainTable", height="2in", width="5in"
-        )
-        result = set_tablix_size(
-            path=str(rdl_path), name="MainTable", height="2in", width="6in"
-        )
+        set_tablix_size(path=str(rdl_path), name="MainTable", height="2in", width="5in")
+        result = set_tablix_size(path=str(rdl_path), name="MainTable", height="2in", width="6in")
         assert result["changed"] == ["Width"]
 
     def test_empty_height_rejected(self, rdl_path):
@@ -213,14 +207,10 @@ class TestSetTablixSize:
 
     def test_unknown_tablix_raises(self, rdl_path):
         with pytest.raises(ElementNotFoundError):
-            set_tablix_size(
-                path=str(rdl_path), name="NoSuchTablix", height="2in"
-            )
+            set_tablix_size(path=str(rdl_path), name="NoSuchTablix", height="2in")
 
     def test_round_trip_safe(self, rdl_path):
-        set_tablix_size(
-            path=str(rdl_path), name="MainTable", height="3in", width="6in"
-        )
+        set_tablix_size(path=str(rdl_path), name="MainTable", height="3in", width="6in")
         RDLDocument.open(rdl_path).validate()
 
 
@@ -231,17 +221,17 @@ class TestToolRegistration:
     def test_set_column_width_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "set_column_width" in names
 
     def test_set_tablix_size_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "set_tablix_size" in names

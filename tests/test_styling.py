@@ -467,7 +467,9 @@ class TestSetTextboxValue:
         )
         assert result["changed"] is True
         tb = _textbox(rdl_path, "HeaderProductID")
-        v = tb.find(f"{q('Paragraphs')}/{q('Paragraph')}/{q('TextRuns')}/{q('TextRun')}/{q('Value')}")
+        v = tb.find(
+            f"{q('Paragraphs')}/{q('Paragraph')}/{q('TextRuns')}/{q('TextRun')}/{q('Value')}"
+        )
         assert v is not None and v.text == "Product ID Header"
 
     def test_replaces_with_expression(self, rdl_path):
@@ -478,7 +480,9 @@ class TestSetTextboxValue:
         )
         assert result["changed"] is True
         tb = _textbox(rdl_path, "HeaderProductID")
-        v = tb.find(f"{q('Paragraphs')}/{q('Paragraph')}/{q('TextRuns')}/{q('TextRun')}/{q('Value')}")
+        v = tb.find(
+            f"{q('Paragraphs')}/{q('Paragraph')}/{q('TextRuns')}/{q('TextRun')}/{q('Value')}"
+        )
         assert v is not None and v.text == "=Parameters!DateFrom.Value"
 
     def test_idempotent_when_unchanged(self, rdl_path):
@@ -724,26 +728,26 @@ class TestToolRegistration:
     def test_set_textbox_runs_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "set_textbox_runs" in names
 
     def test_set_textbox_value_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "set_textbox_value" in names
 
     def test_bulk_and_find_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert {"set_textbox_style_bulk", "find_textboxes_by_style"} <= names

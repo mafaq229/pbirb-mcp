@@ -46,7 +46,7 @@ _NAMED_ENTITIES: tuple[tuple[str, str], ...] = (
 _NUMERIC_ENTITY_RE = re.compile(r"&#(?:x[0-9a-fA-F]+|[0-9]+);")
 
 
-def _decode_numeric_entity(match: "re.Match[str]") -> str:
+def _decode_numeric_entity(match: re.Match[str]) -> str:
     raw = match.group(0)
     body = raw[2:-1]
     try:

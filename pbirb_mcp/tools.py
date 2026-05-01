@@ -849,8 +849,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "condition": {
                     "type": "string",
                     "description": (
-                        "RDL expression body, e.g. "
-                        "'Fields!Status.Value = \"Active\"'."
+                        "RDL expression body, e.g. 'Fields!Status.Value = \"Active\"'."
                     ),
                 },
             },
@@ -872,15 +871,12 @@ def register_all_tools(server: MCPServer) -> None:
             "properties": {
                 "field_expression": {
                     "type": "string",
-                    "description": (
-                        "Value to sum, e.g. 'Fields!Amount.Value'."
-                    ),
+                    "description": ("Value to sum, e.g. 'Fields!Amount.Value'."),
                 },
                 "condition": {
                     "type": "string",
                     "description": (
-                        "RDL expression body, e.g. "
-                        "'Fields!Status.Value = \"Active\"'."
+                        "RDL expression body, e.g. 'Fields!Status.Value = \"Active\"'."
                     ),
                 },
             },
@@ -1153,8 +1149,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "content": {
                     "type": "string",
                     "description": (
-                        "XML for the replacement element. Exactly one "
-                        "top-level element."
+                        "XML for the replacement element. Exactly one top-level element."
                     ),
                 },
             },
@@ -1875,8 +1870,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_footer_item_size",
         description=(
-            "Resize a named item inside <PageFooter>. Same shape as "
-            "set_header_item_size."
+            "Resize a named item inside <PageFooter>. Same shape as set_header_item_size."
         ),
         input_schema={
             "type": "object",

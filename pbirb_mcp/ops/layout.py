@@ -33,7 +33,6 @@ from pbirb_mcp.ops.body import _ensure_body_report_items, _names_in, _resolve_bo
 from pbirb_mcp.ops.page import _SIZE_RE, _TO_INCHES
 from pbirb_mcp.ops.tablix import _insert_member_child
 
-
 # ---- set_group_page_break -----------------------------------------------
 
 
@@ -92,8 +91,7 @@ def set_group_page_break(
     """
     if location not in _VALID_BREAK_LOCATIONS:
         raise ValueError(
-            f"unknown BreakLocation {location!r}; valid values: "
-            f"{list(_VALID_BREAK_LOCATIONS)}"
+            f"unknown BreakLocation {location!r}; valid values: {list(_VALID_BREAK_LOCATIONS)}"
         )
 
     doc = RDLDocument.open(path)
@@ -172,9 +170,7 @@ def set_repeat_on_new_page(
     # resolve_group returns a Group; its parent is always a TablixMember.
     # Defensive sanity-check anyway.
     if member is None or etree.QName(member.tag).localname != "TablixMember":
-        raise ValueError(
-            f"Group {group_name!r} is not enclosed in a <TablixMember>"
-        )
+        raise ValueError(f"Group {group_name!r} is not enclosed in a <TablixMember>")
 
     existing = find_child(member, "RepeatOnNewPage")
     current = (existing.text or "").strip().lower() if existing is not None else ""
@@ -345,17 +341,14 @@ def set_keep_with_group(
     """
     if value not in _VALID_KEEP_WITH_GROUP:
         raise ValueError(
-            f"unknown KeepWithGroup value {value!r}; valid values: "
-            f"{list(_VALID_KEEP_WITH_GROUP)}"
+            f"unknown KeepWithGroup value {value!r}; valid values: {list(_VALID_KEEP_WITH_GROUP)}"
         )
 
     doc = RDLDocument.open(path)
     group = resolve_group(doc, tablix_name, group_name)
     member = group.getparent()
     if member is None or etree.QName(member.tag).localname != "TablixMember":
-        raise ValueError(
-            f"Group {group_name!r} is not enclosed in a <TablixMember>"
-        )
+        raise ValueError(f"Group {group_name!r} is not enclosed in a <TablixMember>")
 
     existing = find_child(member, "KeepWithGroup")
     current = (existing.text or "").strip() if existing is not None else ""
@@ -397,8 +390,7 @@ def _parse_size(s: str) -> tuple[float, str]:
     m = _SIZE_RE.match(s or "")
     if not m:
         raise ValueError(
-            f"invalid RDL size {s!r}; expected '<number><unit>' "
-            f"with unit in (in, cm, mm, pt, pc)"
+            f"invalid RDL size {s!r}; expected '<number><unit>' with unit in (in, cm, mm, pt, pc)"
         )
     return float(m.group(1)), m.group(2)
 
@@ -646,8 +638,7 @@ def add_line(
     """
     if line_style not in _VALID_LINE_STYLES:
         raise ValueError(
-            f"unknown line_style {line_style!r}; valid values: "
-            f"{list(_VALID_LINE_STYLES)}"
+            f"unknown line_style {line_style!r}; valid values: {list(_VALID_LINE_STYLES)}"
         )
 
     doc = RDLDocument.open(path)

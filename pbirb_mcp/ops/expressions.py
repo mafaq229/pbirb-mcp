@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 _REFERENCE: dict[str, list[dict[str, str]]] = {
     "globals": [
         {
@@ -67,7 +66,7 @@ _REFERENCE: dict[str, list[dict[str, str]]] = {
             "description": (
                 "Single value, or first value if multi-value. For "
                 "multi-value comparisons use the IN operator or "
-                "Join(Parameters!X.Value, \", \"); using = directly fires "
+                'Join(Parameters!X.Value, ", "); using = directly fires '
                 "the multi-value-eq lint rule."
             ),
         },
@@ -176,10 +175,7 @@ _REFERENCE: dict[str, list[dict[str, str]]] = {
             "name": "Switch",
             "syntax": "Switch(<case1>, <value1>, <case2>, <value2>, true, <default>)",
             "example": (
-                '=Switch('
-                'Fields!Score.Value >= 90, "A", '
-                'Fields!Score.Value >= 80, "B", '
-                'true, "C")'
+                '=Switch(Fields!Score.Value >= 90, "A", Fields!Score.Value >= 80, "B", true, "C")'
             ),
             "description": (
                 "Multi-branch conditional. Pair the final 'true' with a "

@@ -55,9 +55,7 @@ _REPORT_ITEM_TRAILING_CHILD_ORDER = (
 )
 
 
-def _insert_in_item_order(
-    item: etree._Element, new_child: etree._Element
-) -> None:
+def _insert_in_item_order(item: etree._Element, new_child: etree._Element) -> None:
     """Insert ``new_child`` into a ReportItem (Textbox/Image/Rectangle/...)
     respecting the schema-required trailing-child order. Replaces any
     existing child of the same local name."""
@@ -102,8 +100,7 @@ def _build_action_xml(
     """
     if action_type not in _VALID_ACTION_TYPES:
         raise ValueError(
-            f"action_type {action_type!r} not valid; expected one of "
-            f"{sorted(_VALID_ACTION_TYPES)}"
+            f"action_type {action_type!r} not valid; expected one of {sorted(_VALID_ACTION_TYPES)}"
         )
     if not target_expression or not str(target_expression).strip():
         raise ValueError(
@@ -127,13 +124,11 @@ def _build_action_xml(
             for i, p in enumerate(drillthrough_parameters):
                 if not isinstance(p, dict):
                     raise ValueError(
-                        f"drillthrough_parameters[{i}] must be a dict; "
-                        f"got {type(p).__name__}"
+                        f"drillthrough_parameters[{i}] must be a dict; got {type(p).__name__}"
                     )
                 if "name" not in p or "value" not in p:
                     raise ValueError(
-                        f"drillthrough_parameters[{i}] must have 'name' "
-                        "and 'value' keys"
+                        f"drillthrough_parameters[{i}] must have 'name' and 'value' keys"
                     )
                 param = etree.SubElement(params_root, q("Parameter"), Name=p["name"])
                 value_node = etree.SubElement(param, q("Value"))
@@ -152,9 +147,7 @@ def _build_action_info_xml(
     Report Builder rejects a bare ``<Action>`` directly under a
     ReportItem; only the wrapped form passes deserialization.
     """
-    inner_action = _build_action_xml(
-        action_type, target_expression, drillthrough_parameters
-    )
+    inner_action = _build_action_xml(action_type, target_expression, drillthrough_parameters)
     action_info = etree.Element(q("ActionInfo"))
     actions_root = etree.SubElement(action_info, q("Actions"))
     actions_root.append(inner_action)
@@ -192,15 +185,11 @@ _NAMED_REPORT_ITEM_LOCALS = (
 )
 
 
-def _resolve_named_report_item(
-    doc: RDLDocument, name: str
-) -> etree._Element:
+def _resolve_named_report_item(doc: RDLDocument, name: str) -> etree._Element:
     """Find any named ReportItem (Textbox / Image / Rectangle / etc.)
     by Name attribute. Used by ``set_document_map_label`` which works on
     any positioned item."""
-    type_clause = " or ".join(
-        f"local-name()='{tag}'" for tag in _NAMED_REPORT_ITEM_LOCALS
-    )
+    type_clause = " or ".join(f"local-name()='{tag}'" for tag in _NAMED_REPORT_ITEM_LOCALS)
     matches = list(
         doc.root.xpath(
             f".//*[@Name=$n and ({type_clause})]",
@@ -210,13 +199,10 @@ def _resolve_named_report_item(
     )
     if not matches:
         raise ElementNotFoundError(
-            f"no ReportItem named {name!r} (looked at: "
-            f"{', '.join(_NAMED_REPORT_ITEM_LOCALS)})"
+            f"no ReportItem named {name!r} (looked at: {', '.join(_NAMED_REPORT_ITEM_LOCALS)})"
         )
     if len(matches) > 1:
-        raise AmbiguousElementError(
-            f"ReportItem name {name!r} matches {len(matches)} elements"
-        )
+        raise AmbiguousElementError(f"ReportItem name {name!r} matches {len(matches)} elements")
     return matches[0]
 
 
@@ -231,9 +217,7 @@ def _resolve_image(doc: RDLDocument, name: str) -> etree._Element:
     if not matches:
         raise ElementNotFoundError(f"no Image named {name!r}")
     if len(matches) > 1:
-        raise AmbiguousElementError(
-            f"Image name {name!r} matches {len(matches)} elements"
-        )
+        raise AmbiguousElementError(f"Image name {name!r} matches {len(matches)} elements")
     return matches[0]
 
 
@@ -411,9 +395,7 @@ def set_document_map_label(
 # ---- helpers --------------------------------------------------------------
 
 
-def _action_info_matches(
-    existing: etree._Element, new_action_info: etree._Element
-) -> bool:
+def _action_info_matches(existing: etree._Element, new_action_info: etree._Element) -> bool:
     """Structural equality check on two ``<ActionInfo>`` subtrees.
 
     Walks ``ActionInfo/Actions/Action`` on each side and delegates to
@@ -432,9 +414,7 @@ def _action_info_matches(
     return _action_matches(e_list[0], n_list[0])
 
 
-def _action_matches(
-    existing: etree._Element, new_action: etree._Element
-) -> bool:
+def _action_matches(existing: etree._Element, new_action: etree._Element) -> bool:
     """Structural equality check on two ``<Action>`` subtrees that
     avoids namespace-prefix drift in serialised bytes.
 
@@ -461,16 +441,8 @@ def _action_matches(
             return False
         e_params_root = find_child(e_inner, "Parameters")
         n_params_root = find_child(n_inner, "Parameters")
-        e_params = (
-            find_children(e_params_root, "Parameter")
-            if e_params_root is not None
-            else []
-        )
-        n_params = (
-            find_children(n_params_root, "Parameter")
-            if n_params_root is not None
-            else []
-        )
+        e_params = find_children(e_params_root, "Parameter") if e_params_root is not None else []
+        n_params = find_children(n_params_root, "Parameter") if n_params_root is not None else []
         if len(e_params) != len(n_params):
             return False
         for ep, np in zip(e_params, n_params):
@@ -478,9 +450,7 @@ def _action_matches(
                 return False
             ev = find_child(ep, "Value")
             nv = find_child(np, "Value")
-            if (ev.text if ev is not None else None) != (
-                nv.text if nv is not None else None
-            ):
+            if (ev.text if ev is not None else None) != (nv.text if nv is not None else None):
                 return False
         return True
     return False
@@ -583,9 +553,7 @@ def _series_template_data_point(
     return cdp
 
 
-def _insert_in_chart_series_order(
-    series: etree._Element, new_child: etree._Element
-) -> None:
+def _insert_in_chart_series_order(series: etree._Element, new_child: etree._Element) -> None:
     """Insert ``new_child`` into a ChartSeries respecting the
     schema-required order. Replaces any existing element of the same
     local name."""

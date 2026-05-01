@@ -39,9 +39,7 @@ def src_multi(tmp_path: Path) -> Path:
 
 def _data_source_ids(path: Path) -> list[str]:
     doc = RDLDocument.open(path)
-    return [
-        e.text for e in doc.root.iter(f"{{{RD_NS}}}DataSourceID") if e.text
-    ]
+    return [e.text for e in doc.root.iter(f"{{{RD_NS}}}DataSourceID") if e.text]
 
 
 def _all_rd_guids(path: Path) -> list[str]:
@@ -153,8 +151,8 @@ class TestToolRegistration:
     def test_duplicate_report_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "duplicate_report" in names

@@ -52,6 +52,7 @@ def _auto_verify_enabled() -> bool:
 def _is_mutating_tool(name: str) -> bool:
     return any(name.startswith(p) for p in _MUTATING_PREFIXES)
 
+
 # JSON-RPC 2.0 standard error codes
 PARSE_ERROR = -32700
 INVALID_REQUEST = -32600
@@ -187,9 +188,12 @@ class MCPServer:
             except Exception as exc:  # noqa: BLE001
                 # Don't fail the mutating call because verify barfed.
                 logger.warning("auto-verify failed for %s: %s", name, exc)
-                verify = {"valid": None, "issues": [], "xsd_used": False,
-                          "error": {"error_type": type(exc).__name__,
-                                    "message": str(exc)}}
+                verify = {
+                    "valid": None,
+                    "issues": [],
+                    "xsd_used": False,
+                    "error": {"error_type": type(exc).__name__, "message": str(exc)},
+                }
             wrapped = {"result": result, "verify": verify}
             return {"content": [{"type": "text", "text": json.dumps(wrapped, default=str)}]}
 

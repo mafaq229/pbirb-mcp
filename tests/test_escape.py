@@ -15,7 +15,7 @@ import pytest
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.xpath import RDL_NS, find_child
+from pbirb_mcp.core.xpath import RDL_NS
 from pbirb_mcp.ops.escape import raw_xml_replace, raw_xml_view
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
@@ -111,11 +111,7 @@ class TestRawXmlReplace:
         result = raw_xml_replace(
             path=str(rdl_path),
             xpath=".//r:Tablix[@Name='MainTable']/r:Style",
-            content=(
-                "<Style>"
-                "<Border><Style>Solid</Style><Color>#ff0000</Color></Border>"
-                "</Style>"
-            ),
+            content=("<Style><Border><Style>Solid</Style><Color>#ff0000</Color></Border></Style>"),
         )
         assert result["changed"] is True
         # New border color is in place.
@@ -179,11 +175,7 @@ class TestRawXmlReplace:
         raw_xml_replace(
             path=str(rdl_path),
             xpath=".//r:Tablix[@Name='MainTable']/r:Style",
-            content=(
-                "<Style>"
-                "<Border><Style>None</Style></Border>"
-                "</Style>"
-            ),
+            content=("<Style><Border><Style>None</Style></Border></Style>"),
         )
         # File must reopen + structurally validate.
         RDLDocument.open(rdl_path).validate()
@@ -196,9 +188,9 @@ class TestToolRegistration:
     def test_escape_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "raw_xml_view" in names
         assert "raw_xml_replace" in names

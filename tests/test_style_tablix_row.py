@@ -22,7 +22,6 @@ import pytest
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
 from pbirb_mcp.ops.reader import get_textbox
 from pbirb_mcp.ops.styling import style_tablix_row
 from pbirb_mcp.ops.tablix import add_row_group
@@ -166,9 +165,7 @@ class TestStyleTablixRowByRole:
         )
         assert result["row"] == "details"
         assert result["row_index"] == 1
-        assert sorted(result["cells"]) == sorted(
-            ["ProductID", "ProductName", "Amount"]
-        )
+        assert sorted(result["cells"]) == sorted(["ProductID", "ProductName", "Amount"])
         for name in result["cells"]:
             assert _bg_color(rdl_path, name) == "#00FF00"
 
@@ -360,8 +357,8 @@ class TestToolRegistration:
     def test_style_tablix_row_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "style_tablix_row" in names

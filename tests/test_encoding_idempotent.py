@@ -15,11 +15,10 @@ import shutil
 from pathlib import Path
 
 import pytest
-from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
-from pbirb_mcp.core.xpath import RDL_NS, find_child, q
+from pbirb_mcp.core.xpath import RDL_NS
 from pbirb_mcp.ops.body import add_body_textbox
 from pbirb_mcp.ops.dataset import update_dataset_query
 from pbirb_mcp.ops.header_footer import add_header_textbox
@@ -44,7 +43,7 @@ class TestEncodeText:
     def test_passes_raw_text_unchanged(self):
         assert encode_text("A & B") == "A & B"
         assert encode_text("foo<bar>") == "foo<bar>"
-        assert encode_text("she said \"hi\"") == "she said \"hi\""
+        assert encode_text('she said "hi"') == 'she said "hi"'
 
     def test_decodes_named_entities(self):
         assert encode_text("A &amp; B") == "A & B"
@@ -178,7 +177,7 @@ class TestRegressionDatasetQuery:
         update_dataset_query(
             path=str(rdl_path),
             dataset_name="MainDataset",
-            dax_body='EVALUATE FILTER(\'Sales\', \'Sales\'[Region] = "A &amp; B")',
+            dax_body="EVALUATE FILTER('Sales', 'Sales'[Region] = \"A &amp; B\")",
         )
         assert b"&amp;amp;" not in _saved_disk_bytes(rdl_path)
         assert b'"A &amp; B"' in _saved_disk_bytes(rdl_path)

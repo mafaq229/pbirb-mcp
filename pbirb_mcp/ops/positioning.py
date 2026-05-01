@@ -231,14 +231,10 @@ def _resize_named_item(
     (or both) must be supplied; missing fields are left untouched.
     """
     if width is None and height is None:
-        raise ValueError(
-            "at least one of width or height must be supplied; both None is a no-op."
-        )
+        raise ValueError("at least one of width or height must be supplied; both None is a no-op.")
     item = _find_named_item(container, name)
     if item is None:
-        raise ElementNotFoundError(
-            f"{container_label} has no named item {name!r}"
-        )
+        raise ElementNotFoundError(f"{container_label} has no named item {name!r}")
     changed_fields: list[str] = []
     if width is not None and _set_layout_value(item, "Width", width):
         changed_fields.append("Width")

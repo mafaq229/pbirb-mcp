@@ -311,9 +311,13 @@ class TestSetRepeatOnNewPage:
 
 def _read_keep_together(path: Path, item_name: str) -> str | None:
     doc = RDLDocument.open(path)
+    rdl_ns = doc.root.nsmap.get(
+        None,
+        "http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition",
+    )
     matches = doc.root.xpath(
         ".//r:ReportItems/r:*[@Name=$n]",
-        namespaces={"r": doc.root.nsmap[None] if None in doc.root.nsmap else "http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition"},
+        namespaces={"r": rdl_ns},
         n=item_name,
     )
     if not matches:
@@ -324,9 +328,7 @@ def _read_keep_together(path: Path, item_name: str) -> str | None:
 
 class TestSetKeepTogether:
     def test_writes_true_on_tablix(self, rdl_path):
-        result = set_keep_together(
-            path=str(rdl_path), name="MainTable", keep=True
-        )
+        result = set_keep_together(path=str(rdl_path), name="MainTable", keep=True)
         assert result == {
             "name": "MainTable",
             "kind": "Tablix",
@@ -341,7 +343,10 @@ class TestSetKeepTogether:
         set_keep_together(path=str(rdl_path), name="MainTable", keep=True)
         doc = RDLDocument.open(rdl_path)
         tablix = doc.root.xpath(
-            ".//r:Tablix[@Name='MainTable']", namespaces={"r": "http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition"}
+            ".//r:Tablix[@Name='MainTable']",
+            namespaces={
+                "r": "http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition"
+            },
         )[0]
         children = [etree.QName(c.tag).localname for c in tablix]
         assert children.index("KeepTogether") < children.index("TablixBody")
@@ -362,37 +367,27 @@ class TestSetKeepTogether:
             height="0.3in",
         )
         # Off → removes the element.
-        off = set_keep_together(
-            path=str(rdl_path), name="MyBodyText", keep=False
-        )
+        off = set_keep_together(path=str(rdl_path), name="MyBodyText", keep=False)
         assert off["kind"] == "Textbox"
         assert off["changed"] is True
         # On → re-inserts via _set_textbox_direct_child.
-        on = set_keep_together(
-            path=str(rdl_path), name="MyBodyText", keep=True
-        )
+        on = set_keep_together(path=str(rdl_path), name="MyBodyText", keep=True)
         assert on["kind"] == "Textbox"
         assert on["changed"] is True
 
     def test_false_removes_element(self, rdl_path):
         set_keep_together(path=str(rdl_path), name="MainTable", keep=True)
-        result = set_keep_together(
-            path=str(rdl_path), name="MainTable", keep=False
-        )
+        result = set_keep_together(path=str(rdl_path), name="MainTable", keep=False)
         assert result["changed"] is True
         assert _read_keep_together(rdl_path, "MainTable") is None
 
     def test_false_on_clean_is_noop(self, rdl_path):
-        result = set_keep_together(
-            path=str(rdl_path), name="MainTable", keep=False
-        )
+        result = set_keep_together(path=str(rdl_path), name="MainTable", keep=False)
         assert result["changed"] is False
 
     def test_idempotent_true(self, rdl_path):
         set_keep_together(path=str(rdl_path), name="MainTable", keep=True)
-        result = set_keep_together(
-            path=str(rdl_path), name="MainTable", keep=True
-        )
+        result = set_keep_together(path=str(rdl_path), name="MainTable", keep=True)
         assert result["changed"] is False
 
     def test_unknown_name_raises(self, rdl_path):
@@ -445,7 +440,7 @@ class TestSetKeepWithGroup:
         assert _read_keep_with_group(rdl_with_region_group, "MainTable", "Region") == "After"
 
     def test_writes_before(self, rdl_with_region_group):
-        result = set_keep_with_group(
+        set_keep_with_group(
             path=str(rdl_with_region_group),
             tablix_name="MainTable",
             group_name="Region",
@@ -546,9 +541,7 @@ def _body_report_items(path: Path) -> etree._Element:
 
 def _rectangle(path: Path, name: str) -> etree._Element | None:
     doc = RDLDocument.open(path)
-    matches = doc.root.xpath(
-        f".//r:Rectangle[@Name=$n]", namespaces={"r": _RDL}, n=name
-    )
+    matches = doc.root.xpath(".//r:Rectangle[@Name=$n]", namespaces={"r": _RDL}, n=name)
     return matches[0] if matches else None
 
 
@@ -723,9 +716,7 @@ class TestAddRectangle:
 
 def _tablix(path: Path, name: str) -> etree._Element | None:
     doc = RDLDocument.open(path)
-    matches = doc.root.xpath(
-        f".//r:Tablix[@Name=$n]", namespaces={"r": _RDL}, n=name
-    )
+    matches = doc.root.xpath(".//r:Tablix[@Name=$n]", namespaces={"r": _RDL}, n=name)
     return matches[0] if matches else None
 
 
@@ -877,9 +868,7 @@ class TestAddList:
 
 def _line(path: Path, name: str) -> etree._Element | None:
     doc = RDLDocument.open(path)
-    matches = doc.root.xpath(
-        f".//r:Line[@Name=$n]", namespaces={"r": _RDL}, n=name
-    )
+    matches = doc.root.xpath(".//r:Line[@Name=$n]", namespaces={"r": _RDL}, n=name)
     return matches[0] if matches else None
 
 
@@ -988,9 +977,9 @@ class TestToolRegistration:
     def test_pagination_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "set_group_page_break" in names
         assert "set_repeat_on_new_page" in names
@@ -1000,9 +989,9 @@ class TestToolRegistration:
     def test_layout_container_tools_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "add_rectangle" in names
         assert "add_list" in names

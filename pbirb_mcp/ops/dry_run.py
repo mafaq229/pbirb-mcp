@@ -16,6 +16,7 @@ of every op (overriding any caller-supplied ``path``).
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import shutil
 import tempfile
@@ -70,9 +71,7 @@ def dry_run_edit(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
     original_bytes = src.read_bytes()
     original_text = original_bytes.decode("utf-8", errors="replace")
 
-    with tempfile.NamedTemporaryFile(
-        suffix=".rdl", prefix="pbirb-dry-run-", delete=False
-    ) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".rdl", prefix="pbirb-dry-run-", delete=False) as tmp:
         tmp_path = Path(tmp.name)
     try:
         shutil.copy(str(src), str(tmp_path))
@@ -129,9 +128,7 @@ def dry_run_edit(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
                 # into content[0].text on handler exception.
                 import json as _json
 
-                applied.append(
-                    {"tool": tool, "ok": False, "error": _json.loads(text)}
-                )
+                applied.append({"tool": tool, "ok": False, "error": _json.loads(text)})
                 break
             applied.append({"tool": tool, "ok": True, "result_text": text})
 
@@ -152,10 +149,8 @@ def dry_run_edit(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
 
         return {"applied": applied, "diff": diff, "verify": verify}
     finally:
-        try:
+        with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()
-        except FileNotFoundError:
-            pass
 
 
 __all__ = ["dry_run_edit"]

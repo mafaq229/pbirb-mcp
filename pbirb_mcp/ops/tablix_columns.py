@@ -620,9 +620,7 @@ def _resolve_tablix_column_index(
         return column
 
     if not isinstance(column, str):
-        raise TypeError(
-            f"column must be int or str; got {type(column).__name__}"
-        )
+        raise TypeError(f"column must be int or str; got {type(column).__name__}")
 
     # String → search every row's cells for a Textbox whose Name matches.
     rows_root = find_child(body, "TablixRows") if body is not None else None

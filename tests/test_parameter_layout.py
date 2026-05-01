@@ -108,9 +108,7 @@ class TestAddParameterLayoutSync:
     def test_layout_absent_no_sync(self, rdl_path):
         # Fixture has no <ReportParametersLayout>. add_parameter is a no-op
         # for the layout — no synthesis.
-        result = add_parameter(
-            path=str(rdl_path), name="NewParam", type="String"
-        )
+        result = add_parameter(path=str(rdl_path), name="NewParam", type="String")
         assert result["layout_synced"] is False
         # Confirm we didn't synthesise a layout block.
         doc = RDLDocument.open(rdl_path)
@@ -118,9 +116,7 @@ class TestAddParameterLayoutSync:
 
     def test_layout_present_appends_cell(self, rdl_path):
         _inject_layout(rdl_path, ["DateFrom", "DateTo"], columns_per_row=4)
-        result = add_parameter(
-            path=str(rdl_path), name="NewParam", type="String"
-        )
+        result = add_parameter(path=str(rdl_path), name="NewParam", type="String")
         assert result["layout_synced"] is True
         assert _layout_cell_names(rdl_path) == ["DateFrom", "DateTo", "NewParam"]
 
@@ -176,16 +172,12 @@ class TestRemoveParameterLayoutSync:
 class TestRenameParameterLayoutSync:
     def test_layout_cell_renamed(self, rdl_path):
         _inject_layout(rdl_path, ["DateFrom", "DateTo"], columns_per_row=4)
-        result = rename_parameter(
-            path=str(rdl_path), old_name="DateFrom", new_name="StartDate"
-        )
+        result = rename_parameter(path=str(rdl_path), old_name="DateFrom", new_name="StartDate")
         assert result["layout_cells_rewritten"] == 1
         assert _layout_cell_names(rdl_path) == ["StartDate", "DateTo"]
 
     def test_no_layout_returns_zero(self, rdl_path):
-        result = rename_parameter(
-            path=str(rdl_path), old_name="DateFrom", new_name="StartDate"
-        )
+        result = rename_parameter(path=str(rdl_path), old_name="DateFrom", new_name="StartDate")
         assert result["layout_cells_rewritten"] == 0
 
 
@@ -237,9 +229,7 @@ class TestEndToEndInSyncInvariant:
 
     def _counts(self, rdl_path: Path) -> tuple[int, int]:
         doc = RDLDocument.open(rdl_path)
-        params = doc.root.findall(
-            f".//{{{RDL_NS}}}ReportParameters/{{{RDL_NS}}}ReportParameter"
-        )
+        params = doc.root.findall(f".//{{{RDL_NS}}}ReportParameters/{{{RDL_NS}}}ReportParameter")
         layout = find_child(doc.root, "ReportParametersLayout")
         cell_count = 0
         if layout is not None:
@@ -265,9 +255,7 @@ class TestEndToEndInSyncInvariant:
 
     def test_invariant_after_rename(self, rdl_path):
         _inject_layout(rdl_path, ["DateFrom", "DateTo"], columns_per_row=4)
-        rename_parameter(
-            path=str(rdl_path), old_name="DateFrom", new_name="StartDate"
-        )
+        rename_parameter(path=str(rdl_path), old_name="DateFrom", new_name="StartDate")
         params, cells = self._counts(rdl_path)
         assert params == cells == 2
         # Names match.
@@ -494,17 +482,17 @@ class TestToolRegistration:
     def test_sync_tool_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "sync_parameter_layout" in names
 
     def test_set_parameter_layout_registered(self):
         srv = MCPServer()
         register_all_tools(srv)
-        listing = srv.handle_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-        )["result"]["tools"]
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
         names = {t["name"] for t in listing}
         assert "set_parameter_layout" in names

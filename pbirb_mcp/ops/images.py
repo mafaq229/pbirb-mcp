@@ -45,9 +45,7 @@ def _resolve_image(doc: RDLDocument, name: str) -> etree._Element:
     if not matches:
         raise ElementNotFoundError(f"no Image named {name!r}")
     if len(matches) > 1:
-        raise AmbiguousElementError(
-            f"Image name {name!r} matches {len(matches)} elements"
-        )
+        raise AmbiguousElementError(f"Image name {name!r} matches {len(matches)} elements")
     return matches[0]
 
 
@@ -77,9 +75,7 @@ def set_image_sizing(
     short-circuit (no save). Returns ``{name, kind, changed: bool}``.
     """
     if sizing not in _VALID_SIZING:
-        raise ValueError(
-            f"sizing {sizing!r} not valid; expected one of {sorted(_VALID_SIZING)}"
-        )
+        raise ValueError(f"sizing {sizing!r} not valid; expected one of {sorted(_VALID_SIZING)}")
 
     doc = RDLDocument.open(path)
     image = _resolve_image(doc, image_name)
@@ -116,9 +112,7 @@ def _embedded_image_names(doc: RDLDocument) -> list[str]:
     if block is None:
         return []
     return [
-        e.get("Name")
-        for e in find_children(block, "EmbeddedImage")
-        if e.get("Name") is not None
+        e.get("Name") for e in find_children(block, "EmbeddedImage") if e.get("Name") is not None
     ]
 
 
