@@ -13,3 +13,8 @@ dist/
 .idea/
 .vscode/
 uv.lock
+
+# tests/fixtures/ — per-session live-MCP working copies + any RDLs
+# that aren't ours to commit. Tracked fixtures stay tracked
+# (pbi_*.rdl etc.); anything else in this dir is ignored by default.
+tests/fixtures/*.rdl*

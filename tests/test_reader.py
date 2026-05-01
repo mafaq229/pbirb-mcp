@@ -15,6 +15,7 @@ import pytest
 
 from pbirb_mcp.ops.reader import (
     describe_report,
+    find_textbox_by_value,
     get_datasets,
     get_parameters,
     get_tablixes,
@@ -49,6 +50,166 @@ class TestDescribeReport:
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             describe_report(path=str(tmp_path / "missing.rdl"))
+
+
+class TestDescribeReportV03Extensions:
+    """Phase 12 commit 44 — backward-compatible new fields."""
+
+    def test_existing_fields_unchanged(self, rdl_path):
+        out = describe_report(path=str(rdl_path))
+        # Spot-check the v0.2 keys still resolve.
+        assert "data_sources" in out
+        assert "tablixes" in out
+        assert "page" in out
+
+    def test_parameter_layout_none_without_block(self, rdl_path):
+        out = describe_report(path=str(rdl_path))
+        assert out["parameter_layout"] is None
+
+    def test_parameter_layout_summarises_grid(self, rdl_path):
+        from pbirb_mcp.ops.parameters import set_parameter_layout
+
+        set_parameter_layout(
+            path=str(rdl_path),
+            rows=1,
+            columns=2,
+            parameter_order=["DateFrom", "DateTo"],
+        )
+        out = describe_report(path=str(rdl_path))
+        layout = out["parameter_layout"]
+        assert layout == {
+            "rows": 1,
+            "columns": 2,
+            "cell_count": 2,
+            "parameters_count": 2,
+            "in_sync": True,
+        }
+
+    def test_embedded_images_lists_inventory(self, rdl_path, tmp_path):
+        # Create a tiny PNG so add_embedded_image accepts it.
+        png_bytes = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+            b"\x00\x00\x00\rIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        png_path = tmp_path / "logo.png"
+        png_path.write_bytes(png_bytes)
+        from pbirb_mcp.ops.embedded_images import add_embedded_image
+
+        add_embedded_image(
+            path=str(rdl_path),
+            name="Logo",
+            mime_type="image/png",
+            image_path=str(png_path),
+        )
+        out = describe_report(path=str(rdl_path))
+        assert len(out["embedded_images"]) == 1
+        entry = out["embedded_images"][0]
+        assert entry["name"] == "Logo"
+        assert entry["mime_type"] == "image/png"
+        assert entry["byte_size"] == len(png_bytes)
+
+    def test_embedded_images_empty_when_no_block(self, rdl_path):
+        out = describe_report(path=str(rdl_path))
+        assert out["embedded_images"] == []
+
+    def test_dataset_query_parameters_lists_bindings(self, rdl_path):
+        from pbirb_mcp.ops.dataset import add_query_parameter
+
+        add_query_parameter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            name="DateFromParam",
+            value_expression="=Parameters!DateFrom.Value",
+        )
+        out = describe_report(path=str(rdl_path))
+        assert len(out["dataset_query_parameters"]) == 1
+        qp = out["dataset_query_parameters"][0]
+        assert qp == {
+            "dataset": "MainDataset",
+            "name": "DateFromParam",
+            "value": "=Parameters!DateFrom.Value",
+        }
+
+    def test_designer_state_present_false_by_default(self, rdl_path):
+        out = describe_report(path=str(rdl_path))
+        assert out["designer_state_present"] is False
+
+    def test_designer_state_present_true_when_block_exists(self, rdl_path):
+        # Inject a DesignerState block and confirm the flag flips.
+        from lxml import etree
+
+        from pbirb_mcp.core.document import RDLDocument
+        from pbirb_mcp.core.xpath import RDL_NS, find_child, qrd
+
+        doc = RDLDocument.open(rdl_path)
+        ds = doc.root.find(f".//{{{RDL_NS}}}DataSet")
+        query = find_child(ds, "Query")
+        designer = etree.SubElement(query, qrd("DesignerState"))
+        etree.SubElement(designer, qrd("Statement")).text = "EVALUATE 'Sales'"
+        doc.save()
+        out = describe_report(path=str(rdl_path))
+        assert out["designer_state_present"] is True
+
+
+# ---- find_textbox_by_value ---------------------------------------------
+
+
+class TestFindTextboxByValue:
+    def test_returns_empty_when_no_match(self, rdl_path):
+        out = find_textbox_by_value(path=str(rdl_path), pattern="NoSuchString")
+        assert out == []
+
+    def test_finds_literal_match(self, rdl_path):
+        out = find_textbox_by_value(path=str(rdl_path), pattern="Product ID")
+        # Fixture's HeaderProductID textbox has "Product ID" as its
+        # literal value.
+        assert len(out) >= 1
+        names = {entry["textbox"] for entry in out}
+        assert "HeaderProductID" in names
+        for entry in out:
+            assert entry["region"] in ("Body", "PageHeader", "PageFooter")
+
+    def test_regex_matches(self, rdl_path):
+        out = find_textbox_by_value(path=str(rdl_path), pattern=r"^Product")
+        names = {entry["textbox"] for entry in out}
+        # All header textboxes start with "Product".
+        assert "HeaderProductID" in names
+        assert "HeaderProductName" in names
+
+    def test_regex_for_parameter_reference(self, rdl_path):
+        # Add a body textbox with a parameter ref, then find it.
+        from pbirb_mcp.ops.body import add_body_textbox
+
+        add_body_textbox(
+            path=str(rdl_path),
+            name="ParamEcho",
+            text="=Parameters!DateFrom.Value",
+            top="3in",
+            left="0.5in",
+            width="2in",
+            height="0.3in",
+        )
+        out = find_textbox_by_value(path=str(rdl_path), pattern=r"Parameters!\w+\.Value")
+        names = {entry["textbox"] for entry in out}
+        assert "ParamEcho" in names
+
+    def test_invalid_regex_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="invalid regex"):
+            find_textbox_by_value(path=str(rdl_path), pattern="(unclosed")
+
+
+class TestFindTextboxByValueRegistration:
+    def test_tool_registered(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
+        names = {t["name"] for t in listing}
+        assert "find_textbox_by_value" in names
 
 
 # ---- get_datasets ----------------------------------------------------------

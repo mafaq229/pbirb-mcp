@@ -218,6 +218,39 @@ def set_footer_item_position(
 # ---- public tools (commit 8) ---------------------------------------------
 
 
+def _resize_named_item(
+    doc: RDLDocument,
+    container: etree._Element,
+    container_label: str,
+    name: str,
+    width: Optional[str],
+    height: Optional[str],
+) -> dict[str, Any]:
+    """Shared resize helper used by set_body_item_size /
+    set_header_item_size / set_footer_item_size. Either width or height
+    (or both) must be supplied; missing fields are left untouched.
+    """
+    if width is None and height is None:
+        raise ValueError("at least one of width or height must be supplied; both None is a no-op.")
+    item = _find_named_item(container, name)
+    if item is None:
+        raise ElementNotFoundError(f"{container_label} has no named item {name!r}")
+    changed_fields: list[str] = []
+    if width is not None and _set_layout_value(item, "Width", width):
+        changed_fields.append("Width")
+    if height is not None and _set_layout_value(item, "Height", height):
+        changed_fields.append("Height")
+    if changed_fields:
+        doc.save()
+    return {
+        "name": name,
+        "container": container_label,
+        "width": width,
+        "height": height,
+        "changed": bool(changed_fields),
+    }
+
+
 def set_body_item_size(
     path: str,
     name: str,
@@ -228,32 +261,47 @@ def set_body_item_size(
     (or both) must be supplied; missing fields are left untouched.
     Returns ``changed: false`` when neither dimension differs from the
     current value (idempotent — file is not rewritten)."""
-    if width is None and height is None:
-        raise ValueError("at least one of width or height must be supplied; both None is a no-op.")
     doc = RDLDocument.open(path)
-    container = _resolve_body(doc)
-    item = _find_named_item(container, name)
-    if item is None:
-        raise ElementNotFoundError(f"body has no named item {name!r}")
-    changed_fields: list[str] = []
-    if width is not None and _set_layout_value(item, "Width", width):
-        changed_fields.append("Width")
-    if height is not None and _set_layout_value(item, "Height", height):
-        changed_fields.append("Height")
-    if changed_fields:
-        doc.save()
-    return {
-        "name": name,
-        "container": "body",
-        "width": width,
-        "height": height,
-        "changed": bool(changed_fields),
-    }
+    return _resize_named_item(doc, _resolve_body(doc), "body", name, width, height)
+
+
+# ---- public tools (Phase 6 commit 26) — header/footer size parity ------
+
+
+def set_header_item_size(
+    path: str,
+    name: str,
+    width: Optional[str] = None,
+    height: Optional[str] = None,
+) -> dict[str, Any]:
+    """Resize a named item inside ``<PageHeader>``. Mirrors the contract
+    of :func:`set_body_item_size` — at least one of width / height; missing
+    fields untouched; ``changed: false`` when nothing differs.
+
+    Closes the v0.2 parity gap where only ``set_body_item_size`` existed
+    and resizing a header logo / banner forced a manual ``str_replace``.
+    """
+    doc = RDLDocument.open(path)
+    return _resize_named_item(doc, _resolve_header(doc), "header", name, width, height)
+
+
+def set_footer_item_size(
+    path: str,
+    name: str,
+    width: Optional[str] = None,
+    height: Optional[str] = None,
+) -> dict[str, Any]:
+    """Resize a named item inside ``<PageFooter>``. Same shape as
+    :func:`set_header_item_size`."""
+    doc = RDLDocument.open(path)
+    return _resize_named_item(doc, _resolve_footer(doc), "footer", name, width, height)
 
 
 __all__ = [
     "set_body_item_position",
     "set_body_item_size",
     "set_footer_item_position",
+    "set_footer_item_size",
     "set_header_item_position",
+    "set_header_item_size",
 ]

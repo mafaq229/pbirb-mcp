@@ -40,6 +40,7 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 from pbirb_mcp.ops.styling import _detail_row_index
@@ -101,7 +102,7 @@ def _build_subtotal_cell(textbox_name: str, cell_text: str) -> etree._Element:
     textruns = etree.SubElement(paragraph, q("TextRuns"))
     textrun = etree.SubElement(textruns, q("TextRun"))
     value = etree.SubElement(textrun, q("Value"))
-    value.text = cell_text
+    value.text = encode_text(cell_text)
     etree.SubElement(textrun, q("Style"))
     etree.SubElement(paragraph, q("Style"))
     default_name = etree.SubElement(tb, qrd("DefaultName"))

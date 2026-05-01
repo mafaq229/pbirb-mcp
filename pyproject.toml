@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pbirb-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server for editing Power BI Report Builder paginated reports (RDL)"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -43,6 +43,7 @@ dependencies = [
 dev = [
     "pytest>=7",
     "ruff>=0.6",
+    "pre-commit>=3",
 ]
 
 [project.urls]

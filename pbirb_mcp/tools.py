@@ -10,11 +10,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pbirb_mcp.ops import (
+    actions,
     body,
+    chart,
+    clone,
     dataset,
     datasource,
     embedded_images,
     header_footer,
+    images,
     page,
     parameters,
     positioning,
@@ -27,8 +31,14 @@ from pbirb_mcp.ops import (
     tablix_static,
     tablix_subtotals,
     templates,
+    validate,
     visibility,
 )
+from pbirb_mcp.ops import dry_run as _dry_run
+from pbirb_mcp.ops import escape as _escape
+from pbirb_mcp.ops import expressions as _expressions
+from pbirb_mcp.ops import layout as _layout
+from pbirb_mcp.ops import lint as _lint
 
 if TYPE_CHECKING:
     from pbirb_mcp.server import MCPServer
@@ -86,7 +96,11 @@ def register_all_tools(server: MCPServer) -> None:
         name="update_dataset_query",
         description=(
             "Replace the DAX command text of a named dataset. The full DAX "
-            "expression is accepted verbatim; empty bodies are rejected."
+            "expression is accepted verbatim; empty bodies are rejected. "
+            "Optional alias_strategy='preserve_field_names' positionally "
+            "rewrites <DataField> cells to the new DAX columns while "
+            "keeping existing <Field Name> identifiers — so "
+            "Fields!X.Value references in expressions keep resolving."
         ),
         input_schema={
             "type": "object",
@@ -97,6 +111,14 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": "string",
                     "description": "Full DAX (e.g. EVALUATE TOPN(10, 'Sales')).",
                 },
+                "alias_strategy": {
+                    "type": ["string", "null"],
+                    "enum": [None, "preserve_field_names"],
+                    "description": (
+                        "When 'preserve_field_names', positionally remap "
+                        "<DataField> cells to the new DAX column list."
+                    ),
+                },
             },
             "required": ["path", "dataset_name", "dax_body"],
             "additionalProperties": False,
@@ -106,8 +128,18 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_query_parameter",
         description=(
-            "Add a <QueryParameter> binding to a dataset's query. Use to wire "
-            "report parameters into DAX (e.g. =Parameters!DateFrom.Value)."
+            "Add a <QueryParameter> binding to a dataset's query. Use to "
+            "wire report parameters into DAX (e.g. "
+            "=Parameters!DateFrom.Value).\n"
+            "\n"
+            "PBIDATASET parameter naming rule: in DAX/<CommandText>, "
+            "write @MyParam (with @). In <QueryParameter Name=...>, "
+            "write MyParam (no @). SQL/MDX use @ in both places. This "
+            "tool detects the dataset's provider and AUTO-STRIPS a "
+            "leading @ from `name` for PBIDATASET datasets, returning "
+            "{normalised: true, warning: ...}. Pass force_at_prefix=true "
+            "to override (rare; needed for some RSCustomDaxFilter "
+            "patterns)."
         ),
         input_schema={
             "type": "object",
@@ -116,6 +148,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "dataset_name": {"type": "string"},
                 "name": {"type": "string"},
                 "value_expression": {"type": "string"},
+                "force_at_prefix": {"type": "boolean", "default": False},
             },
             "required": ["path", "dataset_name", "name", "value_expression"],
             "additionalProperties": False,
@@ -124,7 +157,12 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="update_query_parameter",
-        description="Change the value expression of an existing query parameter.",
+        description=(
+            "Change the value expression of an existing query parameter. "
+            "Same PBIDATASET @-prefix normalisation as add_query_parameter "
+            "applies on lookup; legacy Name='@X' parameters that already "
+            "exist on disk are addressable via either @X or X."
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -132,6 +170,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "dataset_name": {"type": "string"},
                 "name": {"type": "string"},
                 "value_expression": {"type": "string"},
+                "force_at_prefix": {"type": "boolean", "default": False},
             },
             "required": ["path", "dataset_name", "name", "value_expression"],
             "additionalProperties": False,
@@ -170,6 +209,1112 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=datasource.set_datasource_connection,
+    )
+    server.register_tool(
+        name="list_data_sources",
+        description=(
+            "Return a rich list of every <DataSource> in the report — "
+            "name, data_provider, connect_string, integrated_security, "
+            "shared_reference, security_type, data_source_id. "
+            "describe_report.data_sources returns names only; this tool "
+            "is the authoring-friendly read."
+        ),
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=datasource.list_data_sources,
+    )
+    server.register_tool(
+        name="get_data_source",
+        description=(
+            "Single-DataSource read-back (parity with get_textbox / "
+            "get_image / get_rectangle / get_chart). Returns the same "
+            "shape as one entry of list_data_sources."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=datasource.get_data_source,
+    )
+    server.register_tool(
+        name="add_data_source",
+        description=(
+            "Create a new <DataSource> for a Power BI XMLA endpoint. "
+            "workspace_url accepts a bare workspace name or a full "
+            "powerbi:// URL. Generates a fresh rd:DataSourceID GUID. "
+            "Refuses if a DataSource of the same name already exists."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "workspace_url": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "integrated_security": {"type": "boolean", "default": True},
+            },
+            "required": ["path", "name", "workspace_url", "dataset_name"],
+            "additionalProperties": False,
+        },
+        handler=datasource.add_data_source,
+    )
+    server.register_tool(
+        name="remove_data_source",
+        description=(
+            "Remove a named <DataSource>. Refuses by default if any "
+            "DataSet/Query/DataSourceName or DataSource/"
+            "DataSourceReference still references it; the error lists "
+            "the offending locators. Pass force=True to remove anyway."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=datasource.remove_data_source,
+    )
+    server.register_tool(
+        name="rename_data_source",
+        description=(
+            "Rename a <DataSource> and rewrite every reference: "
+            "DataSet/Query/DataSourceName entries AND any "
+            "DataSource/DataSourceReference shared-source links. "
+            "Atomic: stages all matches before committing. Errors if "
+            "new_name already exists or equals old_name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_name": {"type": "string"},
+                "new_name": {"type": "string"},
+            },
+            "required": ["path", "old_name", "new_name"],
+            "additionalProperties": False,
+        },
+        handler=datasource.rename_data_source,
+    )
+    server.register_tool(
+        name="list_dataset_filters",
+        description=(
+            "List dataset-level filters in document order. Returns "
+            "[{expression, operator, values}]; index in the list is the "
+            "stable handle for remove_dataset_filter. DataSet filters "
+            "apply to every consumer of the dataset (every Tablix / "
+            "Chart bound to it); use list_tablix_filters for per-tablix "
+            "filtering."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+            },
+            "required": ["path", "dataset_name"],
+            "additionalProperties": False,
+        },
+        handler=dataset.list_dataset_filters,
+    )
+    server.register_tool(
+        name="add_dataset_filter",
+        description=(
+            "Append a <Filter> to the named dataset's <Filters> block. "
+            "operator ∈ Equal / NotEqual / GreaterThan / LessThan / "
+            "GreaterThanOrEqual / LessThanOrEqual / Like / In / Between "
+            "/ TopN / BottomN / TopPercent / BottomPercent. values must "
+            "be non-empty (single-value filters use a one-element list). "
+            "Returns the new filter's index for later removal. Optional "
+            "field_format wraps the expression as Format(<body>, fmt) "
+            "to coerce typed fields for string-parameter comparison. "
+            "Response includes warnings for field/parameter type "
+            "mismatches detected via best-effort cross-check."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "expression": {
+                    "type": "string",
+                    "description": "FilterExpression — usually a Fields! reference.",
+                },
+                "operator": {"type": "string"},
+                "values": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+                "field_format": {
+                    "type": "string",
+                    "description": (
+                        "Optional format string (e.g. 'MMM, yyyy') wrapping "
+                        "the expression as Format(<body>, '<fmt>')."
+                    ),
+                },
+            },
+            "required": [
+                "path",
+                "dataset_name",
+                "expression",
+                "operator",
+                "values",
+            ],
+            "additionalProperties": False,
+        },
+        handler=dataset.add_dataset_filter,
+    )
+    server.register_tool(
+        name="remove_dataset_filter",
+        description=(
+            "Remove a dataset-level filter by its 0-based document-order "
+            "index. Cleans up the empty <Filters> block when removing the "
+            "last entry."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "filter_index": {"type": "integer", "minimum": 0},
+            },
+            "required": ["path", "dataset_name", "filter_index"],
+            "additionalProperties": False,
+        },
+        handler=dataset.remove_dataset_filter,
+    )
+    server.register_tool(
+        name="get_dataset",
+        description=(
+            "Single-DataSet read-back (parity with get_textbox / "
+            "get_image / get_rectangle / get_chart / get_data_source). "
+            "Returns dataset name, data_source, command_text, fields "
+            "(with both data_field and value), query_parameters, "
+            "filters, and designer_state_present."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=dataset.get_dataset,
+    )
+    server.register_tool(
+        name="add_calculated_field",
+        description=(
+            "Append a calculated <Field> to the named dataset. "
+            "Calculated fields carry an expression (<Value>) instead of "
+            "a column reference (<DataField>); use them for derived "
+            "fields like Total = Amount * Quantity that aren't in the "
+            "source query but should be available via Fields!Name.Value. "
+            "Refuses if a field of the same name already exists."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "field_name": {"type": "string"},
+                "expression": {
+                    "type": "string",
+                    "description": "RDL expression, e.g. '=Fields!Amount.Value * Fields!Quantity.Value'.",
+                },
+            },
+            "required": ["path", "dataset_name", "field_name", "expression"],
+            "additionalProperties": False,
+        },
+        handler=dataset.add_calculated_field,
+    )
+    server.register_tool(
+        name="remove_calculated_field",
+        description=(
+            "Remove a calculated <Field> by name. Refuses if the field "
+            "is data-bound (carries <DataField> instead of <Value>) — "
+            "those reflect the source query's columns. Drop a data-bound "
+            "field by rewriting the dataset query via update_dataset_query."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "field_name": {"type": "string"},
+            },
+            "required": ["path", "dataset_name", "field_name"],
+            "additionalProperties": False,
+        },
+        handler=dataset.remove_calculated_field,
+    )
+    server.register_tool(
+        name="add_dataset_field",
+        description=(
+            "Append a data-bound <Field> to a dataset's <Fields> block. "
+            "Writes <DataField>data_field</DataField> (and optional "
+            "<rd:TypeName>type_name</rd:TypeName>). Distinct from "
+            "add_calculated_field which writes <Value> for derived "
+            "fields. Use after rewriting the DAX to declare a new "
+            "column that came back from the query but isn't yet in "
+            "<Fields>. Refuses on duplicate field name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "field_name": {"type": "string"},
+                "data_field": {
+                    "type": "string",
+                    "description": (
+                        "Source column reference, e.g. 'Sales[ProductID]' "
+                        "or '[Region]' (the form depends on DAX shape)."
+                    ),
+                },
+                "type_name": {
+                    "type": ["string", "null"],
+                    "description": (
+                        ".NET type, e.g. 'System.String', "
+                        "'System.DateTime', 'System.Decimal'. Optional."
+                    ),
+                },
+            },
+            "required": ["path", "dataset_name", "field_name", "data_field"],
+            "additionalProperties": False,
+        },
+        handler=dataset.add_dataset_field,
+    )
+    server.register_tool(
+        name="refresh_dataset_fields",
+        description=(
+            "Sync a dataset's <Fields> block against the shape detected "
+            "in its DAX <CommandText>. Eliminates the manual 'open "
+            "Report Builder → right-click → Refresh Fields' step after "
+            "a query rewrite. Recognises SELECTCOLUMNS aliases and "
+            "Table[Col] tokens (SUMMARIZECOLUMNS / ad-hoc). Adds missing "
+            "fields; lists orphans without auto-removing (caller decides "
+            "what to drop). Returns {added, orphans, unchanged, "
+            "warnings}. Cheap regex-based detection — bare EVALUATE "
+            "'Table' returns a warning."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+            },
+            "required": ["path", "dataset_name"],
+            "additionalProperties": False,
+        },
+        handler=dataset.refresh_dataset_fields,
+    )
+    server.register_tool(
+        name="set_image_sizing",
+        description=(
+            "Set <Image>/<Sizing> on a named Image. sizing ∈ AutoSize / "
+            "Fit / FitProportional / Clip. AutoSize renders at native "
+            "size (box grows to fit); Fit stretches to fill (ignores "
+            "aspect ratio); FitProportional preserves aspect ratio; "
+            "Clip renders at native size, clipped to the box. "
+            "Idempotent: same value → {changed: false}, no save."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "image_name": {"type": "string"},
+                "sizing": {
+                    "type": "string",
+                    "enum": ["AutoSize", "Fit", "FitProportional", "Clip"],
+                },
+            },
+            "required": ["path", "image_name", "sizing"],
+            "additionalProperties": False,
+        },
+        handler=images.set_image_sizing,
+    )
+    server.register_tool(
+        name="set_image_source",
+        description=(
+            "Repoint an existing <Image> at a different embedded image "
+            "entry without delete-and-readd. Sets Source=Embedded and "
+            "rewrites <Value> to embedded_name. Refuses with a clear "
+            "error if embedded_name isn't in <EmbeddedImages> — leaving "
+            "a dangling reference would render as a broken image. Add "
+            "the image first via add_embedded_image. Idempotent: same "
+            "(Source, Value) pair → {changed: false}, no save. Returns "
+            "{name, kind, changed: bool}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "image_name": {"type": "string"},
+                "embedded_name": {"type": "string"},
+            },
+            "required": ["path", "image_name", "embedded_name"],
+            "additionalProperties": False,
+        },
+        handler=images.set_image_source,
+    )
+    server.register_tool(
+        name="set_column_width",
+        description=(
+            "Set <Width> on a tablix's body column. column accepts a "
+            "0-based integer index OR a textbox name living in any cell "
+            "of that column (mirrors how set_cell_span / add_subtotal_row "
+            "address columns). width is an RDL size ('1.5in', '4cm', "
+            "'80pt'). Idempotent: same width → {changed: false}, no save."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "column": {
+                    "oneOf": [
+                        {"type": "integer", "minimum": 0},
+                        {"type": "string"},
+                    ],
+                    "description": "0-based column index or textbox name in any column cell.",
+                },
+                "width": {"type": "string"},
+            },
+            "required": ["path", "tablix_name", "column", "width"],
+            "additionalProperties": False,
+        },
+        handler=tablix_columns.set_column_width,
+    )
+    server.register_tool(
+        name="set_tablix_size",
+        description=(
+            "Resize a tablix by writing <Height> and / or <Width> directly. "
+            "Each arg independently optional. Use after adding header / "
+            "footer rows that change the body's natural height — v0.2's "
+            "positioning tools only cover top/left, not size. Both values "
+            "are RDL size strings. Returns {tablix, kind, changed: "
+            "list[str]} — empty list when inputs match existing."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "height": {"type": "string"},
+                "width": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=tablix.set_tablix_size,
+    )
+    server.register_tool(
+        name="reorder_parameters",
+        description=(
+            "Reorder <ReportParameter> children to match the supplied "
+            "names list. names MUST be a permutation of every existing "
+            "parameter — no missing, no duplicates, no unknown names. "
+            "When a <ReportParametersLayout> exists, its CellDefinition "
+            "entries are reordered in lockstep so the parameter pane "
+            "shows fields in the new declaration order. RowIndex / "
+            "ColumnIndex are not recomputed (RB's layout grid is "
+            "independent of declaration order). Returns {order, kind, "
+            "changed: bool}; same order → no save."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+            },
+            "required": ["path", "names"],
+            "additionalProperties": False,
+        },
+        handler=parameters.reorder_parameters,
+    )
+    server.register_tool(
+        name="set_parameter_layout",
+        description=(
+            "Author <ReportParametersLayout>/<GridLayoutDefinition> "
+            "explicitly. Writes <NumberOfRows> + <NumberOfColumns>; "
+            "rewrites <CellDefinitions> so each name in parameter_order "
+            "lands at (row=index // columns, col=index % columns). "
+            "Strict permutation check (every existing parameter exactly "
+            "once). rows*columns must be ≥ parameter count. Auto-creates "
+            "the layout block when absent. Idempotent: same grid + order "
+            "→ no save. Complements reorder_parameters (declaration "
+            "order) and sync_parameter_layout (gap-filling). Returns "
+            "{rows, columns, order, kind, changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "rows": {"type": "integer", "minimum": 1},
+                "columns": {"type": "integer", "minimum": 1},
+                "parameter_order": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+            },
+            "required": ["path", "rows", "columns", "parameter_order"],
+            "additionalProperties": False,
+        },
+        handler=parameters.set_parameter_layout,
+    )
+    server.register_tool(
+        name="duplicate_report",
+        description=(
+            "Clone an .rdl to a new path. When regenerate_ids=true "
+            "(default), every <rd:DataSourceID> and any <rd:ReportID> "
+            "is rewritten to a fresh uuid4() so Power BI Report Builder "
+            "doesn't refuse to load the duplicate due to identity "
+            "collision. Atomic-write convention from RDLDocument.save_as. "
+            "Refuses if dst_path already exists. Returns {src, dst, "
+            "regenerated_ids: list[str]}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "src_path": {"type": "string"},
+                "dst_path": {"type": "string"},
+                "regenerate_ids": {"type": "boolean", "default": True},
+            },
+            "required": ["src_path", "dst_path"],
+            "additionalProperties": False,
+        },
+        handler=clone.duplicate_report,
+    )
+    server.register_tool(
+        name="get_embedded_image_data",
+        description=(
+            "Read an embedded image's base64 <ImageData> for porting "
+            "it to another report without re-reading from disk. Returns "
+            "{name, mime_type, base64, byte_size}. base64 is the raw "
+            "text of the ImageData element; byte_size is the decoded "
+            "size for sanity-checking. Refuses with ElementNotFoundError "
+            "if the named entry isn't in <EmbeddedImages>."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=embedded_images.get_embedded_image_data,
+    )
+
+    # ---- validation (Phase 7) -------------------------------------------
+
+    server.register_tool(
+        name="validate_report",
+        description=(
+            "Run schema/structural validation against an .rdl. Returns "
+            "{valid, errors, xsd_used}. Structural checks always run "
+            "(root element + required top-level sections); XSD validation "
+            "is opt-in (drop the Microsoft RDL 2016 XSD into "
+            "pbirb_mcp/schemas/reportdefinition.xsd to enable). Each "
+            "error is {severity, rule, location, message} so verify_report "
+            "can union with lint output."
+        ),
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=validate.validate_report,
+    )
+
+    server.register_tool(
+        name="verify_report",
+        description=(
+            "One-shot static check: union of validate_report and "
+            "lint_report. Returns {valid, issues, xsd_used} where "
+            "valid is True iff no issue has severity='error'. "
+            "Warnings don't invalidate the report. Use this as the "
+            "single 'is the report OK?' tool, or set "
+            "PBIRB_MCP_AUTO_VERIFY=1 to have it run after every "
+            "mutating call."
+        ),
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=validate.verify_report,
+    )
+
+    server.register_tool(
+        name="lint_report",
+        description=(
+            "Run static-analysis lint rules against an .rdl. Fifteen "
+            "rules cover the v0.2-session bug classes (multi-value-eq, "
+            "missing-field-reference, dangling-embedded-image, "
+            "pbidataset-at-prefix, parameter-layout-out-of-sync, "
+            "double-encoded-entities, stale-designer-state, "
+            "tablix-span-misplaced, etc.). Returns {issues, rules_run} "
+            "with each issue {severity, rule, location, message, "
+            "suggestion?}. Optional `rules` selects a subset by name."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "rules": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional subset of rule names; default runs all 15.",
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=_lint.lint_report,
+    )
+
+    server.register_tool(
+        name="dry_run_edit",
+        description=(
+            "Apply a list of {tool, args} ops to a tempfile clone of "
+            "the report; return the unified diff and a verify "
+            "(validate + lint) report. The original file is NEVER "
+            "modified. The harness auto-injects `path` into each op's "
+            "args, so callers don't supply it. On op failure, dispatch "
+            "stops; partial diff + verify are still returned. Use this "
+            "to preview risky multi-step edits before committing."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "ops": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tool": {"type": "string"},
+                            "args": {"type": "object"},
+                        },
+                        "required": ["tool"],
+                        "additionalProperties": False,
+                    },
+                    "description": "Sequence of tool calls to dispatch against the tempfile.",
+                },
+            },
+            "required": ["path", "ops"],
+            "additionalProperties": False,
+        },
+        handler=_dry_run.dry_run_edit,
+    )
+
+    server.register_tool(
+        name="get_expression_reference",
+        description=(
+            "Return a static cheat-sheet of common RDL expression "
+            "patterns: globals, parameters, fields, aggregates, "
+            "conditionals, strings, dates. Each entry is {name, syntax, "
+            "example, description}. Call this when authoring a textbox "
+            "value or filter expression instead of guessing — and note "
+            "the explicit encoding hint for the `&` concat operator."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        handler=_expressions.get_expression_reference,
+    )
+
+    server.register_tool(
+        name="count_where",
+        description=(
+            "Emit =Sum(IIf(<condition>, 1, 0)) — the SSRS conditional-count "
+            "idiom. condition is an RDL expression body (no leading '='). "
+            "Returns a complete top-level expression suitable for "
+            "set_textbox_value or any RDL <Value> sink."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "condition": {
+                    "type": "string",
+                    "description": (
+                        "RDL expression body, e.g. 'Fields!Status.Value = \"Active\"'."
+                    ),
+                },
+            },
+            "required": ["condition"],
+            "additionalProperties": False,
+        },
+        handler=_expressions.count_where,
+    )
+
+    server.register_tool(
+        name="sum_where",
+        description=(
+            "Emit =Sum(IIf(<condition>, <field_expression>, 0)) — the SSRS "
+            "conditional-sum idiom. Both args are expression bodies "
+            "(no leading '=')."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "field_expression": {
+                    "type": "string",
+                    "description": ("Value to sum, e.g. 'Fields!Amount.Value'."),
+                },
+                "condition": {
+                    "type": "string",
+                    "description": (
+                        "RDL expression body, e.g. 'Fields!Status.Value = \"Active\"'."
+                    ),
+                },
+            },
+            "required": ["field_expression", "condition"],
+            "additionalProperties": False,
+        },
+        handler=_expressions.sum_where,
+    )
+
+    server.register_tool(
+        name="iif_format",
+        description=(
+            "Emit =IIf(<condition>, <true_value>, <false_value>). All three "
+            "args are expression bodies (no leading '='); string literals "
+            "must already be quoted, e.g. true_value='\"Yes\"'."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "condition": {"type": "string"},
+                "true_value": {"type": "string"},
+                "false_value": {"type": "string"},
+            },
+            "required": ["condition", "true_value", "false_value"],
+            "additionalProperties": False,
+        },
+        handler=_expressions.iif_format,
+    )
+
+    # ---- pagination (Phase 10) ------------------------------------------
+
+    server.register_tool(
+        name="set_group_page_break",
+        description=(
+            "Set <BreakLocation> on a tablix group's page-break rule. "
+            "location ∈ {None, Start, End, StartAndEnd, Between}. "
+            "Passing 'None' removes the <PageBreak> element (the "
+            "canonical 'no break' shape). Idempotent. Returns "
+            "{tablix, group, kind: 'Group', location, changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "location": {
+                    "type": "string",
+                    "enum": list(_layout._VALID_BREAK_LOCATIONS),
+                },
+            },
+            "required": ["path", "tablix_name", "group_name", "location"],
+            "additionalProperties": False,
+        },
+        handler=_layout.set_group_page_break,
+    )
+
+    server.register_tool(
+        name="set_repeat_on_new_page",
+        description=(
+            "Set <TablixMember>/<RepeatOnNewPage> on the member that "
+            "wraps the named group. Most common use: repeat a group "
+            "header row at the top of every page the group spans. "
+            "Setting repeat=False removes the element (False is "
+            "default). Returns {tablix, group, kind: 'TablixMember', "
+            "repeat, changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "repeat": {"type": "boolean"},
+            },
+            "required": ["path", "tablix_name", "group_name", "repeat"],
+            "additionalProperties": False,
+        },
+        handler=_layout.set_repeat_on_new_page,
+    )
+
+    server.register_tool(
+        name="set_keep_together",
+        description=(
+            "Set <KeepTogether> on a named Tablix / Rectangle / Chart / "
+            "Textbox / Map / Gauge. Tells the renderer 'don't split "
+            "this across pages if you can help it'. Best-effort — "
+            "items larger than a page are still split. keep=False "
+            "removes the element. Refuses for Image / Line / Subreport "
+            "and other kinds where the RDL XSD doesn't allow it."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "keep": {"type": "boolean"},
+            },
+            "required": ["path", "name", "keep"],
+            "additionalProperties": False,
+        },
+        handler=_layout.set_keep_together,
+    )
+
+    server.register_tool(
+        name="set_keep_with_group",
+        description=(
+            "Set <TablixMember>/<KeepWithGroup> on the member that "
+            "wraps the named group. value ∈ {None, Before, After}. "
+            "Typical use: a column-header row's member with 'After' "
+            "to glue it to the data rows that follow. value='None' "
+            "removes the element."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "value": {
+                    "type": "string",
+                    "enum": list(_layout._VALID_KEEP_WITH_GROUP),
+                },
+            },
+            "required": ["path", "tablix_name", "group_name", "value"],
+            "additionalProperties": False,
+        },
+        handler=_layout.set_keep_with_group,
+    )
+
+    # ---- layout containers (Phase 11) -----------------------------------
+
+    server.register_tool(
+        name="add_rectangle",
+        description=(
+            "Add a <Rectangle> to <Body>/<ReportItems>. With no "
+            "contained_items the rectangle is empty (a visual frame). "
+            "With contained_items=[name1, name2, ...], each named "
+            "body item is MOVED into the rectangle's <ReportItems> "
+            "and its <Top>/<Left> recalculated so the on-screen "
+            "position is preserved. Refuses on duplicate name or "
+            "if any contained_item isn't in <Body>/<ReportItems>. "
+            "Returns {name, kind: 'Rectangle', moved}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "top": {"type": "string"},
+                "left": {"type": "string"},
+                "width": {"type": "string"},
+                "height": {"type": "string"},
+                "contained_items": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Names of existing body items to move into the "
+                        "rectangle. Empty list / omitted → empty rectangle."
+                    ),
+                },
+            },
+            "required": ["path", "name", "top", "left", "width", "height"],
+            "additionalProperties": False,
+        },
+        handler=_layout.add_rectangle,
+    )
+
+    server.register_tool(
+        name="add_list",
+        description=(
+            "Add a List (single-cell repeating Tablix) bound to a "
+            "dataset. RDL has no distinct <List> element — Report "
+            "Builder's List is a Tablix with one column, one detail "
+            "row, and a Rectangle inside the cell. Items placed in "
+            "the rectangle repeat once per dataset row. The inner "
+            "rectangle is named '<name>_Rect' for subsequent lookup. "
+            "Returns {name, kind: 'Tablix', dataset, rectangle}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "top": {"type": "string"},
+                "left": {"type": "string"},
+                "width": {"type": "string"},
+                "height": {"type": "string"},
+            },
+            "required": ["path", "name", "dataset_name", "top", "left", "width", "height"],
+            "additionalProperties": False,
+        },
+        handler=_layout.add_list,
+    )
+
+    server.register_tool(
+        name="add_line",
+        description=(
+            "Add a <Line> to <Body>/<ReportItems>. RDL Line semantics: "
+            "top/left is the start point; width/height is the offset "
+            "(vector) to the end point — horizontal line uses "
+            "height='0in', vertical uses width='0in'. Optional color, "
+            "line_thickness ('1pt' default), line_style "
+            "(Solid/Dashed/Dotted/Double/etc.). Returns {name, kind: 'Line'}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "top": {"type": "string"},
+                "left": {"type": "string"},
+                "width": {"type": "string"},
+                "height": {"type": "string"},
+                "color": {"type": "string"},
+                "line_thickness": {"type": "string"},
+                "line_style": {
+                    "type": "string",
+                    "enum": list(_layout._VALID_LINE_STYLES),
+                },
+            },
+            "required": ["path", "name", "top", "left", "width", "height"],
+            "additionalProperties": False,
+        },
+        handler=_layout.add_line,
+    )
+
+    # ---- xpath escape hatch (Phase 12 commit 45) ------------------------
+
+    server.register_tool(
+        name="raw_xml_view",
+        description=(
+            "Read-only XPath query against the report. Returns matched "
+            "elements as serialised XML strings. XPath context is "
+            "<Report> (the root); 'r:' is bound to the RDL namespace, "
+            "'rd:' to the rd namespace. Examples: "
+            "\"r:DataSources/r:DataSource[@Name='X']\" / "
+            "\".//r:Textbox[@Name='X']/r:Style\". Returns [] when "
+            "nothing matches; raises on malformed xpath."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "xpath": {"type": "string"},
+            },
+            "required": ["path", "xpath"],
+            "additionalProperties": False,
+        },
+        handler=_escape.raw_xml_view,
+    )
+
+    server.register_tool(
+        name="raw_xml_replace",
+        description=(
+            "Replace the single element matched by xpath with new "
+            "content. content is parsed with RDL as the default "
+            "namespace and 'rd:' bound, so bare names like "
+            "<Textbox><Value>x</Value></Textbox> work without explicit "
+            "xmlns. Refuses on zero matches, multiple matches, or if "
+            "the xpath targets the <Report> root. Saves atomically. "
+            "Returns {xpath, kind, changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "xpath": {"type": "string"},
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "XML for the replacement element. Exactly one top-level element."
+                    ),
+                },
+            },
+            "required": ["path", "xpath", "content"],
+            "additionalProperties": False,
+        },
+        handler=_escape.raw_xml_replace,
+    )
+
+    # ---- actions / tooltip / document-map (Phase 5) ---------------------
+
+    _DRILLTHROUGH_PARAM_ITEM = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "value": {"type": "string"},
+        },
+        "required": ["name", "value"],
+        "additionalProperties": False,
+    }
+
+    server.register_tool(
+        name="set_textbox_action",
+        description=(
+            "Set <Textbox>/<Action> to a Hyperlink (URL), Drillthrough "
+            "(another report + optional parameters), or BookmarkLink "
+            "(jump within document). target_expression accepts literal "
+            "text or =expression. drillthrough_parameters is a list of "
+            "{name, value} dicts wired into <Drillthrough>/<Parameters>. "
+            "Idempotent: same action_type + target + parameters → "
+            "{changed: false}, no save."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "textbox_name": {"type": "string"},
+                "action_type": {
+                    "type": "string",
+                    "enum": ["Hyperlink", "Drillthrough", "BookmarkLink"],
+                },
+                "target_expression": {"type": "string"},
+                "drillthrough_parameters": {
+                    "type": "array",
+                    "items": _DRILLTHROUGH_PARAM_ITEM,
+                },
+            },
+            "required": [
+                "path",
+                "textbox_name",
+                "action_type",
+                "target_expression",
+            ],
+            "additionalProperties": False,
+        },
+        handler=actions.set_textbox_action,
+    )
+    server.register_tool(
+        name="set_image_action",
+        description=(
+            "Same shape as set_textbox_action but operates on a named "
+            "<Image>. action_type ∈ Hyperlink / Drillthrough / "
+            "BookmarkLink. Returns {image, kind, action_type, changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "image_name": {"type": "string"},
+                "action_type": {
+                    "type": "string",
+                    "enum": ["Hyperlink", "Drillthrough", "BookmarkLink"],
+                },
+                "target_expression": {"type": "string"},
+                "drillthrough_parameters": {
+                    "type": "array",
+                    "items": _DRILLTHROUGH_PARAM_ITEM,
+                },
+            },
+            "required": [
+                "path",
+                "image_name",
+                "action_type",
+                "target_expression",
+            ],
+            "additionalProperties": False,
+        },
+        handler=actions.set_image_action,
+    )
+    server.register_tool(
+        name="set_textbox_tooltip",
+        description=(
+            "Set <Textbox>/<ToolTip>. Literal text or =expression. Pass "
+            "'' to clear. Idempotent. Returns {textbox, kind, changed: "
+            "bool}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "textbox_name": {"type": "string"},
+                "text_or_expression": {"type": "string"},
+            },
+            "required": ["path", "textbox_name", "text_or_expression"],
+            "additionalProperties": False,
+        },
+        handler=actions.set_textbox_tooltip,
+    )
+    server.register_tool(
+        name="set_document_map_label",
+        description=(
+            "Set <DocumentMapLabel> on any named ReportItem (Textbox / "
+            "Image / Rectangle / Chart / Tablix / etc.). Surfaces in "
+            "the rendered report's navigable document-map / "
+            "table-of-contents pane. Pass '' to clear. Idempotent. "
+            "Returns {element, kind, changed: bool}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "element_name": {"type": "string"},
+                "label_or_expression": {"type": "string"},
+            },
+            "required": ["path", "element_name", "label_or_expression"],
+            "additionalProperties": False,
+        },
+        handler=actions.set_document_map_label,
+    )
+    server.register_tool(
+        name="set_chart_series_action",
+        description=(
+            "Set <ChartSeries>/<Action> to a Hyperlink (URL), Drillthrough "
+            "(another report + optional parameters), or BookmarkLink. "
+            "Same kwarg surface as set_textbox_action / set_image_action; "
+            "the chart series is addressed by (chart_name, series_name). "
+            "Schema-aware insertion respects ChartSeries child order. "
+            "Idempotent on structural equality of the inner block."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+                "action_type": {
+                    "type": "string",
+                    "enum": ["Hyperlink", "Drillthrough", "BookmarkLink"],
+                },
+                "target_expression": {"type": "string"},
+                "drillthrough_parameters": {
+                    "type": "array",
+                    "items": _DRILLTHROUGH_PARAM_ITEM,
+                },
+            },
+            "required": [
+                "path",
+                "chart_name",
+                "series_name",
+                "action_type",
+                "target_expression",
+            ],
+            "additionalProperties": False,
+        },
+        handler=actions.set_chart_series_action,
     )
 
     server.register_tool(
@@ -214,7 +1359,11 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Append a <Filter> to a tablix. Operator must be one of the RDL "
             "2016 enumeration (Equal, NotEqual, GreaterThan, In, Between, ...). "
-            "Returns the new filter's index for follow-up calls."
+            "Returns the new filter's index for follow-up calls. Optional "
+            "field_format wraps the expression as Format(<body>, fmt) to "
+            "coerce typed fields for string-parameter comparison. The "
+            "response includes warnings for cross-checked field/parameter "
+            "type mismatches."
         ),
         input_schema={
             "type": "object",
@@ -227,6 +1376,13 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": "array",
                     "items": {"type": "string"},
                     "minItems": 1,
+                },
+                "field_format": {
+                    "type": "string",
+                    "description": (
+                        "Optional format string (e.g. 'MMM, yyyy') wrapping "
+                        "the expression as Format(<body>, '<fmt>')."
+                    ),
                 },
             },
             "required": ["path", "tablix_name", "expression", "operator", "values"],
@@ -689,6 +1845,46 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=positioning.set_body_item_size,
     )
+    server.register_tool(
+        name="set_header_item_size",
+        description=(
+            "Resize a named item inside <PageHeader>. Mirrors "
+            "set_body_item_size — at least one of width / height; "
+            "missing fields untouched; idempotent ({changed: false} "
+            "when nothing differs). Closes the v0.2 parity gap where "
+            "only the body variant existed."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "width": {"type": ["string", "null"]},
+                "height": {"type": ["string", "null"]},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=positioning.set_header_item_size,
+    )
+    server.register_tool(
+        name="set_footer_item_size",
+        description=(
+            "Resize a named item inside <PageFooter>. Same shape as set_header_item_size."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "width": {"type": ["string", "null"]},
+                "height": {"type": ["string", "null"]},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=positioning.set_footer_item_size,
+    )
 
     # ---- reader extensions (v0.2) -----------------------------------------
     server.register_tool(
@@ -775,6 +1971,26 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=reader.get_rectangle,
+    )
+    server.register_tool(
+        name="get_chart",
+        description=(
+            "Return effective state of a named Chart: position, size, "
+            "dataset, palette, series list (name/type/subtype/value "
+            "expression/color), category groups (name/expression/label), "
+            "axes (category and value), legend, title, Style, Visibility. "
+            "Symmetric with get_textbox / get_image / get_rectangle."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=reader.get_chart,
     )
 
     # ---- snapshot (v0.2 commit 14) ----------------------------------------
@@ -904,6 +2120,22 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=parameters.rename_parameter,
+    )
+    server.register_tool(
+        name="sync_parameter_layout",
+        description=(
+            "Bring <ReportParametersLayout>/<GridLayoutDefinition>/"
+            "<CellDefinitions> into sync with <ReportParameters>. Drops "
+            "cells whose ParameterName no longer exists; appends cells "
+            "for parameters that have no entry, placed at the next free "
+            "(row, col) slot. add_parameter / remove_parameter / "
+            "rename_parameter call this internally; the standalone tool "
+            "is for repairing legacy reports authored before v0.3.0 "
+            "where the layout drifted. No-op when the report has no "
+            "<ReportParametersLayout>. Returns {added, removed}."
+        ),
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=parameters.sync_parameter_layout,
     )
 
     server.register_tool(
@@ -1103,7 +2335,10 @@ def register_all_tools(server: MCPServer) -> None:
         name="add_header_textbox",
         description=(
             "Add a Textbox to <PageHeader>/<ReportItems>. text accepts "
-            "static strings or RDL expressions (=Parameters!DateFrom.Value)."
+            "static strings or RDL expressions (=Parameters!DateFrom.Value). "
+            "Pass raw text — encoding is handled; don't pre-encode XML "
+            "entities (use `&` not `&amp;`, including for the VB.NET "
+            "string-concat operator in expressions)."
         ),
         input_schema=_TEXTBOX_SCHEMA,
         handler=header_footer.add_header_textbox,
@@ -1151,11 +2386,13 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Set styling on a named Textbox. Properties route to the right "
             "nested Style node automatically: background_color, "
-            "border_*, vertical_align go on Textbox/Style; text_align on "
-            "Paragraph/Style; font_*, color, format on TextRun/Style. All "
-            "fields optional — only what's passed gets written. Cell-level "
-            "styling: every tablix cell is a Textbox with a unique name, so "
-            "use this tool with the cell's textbox name (e.g. 'HeaderAmount')."
+            "border_*, vertical_align, padding_*, writing_mode go on "
+            "Textbox/Style; text_align on Paragraph/Style; font_*, color, "
+            "format on TextRun/Style; can_grow / can_shrink go DIRECTLY "
+            "on Textbox (not inside Style). All fields optional — only "
+            "what's passed gets written. Cell-level styling: every tablix "
+            "cell is a Textbox with a unique name, so use this tool with "
+            "the cell's textbox name (e.g. 'HeaderAmount')."
         ),
         input_schema={
             "type": "object",
@@ -1194,11 +2431,273 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": ["string", "null"],
                     "description": "Number/date format (e.g. '#,0.00', 'C2', 'd').",
                 },
+                "padding_top": {
+                    "type": ["string", "null"],
+                    "description": "RDL size (e.g. '2pt', '0.05in').",
+                },
+                "padding_bottom": {"type": ["string", "null"]},
+                "padding_left": {"type": ["string", "null"]},
+                "padding_right": {"type": ["string", "null"]},
+                "writing_mode": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "Horizontal | Vertical | Rotate270 — text "
+                        "orientation. Useful for narrow column headers."
+                    ),
+                },
+                "can_grow": {
+                    "type": ["boolean", "null"],
+                    "description": (
+                        "Allow textbox to grow vertically when content "
+                        "exceeds the height. Direct Textbox child, not Style."
+                    ),
+                },
+                "can_shrink": {
+                    "type": ["boolean", "null"],
+                    "description": (
+                        "Allow textbox to shrink when content is shorter "
+                        "than the height. Direct Textbox child, not Style."
+                    ),
+                },
             },
             "required": ["path", "textbox_name"],
             "additionalProperties": False,
         },
         handler=styling.set_textbox_style,
+    )
+    server.register_tool(
+        name="set_textbox_runs",
+        description=(
+            "Replace a textbox's content with multiple <TextRun> children "
+            "for mixed styling within one display — e.g. '**Asset(s):** "
+            "value' with a bold prefix + regular value in a single "
+            "textbox. Each run is a dict with required 'text' and optional "
+            "font_family / font_size / font_weight / font_style / color / "
+            "format / text_decoration. Replaces the entire <Paragraphs> "
+            "subtree (single-paragraph in v0.3; multi-paragraph deferred). "
+            "Round-trip contract: get_textbox.runs[] returns the same "
+            "shape this tool writes. Idempotent — identical input is a "
+            "no-op short-circuit. Returns {textbox, kind, runs, changed}. "
+            "Pass raw text in each run's `text` — encoding is handled; "
+            "don't pre-encode XML entities (use `&` not `&amp;`, "
+            "including for the VB.NET string-concat operator)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "textbox_name": {"type": "string"},
+                "runs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "font_family": {"type": "string"},
+                            "font_size": {"type": "string"},
+                            "font_weight": {"type": "string"},
+                            "font_style": {"type": "string"},
+                            "color": {"type": "string"},
+                            "format": {"type": "string"},
+                            "text_decoration": {"type": "string"},
+                        },
+                        "required": ["text"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["path", "textbox_name", "runs"],
+            "additionalProperties": False,
+        },
+        handler=styling.set_textbox_runs,
+    )
+    server.register_tool(
+        name="set_textbox_value",
+        description=(
+            "Replace the text content of a single-run textbox. value can "
+            "be raw text or an =expression. Use this for the everyday "
+            "'change the textbox content' case (swap a literal label, "
+            "update a stale parameter reference, replace a broken "
+            "aggregate). Refuses with a redirect to set_textbox_runs when "
+            "the textbox has multiple text runs (multi-run content needs "
+            "the rich-text editor). Idempotent: identical value → "
+            "{changed: false} no-op. Returns {textbox, kind, changed}. "
+            "Pass raw text — encoding is handled; don't pre-encode XML "
+            "entities (use `&` not `&amp;`, including for the VB.NET "
+            "string-concat operator in expressions)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "textbox_name": {"type": "string"},
+                "value": {"type": "string"},
+            },
+            "required": ["path", "textbox_name", "value"],
+            "additionalProperties": False,
+        },
+        handler=styling.set_textbox_value,
+    )
+    server.register_tool(
+        name="set_textbox_style_bulk",
+        description=(
+            "Apply the same style kwargs to every named textbox in one "
+            "call. Same kwarg surface as set_textbox_style. Missing names "
+            "land in skipped rather than raising. Returns {textboxes, "
+            "skipped, changed} where changed is the union of sub-paths "
+            "affected across all textboxes. Pair with find_textboxes_by_"
+            "style to discover names by current style."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "textbox_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "font_family": {"type": ["string", "null"]},
+                "font_size": {"type": ["string", "null"]},
+                "font_weight": {"type": ["string", "null"]},
+                "color": {"type": ["string", "null"]},
+                "background_color": {"type": ["string", "null"]},
+                "border_style": {"type": ["string", "null"]},
+                "border_color": {"type": ["string", "null"]},
+                "border_width": {"type": ["string", "null"]},
+                "text_align": {"type": ["string", "null"]},
+                "vertical_align": {"type": ["string", "null"]},
+                "format": {"type": ["string", "null"]},
+                "padding_top": {"type": ["string", "null"]},
+                "padding_bottom": {"type": ["string", "null"]},
+                "padding_left": {"type": ["string", "null"]},
+                "padding_right": {"type": ["string", "null"]},
+                "writing_mode": {"type": ["string", "null"]},
+                "can_grow": {"type": ["boolean", "null"]},
+                "can_shrink": {"type": ["boolean", "null"]},
+            },
+            "required": ["path", "textbox_names"],
+            "additionalProperties": False,
+        },
+        handler=styling.set_textbox_style_bulk,
+    )
+    server.register_tool(
+        name="find_textboxes_by_style",
+        description=(
+            "Search for textboxes matching one or more style filters. "
+            "Filters AND together (every supplied filter must match). "
+            "Returns [{name, location, matched_fields}] where location "
+            "is best-effort 'body' / 'header' / 'footer' / "
+            "'tablix:<name>' / 'rectangle:<name>'. Returns [] when no "
+            "filters supplied. Pair with set_textbox_style_bulk for "
+            "discovery+apply patterns (e.g. 'recolor every red textbox')."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "background_color": {"type": "string"},
+                "vertical_align": {"type": "string"},
+                "writing_mode": {"type": "string"},
+                "padding_top": {"type": "string"},
+                "padding_bottom": {"type": "string"},
+                "padding_left": {"type": "string"},
+                "padding_right": {"type": "string"},
+                "border_style": {"type": "string"},
+                "border_color": {"type": "string"},
+                "border_width": {"type": "string"},
+                "text_align": {"type": "string"},
+                "font_family": {"type": "string"},
+                "font_size": {"type": "string"},
+                "font_weight": {"type": "string"},
+                "font_style": {"type": "string"},
+                "color": {"type": "string"},
+                "format": {"type": "string"},
+                "text_decoration": {"type": "string"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=reader.find_textboxes_by_style,
+    )
+    server.register_tool(
+        name="find_textbox_by_value",
+        description=(
+            "Find every Textbox whose <Value> text matches a Python "
+            "regex pattern. Searches Body / PageHeader / PageFooter. "
+            "A textbox with multiple matching runs surfaces once per "
+            "match. Returns [{textbox, value, region}]. Useful for "
+            "finding stale =Parameters!Old.Value references after "
+            "rename_parameter, or any cross-cutting expression edit."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "pattern": {
+                    "type": "string",
+                    "description": "Python regex (re.search); not RDL/SQL glob.",
+                },
+            },
+            "required": ["path", "pattern"],
+            "additionalProperties": False,
+        },
+        handler=reader.find_textbox_by_value,
+    )
+    server.register_tool(
+        name="style_tablix_row",
+        description=(
+            "Apply the same style kwargs to every cell in a tablix row "
+            "in ONE call. Replaces the 12-individual-set_textbox_style-"
+            "calls-per-row pattern. row accepts: integer (0-based body "
+            "row index), 'header' (first leaf with KeepWithGroup=After "
+            "— the column header row), 'details' (the Details leaf "
+            "row), '<group>_header' (header row of a named row group), "
+            "'<group>_footer' (footer row when present, e.g. after "
+            "add_subtotal_row). Same style kwargs as set_textbox_style "
+            "(font_*, color, background_color, border_*, padding_*, "
+            "writing_mode, can_grow, can_shrink, etc.). Delegates "
+            "writes to set_textbox_style_bulk. Returns {tablix, row, "
+            "row_index, kind, cells, changed, skipped}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "row": {
+                    "oneOf": [
+                        {"type": "integer", "minimum": 0},
+                        {"type": "string"},
+                    ],
+                    "description": (
+                        "Integer index, or one of: 'header', 'details', "
+                        "'<group>_header', '<group>_footer'."
+                    ),
+                },
+                "font_family": {"type": ["string", "null"]},
+                "font_size": {"type": ["string", "null"]},
+                "font_weight": {"type": ["string", "null"]},
+                "color": {"type": ["string", "null"]},
+                "background_color": {"type": ["string", "null"]},
+                "border_style": {"type": ["string", "null"]},
+                "border_color": {"type": ["string", "null"]},
+                "border_width": {"type": ["string", "null"]},
+                "text_align": {"type": ["string", "null"]},
+                "vertical_align": {"type": ["string", "null"]},
+                "format": {"type": ["string", "null"]},
+                "padding_top": {"type": ["string", "null"]},
+                "padding_bottom": {"type": ["string", "null"]},
+                "padding_left": {"type": ["string", "null"]},
+                "padding_right": {"type": ["string", "null"]},
+                "writing_mode": {"type": ["string", "null"]},
+                "can_grow": {"type": ["boolean", "null"]},
+                "can_shrink": {"type": ["boolean", "null"]},
+            },
+            "required": ["path", "tablix_name", "row"],
+            "additionalProperties": False,
+        },
+        handler=styling.style_tablix_row,
     )
 
     _BODY_TEXTBOX_SCHEMA = {
@@ -1250,7 +2749,10 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Add a Textbox to <Body>/<ReportItems>. text accepts static "
             "strings or RDL expressions (e.g. =Globals!ReportName). "
-            "Coexists with the existing tablix; rejects names already in use."
+            "Coexists with the existing tablix; rejects names already in use. "
+            "Pass raw text — encoding is handled; don't pre-encode XML "
+            "entities (use `&` not `&amp;`, including for the VB.NET "
+            "string-concat operator in expressions)."
         ),
         input_schema=_BODY_TEXTBOX_SCHEMA,
         handler=body.add_body_textbox,
@@ -1361,7 +2863,239 @@ def register_all_tools(server: MCPServer) -> None:
             ],
             "additionalProperties": False,
         },
-        handler=templates.insert_chart_from_template,
+        handler=chart.insert_chart_from_template,
+    )
+    server.register_tool(
+        name="add_chart_series",
+        description=(
+            "Append a new <ChartSeries> to a named chart. value_field is "
+            "the dataset field whose Sum becomes the Y expression "
+            "(=Sum(Fields!<value_field>.Value)). series_type defaults to "
+            "Column; combine series of different types in one chart for "
+            "combo charts (e.g. Bar + Line). series_subtype defaults to "
+            "Plain. Refuses if series_name already exists."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+                "value_field": {"type": "string"},
+                "series_type": {
+                    "type": "string",
+                    "description": (
+                        "Column / Bar / Line / Area / Pie / Doughnut / "
+                        "Range / Scatter / Bubble / Stock / Polar / Radar "
+                        "/ Funnel / Pyramid"
+                    ),
+                },
+                "series_subtype": {
+                    "type": "string",
+                    "description": (
+                        "Plain / Stacked / PercentStacked / Smooth / "
+                        "Exploded / SmoothLine / 100 / Line / Spline"
+                    ),
+                },
+            },
+            "required": ["path", "chart_name", "series_name", "value_field"],
+            "additionalProperties": False,
+        },
+        handler=chart.add_chart_series,
+    )
+    server.register_tool(
+        name="remove_chart_series",
+        description=(
+            "Remove a named <ChartSeries> from a chart. Refuses to remove "
+            "the last remaining series (use remove_body_item to drop the "
+            "whole chart instead). Returns {chart, removed, remaining}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+            },
+            "required": ["path", "chart_name", "series_name"],
+            "additionalProperties": False,
+        },
+        handler=chart.remove_chart_series,
+    )
+    server.register_tool(
+        name="set_chart_series_type",
+        description=(
+            "Update <Type> and <Subtype> on a named ChartSeries. Combo "
+            "charts work by setting different types per series in the "
+            "same chart (e.g. one Bar series and one Line series). "
+            "Returns {chart, series, kind, changed: list[str]} — empty "
+            "when inputs match existing values (no-op short-circuit)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+                "series_type": {"type": "string"},
+                "series_subtype": {"type": "string", "default": "Plain"},
+            },
+            "required": ["path", "chart_name", "series_name", "series_type"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_series_type,
+    )
+    server.register_tool(
+        name="set_chart_axis",
+        description=(
+            "Configure a chart axis: title (Caption), format (numeric/"
+            "date format string in <Style>/<Format>), min/max range, "
+            "log_scale, interval, visible. axis ∈ {Category, Value}; "
+            "axis_name defaults to 'Primary' (the only axis the template "
+            "emits — pass a real name for secondary axes). "
+            "All field args are optional; pass '' to clear an element. "
+            "Returns {chart, axis, axis_name, kind, changed: list[str]} "
+            "with the affected sub-element names."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "axis": {
+                    "type": "string",
+                    "description": "Category or Value",
+                    "enum": ["Category", "Value"],
+                },
+                "axis_name": {"type": "string", "default": "Primary"},
+                "title": {"type": "string"},
+                "format": {
+                    "type": "string",
+                    "description": "Numeric/date format, e.g. '#,0.00' or 'MMM yyyy'.",
+                },
+                "min": {"type": "string"},
+                "max": {"type": "string"},
+                "log_scale": {"type": "boolean"},
+                "interval": {"type": "string"},
+                "visible": {"type": "boolean"},
+            },
+            "required": ["path", "chart_name", "axis"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_axis,
+    )
+    server.register_tool(
+        name="set_chart_legend",
+        description=(
+            "Configure a chart legend: position (TopLeft / TopCenter / "
+            "TopRight / LeftTop / LeftCenter / LeftBottom / RightTop / "
+            "RightCenter / RightBottom / BottomLeft / BottomCenter / "
+            "BottomRight) and visible (writes <Hidden>true|false</Hidden>). "
+            "legend_name defaults to 'Default' (the only one the template "
+            "emits). Returns {chart, legend, kind, changed: list[str]}; "
+            "no-op short-circuit when nothing supplied."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "legend_name": {"type": "string", "default": "Default"},
+                "position": {"type": "string"},
+                "visible": {"type": "boolean"},
+            },
+            "required": ["path", "chart_name"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_legend,
+    )
+    server.register_tool(
+        name="set_chart_data_labels",
+        description=(
+            "Configure <ChartDataLabel> on one or all series in a chart. "
+            "When series_name is None, the change applies to every "
+            "series; otherwise only the named series. visible writes "
+            "<Visible>true|false</Visible>; format writes <Style>/<Format>. "
+            "Pass format='' to clear the format. Returns {chart, series, "
+            "kind, changed}; series lists affected series names."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+                "visible": {"type": "boolean"},
+                "format": {"type": "string"},
+            },
+            "required": ["path", "chart_name"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_data_labels,
+    )
+    server.register_tool(
+        name="set_chart_palette",
+        description=(
+            "Set <Palette> on a chart. palette ∈ Default / EarthTones / "
+            "Excel / GrayScale / Light / Pastel / SemiTransparent / "
+            "Berry / Chocolate / Fire / SeaGreen / BrightPastel. Pass "
+            "'' to clear (RB falls back to its built-in default palette). "
+            "Returns {chart, kind, changed: bool}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "palette": {"type": "string"},
+            },
+            "required": ["path", "chart_name", "palette"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_palette,
+    )
+    server.register_tool(
+        name="set_series_color",
+        description=(
+            "Write <Color> into a named series's <Style> block, "
+            "overriding the chart palette for just that series. color "
+            "accepts a named color ('Red'), a hex string ('#FF0000'), "
+            "or an =expression. Pass '' to clear (series falls back to "
+            "the palette). Returns {chart, series, kind, changed: bool}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+                "color": {"type": "string"},
+            },
+            "required": ["path", "chart_name", "series_name", "color"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_series_color,
+    )
+    server.register_tool(
+        name="set_chart_title",
+        description=(
+            "Update <ChartTitle>/<Caption>. text can be literal text or "
+            "an =expression. title_name defaults to 'Default' (the only "
+            "title the template emits). Returns {chart, title, kind, "
+            "changed: bool}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "text": {"type": "string"},
+                "title_name": {"type": "string", "default": "Default"},
+            },
+            "required": ["path", "chart_name", "text"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_title,
     )
 
     _STATIC_VALUE_ITEM = {

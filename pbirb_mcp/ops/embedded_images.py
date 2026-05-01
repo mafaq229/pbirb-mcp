@@ -247,8 +247,59 @@ def remove_embedded_image(
     return {"removed": name, "force": force}
 
 
+# ---- get_embedded_image_data (Phase 6 commit 29) ------------------------
+
+
+def get_embedded_image_data(path: str, name: str) -> dict[str, Any]:
+    """Read an embedded image's base64 ``<ImageData>`` for porting it to
+    another report without re-reading from disk.
+
+    Returns ``{name, mime_type, base64, byte_size}`` — ``base64`` is the
+    raw text of ``<EmbeddedImages>/<EmbeddedImage Name=name>/
+    <ImageData>`` (a base64-encoded string); ``byte_size`` is the
+    decoded byte length so callers can sanity-check before passing the
+    payload around.
+
+    The companion :func:`add_embedded_image` reads bytes from a path
+    and base64-encodes them. The intended round-trip is:
+    ``add_embedded_image(src) → … → get_embedded_image_data(name)`` then
+    feed the returned base64 + mime_type to a manual
+    ``<EmbeddedImage>`` write in another report (Phase 6 doesn't yet
+    ship a paired ``add_embedded_image_from_data`` writer; the v0.1
+    ``add_embedded_image`` requires a file path).
+
+    Refuses with ``ElementNotFoundError`` if the named entry isn't in
+    ``<EmbeddedImages>``.
+    """
+    doc = RDLDocument.open(path)
+    block = find_child(doc.root, "EmbeddedImages")
+    target = _find_embedded(block, name) if block is not None else None
+    if target is None:
+        raise ElementNotFoundError(f"embedded image named {name!r} not found")
+
+    mime_node = find_child(target, "MIMEType")
+    data_node = find_child(target, "ImageData")
+    mime_type = mime_node.text if mime_node is not None else None
+    b64 = data_node.text if data_node is not None else ""
+    if b64 is None:
+        b64 = ""
+    # Compute decoded byte size — base64 strings have whitespace in some
+    # exports; ignore whitespace via the validate flag's relaxed mode.
+    try:
+        byte_size = len(base64.b64decode(b64, validate=False))
+    except Exception:
+        byte_size = 0
+    return {
+        "name": name,
+        "mime_type": mime_type,
+        "base64": b64,
+        "byte_size": byte_size,
+    }
+
+
 __all__ = [
     "add_embedded_image",
+    "get_embedded_image_data",
     "list_embedded_images",
     "remove_embedded_image",
 ]

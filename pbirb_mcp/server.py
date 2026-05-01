@@ -3,12 +3,19 @@
 Tools are registered via :meth:`MCPServer.register_tool`. Each registered tool
 declares an input JSON Schema and a handler callable. The bootstrap server
 exposes no tools — feature commits add them.
+
+Optional :envvar:`PBIRB_MCP_AUTO_VERIFY` (Phase 7 commit 34): when set to a
+truthy value (``1``, ``true``, ``yes``, ``on``, case-insensitive) the server
+runs :func:`pbirb_mcp.ops.validate.verify_report` after every successful
+mutating-tool call and merges the result into the response:
+``{result, verify}``. Default off — v0.2 callers see no shape change.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -17,7 +24,34 @@ logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "pbirb-mcp"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.3.0"
+
+# Tool-name prefixes treated as mutating for auto-verify routing. All RDL-
+# state-changing tools in the codebase start with one of these. Read-only
+# tools (get_*, list_*, describe_*, find_*, validate_*, lint_*, verify_*,
+# dry_run_edit, backup_report) are explicitly out — they don't write.
+_MUTATING_PREFIXES = (
+    "set_",
+    "add_",
+    "remove_",
+    "update_",
+    "rename_",
+    "reorder_",
+    "insert_",
+    "style_",
+    "duplicate_",
+    "sync_",
+)
+
+
+def _auto_verify_enabled() -> bool:
+    val = os.environ.get("PBIRB_MCP_AUTO_VERIFY", "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+def _is_mutating_tool(name: str) -> bool:
+    return any(name.startswith(p) for p in _MUTATING_PREFIXES)
+
 
 # JSON-RPC 2.0 standard error codes
 PARSE_ERROR = -32700
@@ -137,6 +171,32 @@ class MCPServer:
                 "content": [{"type": "text", "text": json.dumps(payload, default=str)}],
                 "isError": True,
             }
+
+        # Auto-verify (Phase 7 commit 34): when PBIRB_MCP_AUTO_VERIFY is on
+        # and the tool is mutating + has a `path` arg, run verify_report
+        # against the post-mutation file and merge into the response. Off
+        # by default — v0.2 callers see no shape change.
+        if (
+            _auto_verify_enabled()
+            and _is_mutating_tool(name)
+            and isinstance(arguments.get("path"), str)
+        ):
+            from pbirb_mcp.ops.validate import verify_report
+
+            try:
+                verify = verify_report(arguments["path"])
+            except Exception as exc:  # noqa: BLE001
+                # Don't fail the mutating call because verify barfed.
+                logger.warning("auto-verify failed for %s: %s", name, exc)
+                verify = {
+                    "valid": None,
+                    "issues": [],
+                    "xsd_used": False,
+                    "error": {"error_type": type(exc).__name__, "message": str(exc)},
+                }
+            wrapped = {"result": result, "verify": verify}
+            return {"content": [{"type": "text", "text": json.dumps(wrapped, default=str)}]}
+
         return {"content": [{"type": "text", "text": json.dumps(result, default=str)}]}
 
     # ---- transport ----------------------------------------------------------

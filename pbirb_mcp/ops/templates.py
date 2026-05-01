@@ -1,15 +1,16 @@
 """Snippet-template tools.
 
 Build RDL fragments programmatically and append them to
-``<Body>/<ReportItems>``. Two templates today:
+``<Body>/<ReportItems>``. The tablix template lives here; the chart
+template moved to ``pbirb_mcp.ops.chart`` in v0.3.0 alongside the chart
+mutation tools.
 
-- A basic Tablix mirroring the fixture's ``MainTable`` shape (header row
-  with static labels, detail row binding each column to a Field).
-- A basic Column chart with a single series (Y = Sum of value_field) and
-  a category axis grouped by ``category_field``.
+Tablix template: a basic Tablix mirroring the fixture's ``MainTable``
+shape (header row with static labels, detail row binding each column to
+a Field).
 
-Both share dataset binding: ``dataset_name`` must already exist in the
-report's ``<DataSets>`` collection — we don't create datasets implicitly.
+Dataset binding: ``dataset_name`` must already exist in the report's
+``<DataSets>`` collection — we don't create datasets implicitly.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from typing import Any
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import resolve_dataset
 from pbirb_mcp.core.xpath import find_child, q, qrd
 from pbirb_mcp.ops.body import _ensure_body_report_items, _names_in, _resolve_body
@@ -40,7 +42,7 @@ def _build_cell_textbox(name: str, value_text: str) -> etree._Element:
     textruns = etree.SubElement(paragraph, q("TextRuns"))
     textrun = etree.SubElement(textruns, q("TextRun"))
     value = etree.SubElement(textrun, q("Value"))
-    value.text = value_text
+    value.text = encode_text(value_text)
     etree.SubElement(textrun, q("Style"))
     etree.SubElement(paragraph, q("Style"))
     default_name = etree.SubElement(tb, qrd("DefaultName"))
@@ -142,106 +144,11 @@ def insert_tablix_from_template(
     return {"name": name, "kind": "Tablix", "columns": list(columns)}
 
 
-# ---- insert_chart_from_template -------------------------------------------
-
-
-def insert_chart_from_template(
-    path: str,
-    name: str,
-    dataset_name: str,
-    category_field: str,
-    value_field: str,
-    top: str,
-    left: str,
-    width: str,
-    height: str,
-) -> dict[str, Any]:
-    """Insert a basic Column chart bound to ``dataset_name``.
-
-    The chart has one category axis (grouped by ``category_field``) and
-    one Y series (``=Sum(Fields!<value_field>.Value)``). Type defaults to
-    Column; callers can change it post-insert by editing the
-    ``<Type>`` element directly.
-    """
-    doc = RDLDocument.open(path)
-    resolve_dataset(doc, dataset_name)
-    _ensure_no_collision(doc, name)
-
-    chart = etree.Element(q("Chart"), Name=name)
-
-    # ChartCategoryHierarchy — single category group.
-    cat_hier = etree.SubElement(chart, q("ChartCategoryHierarchy"))
-    cat_members = etree.SubElement(cat_hier, q("ChartMembers"))
-    cat_member = etree.SubElement(cat_members, q("ChartMember"))
-    cat_group = etree.SubElement(cat_member, q("Group"), Name=f"{name}_CategoryGroup")
-    cat_expressions = etree.SubElement(cat_group, q("GroupExpressions"))
-    cat_expression = etree.SubElement(cat_expressions, q("GroupExpression"))
-    cat_expression.text = f"=Fields!{category_field}.Value"
-    cat_label = etree.SubElement(cat_member, q("Label"))
-    cat_label.text = f"=Fields!{category_field}.Value"
-
-    # ChartSeriesHierarchy — single static series. Per RDL XSD a ChartMember
-    # is required to have a <Label>; an empty member fails Report Builder's
-    # deserializer with "ChartMember is empty ... missing mandatory child
-    # element of type 'Label'", even though it parses as well-formed XML.
-    series_hier = etree.SubElement(chart, q("ChartSeriesHierarchy"))
-    series_members = etree.SubElement(series_hier, q("ChartMembers"))
-    series_member = etree.SubElement(series_members, q("ChartMember"))
-    etree.SubElement(series_member, q("Label")).text = value_field
-
-    # ChartData — one ChartSeries with Y = Sum(value_field).
-    chart_data = etree.SubElement(chart, q("ChartData"))
-    series_collection = etree.SubElement(chart_data, q("ChartSeriesCollection"))
-    series = etree.SubElement(series_collection, q("ChartSeries"), Name=value_field)
-    data_points = etree.SubElement(series, q("ChartDataPoints"))
-    data_point = etree.SubElement(data_points, q("ChartDataPoint"))
-    data_point_values = etree.SubElement(data_point, q("ChartDataPointValues"))
-    y_node = etree.SubElement(data_point_values, q("Y"))
-    y_node.text = f"=Sum(Fields!{value_field}.Value)"
-    etree.SubElement(series, q("Type")).text = "Column"
-    etree.SubElement(series, q("Subtype")).text = "Plain"
-
-    # ChartAreas — Default with primary category and value axes. Per the
-    # RDL XSD, ChartCategoryAxes / ChartValueAxes contain <ChartAxis>
-    # children DIRECTLY; there is no <ChartCategoryAxis>/<ChartValueAxis>
-    # wrapper element. Report Builder's deserializer rejects the wrapped
-    # form with "invalid child element 'ChartCategoryAxis' ... expected
-    # 'ChartAxis'".
-    chart_areas = etree.SubElement(chart, q("ChartAreas"))
-    chart_area = etree.SubElement(chart_areas, q("ChartArea"), Name="Default")
-    cat_axes = etree.SubElement(chart_area, q("ChartCategoryAxes"))
-    etree.SubElement(cat_axes, q("ChartAxis"), Name="Primary")
-    val_axes = etree.SubElement(chart_area, q("ChartValueAxes"))
-    etree.SubElement(val_axes, q("ChartAxis"), Name="Primary")
-
-    # Legend + title.
-    legends = etree.SubElement(chart, q("ChartLegends"))
-    etree.SubElement(legends, q("ChartLegend"), Name="Default")
-    titles = etree.SubElement(chart, q("ChartTitles"))
-    title = etree.SubElement(titles, q("ChartTitle"), Name="Default")
-    etree.SubElement(title, q("Caption")).text = name
-
-    # Dataset binding + layout.
-    etree.SubElement(chart, q("DataSetName")).text = dataset_name
-    etree.SubElement(chart, q("Top")).text = top
-    etree.SubElement(chart, q("Left")).text = left
-    etree.SubElement(chart, q("Height")).text = height
-    etree.SubElement(chart, q("Width")).text = width
-    etree.SubElement(chart, q("Style"))
-
-    body = _resolve_body(doc)
-    items = _ensure_body_report_items(body)
-    items.append(chart)
-
-    doc.save()
-    return {
-        "name": name,
-        "kind": "Chart",
-        "type": "Column",
-        "category_field": category_field,
-        "value_field": value_field,
-    }
-
+# Chart template insertion moved to pbirb_mcp.ops.chart in v0.3.0
+# alongside the chart mutation tools (add_chart_series, set_chart_axis,
+# set_chart_legend, etc.). Re-exported here for backward compatibility
+# with any caller importing it from this module.
+from pbirb_mcp.ops.chart import insert_chart_from_template  # noqa: E402, F401
 
 __all__ = [
     "insert_chart_from_template",

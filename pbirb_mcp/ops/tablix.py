@@ -22,8 +22,10 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
+from pbirb_mcp.core.encoding import encode_text
+from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_tablix
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
+from pbirb_mcp.ops.filter_types import type_mismatch_warnings, wrap_with_format
 
 # RDL 2016 FilterOperator enumeration.
 _VALID_OPERATORS = frozenset(
@@ -113,7 +115,21 @@ def add_tablix_filter(
     expression: str,
     operator: str,
     values: list[str],
+    field_format: Optional[str] = None,
 ) -> dict[str, Any]:
+    """Append a ``<Filter>`` to a tablix's ``<Filters>`` block.
+
+    ``field_format`` (Phase 8 commit 36): when provided, the filter
+    expression is wrapped as ``=Format(<body>, "<field_format>")``.
+    Closes the date-vs-string mismatch class — e.g. filter on a
+    DateTime field with a ``"MMM, yyyy"``-typed String parameter
+    without hand-writing the Format() call.
+
+    Type-aware warnings are emitted in the response when a
+    ``Fields!X.Value`` reference in the expression is cross-checked
+    against a ``Parameters!Y.Value`` in the values and their declared
+    types differ. Best-effort, silent when either side isn't readable.
+    """
     if operator not in _VALID_OPERATORS:
         raise ValueError(
             f"unknown filter operator {operator!r}; valid operators are: {sorted(_VALID_OPERATORS)}"
@@ -121,28 +137,47 @@ def add_tablix_filter(
     if not values:
         raise ValueError("at least one filter value is required")
 
+    effective_expression = (
+        wrap_with_format(expression, field_format) if field_format else expression
+    )
+
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
+
+    # Resolve the bound dataset for the type-mismatch check. Tablix
+    # binding lives at <Tablix>/<DataSetName>; missing means we skip
+    # the check (no dataset, no field types).
+    warnings: list[str] = []
+    ds_name_node = find_child(tablix, "DataSetName")
+    if ds_name_node is not None and ds_name_node.text:
+        try:
+            dataset = resolve_dataset(doc, ds_name_node.text)
+            warnings = type_mismatch_warnings(doc.root, dataset, effective_expression, values)
+        except Exception:  # noqa: BLE001 — ElementNotFoundError is fine to swallow
+            warnings = []
+
     filters_root = _ensure_filters_block(tablix)
 
     filter_node = etree.SubElement(filters_root, q("Filter"))
     expr_node = etree.SubElement(filter_node, q("FilterExpression"))
-    expr_node.text = expression
+    expr_node.text = encode_text(effective_expression)
     op_node = etree.SubElement(filter_node, q("Operator"))
     op_node.text = operator
     values_root = etree.SubElement(filter_node, q("FilterValues"))
     for v in values:
         v_node = etree.SubElement(values_root, q("FilterValue"))
-        v_node.text = v
+        v_node.text = encode_text(v)
 
     new_index = len(find_children(filters_root, "Filter")) - 1
     doc.save()
     return {
         "tablix": tablix_name,
         "index": new_index,
-        "expression": expression,
+        "expression": effective_expression,
         "operator": operator,
         "values": list(values),
+        "formatted": field_format is not None,
+        "warnings": warnings,
     }
 
 
@@ -242,7 +277,7 @@ def _build_group_header_row(
         value = etree.SubElement(textrun, q("Value"))
         # Only the first cell shows the group expression; others stay blank
         # so the group-header row visually reads as a left-anchored caption.
-        value.text = group_expression if i == 0 else ""
+        value.text = encode_text(group_expression) if i == 0 else ""
         etree.SubElement(textrun, q("Style"))
         etree.SubElement(paragraph, q("Style"))
         default_name = etree.SubElement(tb, qrd("DefaultName"))
@@ -346,7 +381,7 @@ def add_row_group(
     group = etree.SubElement(new_outer, q("Group"), Name=group_name)
     expr_root = etree.SubElement(group, q("GroupExpressions"))
     expr_node = etree.SubElement(expr_root, q("GroupExpression"))
-    expr_node.text = group_expression
+    expr_node.text = encode_text(group_expression)
 
     inner_members = etree.SubElement(new_outer, q("TablixMembers"))
     header_leaf = etree.SubElement(inner_members, q("TablixMember"))
@@ -456,7 +491,7 @@ def _apply_sort_to_member(member: etree._Element, sort_expressions: list[str]) -
     for expr in sort_expressions:
         sort = etree.SubElement(new_block, q("SortExpression"))
         value = etree.SubElement(sort, q("Value"))
-        value.text = expr
+        value.text = encode_text(expr)
     _insert_member_child(member, new_block)
 
 
@@ -496,10 +531,10 @@ def _apply_visibility_to_member(
     """Hierarchy-agnostic core of set_group_visibility / set_column_group_visibility."""
     new_vis = etree.Element(q("Visibility"))
     hidden = etree.SubElement(new_vis, q("Hidden"))
-    hidden.text = visibility_expression
+    hidden.text = encode_text(visibility_expression)
     if toggle_textbox is not None:
         toggle = etree.SubElement(new_vis, q("ToggleItem"))
-        toggle.text = toggle_textbox
+        toggle.text = encode_text(toggle_textbox)
     _insert_member_child(member, new_vis)
 
 
@@ -554,10 +589,10 @@ def set_detail_row_visibility(
 
     new_vis = etree.Element(q("Visibility"))
     hidden = etree.SubElement(new_vis, q("Hidden"))
-    hidden.text = expression
+    hidden.text = encode_text(expression)
     if toggle_textbox is not None:
         toggle = etree.SubElement(new_vis, q("ToggleItem"))
-        toggle.text = toggle_textbox
+        toggle.text = encode_text(toggle_textbox)
 
     _insert_member_child(member, new_vis)
 
@@ -603,6 +638,77 @@ def set_row_height(
     return {"tablix": tablix_name, "row_index": row_index, "height": height}
 
 
+# ---- set_tablix_size -----------------------------------------------------
+
+
+def set_tablix_size(
+    path: str,
+    name: str,
+    height: Optional[str] = None,
+    width: Optional[str] = None,
+) -> dict[str, Any]:
+    """Resize a tablix by setting its outer ``<Height>`` and / or
+    ``<Width>`` directly.
+
+    Each argument is independently optional; only the supplied fields
+    are written. v0.2's positioning tools cover top/left moves but not
+    sizing — adding a couple of header rows often required a manual
+    ``str_replace`` on the tablix's outer Height (RAG-Report session
+    feedback bug #10).
+
+    Both values are RDL size strings (``'4in'``, ``'10cm'``, etc.).
+    Empty / whitespace-only values are rejected.
+
+    Returns ``{tablix, kind, changed: list[str]}`` — empty list when
+    inputs match existing (no save).
+    """
+    if height is not None and (not height or not height.strip()):
+        raise ValueError("height must be a non-empty RDL size (e.g. '4in', '10cm')")
+    if width is not None and (not width or not width.strip()):
+        raise ValueError("width must be a non-empty RDL size (e.g. '4in', '10cm')")
+    if height is None and width is None:
+        return {"tablix": name, "kind": "Tablix", "changed": []}
+
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, name)
+    changed: list[str] = []
+
+    if height is not None:
+        h_node = find_child(tablix, "Height")
+        if h_node is None:
+            # Per RDL XSD, Height sits between Top/Left and Width/Style.
+            h_node = etree.Element(q("Height"))
+            anchor = find_child(tablix, "Width") or find_child(tablix, "Style")
+            if anchor is not None:
+                anchor.addprevious(h_node)
+            else:
+                tablix.append(h_node)
+            h_node.text = height
+            changed.append("Height")
+        elif h_node.text != height:
+            h_node.text = height
+            changed.append("Height")
+
+    if width is not None:
+        w_node = find_child(tablix, "Width")
+        if w_node is None:
+            w_node = etree.Element(q("Width"))
+            anchor = find_child(tablix, "Style")
+            if anchor is not None:
+                anchor.addprevious(w_node)
+            else:
+                tablix.append(w_node)
+            w_node.text = width
+            changed.append("Width")
+        elif w_node.text != width:
+            w_node.text = width
+            changed.append("Width")
+
+    if changed:
+        doc.save()
+    return {"tablix": name, "kind": "Tablix", "changed": changed}
+
+
 __all__ = [
     "add_row_group",
     "add_tablix_filter",
@@ -613,4 +719,5 @@ __all__ = [
     "set_group_sort",
     "set_group_visibility",
     "set_row_height",
+    "set_tablix_size",
 ]

@@ -318,6 +318,32 @@ PBI paginated reports do **not** carry `<CommandType>` for DAX (unlike
 SSRS where you'd set `CommandType=StoredProcedure`); these tools never
 emit it.
 
+### Pre-commit hooks (contributors)
+
+`pre-commit` is in the `[dev]` extras. After a fresh checkout:
+
+```bash
+uv pip install --python .venv/bin/python -e ".[dev]"
+.venv/bin/pre-commit install                # one-time — installs the git hook
+.venv/bin/pre-commit run --all-files        # one-time — clean any drift
+```
+
+After the hook is installed, every `git commit` runs ruff format +
+ruff check (with `--fix`) + the fast pytest suite. If lint or tests
+fail the commit is aborted; fix and re-stage before retrying.
+
+To run individual hooks ad-hoc:
+
+```bash
+.venv/bin/pre-commit run ruff --all-files
+.venv/bin/pre-commit run ruff-format --all-files
+.venv/bin/pre-commit run pytest-fast --all-files
+```
+
+The full config lives in `.pre-commit-config.yaml`. Ruff settings
+(line length, rule selection, per-file ignores) live under
+`[tool.ruff*]` in `pyproject.toml`.
+
 ### Report Builder install
 
 Power BI Report Builder is a free Microsoft-distributed Windows app:
