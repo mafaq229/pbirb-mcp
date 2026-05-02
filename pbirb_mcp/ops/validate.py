@@ -6,11 +6,15 @@ Wraps :mod:`pbirb_mcp.core.schema` for the JSON-RPC surface. The
 1. **Parse** — lxml load. Failures are reported as ``rule="parse"``.
 2. **Structural** — root-element + required top-level sections check.
    Failures: ``rule="structural"``.
-3. **XSD** — opt-in. If ``pbirb_mcp/schemas/reportdefinition.xsd`` is
-   bundled, the document is validated against it. Failures:
-   ``rule="xsd"``. The Microsoft RDL XSD is not redistributable, so the
-   shipped package returns ``xsd_used=False``; users who drop the
-   official XSD into ``schemas/`` get full validation.
+3. **XSD** — bundled by default since v0.3.1. The Microsoft RDL 2016/01
+   XSD ships under ``pbirb_mcp/schemas/reportdefinition.xsd`` (see
+   ``schemas/NOTICE.md`` for the redistribution permission granted by the
+   MS-RDL Open Specifications IP Rights Notice). Failures:
+   ``rule="xsd"``. If the schema file is missing (e.g. a source-build
+   that didn't copy package-data), ``validate_report`` emits a
+   ``severity="warning"``, ``rule="xsd-not-bundled"`` issue rather than
+   silently skipping — the silent skip masked four schema-conformance
+   bugs in the v0.3.0 live-MCP sweep.
 
 Issue shape mirrors :mod:`pbirb_mcp.ops.lint` (``severity``, ``rule``,
 ``location``, ``message``) so :func:`verify_report` (commit 33) can union

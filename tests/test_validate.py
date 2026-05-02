@@ -1,9 +1,11 @@
 """Tests for validate_report (Phase 7 commit 30).
 
-The bundled package doesn't ship the (non-redistributable) Microsoft RDL
-XSD, so ``xsd_used`` is always ``False`` in CI. Structural validation is
-the load-bearing layer here; the XSD path is exercised at the
-:mod:`pbirb_mcp.core.schema` unit-test level.
+Since v0.3.1 the package ships the Microsoft RDL 2016/01 XSD (see
+``pbirb_mcp/schemas/NOTICE.md`` for the redistribution permission), so
+``xsd_used`` is ``True`` for every clean fixture run. The
+``xsd-not-bundled`` warning path is exercised in
+:mod:`tests.test_schema_bundled` (and in the dedicated test below that
+patches ``_bundled_xsd_path`` to a non-existent path).
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ def rdl_path(tmp_path: Path) -> Path:
 class TestValidateReport:
     def test_clean_fixture_is_valid(self, rdl_path):
         result = validate_report(str(rdl_path))
-        assert result == {"valid": True, "errors": [], "xsd_used": False}
+        assert result == {"valid": True, "errors": [], "xsd_used": True}
 
     def test_missing_file_reports_parse_error(self, tmp_path):
         result = validate_report(str(tmp_path / "nope.rdl"))
@@ -75,7 +77,7 @@ class TestVerifyReport:
         result = verify_report(str(rdl_path))
         assert result["valid"] is True
         assert result["issues"] == []
-        assert result["xsd_used"] is False
+        assert result["xsd_used"] is True
 
     def test_parse_failure_short_circuits_lint(self, tmp_path):
         bad = tmp_path / "broken.rdl"
