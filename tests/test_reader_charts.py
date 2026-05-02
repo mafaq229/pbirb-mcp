@@ -107,6 +107,63 @@ class TestGetChart:
         assert c["title"] is not None
         assert c["title"]["caption"] == "Sales by Product"
 
+    def test_data_labels_none_when_unset(self, rich_path):
+        # Chart-rich fixture has no <ChartDataLabel>.
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        for s in c["series"]:
+            assert s["data_labels"] is None
+
+
+class TestGetChartDataLabelsRoundTrip:
+    """``get_chart`` should symmetrically read back what
+    ``set_chart_data_labels`` writes — closes the asymmetric reader/
+    writer gap flagged in the v0.3.0 sweep (P1.3 in
+    .local/feedback/2026-04-30-v030-live-mcp-sweep.md).
+    """
+
+    def test_visible_only(self, rich_path):
+        from pbirb_mcp.ops.chart import set_chart_data_labels
+
+        set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            visible=True,
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        amount = next(s for s in c["series"] if s["name"] == "Amount")
+        assert amount["data_labels"] == {"visible": "true", "format": None}
+        # Other series untouched.
+        for other in (s for s in c["series"] if s["name"] != "Amount"):
+            assert other["data_labels"] is None
+
+    def test_visible_and_format(self, rich_path):
+        from pbirb_mcp.ops.chart import set_chart_data_labels
+
+        set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Quantity",
+            visible=False,
+            format="#,0",
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        qty = next(s for s in c["series"] if s["name"] == "Quantity")
+        assert qty["data_labels"] == {"visible": "false", "format": "#,0"}
+
+    def test_apply_to_all_series(self, rich_path):
+        from pbirb_mcp.ops.chart import set_chart_data_labels
+
+        set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            visible=True,
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        for s in c["series"]:
+            assert s["data_labels"] is not None
+            assert s["data_labels"]["visible"] == "true"
+
 
 # ---- minimal-fixture chart (one series, no enrichments) ------------------
 
