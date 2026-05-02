@@ -736,10 +736,30 @@ def get_rectangle(path: str, name: str) -> dict[str, Any]:
 # ---- get_chart ------------------------------------------------------------
 
 
+def _chart_data_labels_dict(series: etree._Element) -> Optional[dict[str, Any]]:
+    """Read-back shape for ``<ChartDataLabel>``: visible + format,
+    symmetric with what :func:`set_chart_data_labels` writes. Returns
+    ``None`` when the element is absent so consumers can distinguish
+    "no data labels configured" from "configured with no visible/format".
+    Closes the asymmetric reader/writer gap flagged in the v0.3.0 sweep
+    (P1.3 in feedback/2026-04-30-v030-live-mcp-sweep.md).
+    """
+    label = find_child(series, "ChartDataLabel")
+    if label is None:
+        return None
+    style = find_child(label, "Style")
+    fmt = _text(find_child(style, "Format")) if style is not None else None
+    return {
+        "visible": _text(find_child(label, "Visible")),
+        "format": fmt,
+    }
+
+
 def _chart_series_dict(series: etree._Element) -> dict[str, Any]:
     """Return the read-back shape for one ``<ChartSeries>``: name, type,
-    subtype, value/category expressions on the (single) data point, plus
-    style color when set explicitly via ``<Style>/<Color>``.
+    subtype, value/category expressions on the (single) data point,
+    style color (when explicitly set via ``<Style>/<Color>``), and
+    ``data_labels`` (``None`` when ``<ChartDataLabel>`` is absent).
     """
     data_points = find_child(series, "ChartDataPoints")
     point = find_child(data_points, "ChartDataPoint") if data_points is not None else None
@@ -757,6 +777,7 @@ def _chart_series_dict(series: etree._Element) -> dict[str, Any]:
         "value_expression": _text(y),
         "category_expression": _text(x),
         "color": color,
+        "data_labels": _chart_data_labels_dict(series),
     }
 
 
@@ -808,10 +829,14 @@ def _chart_legend_dict(chart: etree._Element) -> Optional[dict[str, Any]]:
         visible_text: Optional[str] = None
     else:
         visible_text = "false" if hidden_text.strip().lower() == "true" else "true"
+    # Pre-v0.3.1 had a fallback `_text(<DockOutsideChartArea>) or
+    # _text(<Position>)` which returned the boolean's text as the
+    # "position" string when both elements were present. Read only
+    # <Position> — DockOutsideChartArea is a separate boolean and
+    # doesn't belong in this field.
     return {
         "name": legend.get("Name"),
-        "position": _text(find_child(legend, "DockOutsideChartArea"))
-        or _text(find_child(legend, "Position")),
+        "position": _text(find_child(legend, "Position")),
         "visible": visible_text,
     }
 
@@ -870,7 +895,8 @@ def get_chart(path: str, name: str) -> dict[str, Any]:
           "top": "..", "left": "..", "width": "..", "height": "..",
           "dataset": "..",
           "palette": "EarthTones" | None,
-          "series": [{name, type, subtype, value_expression, ...}, ...],
+          "series": [{name, type, subtype, value_expression,
+                      category_expression, color, data_labels}, ...],
           "category_groups": [{name, expression, label}, ...],
           "axes": {"category": [...], "value": [...]},
           "legend": {name, position, visible} | None,

@@ -443,7 +443,8 @@ def register_all_tools(server: MCPServer) -> None:
             "Remove a calculated <Field> by name. Refuses if the field "
             "is data-bound (carries <DataField> instead of <Value>) — "
             "those reflect the source query's columns. Drop a data-bound "
-            "field by rewriting the dataset query via update_dataset_query."
+            "field via remove_dataset_field, or rewrite the dataset "
+            "query via update_dataset_query."
         ),
         input_schema={
             "type": "object",
@@ -456,6 +457,39 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=dataset.remove_calculated_field,
+    )
+    server.register_tool(
+        name="remove_dataset_field",
+        description=(
+            "Remove a data-bound <Field> by name (one with <DataField>). "
+            "Symmetric counterpart to remove_calculated_field. Refuses "
+            "on calculated fields (use remove_calculated_field instead) "
+            "and on still-referenced fields (any expression containing "
+            "Fields!<name>.Value / .IsMissing / .Count). Pass "
+            "force=True to delete anyway. Closes the cookbook flow: "
+            "refresh_dataset_fields lists orphans, "
+            "remove_dataset_field drops them. Returns "
+            "{dataset, removed, kind: 'DataBoundField'}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "field_name": {"type": "string"},
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Default false: refuse if the field is still "
+                        "referenced anywhere. true: delete anyway "
+                        "(prefer fixing the references first)."
+                    ),
+                },
+            },
+            "required": ["path", "dataset_name", "field_name"],
+            "additionalProperties": False,
+        },
+        handler=dataset.remove_dataset_field,
     )
     server.register_tool(
         name="add_dataset_field",
@@ -729,11 +763,15 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Run schema/structural validation against an .rdl. Returns "
             "{valid, errors, xsd_used}. Structural checks always run "
-            "(root element + required top-level sections); XSD validation "
-            "is opt-in (drop the Microsoft RDL 2016 XSD into "
-            "pbirb_mcp/schemas/reportdefinition.xsd to enable). Each "
-            "error is {severity, rule, location, message} so verify_report "
-            "can union with lint output."
+            "(root element + required top-level sections). The Microsoft "
+            "RDL 2016/01 XSD is bundled by default since v0.3.1 — when "
+            "it's loaded, xsd_used is True and the schema-conformance "
+            "bug class Power BI Report Builder rejects on load gets "
+            "caught here. If the bundled XSD is missing (source-build "
+            "without package-data) a {severity:warning, "
+            "rule:'xsd-not-bundled'} issue surfaces instead of silent "
+            "skip. Each issue is {severity, rule, location, message, "
+            "suggestion?}; valid is True iff no severity='error' issue."
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=validate.validate_report,
@@ -745,8 +783,9 @@ def register_all_tools(server: MCPServer) -> None:
             "One-shot static check: union of validate_report and "
             "lint_report. Returns {valid, issues, xsd_used} where "
             "valid is True iff no issue has severity='error'. "
-            "Warnings don't invalidate the report. Use this as the "
-            "single 'is the report OK?' tool, or set "
+            "Warnings (including 'xsd-not-bundled' when the schema "
+            "file is missing) don't invalidate the report. Use this as "
+            "the single 'is the report OK?' tool, or set "
             "PBIRB_MCP_AUTO_VERIFY=1 to have it run after every "
             "mutating call."
         ),
@@ -757,14 +796,15 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="lint_report",
         description=(
-            "Run static-analysis lint rules against an .rdl. Fifteen "
-            "rules cover the v0.2-session bug classes (multi-value-eq, "
+            "Run static-analysis lint rules against an .rdl. Sixteen "
+            "rules cover the v0.2/v0.3 sweep bug classes (multi-value-eq, "
             "missing-field-reference, dangling-embedded-image, "
             "pbidataset-at-prefix, parameter-layout-out-of-sync, "
             "double-encoded-entities, stale-designer-state, "
-            "tablix-span-misplaced, etc.). Returns {issues, rules_run} "
-            "with each issue {severity, rule, location, message, "
-            "suggestion?}. Optional `rules` selects a subset by name."
+            "tablix-span-misplaced, dataset-fields-out-of-sync, etc.). "
+            "Returns {issues, rules_run} with each issue {severity, "
+            "rule, location, message, suggestion?}. Optional `rules` "
+            "selects a subset by name."
         ),
         input_schema={
             "type": "object",
@@ -773,7 +813,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "rules": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional subset of rule names; default runs all 15.",
+                    "description": "Optional subset of rule names; default runs all 16.",
                 },
             },
             "required": ["path"],

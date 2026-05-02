@@ -1,9 +1,11 @@
 """Tests for validate_report (Phase 7 commit 30).
 
-The bundled package doesn't ship the (non-redistributable) Microsoft RDL
-XSD, so ``xsd_used`` is always ``False`` in CI. Structural validation is
-the load-bearing layer here; the XSD path is exercised at the
-:mod:`pbirb_mcp.core.schema` unit-test level.
+Since v0.3.1 the package ships the Microsoft RDL 2016/01 XSD (see
+``pbirb_mcp/schemas/NOTICE.md`` for the redistribution permission), so
+``xsd_used`` is ``True`` for every clean fixture run. The
+``xsd-not-bundled`` warning path is exercised in
+:mod:`tests.test_schema_bundled` (and in the dedicated test below that
+patches ``_bundled_xsd_path`` to a non-existent path).
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ def rdl_path(tmp_path: Path) -> Path:
 class TestValidateReport:
     def test_clean_fixture_is_valid(self, rdl_path):
         result = validate_report(str(rdl_path))
-        assert result == {"valid": True, "errors": [], "xsd_used": False}
+        assert result == {"valid": True, "errors": [], "xsd_used": True}
 
     def test_missing_file_reports_parse_error(self, tmp_path):
         result = validate_report(str(tmp_path / "nope.rdl"))
@@ -75,7 +77,7 @@ class TestVerifyReport:
         result = verify_report(str(rdl_path))
         assert result["valid"] is True
         assert result["issues"] == []
-        assert result["xsd_used"] is False
+        assert result["xsd_used"] is True
 
     def test_parse_failure_short_circuits_lint(self, tmp_path):
         bad = tmp_path / "broken.rdl"
@@ -122,6 +124,50 @@ class TestVerifyReport:
         assert result["valid"] is False
         rules = {i["rule"] for i in result["issues"]}
         assert "tablix-span-misplaced" in rules
+
+
+class TestXsdNotBundledWarning:
+    """When the bundled XSD is missing (e.g. a source-build that didn't
+    copy package-data), validate_report emits a loud warning instead of
+    silently skipping the XSD layer. The silent skip masked four
+    schema-conformance bugs in the v0.3.0 live-MCP sweep."""
+
+    def _hide_xsd(self, monkeypatch, tmp_path):
+        from pbirb_mcp.core import schema as core_schema
+
+        core_schema._xsd_cache = None
+        monkeypatch.setattr(core_schema, "_bundled_xsd_path", lambda: tmp_path / "missing.xsd")
+
+    def test_validate_report_warns_when_xsd_missing(self, monkeypatch, tmp_path, rdl_path):
+        self._hide_xsd(monkeypatch, tmp_path)
+        result = validate_report(str(rdl_path))
+        # Warning-only — `valid` stays True; warnings live in errors[].
+        assert result["valid"] is True
+        assert result["xsd_used"] is False
+        warnings = [e for e in result["errors"] if e["rule"] == "xsd-not-bundled"]
+        assert len(warnings) == 1
+        w = warnings[0]
+        assert w["severity"] == "warning"
+        assert "xsd" in w["message"].lower() or "schema" in w["message"].lower()
+        assert "suggestion" in w  # actionable
+
+    def test_verify_report_includes_warning(self, monkeypatch, tmp_path, rdl_path):
+        self._hide_xsd(monkeypatch, tmp_path)
+        result = verify_report(str(rdl_path))
+        assert result["valid"] is True  # warning, not error
+        assert result["xsd_used"] is False
+        rules = {i["rule"] for i in result["issues"]}
+        assert "xsd-not-bundled" in rules
+
+    def test_no_warning_when_xsd_bundled(self, rdl_path):
+        # Sanity-check the inverse: with the real bundle present, the
+        # warning is absent. Reset cache so we hit the real lookup.
+        from pbirb_mcp.core import schema as core_schema
+
+        core_schema._xsd_cache = None
+        result = validate_report(str(rdl_path))
+        assert result["xsd_used"] is True
+        assert all(e["rule"] != "xsd-not-bundled" for e in result["errors"])
 
 
 class TestToolRegistration:

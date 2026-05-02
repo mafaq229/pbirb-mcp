@@ -30,6 +30,7 @@ from pbirb_mcp.ops.dataset import (
     list_dataset_filters,
     refresh_dataset_fields,
     remove_calculated_field,
+    remove_dataset_field,
     remove_dataset_filter,
     remove_query_parameter,
     update_dataset_query,
@@ -823,6 +824,99 @@ class TestRemoveCalculatedField:
             )
 
 
+class TestRemoveDatasetField:
+    """Symmetric with ``remove_calculated_field`` but for data-bound
+    fields (``<DataField>``, not ``<Value>``). Closes the cookbook
+    flow ``refresh_dataset_fields`` (lists orphans) → review →
+    ``remove_dataset_field`` (drops them)."""
+
+    def test_removes_data_bound_field(self, rdl_path):
+        # Add a data-bound field, then remove it.
+        add_dataset_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="ExtraColumn",
+            data_field="ExtraColumn",
+        )
+        result = remove_dataset_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="ExtraColumn",
+        )
+        assert result == {
+            "dataset": "MainDataset",
+            "removed": "ExtraColumn",
+            "kind": "DataBoundField",
+        }
+        ds = get_dataset(path=str(rdl_path), name="MainDataset")
+        assert "ExtraColumn" not in [f["name"] for f in ds["fields"]]
+
+    def test_refuses_calculated_field_with_hint(self, rdl_path):
+        add_calculated_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="Doubled",
+            expression="=Fields!Amount.Value * 2",
+        )
+        with pytest.raises(ValueError, match="remove_calculated_field"):
+            remove_dataset_field(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                field_name="Doubled",
+            )
+
+    def test_refuses_when_field_still_referenced(self, rdl_path):
+        # The fixture's tablix already references Fields!Amount.Value.
+        with pytest.raises(ValueError) as excinfo:
+            remove_dataset_field(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                field_name="Amount",
+            )
+        msg = str(excinfo.value)
+        assert "Amount" in msg
+        assert "force" in msg.lower()  # mentions force=True override
+
+    def test_force_removes_referenced_field(self, rdl_path):
+        # force=True bypasses the reference check.
+        result = remove_dataset_field(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            field_name="Amount",
+            force=True,
+        )
+        assert result["removed"] == "Amount"
+
+    def test_unknown_dataset_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            remove_dataset_field(
+                path=str(rdl_path),
+                dataset_name="NoSuchDataset",
+                field_name="X",
+            )
+
+    def test_unknown_field_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            remove_dataset_field(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                field_name="NoSuchField",
+            )
+
+    def test_cleans_empty_fields_block(self, rdl_path):
+        # Remove all data-bound fields; confirm the empty <Fields> is dropped.
+        for fname in ("ProductID", "ProductName", "Amount"):
+            remove_dataset_field(
+                path=str(rdl_path),
+                dataset_name="MainDataset",
+                field_name=fname,
+                force=True,
+            )
+        doc = RDLDocument.open(rdl_path)
+        ds = doc.root.find(f".//{{{RDL_NS}}}DataSet[@Name='MainDataset']")
+        assert find_child(ds, "Fields") is None
+
+
 # ---- registration ---------------------------------------------------------
 
 
@@ -874,6 +968,7 @@ class TestToolRegistration:
         assert {
             "add_calculated_field",
             "remove_calculated_field",
+            "remove_dataset_field",
         } <= names
 
     def test_v03_phase6_dataset_field_tools_registered(self):

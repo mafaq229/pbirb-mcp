@@ -1,6 +1,6 @@
-"""Tests for lint_report (Phase 7 commit 31).
+"""Tests for lint_report (Phase 7 commit 31; v0.3.1 added rule 16).
 
-15 rules. Each has a clean-input test (asserts no issues fire) and a
+16 rules. Each has a clean-input test (asserts no issues fire) and a
 dirty-input test (asserts exactly the expected rule fires). Dirty
 inputs are produced by mutating ``pbi_paginated_minimal.rdl`` in-test
 rather than maintaining a hand-written ``pbi_lint_warnings.rdl``
@@ -63,7 +63,7 @@ class TestLintRegistry:
         result = lint_report(str(rdl_path))
         assert result["issues"] == []
         assert set(result["rules_run"]) == set(ALL_RULES)
-        assert len(ALL_RULES) == 15
+        assert len(ALL_RULES) == 16
 
     def test_unknown_rule_rejected(self, rdl_path):
         with pytest.raises(ValueError, match="unknown lint rule"):
@@ -456,6 +456,57 @@ class TestTablixSpanMisplaced:
         _save(doc)
         result = lint_report(str(rdl_path), rules=["tablix-span-misplaced"])
         assert _rule_count(result, "tablix-span-misplaced") == 1
+
+
+# ---- rule 16: dataset-fields-out-of-sync -------------------------------
+
+
+class TestDatasetFieldsOutOfSync:
+    """Detects ``<Field>`` declared but DAX ``<CommandText>`` doesn't
+    return that column. Same regression class as the v0.3.0
+    SELECTCOLUMNS over-match (commit 9792281), but at the static-lint
+    layer instead of the runtime ``refresh_dataset_fields`` reporter.
+    """
+
+    def test_clean(self, rdl_path):
+        result = lint_report(str(rdl_path), rules=["dataset-fields-out-of-sync"])
+        assert result["issues"] == []
+
+    def test_fires_when_field_is_orphan(self, rdl_path):
+        # Fixture's MainDataset uses bare EVALUATE 'Table' which the
+        # extractor can't see into. Rewrite to a SUMMARIZECOLUMNS shape
+        # whose bracketed columns are extractable, then add a phantom
+        # <Field> that isn't in the DAX.
+        doc = RDLDocument.open(rdl_path)
+        ds = doc.root.find(q("DataSets")).find(q("DataSet"))
+        cmd = ds.find(q("Query")).find(q("CommandText"))
+        cmd.text = (
+            "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[ProductName], 'Sales'[Amount])"
+        )
+        fields = ds.find(q("Fields"))
+        new_field = etree.SubElement(fields, q("Field"), Name="GhostColumn")
+        df = etree.SubElement(new_field, q("DataField"))
+        df.text = "GhostColumn"
+        _save(doc)
+        result = lint_report(str(rdl_path), rules=["dataset-fields-out-of-sync"])
+        assert _rule_count(result, "dataset-fields-out-of-sync") == 1
+        issue = next(i for i in result["issues"] if i["rule"] == "dataset-fields-out-of-sync")
+        assert issue["severity"] == "warning"
+        assert "GhostColumn" in issue["location"]
+        assert "remove_dataset_field" in issue["suggestion"]
+
+    def test_skips_when_dax_is_unparseable(self, rdl_path):
+        # When _extract_dax_field_names returns warnings (no recognisable
+        # shape), don't false-flag every <Field> as orphan. The rule
+        # should silently skip the dataset.
+        doc = RDLDocument.open(rdl_path)
+        ds = doc.root.find(q("DataSets")).find(q("DataSet"))
+        cmd = ds.find(q("Query")).find(q("CommandText"))
+        # Bare-table EVALUATE — extractor can't see columns.
+        cmd.text = "EVALUATE 'OpaqueTable'"
+        _save(doc)
+        result = lint_report(str(rdl_path), rules=["dataset-fields-out-of-sync"])
+        assert result["issues"] == []
 
 
 # ---- registration ------------------------------------------------------

@@ -6,10 +6,14 @@ Two layers:
    RDL 2016 namespace and that the load-bearing top-level sections (DataSources,
    DataSets, ReportSections) are present. Cheap and dependency-free.
 
-2. **XSD** — opt-in. If ``pbirb_mcp/schemas/reportdefinition.xsd`` is present,
-   :func:`validate_against_xsd` runs lxml's schema validator. The Microsoft RDL
-   2016 XSD is not redistributable here; users who want full schema validation
-   can drop the official XSD into the ``schemas/`` directory.
+2. **XSD** — bundled by default since v0.3.1. The Microsoft RDL 2016/01 XSD
+   ships under ``pbirb_mcp/schemas/reportdefinition.xsd`` (see
+   ``pbirb_mcp/schemas/NOTICE.md`` for the redistribution permission granted by
+   the MS-RDL Open Specifications IP Rights Notice). :func:`validate_against_xsd`
+   runs lxml's schema validator against it. A source-build that omits
+   package-data will cause :func:`xsd_available` to return ``False``;
+   :mod:`pbirb_mcp.ops.validate` surfaces that as a loud
+   ``rule="xsd-not-bundled"`` warning rather than silently skipping.
 """
 
 from __future__ import annotations

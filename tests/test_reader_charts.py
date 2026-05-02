@@ -102,10 +102,95 @@ class TestGetChart:
         assert c["legend"] is not None
         assert c["legend"]["name"] == "Default"
 
+    def test_legend_position_ignores_dock_outside_chart_area(self, rich_path):
+        """``<DockOutsideChartArea>`` is a boolean, not a position.
+        Pre-v0.3.1 the reader returned its text as ``position`` when
+        both elements were present (P1.4 in
+        .local/feedback/2026-04-30-v030-live-mcp-sweep.md). After the
+        fix, ``position`` is the actual ``<Position>`` text.
+        """
+        from lxml import etree
+
+        from pbirb_mcp.core.document import RDLDocument
+        from pbirb_mcp.core.xpath import RDL_NS, find_child, q
+
+        doc = RDLDocument.open(rich_path)
+        legend = doc.root.find(
+            f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']"
+            f"/{{{RDL_NS}}}ChartLegends/{{{RDL_NS}}}ChartLegend"
+        )
+        # Inject both boolean DockOutsideChartArea AND a real Position.
+        # If the reader's old fallback survives, position would echo the
+        # boolean text; with the fix it returns "BottomCenter".
+        if find_child(legend, "Position") is None:
+            etree.SubElement(legend, q("Position")).text = "BottomCenter"
+        if find_child(legend, "DockOutsideChartArea") is None:
+            etree.SubElement(legend, q("DockOutsideChartArea")).text = "true"
+        doc.save()
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        assert c["legend"]["position"] == "BottomCenter"
+
     def test_title_block_present(self, rich_path):
         c = get_chart(path=str(rich_path), name="SalesByProduct")
         assert c["title"] is not None
         assert c["title"]["caption"] == "Sales by Product"
+
+    def test_data_labels_none_when_unset(self, rich_path):
+        # Chart-rich fixture has no <ChartDataLabel>.
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        for s in c["series"]:
+            assert s["data_labels"] is None
+
+
+class TestGetChartDataLabelsRoundTrip:
+    """``get_chart`` should symmetrically read back what
+    ``set_chart_data_labels`` writes — closes the asymmetric reader/
+    writer gap flagged in the v0.3.0 sweep (P1.3 in
+    .local/feedback/2026-04-30-v030-live-mcp-sweep.md).
+    """
+
+    def test_visible_only(self, rich_path):
+        from pbirb_mcp.ops.chart import set_chart_data_labels
+
+        set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            visible=True,
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        amount = next(s for s in c["series"] if s["name"] == "Amount")
+        assert amount["data_labels"] == {"visible": "true", "format": None}
+        # Other series untouched.
+        for other in (s for s in c["series"] if s["name"] != "Amount"):
+            assert other["data_labels"] is None
+
+    def test_visible_and_format(self, rich_path):
+        from pbirb_mcp.ops.chart import set_chart_data_labels
+
+        set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Quantity",
+            visible=False,
+            format="#,0",
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        qty = next(s for s in c["series"] if s["name"] == "Quantity")
+        assert qty["data_labels"] == {"visible": "false", "format": "#,0"}
+
+    def test_apply_to_all_series(self, rich_path):
+        from pbirb_mcp.ops.chart import set_chart_data_labels
+
+        set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            visible=True,
+        )
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        for s in c["series"]:
+            assert s["data_labels"] is not None
+            assert s["data_labels"]["visible"] == "true"
 
 
 # ---- minimal-fixture chart (one series, no enrichments) ------------------

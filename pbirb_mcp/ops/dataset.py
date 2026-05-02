@@ -802,6 +802,116 @@ def remove_calculated_field(
     }
 
 
+def _scan_field_references(doc: RDLDocument, name: str) -> list[str]:
+    """Walk every text-bearing element looking for ``Fields!<name>.Value``
+    (or ``.IsMissing`` / ``.Count`` aggregation suffixes).
+
+    Returns a list of human-readable locator strings describing where the
+    references live. Used by :func:`remove_dataset_field` to refuse a
+    destructive delete and surface the offending sites.
+    """
+    # Match the field name as a whole word so e.g. removing 'Date' doesn't
+    # report 'Fields!DateFrom.Value' as a reference.
+    pattern = re.compile(rf"\bFields!{re.escape(name)}\.(Value|IsMissing|Count)\b")
+    locators: list[str] = []
+    seen: set[str] = set()
+    for el in doc.root.iter():
+        if not isinstance(el.tag, str):
+            continue
+        text = el.text
+        if not text or "Fields!" not in text or not pattern.search(text):
+            continue
+        ancestor = el
+        label_parts: list[str] = []
+        depth = 0
+        while ancestor is not None and depth < 5:
+            tag = etree.QName(ancestor.tag).localname
+            if ancestor.get("Name"):
+                label_parts.append(f"{tag}[Name={ancestor.get('Name')!r}]")
+            ancestor = ancestor.getparent()
+            depth += 1
+        loc = ">".join(reversed(label_parts)) if label_parts else "(unnamed)"
+        if loc not in seen:
+            seen.add(loc)
+            locators.append(loc)
+    return locators
+
+
+def remove_dataset_field(
+    path: str,
+    dataset_name: str,
+    field_name: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Remove a **data-bound** ``<Field>`` (one with ``<DataField>``) by name.
+
+    Symmetric counterpart to :func:`remove_calculated_field` — that one
+    deletes ``<Value>``-bearing calculated fields and refuses on
+    data-bound; this one deletes ``<DataField>``-bearing data-bound
+    fields and refuses on calculated. Together they close the cookbook
+    flow ``refresh_dataset_fields`` (lists orphans) → review →
+    ``remove_dataset_field`` (drops them) without falling back to
+    ``raw_xml_replace``.
+
+    Refusal paths:
+
+    1. **Calculated field**: target has ``<Value>`` and not
+       ``<DataField>`` → ``ValueError`` pointing at
+       :func:`remove_calculated_field`.
+    2. **Still referenced**: any expression in the report contains
+       ``Fields!<field_name>.Value`` (or ``.IsMissing`` / ``.Count``) →
+       ``ValueError`` carrying up to the first 5 locators. Pass
+       ``force=True`` to remove anyway.
+
+    Cleans up the empty ``<Fields>`` block when removing the last field.
+
+    Returns ``{dataset, removed, kind: 'DataBoundField'}``.
+    """
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, dataset_name)
+
+    fields_root = find_child(dataset, "Fields")
+    if fields_root is None:
+        raise ElementNotFoundError(f"dataset {dataset_name!r} has no <Fields> block")
+
+    target: Optional[etree._Element] = None
+    for f in find_children(fields_root, "Field"):
+        if f.get("Name") == field_name:
+            target = f
+            break
+    if target is None:
+        raise ElementNotFoundError(f"field {field_name!r} not found in dataset {dataset_name!r}")
+
+    if find_child(target, "Value") is not None and find_child(target, "DataField") is None:
+        raise ValueError(
+            f"field {field_name!r} is calculated (has <Value>, not <DataField>); "
+            "remove_dataset_field only deletes data-bound fields. Use "
+            "remove_calculated_field instead."
+        )
+
+    if not force:
+        locators = _scan_field_references(doc, field_name)
+        if locators:
+            shown = locators[:5]
+            elided = " (more elided)" if len(locators) > 5 else ""
+            raise ValueError(
+                f"field {field_name!r} is still referenced from "
+                f"{len(locators)} location(s): {shown}{elided}. "
+                "Pass force=True to remove anyway."
+            )
+
+    fields_root.remove(target)
+    if len(find_children(fields_root, "Field")) == 0:
+        dataset.remove(fields_root)
+
+    doc.save()
+    return {
+        "dataset": dataset_name,
+        "removed": field_name,
+        "kind": "DataBoundField",
+    }
+
+
 # ---- data-bound field authoring (Phase 6 commit 27) ---------------------
 
 

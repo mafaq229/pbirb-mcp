@@ -6,11 +6,15 @@ Wraps :mod:`pbirb_mcp.core.schema` for the JSON-RPC surface. The
 1. **Parse** — lxml load. Failures are reported as ``rule="parse"``.
 2. **Structural** — root-element + required top-level sections check.
    Failures: ``rule="structural"``.
-3. **XSD** — opt-in. If ``pbirb_mcp/schemas/reportdefinition.xsd`` is
-   bundled, the document is validated against it. Failures:
-   ``rule="xsd"``. The Microsoft RDL XSD is not redistributable, so the
-   shipped package returns ``xsd_used=False``; users who drop the
-   official XSD into ``schemas/`` get full validation.
+3. **XSD** — bundled by default since v0.3.1. The Microsoft RDL 2016/01
+   XSD ships under ``pbirb_mcp/schemas/reportdefinition.xsd`` (see
+   ``schemas/NOTICE.md`` for the redistribution permission granted by the
+   MS-RDL Open Specifications IP Rights Notice). Failures:
+   ``rule="xsd"``. If the schema file is missing (e.g. a source-build
+   that didn't copy package-data), ``validate_report`` emits a
+   ``severity="warning"``, ``rule="xsd-not-bundled"`` issue rather than
+   silently skipping — the silent skip masked four schema-conformance
+   bugs in the v0.3.0 live-MCP sweep.
 
 Issue shape mirrors :mod:`pbirb_mcp.ops.lint` (``severity``, ``rule``,
 ``location``, ``message``) so :func:`verify_report` (commit 33) can union
@@ -85,7 +89,11 @@ def validate_report(path: str) -> dict[str, Any]:
             }
         )
 
-    # XSD — opt-in. Skip when not bundled.
+    # XSD — bundled by default since v0.3.1. If the file is missing
+    # (e.g. a source-build that didn't copy package-data) emit a loud
+    # warning rather than silently skipping. Silent skip masked four
+    # schema-conformance bugs in the v0.3.0 live-MCP sweep — see
+    # .local/feedback/2026-04-30-v030-live-mcp-sweep.md.
     xsd_used = False
     if xsd_available():
         schema = _load_xsd()
@@ -101,8 +109,30 @@ def validate_report(path: str) -> dict[str, Any]:
                             "message": entry.message,
                         }
                     )
+    else:
+        errors.append(
+            {
+                "severity": "warning",
+                "rule": "xsd-not-bundled",
+                "location": "pbirb_mcp/schemas/reportdefinition.xsd",
+                "message": (
+                    "bundled RDL 2016 XSD not found; XSD validation skipped. "
+                    "This masks the schema-conformance bug class that "
+                    "Power BI Report Builder rejects on load."
+                ),
+                "suggestion": (
+                    "reinstall pbirb-mcp (the package ships the XSD as "
+                    "package-data) or restore the file from the source "
+                    "tree per pbirb_mcp/schemas/NOTICE.md"
+                ),
+            }
+        )
 
-    return {"valid": not errors, "errors": errors, "xsd_used": xsd_used}
+    # `valid` reflects ERROR-severity issues only — warnings (e.g.
+    # xsd-not-bundled) don't flip it. Mirrors verify_report's
+    # severity-aware computation.
+    has_error = any(e.get("severity") == "error" for e in errors)
+    return {"valid": not has_error, "errors": errors, "xsd_used": xsd_used}
 
 
 def verify_report(path: str) -> dict[str, Any]:
