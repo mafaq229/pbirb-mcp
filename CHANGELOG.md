@@ -1,5 +1,83 @@
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-02
+
+PATCH driven by the v0.3.0 live-MCP sweep
+(`.local/feedback/2026-04-30-v030-live-mcp-sweep.md`). The sweep
+cleared every static gate yet Power BI Report Builder rejected the
+file on load with four schema-conformance bugs — root cause: the XSD
+layer was silently skipped because we never shipped the schema file.
+v0.3.1 closes that gap and ships the small ergonomics deltas the same
+sweep flagged. **Tool count: 131 → 132. Lint rules: 15 → 16.**
+
+### Added
+
+- **Bundled RDL 2016/01 XSD** — `pbirb_mcp/schemas/reportdefinition.xsd`
+  ships by default. `validate_report` / `verify_report` now report
+  `xsd_used: true` out of the box and catch the schema-conformance
+  bug class (wrong child elements, wrong-host nesting, missing
+  required children) at the static layer — the same gate Report
+  Builder runs on load. See `pbirb_mcp/schemas/NOTICE.md` for the
+  redistribution permission granted by the MS-RDL Open Specifications
+  IP Rights Notice.
+- **`xsd-not-bundled` warning** — `validate_report` emits a
+  `severity: warning, rule: xsd-not-bundled` issue when the bundled
+  XSD is missing (e.g. a source-build that didn't copy package-data),
+  instead of silently skipping. The silent skip is what masked the
+  four 2026-04-30 RB-only bugs.
+- **`dataset-fields-out-of-sync` lint rule (16th)** — detects
+  `<Field>` declared but DAX `<CommandText>` doesn't return that
+  column. Reuses `_extract_dax_field_names`. Skips datasets with
+  unparseable DAX (e.g. bare `EVALUATE 'Table'`) to avoid false
+  flags.
+- **`remove_dataset_field` tool** — symmetric counterpart to
+  `remove_calculated_field` for data-bound `<Field>` entries
+  (`<DataField>`). Refuses on calculated fields (with hint pointing
+  at the right tool) and on still-referenced fields (locator list,
+  `force=True` override). Closes the cookbook flow
+  `refresh_dataset_fields` (lists orphans) → review →
+  `remove_dataset_field` (drops them).
+- **`get_chart.series[].data_labels`** — per-series read-back of
+  `<ChartDataLabel>` (`{visible, format}` or `None`). Closes the
+  asymmetric reader/writer gap with `set_chart_data_labels`.
+
+### Fixed
+
+- **`get_chart.legend.position`** no longer returns the boolean text
+  of `<DockOutsideChartArea>` when both that element and `<Position>`
+  are present. Reads only `<Position>`. Pure bug fix; same key,
+  same shape.
+- **`tests/fixtures/pbi_chart_rich.rdl`** migrated from legacy
+  `<ChartAxis><Title>` to canonical `<ChartAxisTitle>` (same bug
+  class as v0.3.0 `09225df`). Without the migration, every
+  `test_round_trip_safe` in `test_chart.py` and `test_actions.py`
+  would fail under the bundled XSD layer.
+
+### Changed
+
+- **Stale "not redistributable" docstrings** in
+  `pbirb_mcp/ops/validate.py` and `pbirb_mcp/core/schema.py` retired
+  — predated the licensing research; the MS-RDL Open Specifications
+  IP Rights Notice explicitly grants redistribution of schemas
+  included in the spec documentation.
+- `lint_report` description updated to "Sixteen rules" and lists
+  the new `dataset-fields-out-of-sync` rule.
+- `validate_report` and `verify_report` descriptions document the
+  bundled XSD posture and the new `xsd-not-bundled` warning shape.
+- `remove_calculated_field` description now points at the new
+  `remove_dataset_field` for data-bound fields.
+
+### Notes
+
+- Three of the four 2026-04-30 RB-only bugs are now caught at the
+  XSD layer (regression fixtures under `tests/fixtures/known_bad/`,
+  driven by `tests/test_xsd_regressions.py`). The fourth
+  (`d999da5`: `<ChartAxis><Visible>true</Visible>` lowercase) is an
+  RB-runtime constraint that the bundled XSD treats as `xsd:string`
+  — needs the v0.7 `load_test_report` runner or a future lint rule.
+- Pytest 1004 → 1035 green; JSON-RPC stdio smoke + uvx smoke still
+  green; byte-identical round-trip preserved.
+
 ## [0.3.0] - 2026-04-30
 
 A consolidated MINOR that bundled what was originally planned as v0.3 +
