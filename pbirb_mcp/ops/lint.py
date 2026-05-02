@@ -1,8 +1,8 @@
-"""Static-analysis lint rules (Phase 7 commit 31).
+"""Static-analysis lint rules (Phase 7 commit 31; v0.3.1 added rule 16).
 
-Fifteen rules driven by the v0.2-session feedback that surfaced this
-phase. Each rule is a small pure function that takes the open
-:class:`RDLDocument` and returns a list of issue dicts:
+Sixteen rules driven by the v0.2/v0.3 sweep feedback. Each rule is a
+small pure function that takes the open :class:`RDLDocument` and
+returns a list of issue dicts:
 
     {"severity": "error"|"warning",
      "rule": "<rule-name>",
@@ -13,7 +13,7 @@ phase. Each rule is a small pure function that takes the open
 The shape mirrors :mod:`pbirb_mcp.ops.validate` so :func:`verify_report`
 (commit 33) can union the two streams without reshaping.
 
-Rules (15):
+Rules (16):
 
 * ``multi-value-eq`` (warn) — multi-value param compared with ``=``.
 * ``unused-data-source`` (warn) — DataSource never referenced.
@@ -45,6 +45,9 @@ Rules (15):
   diverges from ``<CommandText>``.
 * ``tablix-span-misplaced`` (error) — ``<ColSpan>``/``<RowSpan>``
   outside ``<CellContents>``.
+* ``dataset-fields-out-of-sync`` (warn, v0.3.1) — ``<Field>`` declared
+  but the dataset's DAX ``<CommandText>`` doesn't return that column.
+  Reuses :func:`pbirb_mcp.ops.dataset._extract_dax_field_names`.
 """
 
 from __future__ import annotations
@@ -56,7 +59,7 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q
-from pbirb_mcp.ops.dataset import _is_pbidataset_dataset
+from pbirb_mcp.ops.dataset import _extract_dax_field_names, _is_pbidataset_dataset
 
 Issue = dict[str, Any]
 
@@ -670,6 +673,76 @@ def _rule_tablix_span_misplaced(doc: RDLDocument) -> list[Issue]:
     return issues
 
 
+# ---- rule 16: dataset-fields-out-of-sync (v0.3.1) ----------------------
+
+
+def _rule_dataset_fields_out_of_sync(doc: RDLDocument) -> list[Issue]:
+    """Detect ``<Field>`` declarations that no longer correspond to any
+    column the DAX ``<CommandText>`` is expected to return.
+
+    Same regression class as the v0.3.0 SELECTCOLUMNS over-match
+    (commit ``9792281``), but caught at the static-lint layer instead
+    of the runtime ``refresh_dataset_fields`` reporter — useful when
+    nobody has called the refresh tool yet but the dataset query was
+    rewritten in a way that drops columns.
+
+    Reuses :func:`pbirb_mcp.ops.dataset._extract_dax_field_names`. When
+    the extractor returns warnings (the DAX shape isn't recognisable —
+    e.g. bare ``EVALUATE 'Table'``), the rule silently skips that
+    dataset rather than false-flagging every declared field as orphan.
+    """
+    issues: list[Issue] = []
+    datasets_root = find_child(doc.root, "DataSets")
+    if datasets_root is None:
+        return issues
+    for ds in find_children(datasets_root, "DataSet"):
+        ds_name = ds.get("Name") or "(unnamed)"
+        query = find_child(ds, "Query")
+        if query is None:
+            continue
+        cmd = find_child(query, "CommandText")
+        if cmd is None or not (cmd.text or "").strip():
+            continue
+        extracted, warnings = _extract_dax_field_names(cmd.text)
+        if warnings:
+            # Unparseable shape — skip rather than false-flag.
+            continue
+        if not extracted:
+            continue
+        fields_root = find_child(ds, "Fields")
+        if fields_root is None:
+            continue
+        extracted_set = set(extracted)
+        for f in find_children(fields_root, "Field"):
+            name = f.get("Name")
+            if name is None:
+                continue
+            # Calculated fields (have <Value>, not <DataField>) are
+            # author-defined and never expected to come back from DAX —
+            # skip them.
+            if find_child(f, "Value") is not None and find_child(f, "DataField") is None:
+                continue
+            if name in extracted_set:
+                continue
+            issues.append(
+                {
+                    "severity": "warning",
+                    "rule": "dataset-fields-out-of-sync",
+                    "location": (f"DataSet[Name={ds_name!r}]/Fields/Field[Name={name!r}]"),
+                    "message": (
+                        f"<Field Name={name!r}> is declared but the DAX "
+                        f"<CommandText> does not appear to return that "
+                        f"column"
+                    ),
+                    "suggestion": (
+                        "rewrite the dataset query (update_dataset_query) "
+                        "or remove the orphan field (remove_dataset_field)"
+                    ),
+                }
+            )
+    return issues
+
+
 # ---- registry -----------------------------------------------------------
 
 
@@ -689,6 +762,7 @@ _RULES: dict[str, Callable[[RDLDocument], list[Issue]]] = {
     "double-encoded-entities": _rule_double_encoded_entities,
     "stale-designer-state": _rule_stale_designer_state,
     "tablix-span-misplaced": _rule_tablix_span_misplaced,
+    "dataset-fields-out-of-sync": _rule_dataset_fields_out_of_sync,
 }
 
 ALL_RULES = tuple(_RULES.keys())
@@ -697,7 +771,7 @@ ALL_RULES = tuple(_RULES.keys())
 def lint_report(path: str, rules: list[str] | None = None) -> dict[str, Any]:
     """Run lint rules against an RDL.
 
-    ``rules`` selects a subset by name; ``None`` runs all 15. Unknown
+    ``rules`` selects a subset by name; ``None`` runs all 16. Unknown
     rule names are rejected with ``ValueError`` so a typo doesn't quietly
     skip checks.
 

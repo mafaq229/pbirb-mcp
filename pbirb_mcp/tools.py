@@ -762,14 +762,15 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="lint_report",
         description=(
-            "Run static-analysis lint rules against an .rdl. Fifteen "
-            "rules cover the v0.2-session bug classes (multi-value-eq, "
+            "Run static-analysis lint rules against an .rdl. Sixteen "
+            "rules cover the v0.2/v0.3 sweep bug classes (multi-value-eq, "
             "missing-field-reference, dangling-embedded-image, "
             "pbidataset-at-prefix, parameter-layout-out-of-sync, "
             "double-encoded-entities, stale-designer-state, "
-            "tablix-span-misplaced, etc.). Returns {issues, rules_run} "
-            "with each issue {severity, rule, location, message, "
-            "suggestion?}. Optional `rules` selects a subset by name."
+            "tablix-span-misplaced, dataset-fields-out-of-sync, etc.). "
+            "Returns {issues, rules_run} with each issue {severity, "
+            "rule, location, message, suggestion?}. Optional `rules` "
+            "selects a subset by name."
         ),
         input_schema={
             "type": "object",
@@ -778,7 +779,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "rules": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional subset of rule names; default runs all 15.",
+                    "description": "Optional subset of rule names; default runs all 16.",
                 },
             },
             "required": ["path"],
