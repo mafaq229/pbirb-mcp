@@ -126,6 +126,50 @@ class TestVerifyReport:
         assert "tablix-span-misplaced" in rules
 
 
+class TestXsdNotBundledWarning:
+    """When the bundled XSD is missing (e.g. a source-build that didn't
+    copy package-data), validate_report emits a loud warning instead of
+    silently skipping the XSD layer. The silent skip masked four
+    schema-conformance bugs in the v0.3.0 live-MCP sweep."""
+
+    def _hide_xsd(self, monkeypatch, tmp_path):
+        from pbirb_mcp.core import schema as core_schema
+
+        core_schema._xsd_cache = None
+        monkeypatch.setattr(core_schema, "_bundled_xsd_path", lambda: tmp_path / "missing.xsd")
+
+    def test_validate_report_warns_when_xsd_missing(self, monkeypatch, tmp_path, rdl_path):
+        self._hide_xsd(monkeypatch, tmp_path)
+        result = validate_report(str(rdl_path))
+        # Warning-only — `valid` stays True; warnings live in errors[].
+        assert result["valid"] is True
+        assert result["xsd_used"] is False
+        warnings = [e for e in result["errors"] if e["rule"] == "xsd-not-bundled"]
+        assert len(warnings) == 1
+        w = warnings[0]
+        assert w["severity"] == "warning"
+        assert "xsd" in w["message"].lower() or "schema" in w["message"].lower()
+        assert "suggestion" in w  # actionable
+
+    def test_verify_report_includes_warning(self, monkeypatch, tmp_path, rdl_path):
+        self._hide_xsd(monkeypatch, tmp_path)
+        result = verify_report(str(rdl_path))
+        assert result["valid"] is True  # warning, not error
+        assert result["xsd_used"] is False
+        rules = {i["rule"] for i in result["issues"]}
+        assert "xsd-not-bundled" in rules
+
+    def test_no_warning_when_xsd_bundled(self, rdl_path):
+        # Sanity-check the inverse: with the real bundle present, the
+        # warning is absent. Reset cache so we hit the real lookup.
+        from pbirb_mcp.core import schema as core_schema
+
+        core_schema._xsd_cache = None
+        result = validate_report(str(rdl_path))
+        assert result["xsd_used"] is True
+        assert all(e["rule"] != "xsd-not-bundled" for e in result["errors"])
+
+
 class TestToolRegistration:
     def test_validate_report_registered(self):
         srv = MCPServer()

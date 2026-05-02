@@ -729,11 +729,15 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Run schema/structural validation against an .rdl. Returns "
             "{valid, errors, xsd_used}. Structural checks always run "
-            "(root element + required top-level sections); XSD validation "
-            "is opt-in (drop the Microsoft RDL 2016 XSD into "
-            "pbirb_mcp/schemas/reportdefinition.xsd to enable). Each "
-            "error is {severity, rule, location, message} so verify_report "
-            "can union with lint output."
+            "(root element + required top-level sections). The Microsoft "
+            "RDL 2016/01 XSD is bundled by default since v0.3.1 — when "
+            "it's loaded, xsd_used is True and the schema-conformance "
+            "bug class Power BI Report Builder rejects on load gets "
+            "caught here. If the bundled XSD is missing (source-build "
+            "without package-data) a {severity:warning, "
+            "rule:'xsd-not-bundled'} issue surfaces instead of silent "
+            "skip. Each issue is {severity, rule, location, message, "
+            "suggestion?}; valid is True iff no severity='error' issue."
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=validate.validate_report,
@@ -745,8 +749,9 @@ def register_all_tools(server: MCPServer) -> None:
             "One-shot static check: union of validate_report and "
             "lint_report. Returns {valid, issues, xsd_used} where "
             "valid is True iff no issue has severity='error'. "
-            "Warnings don't invalidate the report. Use this as the "
-            "single 'is the report OK?' tool, or set "
+            "Warnings (including 'xsd-not-bundled' when the schema "
+            "file is missing) don't invalidate the report. Use this as "
+            "the single 'is the report OK?' tool, or set "
             "PBIRB_MCP_AUTO_VERIFY=1 to have it run after every "
             "mutating call."
         ),
