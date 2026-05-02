@@ -829,10 +829,14 @@ def _chart_legend_dict(chart: etree._Element) -> Optional[dict[str, Any]]:
         visible_text: Optional[str] = None
     else:
         visible_text = "false" if hidden_text.strip().lower() == "true" else "true"
+    # Pre-v0.3.1 had a fallback `_text(<DockOutsideChartArea>) or
+    # _text(<Position>)` which returned the boolean's text as the
+    # "position" string when both elements were present. Read only
+    # <Position> — DockOutsideChartArea is a separate boolean and
+    # doesn't belong in this field.
     return {
         "name": legend.get("Name"),
-        "position": _text(find_child(legend, "DockOutsideChartArea"))
-        or _text(find_child(legend, "Position")),
+        "position": _text(find_child(legend, "Position")),
         "visible": visible_text,
     }
 
