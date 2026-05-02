@@ -443,7 +443,8 @@ def register_all_tools(server: MCPServer) -> None:
             "Remove a calculated <Field> by name. Refuses if the field "
             "is data-bound (carries <DataField> instead of <Value>) — "
             "those reflect the source query's columns. Drop a data-bound "
-            "field by rewriting the dataset query via update_dataset_query."
+            "field via remove_dataset_field, or rewrite the dataset "
+            "query via update_dataset_query."
         ),
         input_schema={
             "type": "object",
@@ -456,6 +457,39 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=dataset.remove_calculated_field,
+    )
+    server.register_tool(
+        name="remove_dataset_field",
+        description=(
+            "Remove a data-bound <Field> by name (one with <DataField>). "
+            "Symmetric counterpart to remove_calculated_field. Refuses "
+            "on calculated fields (use remove_calculated_field instead) "
+            "and on still-referenced fields (any expression containing "
+            "Fields!<name>.Value / .IsMissing / .Count). Pass "
+            "force=True to delete anyway. Closes the cookbook flow: "
+            "refresh_dataset_fields lists orphans, "
+            "remove_dataset_field drops them. Returns "
+            "{dataset, removed, kind: 'DataBoundField'}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "dataset_name": {"type": "string"},
+                "field_name": {"type": "string"},
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Default false: refuse if the field is still "
+                        "referenced anywhere. true: delete anyway "
+                        "(prefer fixing the references first)."
+                    ),
+                },
+            },
+            "required": ["path", "dataset_name", "field_name"],
+            "additionalProperties": False,
+        },
+        handler=dataset.remove_dataset_field,
     )
     server.register_tool(
         name="add_dataset_field",
