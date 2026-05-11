@@ -182,7 +182,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           # Tag is implicit from the trigger (refs/tags/v*).
           name: v${{ needs.verify.outputs.version }}
