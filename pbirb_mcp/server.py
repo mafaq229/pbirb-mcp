@@ -153,13 +153,19 @@ class MCPServer:
             raise _MCPError(INVALID_PARAMS, "tools/call `arguments` must be an object")
 
         # v0.4 commit 9 — transaction routing. When `transaction_id` is in
-        # arguments, swap arguments["path"] with the registered abspath and
-        # strip the id from kwargs (handlers don't accept it; their
-        # signatures stay unchanged). On miss → structured isError that
-        # does NOT echo the opaque id back (leakage guard). Orphans are
-        # swept lazily before every transaction-aware lookup.
+        # arguments AND the tool is an EDIT tool (i.e. its schema declares
+        # `path` but NOT `transaction_id`), swap arguments["path"] with
+        # the registered abspath and strip the id from kwargs. The
+        # transaction-control tools (commit/cancel_editing_transaction)
+        # declare `transaction_id` as their first-class argument; the
+        # dispatcher leaves those alone and lets the handler look up the
+        # transaction itself.
+        # On miss → structured isError that does NOT echo the opaque id
+        # back (leakage guard). Orphans are swept lazily before every
+        # transaction-aware lookup.
         in_transaction = False
-        if "transaction_id" in arguments:
+        schema_props = (tool.input_schema or {}).get("properties", {})
+        if "transaction_id" in arguments and "transaction_id" not in schema_props:
             import time as _time
 
             from pbirb_mcp.core import transactions as _tx
@@ -180,7 +186,8 @@ class MCPServer:
                     "content": [{"type": "text", "text": json.dumps(payload, default=str)}],
                     "isError": True,
                 }
-            arguments["path"] = tx.abspath
+            if "path" in schema_props:
+                arguments["path"] = tx.abspath
             in_transaction = True
 
         # Per MCP spec, tool-handler exceptions are surfaced in the result

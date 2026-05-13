@@ -39,6 +39,7 @@ from pbirb_mcp.ops import escape as _escape
 from pbirb_mcp.ops import expressions as _expressions
 from pbirb_mcp.ops import layout as _layout
 from pbirb_mcp.ops import lint as _lint
+from pbirb_mcp.ops import transactions as _transactions
 
 if TYPE_CHECKING:
     from pbirb_mcp.server import MCPServer
@@ -870,6 +871,56 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_dry_run.dry_run_edit,
+    )
+
+    # ---- v0.4 transactions (commit 10) -----------------------------------
+    server.register_tool(
+        name="start_editing_transaction",
+        description=(
+            "Open the report and start an editing transaction. Returns "
+            "{transaction_id, path, expires_at}. Pass transaction_id to "
+            "subsequent edit tools to mutate the live in-memory tree "
+            "WITHOUT touching disk between calls — eliminates the "
+            "per-edit parse+serialize round-trip. The transaction times "
+            "out after PBIRB_MCP_TRANSACTION_TIMEOUT_S seconds (default "
+            "600); call commit_editing_transaction to flush or "
+            "cancel_editing_transaction to discard. Refuses if an active "
+            "transaction already owns this path."
+        ),
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=_transactions.start_editing_transaction,
+    )
+    server.register_tool(
+        name="commit_editing_transaction",
+        description=(
+            "Lint the in-memory tree, save to disk once (atomic .tmp + "
+            "rename), and deregister. Aborts (saved=False) if lint "
+            "surfaces any severity='error' issue — the transaction "
+            "stays OPEN so the caller can fix the offending state and "
+            "re-commit. Returns {transaction_id, path, saved, verify}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"transaction_id": {"type": "string"}},
+            "required": ["transaction_id"],
+            "additionalProperties": False,
+        },
+        handler=_transactions.commit_editing_transaction,
+    )
+    server.register_tool(
+        name="cancel_editing_transaction",
+        description=(
+            "Discard a transaction. The in-memory tree is dropped; the "
+            "on-disk file is unchanged from when the transaction was "
+            "started. Returns {transaction_id, path, discarded}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"transaction_id": {"type": "string"}},
+            "required": ["transaction_id"],
+            "additionalProperties": False,
+        },
+        handler=_transactions.cancel_editing_transaction,
     )
 
     server.register_tool(

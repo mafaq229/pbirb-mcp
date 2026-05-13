@@ -256,3 +256,150 @@ class TestRDLDocumentInterception:
             RDLDocument.open(doc.path).root.find(".//{*}CommandText").text
             == "EVALUATE TOPN(3, 'Sales')"
         )
+
+
+# ---- v0.4 commit 10 — public start/commit/cancel tools ------------------
+
+
+class TestStartEditingTransaction:
+    def test_returns_canonical_shape(self, doc):
+        from pbirb_mcp.ops.transactions import start_editing_transaction
+
+        result = start_editing_transaction(str(doc.path))
+        assert set(result.keys()) == {"transaction_id", "path", "expires_at"}
+        assert isinstance(result["transaction_id"], str)
+        assert result["path"] == str(doc.path.resolve())
+        assert isinstance(result["expires_at"], float)
+
+    def test_registers_in_the_registry(self, doc):
+        from pbirb_mcp.ops.transactions import start_editing_transaction
+
+        result = start_editing_transaction(str(doc.path))
+        assert transactions.lookup_by_id(result["transaction_id"]) is not None
+
+    def test_refuses_when_path_already_in_transaction(self, doc):
+        from pbirb_mcp.ops.transactions import start_editing_transaction
+
+        start_editing_transaction(str(doc.path))
+        with pytest.raises(ValueError, match="already owns"):
+            start_editing_transaction(str(doc.path))
+
+
+class TestCommitEditingTransaction:
+    def test_lints_then_saves_and_deregisters(self, doc):
+        from pbirb_mcp.ops.transactions import (
+            commit_editing_transaction,
+            start_editing_transaction,
+        )
+
+        original_bytes = doc.path.read_bytes()
+        tx = start_editing_transaction(str(doc.path))
+        tx_id = tx["transaction_id"]
+
+        # Mutate the in-memory tree without touching disk.
+        live = transactions.lookup_by_id(tx_id).doc
+        cmd = live.root.find(".//{*}CommandText")
+        cmd.text = "EVALUATE TOPN(11, 'Sales')"
+        # File on disk is still original — interception is keeping it stale.
+        assert doc.path.read_bytes() == original_bytes
+
+        result = commit_editing_transaction(tx_id)
+        assert result["saved"] is True
+        assert result["transaction_id"] == tx_id
+        assert result["verify"]["valid"] is True
+        # Now the change is on disk.
+        assert doc.path.read_bytes() != original_bytes
+        reopened = RDLDocument.open(doc.path)
+        assert reopened.root.find(".//{*}CommandText").text == "EVALUATE TOPN(11, 'Sales')"
+        # Registry entry is gone.
+        assert transactions.lookup_by_id(tx_id) is None
+
+    def test_unknown_transaction_id_raises(self):
+        from pbirb_mcp.ops.transactions import commit_editing_transaction
+
+        with pytest.raises(ValueError, match="unknown"):
+            commit_editing_transaction("not-a-real-id")
+
+    def test_aborts_on_lint_error_does_not_save(self, doc):
+        """When lint surfaces a severity='error' issue, commit aborts:
+        nothing is written to disk and the transaction stays OPEN so
+        the caller can fix the problem and re-commit."""
+        from lxml import etree
+
+        from pbirb_mcp.core.xpath import q
+        from pbirb_mcp.ops.transactions import (
+            commit_editing_transaction,
+            start_editing_transaction,
+        )
+
+        original_bytes = doc.path.read_bytes()
+        tx = start_editing_transaction(str(doc.path))
+        tx_id = tx["transaction_id"]
+
+        # Inject a state that triggers lint rule
+        # `missing-field-reference` (error severity): add a textbox
+        # whose Value references Fields!NoSuchField.Value.
+        live = transactions.lookup_by_id(tx_id).doc
+        body_items = live.root.find(".//{*}ReportSection/{*}Body/{*}ReportItems")
+        tb = etree.SubElement(body_items, q("Textbox"), Name="BadRef")
+        paras = etree.SubElement(tb, q("Paragraphs"))
+        para = etree.SubElement(paras, q("Paragraph"))
+        runs = etree.SubElement(para, q("TextRuns"))
+        run = etree.SubElement(runs, q("TextRun"))
+        etree.SubElement(run, q("Value")).text = "=Fields!NoSuchField.Value"
+
+        result = commit_editing_transaction(tx_id)
+        assert result["saved"] is False
+        assert result["verify"]["valid"] is False
+        assert any(i["rule"] == "missing-field-reference" for i in result["verify"]["issues"])
+        # Disk unchanged.
+        assert doc.path.read_bytes() == original_bytes
+        # Transaction STILL OPEN — caller can fix and re-commit.
+        assert transactions.lookup_by_id(tx_id) is not None
+
+
+class TestCancelEditingTransaction:
+    def test_discards_without_saving(self, doc):
+        from pbirb_mcp.ops.transactions import (
+            cancel_editing_transaction,
+            start_editing_transaction,
+        )
+
+        original_bytes = doc.path.read_bytes()
+        tx = start_editing_transaction(str(doc.path))
+        tx_id = tx["transaction_id"]
+
+        live = transactions.lookup_by_id(tx_id).doc
+        live.root.find(".//{*}CommandText").text = "EVALUATE WILL-BE-DISCARDED"
+
+        result = cancel_editing_transaction(tx_id)
+        assert result["discarded"] is True
+        assert result["path"] == str(doc.path.resolve())
+        # Disk untouched, registry empty.
+        assert doc.path.read_bytes() == original_bytes
+        assert transactions.lookup_by_id(tx_id) is None
+
+    def test_unknown_transaction_id_raises(self):
+        from pbirb_mcp.ops.transactions import cancel_editing_transaction
+
+        with pytest.raises(ValueError, match="unknown"):
+            cancel_editing_transaction("not-a-real-id")
+
+    def test_save_resumes_normally_after_cancel(self, doc):
+        """After cancel, the doc — if held elsewhere — must save
+        normally again. The registry's cancel clears the
+        _in_transaction flag defensively."""
+        from pbirb_mcp.ops.transactions import (
+            cancel_editing_transaction,
+            start_editing_transaction,
+        )
+
+        tx = start_editing_transaction(str(doc.path))
+        tx_id = tx["transaction_id"]
+        cancel_editing_transaction(tx_id)
+        # Re-open via the normal path (no tx active) and save — should work.
+        live = RDLDocument.open(doc.path)
+        live.root.find(".//{*}CommandText").text = "EVALUATE TOPN(2, 'Sales')"
+        live.save()
+        reopened = RDLDocument.open(doc.path)
+        assert reopened.root.find(".//{*}CommandText").text == "EVALUATE TOPN(2, 'Sales')"
