@@ -1,0 +1,179 @@
+"""Tests for the pure-data transaction registry (v0.4 commit 7).
+
+The registry has no MCPServer dependency and no filesystem side
+effects beyond what RDLDocument.open already does. Tests here verify
+the dict-mechanics, the orphan sweep, and the conflict refusal —
+nothing that requires the dispatcher (that comes in commit 9) or the
+public start/commit/cancel tools (commit 10).
+"""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+import pytest
+
+from pbirb_mcp.core import transactions
+from pbirb_mcp.core.document import RDLDocument
+
+FIXTURE = Path(__file__).parent / "fixtures" / "pbi_paginated_minimal.rdl"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_registry():
+    """Module-level state — reset between every test so failures
+    don't leak transactions into the next case."""
+    transactions._reset_for_tests()
+    yield
+    transactions._reset_for_tests()
+
+
+@pytest.fixture
+def doc(tmp_path: Path) -> RDLDocument:
+    dest = tmp_path / "report.rdl"
+    shutil.copy(FIXTURE, dest)
+    return RDLDocument.open(dest)
+
+
+class TestRegister:
+    def test_returns_a_new_uuid_hex(self, doc):
+        tx_id = transactions.register(doc)
+        assert isinstance(tx_id, str)
+        assert len(tx_id) == 32  # uuid4().hex
+        assert all(c in "0123456789abcdef" for c in tx_id)
+
+    def test_marks_doc_in_transaction(self, doc):
+        transactions.register(doc)
+        assert doc._in_transaction is True
+
+    def test_indexes_by_resolved_abspath(self, doc):
+        tx_id = transactions.register(doc)
+        abspath = str(doc.path.resolve())
+        assert transactions.lookup_by_path(abspath).transaction_id == tx_id
+
+    def test_indexes_by_transaction_id(self, doc):
+        tx_id = transactions.register(doc)
+        tx = transactions.lookup_by_id(tx_id)
+        assert tx is not None
+        assert tx.doc is doc
+
+    def test_refuses_duplicate_for_same_path(self, doc):
+        transactions.register(doc)
+        # Reopen the SAME path via a fresh RDLDocument — different object,
+        # same canonical abspath. Registry must refuse.
+        doc2 = RDLDocument.open(doc.path)
+        with pytest.raises(ValueError, match="already owns"):
+            transactions.register(doc2)
+
+    def test_rejects_non_rdldocument(self, tmp_path):
+        with pytest.raises(TypeError):
+            transactions.register("not a doc")
+
+
+class TestLookup:
+    def test_unknown_id_returns_none(self):
+        assert transactions.lookup_by_id("does-not-exist") is None
+
+    def test_unknown_path_returns_none(self, tmp_path):
+        assert transactions.lookup_by_path(str(tmp_path / "ghost.rdl")) is None
+
+    def test_lookup_survives_until_cancel(self, doc):
+        tx_id = transactions.register(doc)
+        assert transactions.lookup_by_id(tx_id) is not None
+        transactions.cancel(tx_id)
+        assert transactions.lookup_by_id(tx_id) is None
+
+
+class TestCancel:
+    def test_returns_the_removed_transaction(self, doc):
+        tx_id = transactions.register(doc)
+        tx = transactions.cancel(tx_id)
+        assert tx is not None
+        assert tx.transaction_id == tx_id
+
+    def test_returns_none_for_unknown_id(self):
+        assert transactions.cancel("does-not-exist") is None
+
+    def test_clears_in_transaction_flag(self, doc):
+        tx_id = transactions.register(doc)
+        assert doc._in_transaction is True
+        transactions.cancel(tx_id)
+        assert doc._in_transaction is False
+
+    def test_removes_path_reverse_index(self, doc):
+        tx_id = transactions.register(doc)
+        abspath = str(doc.path.resolve())
+        transactions.cancel(tx_id)
+        assert transactions.lookup_by_path(abspath) is None
+
+
+class TestCommit:
+    def test_commit_is_alias_for_cancel_at_registry_layer(self, doc):
+        # The registry doesn't save — the commit_editing_transaction
+        # TOOL (v0.4 commit 10) is responsible for the actual save.
+        # At the registry layer, commit and cancel both deregister.
+        tx_id = transactions.register(doc)
+        result = transactions.commit(tx_id)
+        assert result is not None
+        assert transactions.lookup_by_id(tx_id) is None
+        assert doc._in_transaction is False
+
+
+class TestSweepOrphans:
+    def test_no_op_when_nothing_expired(self, doc):
+        transactions.register(doc, now=1_000.0)
+        expired = transactions.sweep_orphans(now=1_100.0)
+        assert expired == []
+        assert transactions.lookup_by_id is not None
+
+    def test_expires_past_due(self, doc):
+        # Register at t=0, default timeout = 600s.
+        tx_id = transactions.register(doc, now=0.0)
+        # Sweep at t=601 → past the expiry.
+        expired = transactions.sweep_orphans(now=601.0)
+        assert tx_id in expired
+        assert transactions.lookup_by_id(tx_id) is None
+
+    def test_partial_expiry(self, tmp_path):
+        # Two transactions on different paths — only one expires.
+        a = tmp_path / "a.rdl"
+        b = tmp_path / "b.rdl"
+        shutil.copy(FIXTURE, a)
+        shutil.copy(FIXTURE, b)
+        doc_a = RDLDocument.open(a)
+        doc_b = RDLDocument.open(b)
+        old_id = transactions.register(doc_a, now=0.0)
+        new_id = transactions.register(doc_b, now=500.0)
+        # Sweep at t=601 — old_id past expiry, new_id not yet.
+        expired = transactions.sweep_orphans(now=601.0)
+        assert expired == [old_id]
+        assert transactions.lookup_by_id(new_id) is not None
+
+    def test_respects_timeout_env(self, doc, monkeypatch):
+        monkeypatch.setenv("PBIRB_MCP_TRANSACTION_TIMEOUT_S", "10")
+        tx_id = transactions.register(doc, now=0.0)
+        # Within 10s — not expired.
+        assert transactions.sweep_orphans(now=9.0) == []
+        # Past 10s — expired.
+        assert tx_id in transactions.sweep_orphans(now=11.0)
+
+    def test_invalid_timeout_env_falls_back_to_default(self, doc, monkeypatch):
+        monkeypatch.setenv("PBIRB_MCP_TRANSACTION_TIMEOUT_S", "not-a-number")
+        tx_id = transactions.register(doc, now=0.0)
+        # Default 600s — not expired at t=100.
+        assert tx_id not in transactions.sweep_orphans(now=100.0)
+
+
+class TestActiveTransactions:
+    def test_empty_initially(self):
+        assert transactions.active_transactions() == []
+
+    def test_lists_registered_ids(self, tmp_path):
+        a = tmp_path / "a.rdl"
+        b = tmp_path / "b.rdl"
+        shutil.copy(FIXTURE, a)
+        shutil.copy(FIXTURE, b)
+        id_a = transactions.register(RDLDocument.open(a))
+        id_b = transactions.register(RDLDocument.open(b))
+        assert sorted(transactions.active_transactions()) == sorted([id_a, id_b])
