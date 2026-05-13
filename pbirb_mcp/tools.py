@@ -62,7 +62,11 @@ def register_all_tools(server: MCPServer) -> None:
         name="describe_report",
         description=(
             "Top-level inventory of an RDL: data sources, datasets, parameters, "
-            "tablixes, and page setup. Always the first call when planning edits."
+            "tablixes, charts, and page setup. Always the first call when "
+            "planning edits. v0.4: `tablixes` returns rich shape hints "
+            "[{name, rows, columns, has_groups, has_subtotals, has_spans}] "
+            "(was bare strings — migrate with `[t['name'] for t in tablixes]`). "
+            "`charts` (new in v0.4) is a top-level array of chart names."
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=reader.describe_report,
