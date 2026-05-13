@@ -1084,9 +1084,12 @@ def register_all_tools(server: MCPServer) -> None:
                 "contained_items": {
                     "type": "array",
                     "items": {"type": "string"},
+                    "minItems": 0,
+                    "default": [],
                     "description": (
-                        "Names of existing body items to move into the "
-                        "rectangle. Empty list / omitted → empty rectangle."
+                        "Optional names of existing body items to move "
+                        "into the rectangle. Omit or pass [] for an "
+                        "empty rectangle (visual frame)."
                     ),
                 },
             },

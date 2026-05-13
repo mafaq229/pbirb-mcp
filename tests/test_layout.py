@@ -710,6 +710,105 @@ class TestAddRectangle:
         names = {c.get("Name") for c in rect.find(q("ReportItems"))}
         assert names == {"A", "B"}
 
+    def test_non_empty_contained_items_via_jsonrpc_dispatch(self, rdl_path):
+        """Regression test for the 2026-04-30 sweep finding: the
+        non-empty ``contained_items=["a","b"]`` path returned a Zod
+        validation error in the client-side MCP wrapper, even though
+        pytest direct calls worked. This exercises the same JSON-RPC
+        dispatch the wrapper drives, locking in that the server's
+        registered schema ACCEPTS an array of strings and the handler
+        produces the moved-children result without ``isError``.
+        """
+        import json
+
+        server = MCPServer()
+        register_all_tools(server)
+
+        for name in ("Alpha", "Beta"):
+            resp = server.handle_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "add_body_textbox",
+                        "arguments": {
+                            "path": str(rdl_path),
+                            "name": name,
+                            "text": name,
+                            "top": "3in",
+                            "left": "1in",
+                            "width": "1in",
+                            "height": "0.3in",
+                        },
+                    },
+                }
+            )
+            assert resp["result"].get("isError") is not True, resp
+
+        resp = server.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "add_rectangle",
+                    "arguments": {
+                        "path": str(rdl_path),
+                        "name": "Frame",
+                        "top": "2.5in",
+                        "left": "0.5in",
+                        "width": "2in",
+                        "height": "2in",
+                        "contained_items": ["Alpha", "Beta"],
+                    },
+                },
+            }
+        )
+        assert resp["result"].get("isError") is not True, resp
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        assert payload["name"] == "Frame"
+        assert payload["kind"] == "Rectangle"
+        assert payload["moved"] == ["Alpha", "Beta"]
+
+        # Rectangle now owns the moved children.
+        rect = _rectangle(rdl_path, "Frame")
+        names = {c.get("Name") for c in rect.find(q("ReportItems"))}
+        assert names == {"Alpha", "Beta"}
+
+    def test_contained_items_default_empty_via_jsonrpc(self, rdl_path):
+        """Omitting ``contained_items`` produces an empty rectangle —
+        the schema's ``default: []`` makes that intent explicit so
+        client-side Zod doesn't reject the absent key. Round-trip
+        through JSON-RPC to mirror what the wrapper does.
+        """
+        import json
+
+        server = MCPServer()
+        register_all_tools(server)
+
+        resp = server.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "add_rectangle",
+                    "arguments": {
+                        "path": str(rdl_path),
+                        "name": "EmptyByOmission",
+                        "top": "3in",
+                        "left": "0.5in",
+                        "width": "2in",
+                        "height": "1in",
+                    },
+                },
+            }
+        )
+        assert resp["result"].get("isError") is not True, resp
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        assert payload["moved"] == []
+
 
 # ---- add_list -----------------------------------------------------------
 
