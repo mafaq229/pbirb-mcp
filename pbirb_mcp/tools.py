@@ -2051,7 +2051,7 @@ def register_all_tools(server: MCPServer) -> None:
         handler=reader.get_chart,
     )
 
-    # ---- snapshot (v0.2 commit 14) ----------------------------------------
+    # ---- snapshot (v0.2 commit 14, v0.4 restore) --------------------------
     server.register_tool(
         name="backup_report",
         description=(
@@ -2063,6 +2063,29 @@ def register_all_tools(server: MCPServer) -> None:
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=snapshot.backup_report,
+    )
+    server.register_tool(
+        name="restore_from_backup",
+        description=(
+            "Restore a backup file over its original target. target_path "
+            "defaults to the path implied by the backup's "
+            "<target>.bak.<UTC-timestamp> filename; pass target_path "
+            "explicitly when the backup name doesn't match that shape. "
+            "Refuses if target mtime is newer than backup (staleness "
+            "guard) — pass force=True to override. Returns "
+            "{source, restored_to, bytes_restored}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "backup_path": {"type": "string"},
+                "target_path": {"type": ["string", "null"], "default": None},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["backup_path"],
+            "additionalProperties": False,
+        },
+        handler=snapshot.restore_from_backup,
     )
 
     # ---- parameter CRUD (v0.2 commits 15-19) ------------------------------
