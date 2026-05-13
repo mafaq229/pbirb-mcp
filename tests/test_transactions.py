@@ -177,3 +177,82 @@ class TestActiveTransactions:
         id_a = transactions.register(RDLDocument.open(a))
         id_b = transactions.register(RDLDocument.open(b))
         assert sorted(transactions.active_transactions()) == sorted([id_a, id_b])
+
+
+class TestRDLDocumentInterception:
+    """v0.4 commit 8 — RDLDocument.open and save_as consult the registry.
+
+    Open returns the registered in-memory tree (object identity), so
+    handlers calling RDLDocument.open(path) while a transaction owns
+    that path reuse the live tree instead of re-parsing. save_as
+    no-ops while _in_transaction is set, so intermediate doc.save()
+    calls don't hit disk. Commit clears the flag, calls save_as once
+    — that single write is the only on-disk mutation.
+    """
+
+    def test_open_returns_registered_doc_by_identity(self, doc):
+        transactions.register(doc)
+        reopened = RDLDocument.open(doc.path)
+        # SAME object — not a fresh parse.
+        assert reopened is doc
+
+    def test_open_returns_fresh_parse_when_no_transaction(self, doc):
+        # Sanity: with no active transaction, open() still parses fresh.
+        fresh = RDLDocument.open(doc.path)
+        assert fresh is not doc
+        # Same tag, different identity.
+        assert fresh.root.tag == doc.root.tag
+
+    def test_open_normalises_path_via_resolve(self, doc, tmp_path):
+        # Register under the canonical resolved path.
+        transactions.register(doc)
+        # Reopen via a non-canonical variant — same file, different
+        # string. Must hit the registry.
+        weird = Path(str(doc.path.parent / "." / doc.path.name))
+        reopened = RDLDocument.open(weird)
+        assert reopened is doc
+
+    def test_save_noops_while_in_transaction(self, doc, tmp_path):
+        # Mutate but don't save — save_as should silently no-op.
+        transactions.register(doc)
+        original_bytes = doc.path.read_bytes()
+        # Mutate the in-memory tree.
+        cmd = doc.root.find(".//{*}CommandText")
+        # 'doc' was loaded from FIXTURE; we know it has a CommandText.
+        if cmd is not None:
+            cmd.text = "EVALUATE TOPN(42, 'Sales')"
+        # Direct save calls should no-op while the flag is set.
+        doc.save()
+        doc.save_as(doc.path)
+        # Disk file unchanged.
+        assert doc.path.read_bytes() == original_bytes
+
+    def test_save_resumes_after_commit(self, doc):
+        # Register + mutate + clear the flag manually (mimics what
+        # commit_editing_transaction will do in v0.4 commit 10).
+        transactions.register(doc)
+        cmd = doc.root.find(".//{*}CommandText")
+        new_text = "EVALUATE TOPN(7, 'Sales')"
+        cmd.text = new_text
+        doc.save()  # no-op
+        # Clear the flag (commit-style) and save.
+        doc._in_transaction = False
+        doc.save()
+        reopened = RDLDocument.open(doc.path)
+        assert reopened.root.find(".//{*}CommandText").text == new_text
+
+    def test_save_outside_transaction_unaffected(self, doc):
+        """Regression canary: with NO active transaction, doc.save()
+        behaves exactly like before. This is the path every existing
+        handler relies on; if it breaks, all 132 tools break."""
+        original_bytes = doc.path.read_bytes()
+        cmd = doc.root.find(".//{*}CommandText")
+        cmd.text = "EVALUATE TOPN(3, 'Sales')"
+        doc.save()
+        # Disk was actually written.
+        assert doc.path.read_bytes() != original_bytes
+        # And the change is recoverable.
+        assert (
+            RDLDocument.open(doc.path).root.find(".//{*}CommandText").text
+            == "EVALUATE TOPN(3, 'Sales')"
+        )
