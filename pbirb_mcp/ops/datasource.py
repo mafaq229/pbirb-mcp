@@ -176,23 +176,46 @@ def get_data_source(path: str, name: str) -> dict[str, Any]:
 # ---- add_data_source ----------------------------------------------------
 
 
+_VALID_PROVIDERS = ("sql", "pbidataset")
+
+
 def add_data_source(
     path: str,
     name: str,
     workspace_url: str,
     dataset_name: str,
     integrated_security: bool = True,
+    provider: str = "sql",
 ) -> dict[str, Any]:
     """Create a new ``<DataSource>`` for a Power BI XMLA endpoint.
 
-    Same connection-string convention as ``set_datasource_connection``.
-    Generates a fresh ``<rd:DataSourceID>`` GUID and emits
-    ``<rd:SecurityType>Integrated</rd:SecurityType>`` to match Report
-    Builder's emitted shape.
+    ``provider`` controls the wire shape:
 
-    Refuses with ValueError if a DataSource of the same name already
-    exists (per RDL semantics: DataSource names are report-wide unique).
+    * ``"sql"`` (default — back-compat with v0.3.x):
+      ``<DataProvider>SQL</DataProvider>`` + ``Data Source=powerbi://…``
+      ConnectString + ``<rd:SecurityType>Integrated</rd:SecurityType>``.
+      The historical shape ``set_datasource_connection`` emits.
+    * ``"pbidataset"`` (modern, v0.4+):
+      ``<DataProvider>PBIDATASET</DataProvider>`` + ``Data Source=
+      pbiazure://api.powerbi.com/;Initial Catalog=<dataset>;Integrated
+      Security=ClaimsToken``. Adds ``<rd:PowerBIWorkspaceName>`` and
+      ``<rd:PowerBIDatasetName>`` siblings so Report Builder shows the
+      human-readable workspace/dataset on the connection. Omits
+      ``<rd:SecurityType>`` — auth lives in the ConnectString. Matches
+      what current Power BI Desktop emits.
+
+    Both shapes round-trip through ``_is_pbidataset_dataset`` so the
+    PBIDATASET ``@``-prefix defence kicks in for datasets bound to a
+    source emitted by either path.
+
+    Generates a fresh ``<rd:DataSourceID>`` GUID. Refuses with ValueError
+    if a DataSource of the same name already exists (per RDL semantics:
+    DataSource names are report-wide unique) or if ``provider`` is
+    unknown.
     """
+    if provider not in _VALID_PROVIDERS:
+        raise ValueError(f"unknown provider {provider!r}; valid values: {_VALID_PROVIDERS!r}")
+
     doc = RDLDocument.open(path)
     root = doc.root
 
@@ -222,16 +245,33 @@ def add_data_source(
 
     new_ds = etree.SubElement(ds_root, q("DataSource"), Name=name)
     cp = etree.SubElement(new_ds, q("ConnectionProperties"))
-    etree.SubElement(cp, q("DataProvider")).text = "SQL"
-    etree.SubElement(cp, q("ConnectString")).text = encode_text(
-        f"Data Source={_xmla_data_source(workspace_url)};Initial Catalog={dataset_name}"
-    )
-    if integrated_security:
-        etree.SubElement(cp, q("IntegratedSecurity")).text = "true"
-    etree.SubElement(new_ds, qrd("SecurityType")).text = (
-        "Integrated" if integrated_security else "None"
-    )
-    etree.SubElement(new_ds, qrd("DataSourceID")).text = str(uuid.uuid4())
+
+    if provider == "pbidataset":
+        etree.SubElement(cp, q("DataProvider")).text = "PBIDATASET"
+        # Modern PBI Desktop shape — see tests/fixtures/RAG Report.rdl for
+        # the canonical bytes. Auth is encoded inside the ConnectString
+        # via "Integrated Security=ClaimsToken"; no <IntegratedSecurity>
+        # or <rd:SecurityType> elements.
+        cs = "Data Source=pbiazure://api.powerbi.com/;Initial Catalog=" + dataset_name
+        if integrated_security:
+            cs += ";Integrated Security=ClaimsToken"
+        etree.SubElement(cp, q("ConnectString")).text = encode_text(cs)
+        etree.SubElement(new_ds, qrd("DataSourceID")).text = str(uuid.uuid4())
+        # Human-readable sibling elements RB uses to label the connection.
+        etree.SubElement(new_ds, qrd("PowerBIWorkspaceName")).text = encode_text(workspace_url)
+        etree.SubElement(new_ds, qrd("PowerBIDatasetName")).text = encode_text(dataset_name)
+    else:
+        # Legacy SQL/AS shape (v0.3.x and earlier output).
+        etree.SubElement(cp, q("DataProvider")).text = "SQL"
+        etree.SubElement(cp, q("ConnectString")).text = encode_text(
+            f"Data Source={_xmla_data_source(workspace_url)};Initial Catalog={dataset_name}"
+        )
+        if integrated_security:
+            etree.SubElement(cp, q("IntegratedSecurity")).text = "true"
+        etree.SubElement(new_ds, qrd("SecurityType")).text = (
+            "Integrated" if integrated_security else "None"
+        )
+        etree.SubElement(new_ds, qrd("DataSourceID")).text = str(uuid.uuid4())
 
     doc.save()
     return _data_source_to_dict(new_ds) | {"kind": "DataSource"}

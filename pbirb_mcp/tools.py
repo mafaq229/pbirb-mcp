@@ -246,7 +246,13 @@ def register_all_tools(server: MCPServer) -> None:
             "Create a new <DataSource> for a Power BI XMLA endpoint. "
             "workspace_url accepts a bare workspace name or a full "
             "powerbi:// URL. Generates a fresh rd:DataSourceID GUID. "
-            "Refuses if a DataSource of the same name already exists."
+            "Refuses if a DataSource of the same name already exists. "
+            "provider='sql' (default) emits the legacy DataProvider=SQL "
+            "+ powerbi:// ConnectString + <rd:SecurityType> shape; "
+            "provider='pbidataset' emits the modern PBI Desktop shape — "
+            "DataProvider=PBIDATASET, pbiazure:// ConnectString with "
+            "ClaimsToken auth, plus <rd:PowerBIWorkspaceName> / "
+            "<rd:PowerBIDatasetName> siblings, no <rd:SecurityType>."
         ),
         input_schema={
             "type": "object",
@@ -256,6 +262,11 @@ def register_all_tools(server: MCPServer) -> None:
                 "workspace_url": {"type": "string"},
                 "dataset_name": {"type": "string"},
                 "integrated_security": {"type": "boolean", "default": True},
+                "provider": {
+                    "type": "string",
+                    "enum": ["sql", "pbidataset"],
+                    "default": "sql",
+                },
             },
             "required": ["path", "name", "workspace_url", "dataset_name"],
             "additionalProperties": False,
