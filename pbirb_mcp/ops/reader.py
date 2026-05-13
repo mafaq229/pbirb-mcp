@@ -150,6 +150,10 @@ def describe_report(path: str) -> dict[str, Any]:
         "datasets": [ds.get("Name") for ds in root.iter(f"{{{RDL_NS}}}DataSet")],
         "parameters": [p.get("Name") for p in root.iter(f"{{{RDL_NS}}}ReportParameter")],
         "tablixes": [t.get("Name") for t in root.iter(f"{{{RDL_NS}}}Tablix")],
+        # v0.4: top-level charts array — parity with tablixes. Saves a
+        # filter step ("body_items where type==Chart") when the LLM is
+        # planning a chart-targeted edit.
+        "charts": [c.get("Name") for c in root.iter(f"{{{RDL_NS}}}Chart")],
         # v0.2: full body / header / footer item enumeration so the LLM can
         # see every named ReportItem (Tablix, Textbox, Image, Rectangle, etc.)
         # without a follow-up list_*_items call.

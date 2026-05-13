@@ -47,6 +47,22 @@ class TestDescribeReport:
         assert out["page"]["height"] == "11in"
         assert out["page"]["width"] == "8.5in"
 
+    def test_charts_empty_on_minimal_fixture(self, rdl_path):
+        """v0.4 — charts is a top-level array parallel to tablixes.
+        Minimal fixture has no Chart elements -> empty list."""
+        out = describe_report(path=str(rdl_path))
+        assert out["charts"] == []
+
+    def test_charts_lists_named_charts(self, tmp_path):
+        """v0.4 — chart-rich fixture surfaces every <Chart Name="..."> as
+        a bare name in the new top-level ``charts`` array (same shape as
+        ``tablixes``)."""
+        chart_fixture = Path(__file__).parent / "fixtures" / "pbi_chart_rich.rdl"
+        dest = tmp_path / "report.rdl"
+        shutil.copy(chart_fixture, dest)
+        out = describe_report(path=str(dest))
+        assert "SalesByProduct" in out["charts"]
+
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             describe_report(path=str(tmp_path / "missing.rdl"))
