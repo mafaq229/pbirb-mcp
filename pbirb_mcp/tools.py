@@ -2550,6 +2550,33 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=page.set_page_orientation,
     )
+    server.register_tool(
+        name="set_body_size",
+        description=(
+            "Set the body's rendering region inside the page. "
+            "<Body>/<Height> and <ReportSection>/<Width> (the sibling "
+            "of <Body>) — both are RDL size strings (e.g. '14in', "
+            "'9in', '297mm'). Either or both kwargs required. "
+            "Distinct from set_page_setup (which sets the paper "
+            "chrome <Page>/<PageWidth>/<PageHeight>) and "
+            "set_body_item_size (size of items inside the body). "
+            "Use this when a wide tablix or chart needs the body "
+            "region expanded — without it the right edge is clipped "
+            "at preview time. Idempotent: same value → empty changed. "
+            "Returns {kind: 'Body', changed: list[str]}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "width": {"type": ["string", "null"], "default": None},
+                "height": {"type": ["string", "null"], "default": None},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=page.set_body_size,
+    )
 
     _SECTION_FLAGS_SCHEMA = {
         "type": "object",
