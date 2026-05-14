@@ -25,6 +25,7 @@ from pbirb_mcp.ops.chart import (
     set_chart_data_labels,
     set_chart_legend,
     set_chart_palette,
+    set_chart_series_grouping,
     set_chart_series_type,
     set_chart_title,
     set_series_color,
@@ -1032,6 +1033,144 @@ class TestBackwardCompatibleImport:
             height="2in",
         )
         assert result["name"] == "ReExport"
+
+
+class TestSetChartSeriesGrouping:
+    """v0.4 commit 21 — promote a chart's static ChartMember to a
+    dynamic-fanout series by writing
+    <ChartMember>/<Group>/<GroupExpressions>/<GroupExpression>. The
+    canonical 'one rendered series per distinct field value, list
+    unknown at design time' pattern (e.g. violation-type fan-out).
+    """
+
+    def _series_chartmember(self, rdl_path, chart_name):
+        doc = RDLDocument.open(rdl_path)
+        chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='{chart_name}']")
+        return chart.find(f"{q('ChartSeriesHierarchy')}/{q('ChartMembers')}/{q('ChartMember')}")
+
+    def test_writes_group_with_field_shorthand(self, rich_path):
+        result = set_chart_series_grouping(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            group_field="Type",
+        )
+        assert result["chart"] == "SalesByProduct"
+        assert result["series"] == "Amount"
+        assert result["kind"] == "ChartGroup"
+        assert result["group_name"] == "Amount_Group"
+        assert result["expression"] == "=Fields!Type.Value"
+        assert "group_written" in result["changed"]
+
+        member = self._series_chartmember(rich_path, "SalesByProduct")
+        group = find_child(member, "Group")
+        assert group is not None
+        assert group.get("Name") == "Amount_Group"
+        expr = group.find(f"{q('GroupExpressions')}/{q('GroupExpression')}")
+        assert expr.text == "=Fields!Type.Value"
+
+    def test_writes_group_with_raw_expression(self, rich_path):
+        result = set_chart_series_grouping(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            group_expression="=IIf(Fields!N.Value > 0, 'Big', 'Small')",
+        )
+        assert result["expression"] == "=IIf(Fields!N.Value > 0, 'Big', 'Small')"
+        member = self._series_chartmember(rich_path, "SalesByProduct")
+        expr = member.find(f"{q('Group')}/{q('GroupExpressions')}/{q('GroupExpression')}")
+        assert expr.text == "=IIf(Fields!N.Value > 0, 'Big', 'Small')"
+
+    def test_group_inserted_before_label(self, rich_path):
+        """RDL XSD: inside ChartMember, Group comes BEFORE Label."""
+        set_chart_series_grouping(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            group_field="Type",
+        )
+        member = self._series_chartmember(rich_path, "SalesByProduct")
+        locals_ = [etree.QName(c.tag).localname for c in member]
+        assert locals_.index("Group") < locals_.index("Label")
+
+    def test_neither_shorthand_nor_expression_rejected(self, rich_path):
+        with pytest.raises(ValueError, match="group_field or"):
+            set_chart_series_grouping(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="Amount",
+            )
+
+    def test_field_and_expression_mutually_exclusive(self, rich_path):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            set_chart_series_grouping(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="Amount",
+                group_field="Type",
+                group_expression="=Fields!Type.Value",
+            )
+
+    def test_unknown_series_name_rejected(self, rich_path):
+        with pytest.raises(ElementNotFoundError, match="series"):
+            set_chart_series_grouping(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="NoSuchSeries",
+                group_field="Type",
+            )
+
+    def test_unknown_chart_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            set_chart_series_grouping(
+                path=str(rdl_path),
+                chart_name="NoSuchChart",
+                series_name="Amount",
+                group_field="Type",
+            )
+
+    def test_replace_false_refuses_when_group_exists(self, rich_path):
+        set_chart_series_grouping(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            group_field="Type",
+        )
+        with pytest.raises(ValueError, match="already has a"):
+            set_chart_series_grouping(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="Amount",
+                group_field="Region",
+            )
+
+    def test_replace_true_overwrites(self, rich_path):
+        set_chart_series_grouping(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            group_field="Type",
+        )
+        result = set_chart_series_grouping(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            group_field="Region",
+            replace=True,
+        )
+        assert "replaced_existing_group" in result["changed"]
+        member = self._series_chartmember(rich_path, "SalesByProduct")
+        expr = member.find(f"{q('Group')}/{q('GroupExpressions')}/{q('GroupExpression')}")
+        assert expr.text == "=Fields!Region.Value"
+
+    def test_round_trip_valid(self, rich_path):
+        set_chart_series_grouping(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            group_field="Type",
+        )
+        RDLDocument.open(rich_path).validate()
 
 
 class TestToolRegistration:

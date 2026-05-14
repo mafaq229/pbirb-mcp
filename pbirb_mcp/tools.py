@@ -3280,6 +3280,40 @@ def register_all_tools(server: MCPServer) -> None:
         handler=chart.set_chart_series_type,
     )
     server.register_tool(
+        name="set_chart_series_grouping",
+        description=(
+            "Promote a chart's static ChartMember to a dynamic-fanout "
+            "series. Writes <ChartSeriesHierarchy>/<ChartMembers>/"
+            "<ChartMember>/<Group Name='<series>_Group'>/<GroupExpressions>/"
+            "<GroupExpression>. At render time, one rendered series is "
+            "produced per distinct value of the group expression — the "
+            "'13 violation types unknown at design time' fan-out. "
+            "group_field='Type' is a shorthand for "
+            "=Fields!Type.Value; group_expression accepts any VB.NET. "
+            "Mutually exclusive. replace=False (default) refuses if "
+            "the ChartMember already has a <Group>; pass replace=True "
+            "to overwrite. Operates on the FIRST ChartMember in the "
+            "hierarchy (v0.4 commit 21 scope; multi-member chains "
+            "aren't reachable from any v0.4 tool). Returns "
+            "{chart, series, kind: 'ChartGroup', group_name, "
+            "expression, changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+                "group_field": {"type": ["string", "null"], "default": None},
+                "group_expression": {"type": ["string", "null"], "default": None},
+                "replace": {"type": "boolean", "default": False},
+            },
+            "required": ["path", "chart_name", "series_name"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_series_grouping,
+    )
+    server.register_tool(
         name="set_chart_axis",
         description=(
             "Configure a chart axis: title (Caption), format (numeric/"

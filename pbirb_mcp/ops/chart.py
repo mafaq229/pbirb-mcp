@@ -1175,6 +1175,133 @@ def set_chart_title(
     }
 
 
+# ---- set_chart_series_grouping (v0.4 commit 21) ---------------------------
+
+
+def _resolve_first_series_chartmember(chart: etree._Element) -> Optional[etree._Element]:
+    """Find the first ``<ChartMember>`` inside ``<ChartSeriesHierarchy>``.
+
+    The template-inserted chart has exactly one static ChartMember;
+    this is the natural attach point for the dynamic ``<Group>``.
+    Returns ``None`` when the hierarchy is absent — refuses upstream.
+    """
+    hierarchy = find_child(chart, "ChartSeriesHierarchy")
+    if hierarchy is None:
+        return None
+    members = find_child(hierarchy, "ChartMembers")
+    if members is None:
+        return None
+    children = find_children(members, "ChartMember")
+    return children[0] if children else None
+
+
+def set_chart_series_grouping(
+    path: str,
+    chart_name: str,
+    series_name: str,
+    group_field: Optional[str] = None,
+    group_expression: Optional[str] = None,
+    replace: bool = False,
+) -> dict[str, Any]:
+    """Promote a chart's static ChartMember to a dynamic-fanout series.
+
+    Writes ``<Group Name="<series>_Group">/<GroupExpressions>/<GroupExpression>``
+    on the first ``<ChartMember>`` in the chart's ``<ChartSeriesHierarchy>``.
+    At render time, one rendered series is produced per distinct value of
+    the group expression — the canonical "13 violation types, list
+    unknown at design time" fan-out.
+
+    ``group_field`` is a shorthand: ``"Type"`` becomes
+    ``=Fields!Type.Value``. Pass ``group_expression`` directly for any
+    other VB.NET form. Mutually exclusive.
+
+    ``series_name`` must match an existing ``<ChartSeries Name=...>`` in
+    ``<ChartSeriesCollection>`` — the value-template the fanned-out
+    series share. Refused otherwise (catches typos against the chart
+    schema before the dynamic chart silently renders empty).
+
+    ``replace=False`` (default) refuses when the ChartMember already
+    has a ``<Group>`` child; pass ``replace=True`` to overwrite it.
+
+    Note (v0.4 commit 21 scope): operates on the FIRST ChartMember
+    only. Multi-member dynamic-fanout chains aren't reachable from
+    any other v0.4 tool, so they're out of scope here.
+
+    Returns the canonical mutator shape
+    ``{chart, series, kind: 'ChartGroup', group_name, expression, changed}``.
+    """
+    if group_field is None and group_expression is None:
+        raise ValueError(
+            "set_chart_series_grouping requires either group_field or group_expression"
+        )
+    if group_field is not None and group_expression is not None:
+        raise ValueError(
+            "set_chart_series_grouping: group_field and group_expression "
+            "are mutually exclusive — pass only one"
+        )
+
+    effective_expression = (
+        f"=Fields!{group_field}.Value" if group_field is not None else group_expression
+    )
+
+    doc = RDLDocument.open(path)
+    chart = _resolve_chart(doc, chart_name)
+
+    # Validate the series template exists (the ChartSeries in
+    # ChartSeriesCollection that gets cloned per group value at render
+    # time). Without this, a typo would silently produce an empty chart.
+    series_collection = _series_collection(chart)
+    if series_name not in _series_names(series_collection):
+        raise ElementNotFoundError(
+            f"chart {chart_name!r} has no series named {series_name!r}; "
+            f"existing series: {_series_names(series_collection)!r}"
+        )
+
+    member = _resolve_first_series_chartmember(chart)
+    if member is None:
+        raise ValueError(
+            f"chart {chart_name!r} has no <ChartSeriesHierarchy>/<ChartMembers>/"
+            "<ChartMember> — cannot attach a Group element. Use "
+            "insert_chart_from_template first."
+        )
+
+    existing_group = find_child(member, "Group")
+    changed: list[str] = []
+    if existing_group is not None:
+        if not replace:
+            raise ValueError(
+                f"chart {chart_name!r} series ChartMember already has a "
+                "<Group> child; pass replace=True to overwrite it."
+            )
+        member.remove(existing_group)
+        changed.append("replaced_existing_group")
+
+    group_name = f"{series_name}_Group"
+    group = etree.Element(q("Group"), Name=group_name)
+    expressions = etree.SubElement(group, q("GroupExpressions"))
+    etree.SubElement(expressions, q("GroupExpression")).text = encode_text(effective_expression)
+
+    # Per RDL XSD, inside a ChartMember the Group child comes BEFORE
+    # Label. The template-inserted ChartMember has just a Label, so we
+    # insert before it.
+    label = find_child(member, "Label")
+    if label is not None:
+        label.addprevious(group)
+    else:
+        member.insert(0, group)
+
+    changed.append("group_written")
+    doc.save()
+    return {
+        "chart": chart_name,
+        "series": series_name,
+        "kind": "ChartGroup",
+        "group_name": group_name,
+        "expression": effective_expression,
+        "changed": changed,
+    }
+
+
 __all__ = [
     "add_chart_series",
     "insert_chart_from_template",
@@ -1183,6 +1310,7 @@ __all__ = [
     "set_chart_data_labels",
     "set_chart_legend",
     "set_chart_palette",
+    "set_chart_series_grouping",
     "set_chart_series_type",
     "set_chart_title",
     "set_series_color",
