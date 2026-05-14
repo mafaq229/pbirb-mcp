@@ -24,10 +24,12 @@ from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
 from pbirb_mcp.ops.reader import get_tablixes
 from pbirb_mcp.ops.tablix import (
     add_row_group,
+    convert_to_matrix,
     remove_row_group,
     set_group_sort,
     set_group_visibility,
 )
+from pbirb_mcp.ops.tablix_columns import add_column_group
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
 
@@ -395,6 +397,134 @@ class TestRowAxisGuards:
         assert "remove_column_group" in str(exc.value)
 
 
+# ---- convert_to_matrix (v0.4 commit 17) -----------------------------------
+
+
+class TestConvertToMatrix:
+    """Phase F commit 17 — convert_to_matrix drops the residual Details
+    row group + body row from a tablix that has both a named row group
+    and a named column group. The 2026-05-11 matrix-report session
+    feedback gap #1 motivated this.
+
+    remove_row_group refuses Details for safety (Detail-table case);
+    convert_to_matrix is the explicit verb whose pre-conditions
+    (named row group + named column group both exist) make removing
+    Details safe.
+    """
+
+    @pytest.fixture
+    def matrix_path(self, rdl_path):
+        """Fixture: add_row_group('Region') + add_column_group('Date')
+        so the tablix is in the standard 3-row × N-col post-add state
+        with Details still present."""
+        add_row_group(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Region",
+            group_expression="=Fields!ProductName.Value",
+        )
+        add_column_group(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Date",
+            group_expression="=Fields!ProductID.Value",
+        )
+        return rdl_path
+
+    def _details_member(self, doc: RDLDocument, tablix_name: str):
+        tablix = _tablix(doc, tablix_name)
+        for member in tablix.iter(f"{{{RDL_NS}}}TablixMember"):
+            group = find_child(member, "Group")
+            if group is not None and group.get("Name") == "Details":
+                return member
+        return None
+
+    def test_removes_details_member_and_body_row(self, matrix_path):
+        doc_before = RDLDocument.open(matrix_path)
+        rows_before = _body_row_count(_tablix(doc_before, "MainTable"))
+        assert self._details_member(doc_before, "MainTable") is not None
+
+        result = convert_to_matrix(
+            path=str(matrix_path),
+            tablix_name="MainTable",
+            row_group="Region",
+            column_group="Date",
+        )
+
+        # Canonical mutator shape.
+        assert result["tablix"] == "MainTable"
+        assert result["kind"] == "Tablix"
+        assert "details_member_removed" in result["changed"]
+        assert "details_body_row_removed" in result["changed"]
+
+        doc_after = RDLDocument.open(matrix_path)
+        assert self._details_member(doc_after, "MainTable") is None
+        # Exactly one body row dropped.
+        assert _body_row_count(_tablix(doc_after, "MainTable")) == rows_before - 1
+
+    def test_round_trip_valid(self, matrix_path):
+        convert_to_matrix(
+            path=str(matrix_path),
+            tablix_name="MainTable",
+            row_group="Region",
+            column_group="Date",
+        )
+        # Bundled XSD + structural validators both pass.
+        RDLDocument.open(matrix_path).validate()
+
+    def test_unknown_tablix_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            convert_to_matrix(
+                path=str(rdl_path),
+                tablix_name="NoSuchTable",
+                row_group="Region",
+                column_group="Date",
+            )
+
+    def test_missing_row_group_refused(self, rdl_path):
+        # No add_row_group yet — only Details exists in row hierarchy.
+        with pytest.raises(ValueError, match="row group"):
+            convert_to_matrix(
+                path=str(rdl_path),
+                tablix_name="MainTable",
+                row_group="Region",
+                column_group="Date",
+            )
+
+    def test_missing_column_group_refused(self, rdl_path):
+        # add_row_group present but no column group.
+        add_row_group(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Region",
+            group_expression="=Fields!ProductName.Value",
+        )
+        with pytest.raises(ValueError, match="column group"):
+            convert_to_matrix(
+                path=str(rdl_path),
+                tablix_name="MainTable",
+                row_group="Region",
+                column_group="Date",
+            )
+
+    def test_idempotent_second_call_refuses(self, matrix_path):
+        convert_to_matrix(
+            path=str(matrix_path),
+            tablix_name="MainTable",
+            row_group="Region",
+            column_group="Date",
+        )
+        # Second call: Details is gone, refuse with clear "already
+        # matrix" hint.
+        with pytest.raises(ValueError, match="already a matrix|no Details"):
+            convert_to_matrix(
+                path=str(matrix_path),
+                tablix_name="MainTable",
+                row_group="Region",
+                column_group="Date",
+            )
+
+
 # ---- registration ---------------------------------------------------------
 
 
@@ -411,4 +541,5 @@ class TestToolRegistration:
             "remove_row_group",
             "set_group_sort",
             "set_group_visibility",
+            "convert_to_matrix",
         } <= names

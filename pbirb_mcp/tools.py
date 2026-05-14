@@ -1621,6 +1621,35 @@ def register_all_tools(server: MCPServer) -> None:
         handler=tablix.remove_row_group,
     )
     server.register_tool(
+        name="convert_to_matrix",
+        description=(
+            "Convert a row-grouped + column-grouped tablix into a matrix "
+            "by dropping the residual Details row group and its body "
+            "row. Pre-conditions (all checked): the named row_group and "
+            "column_group must already exist (call add_row_group + "
+            "add_column_group first); a <Group Name='Details'> must "
+            "still be present in the row hierarchy. Refuses on second "
+            "call (already a matrix). Use this after the standard "
+            "insert_tablix_from_template + add_row_group + "
+            "add_column_group flow to make the leaf the row group "
+            "instead of Details — without this, cells render at detail "
+            "granularity. Pair with set_tablix_corner (v0.4 commit 18) "
+            "to author the top-left label."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "row_group": {"type": "string"},
+                "column_group": {"type": "string"},
+            },
+            "required": ["path", "tablix_name", "row_group", "column_group"],
+            "additionalProperties": False,
+        },
+        handler=tablix.convert_to_matrix,
+    )
+    server.register_tool(
         name="set_group_sort",
         description=(
             "Replace a group's <SortExpressions> with a fresh list. Each "
