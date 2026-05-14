@@ -39,6 +39,7 @@ from pbirb_mcp.ops import escape as _escape
 from pbirb_mcp.ops import expressions as _expressions
 from pbirb_mcp.ops import layout as _layout
 from pbirb_mcp.ops import lint as _lint
+from pbirb_mcp.ops import scratch as _scratch
 from pbirb_mcp.ops import transactions as _transactions
 
 if TYPE_CHECKING:
@@ -958,6 +959,44 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_transactions.apply_edits,
+    )
+
+    # ---- v0.4 scratch creation (commits 13 + 14) -------------------------
+    server.register_tool(
+        name="create_report",
+        description=(
+            "Emit a minimal valid RDL from scratch at `path`. Refuses "
+            "if `path` exists (no clobbering). Default page_setup is "
+            "US Letter portrait with 1in margins; pass any subset of "
+            "{page_height, page_width, margin_top, margin_bottom, "
+            "margin_left, margin_right, body_width, body_height} to "
+            "override. `datasource` is a forward-compat hook — pass "
+            "{name, workspace_url, dataset_name, provider, "
+            "integrated_security} to wire a real PBI XMLA endpoint "
+            "(v0.4 commit 14); omit for a placeholder DataSource1 + "
+            "DataSet1 stub the caller fills in via subsequent tools. "
+            "Validates structurally + against the bundled XSD before "
+            "saving (atomic .tmp + rename). Returns "
+            "{path, validated, size_bytes}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "page_setup": {
+                    "type": ["object", "null"],
+                    "additionalProperties": {"type": "string"},
+                    "default": None,
+                },
+                "datasource": {
+                    "type": ["object", "null"],
+                    "default": None,
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=_scratch.create_report,
     )
 
     server.register_tool(
