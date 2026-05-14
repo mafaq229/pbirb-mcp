@@ -647,9 +647,9 @@ def set_chart_series_type(
     chart_name: str,
     series_name: str,
     series_type: str,
-    series_subtype: str = "Plain",
+    series_subtype: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Update the ``<Type>`` and ``<Subtype>`` of a named series.
+    """Update the ``<Type>`` and optionally ``<Subtype>`` of a named series.
 
     Combo-chart pattern: the chart can hold series of mixed types — a
     Bar series + a Line series in the same chart renders as a combo
@@ -661,6 +661,13 @@ def set_chart_series_type(
     ``series_subtype`` ∈ Plain / Stacked / PercentStacked / Smooth /
     Exploded / SmoothLine / 100 / Line / Spline.
 
+    v0.4 commit 22: ``series_subtype`` now defaults to ``None`` instead
+    of ``"Plain"``. None means "preserve whatever Subtype is already
+    on disk" — a Bar/Stacked series can have its type changed to
+    Column without losing the Stacked subtype. Pre-v0.4 always wrote
+    Plain unless the caller supplied otherwise, which silently reset
+    stacked-bar charts on a no-op subtype edit.
+
     Returns ``{chart, series, changed: list[str]}`` — empty list when the
     inputs match the existing values (no-op short-circuit, no save).
     """
@@ -668,7 +675,7 @@ def set_chart_series_type(
         raise ValueError(
             f"series_type {series_type!r} not valid; expected one of {sorted(_VALID_SERIES_TYPES)}"
         )
-    if series_subtype not in _VALID_SERIES_SUBTYPES:
+    if series_subtype is not None and series_subtype not in _VALID_SERIES_SUBTYPES:
         raise ValueError(
             f"series_subtype {series_subtype!r} not valid; "
             f"expected one of {sorted(_VALID_SERIES_SUBTYPES)}"
@@ -689,11 +696,12 @@ def set_chart_series_type(
         type_node.text = series_type
         changed.append("Type")
 
-    if subtype_node is None:
-        subtype_node = etree.SubElement(series, q("Subtype"))
-    if subtype_node.text != series_subtype:
-        subtype_node.text = series_subtype
-        changed.append("Subtype")
+    if series_subtype is not None:
+        if subtype_node is None:
+            subtype_node = etree.SubElement(series, q("Subtype"))
+        if subtype_node.text != series_subtype:
+            subtype_node.text = series_subtype
+            changed.append("Subtype")
 
     if changed:
         doc.save()
@@ -851,12 +859,36 @@ def _insert_data_label_child_in_order(label: etree._Element, new_child: etree._E
     label.append(new_child)
 
 
+_VALID_DATA_LABEL_POSITIONS = frozenset(
+    {
+        "Auto",
+        "Top",
+        "TopLeft",
+        "TopCenter",
+        "TopRight",
+        "Left",
+        "Center",
+        "Right",
+        "BottomLeft",
+        "BottomCenter",
+        "BottomRight",
+        "Bottom",
+        "Outside",
+    }
+)
+
+
 def set_chart_data_labels(
     path: str,
     chart_name: str,
     series_name: Optional[str] = None,
     visible: Optional[bool] = None,
     format: Optional[str] = None,  # noqa: A002
+    visible_expression: Optional[str] = None,
+    position: Optional[str] = None,
+    use_value_as_label: Optional[bool] = None,
+    font_weight: Optional[str] = None,
+    color: Optional[str] = None,
 ) -> dict[str, Any]:
     """Configure ``<ChartDataLabel>`` for one series or all series in
     a chart.
@@ -865,16 +897,48 @@ def set_chart_data_labels(
     Otherwise only the named series is touched.
 
     ``visible=True`` writes ``<Visible>true</Visible>``; False writes
-    false; None leaves the element unchanged.
+    false; None leaves the element unchanged. ``visible_expression``
+    writes the same element with a VB.NET ``=IIf(...)``-style
+    expression — mutually exclusive with ``visible``.
 
     ``format`` writes a numeric/date format into the per-label
     ``<Style>/<Format>`` sub-element. Pass ``''`` to clear it.
+
+    v0.4 commit 22 — per-point kwargs:
+
+    * ``position`` ∈ Auto / Top / TopLeft / TopCenter / TopRight /
+      Left / Center / Right / BottomLeft / BottomCenter /
+      BottomRight / Bottom / Outside. Writes ``<Position>``.
+    * ``use_value_as_label=True`` / False. Writes
+      ``<UseValueAsLabel>true/false</UseValueAsLabel>``.
+    * ``font_weight`` / ``color`` — write to ``<Style>/<FontWeight>``
+      and ``<Style>/<Color>`` respectively. Pass ``''`` to clear.
 
     Returns ``{chart, series: list[str], kind, changed: list[str]}`` —
     ``series`` lists the affected series names (one or many);
     ``changed`` is the union of sub-element names touched.
     """
-    if visible is None and format is None:
+    if visible is not None and visible_expression is not None:
+        raise ValueError("visible and visible_expression are mutually exclusive — pass only one")
+    if position is not None and position not in _VALID_DATA_LABEL_POSITIONS:
+        raise ValueError(
+            f"position {position!r} not valid; expected one of "
+            f"{sorted(_VALID_DATA_LABEL_POSITIONS)}"
+        )
+
+    no_op = all(
+        v is None
+        for v in (
+            visible,
+            format,
+            visible_expression,
+            position,
+            use_value_as_label,
+            font_weight,
+            color,
+        )
+    )
+    if no_op:
         return {
             "chart": chart_name,
             "series": [series_name] if series_name else [],
@@ -896,30 +960,65 @@ def set_chart_data_labels(
     for series in targets:
         label = _ensure_series_data_label(series)
 
-        if visible is not None:
+        # ----- Visible (boolean OR expression) ----------------------
+        if visible is not None or visible_expression is not None:
+            new_text = (
+                "true"
+                if visible is True
+                else "false"
+                if visible is False
+                else encode_text(visible_expression)
+            )
             new = etree.Element(q("Visible"))
-            new.text = "true" if visible else "false"
+            new.text = new_text
             existing = find_child(label, "Visible")
             if existing is None or existing.text != new.text:
                 _insert_data_label_child_in_order(label, new)
                 changed.add("Visible")
 
-        if format is not None:
+        # ----- UseValueAsLabel (boolean) ----------------------------
+        if use_value_as_label is not None:
+            uval = etree.Element(q("UseValueAsLabel"))
+            uval.text = "true" if use_value_as_label else "false"
+            existing = find_child(label, "UseValueAsLabel")
+            if existing is None or existing.text != uval.text:
+                _insert_data_label_child_in_order(label, uval)
+                changed.add("UseValueAsLabel")
+
+        # ----- Position (enum) --------------------------------------
+        if position is not None:
+            pos = etree.Element(q("Position"))
+            pos.text = position
+            existing = find_child(label, "Position")
+            if existing is None or existing.text != pos.text:
+                _insert_data_label_child_in_order(label, pos)
+                changed.add("Position")
+
+        # ----- Style.{Format, FontWeight, Color} --------------------
+        if format is not None or font_weight is not None or color is not None:
             style = find_child(label, "Style")
             if style is None:
                 style = etree.Element(q("Style"))
                 _insert_data_label_child_in_order(label, style)
-            fmt = find_child(style, "Format")
-            if format == "":
-                if fmt is not None:
-                    style.remove(fmt)
-                    changed.add("Style.Format")
-            else:
-                if fmt is None:
-                    fmt = etree.SubElement(style, q("Format"))
-                if fmt.text != encode_text(format):
-                    fmt.text = encode_text(format)
-                    changed.add("Style.Format")
+
+            for child_local, value in (
+                ("Format", format),
+                ("FontWeight", font_weight),
+                ("Color", color),
+            ):
+                if value is None:
+                    continue
+                existing = find_child(style, child_local)
+                if value == "":
+                    if existing is not None:
+                        style.remove(existing)
+                        changed.add(f"Style.{child_local}")
+                else:
+                    if existing is None:
+                        existing = etree.SubElement(style, q(child_local))
+                    if existing.text != encode_text(value):
+                        existing.text = encode_text(value)
+                        changed.add(f"Style.{child_local}")
 
         affected.append(series.get("Name"))
 

@@ -3259,11 +3259,16 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_chart_series_type",
         description=(
-            "Update <Type> and <Subtype> on a named ChartSeries. Combo "
-            "charts work by setting different types per series in the "
-            "same chart (e.g. one Bar series and one Line series). "
-            "Returns {chart, series, kind, changed: list[str]} — empty "
-            "when inputs match existing values (no-op short-circuit)."
+            "Update <Type> and optionally <Subtype> on a named "
+            "ChartSeries. Combo charts work by setting different "
+            "types per series in the same chart (e.g. one Bar series "
+            "and one Line series). v0.4: series_subtype defaults to "
+            "null/None — omit to PRESERVE the existing subtype. "
+            "Pass 'Stacked' / 'PercentStacked' / 'Plain' / etc. to "
+            "override. Pre-v0.4 always wrote 'Plain' by default, "
+            "silently resetting stacked-bar charts on type-only edits. "
+            "Returns {chart, series, kind, changed: list[str]} — "
+            "empty when inputs match existing values."
         ),
         input_schema={
             "type": "object",
@@ -3272,7 +3277,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "chart_name": {"type": "string"},
                 "series_name": {"type": "string"},
                 "series_type": {"type": "string"},
-                "series_subtype": {"type": "string", "default": "Plain"},
+                "series_subtype": {"type": ["string", "null"], "default": None},
             },
             "required": ["path", "chart_name", "series_name", "series_type"],
             "additionalProperties": False,
@@ -3382,10 +3387,16 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Configure <ChartDataLabel> on one or all series in a chart. "
             "When series_name is None, the change applies to every "
-            "series; otherwise only the named series. visible writes "
-            "<Visible>true|false</Visible>; format writes <Style>/<Format>. "
-            "Pass format='' to clear the format. Returns {chart, series, "
-            "kind, changed}; series lists affected series names."
+            "series; otherwise only the named series. "
+            "visible writes <Visible>true|false</Visible>; "
+            "visible_expression writes the same element with a VB.NET "
+            "=IIf(...) expression (mutually exclusive with visible). "
+            "format writes <Style>/<Format>; pass '' to clear. "
+            "v0.4: position ∈ Auto/Top/TopLeft/TopCenter/TopRight/Left/"
+            "Center/Right/BottomLeft/BottomCenter/BottomRight/Bottom/"
+            "Outside; use_value_as_label ∈ true/false; font_weight + "
+            "color write to <Style>/<FontWeight> and <Style>/<Color> "
+            "(pass '' to clear). Returns {chart, series, kind, changed}."
         ),
         input_schema={
             "type": "object",
@@ -3395,6 +3406,28 @@ def register_all_tools(server: MCPServer) -> None:
                 "series_name": {"type": "string"},
                 "visible": {"type": "boolean"},
                 "format": {"type": "string"},
+                "visible_expression": {"type": "string"},
+                "position": {
+                    "type": "string",
+                    "enum": [
+                        "Auto",
+                        "Top",
+                        "TopLeft",
+                        "TopCenter",
+                        "TopRight",
+                        "Left",
+                        "Center",
+                        "Right",
+                        "BottomLeft",
+                        "BottomCenter",
+                        "BottomRight",
+                        "Bottom",
+                        "Outside",
+                    ],
+                },
+                "use_value_as_label": {"type": "boolean"},
+                "font_weight": {"type": "string"},
+                "color": {"type": "string"},
             },
             "required": ["path", "chart_name"],
             "additionalProperties": False,
