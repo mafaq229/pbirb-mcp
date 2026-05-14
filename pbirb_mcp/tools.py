@@ -922,6 +922,43 @@ def register_all_tools(server: MCPServer) -> None:
         },
         handler=_transactions.cancel_editing_transaction,
     )
+    server.register_tool(
+        name="apply_edits",
+        description=(
+            "Atomic batch: open once → apply ops → lint → save once. "
+            "Opens an internal transaction against path, dispatches each "
+            "{tool, args} op through the JSON-RPC tools/call path with "
+            "transaction_id injected, and commits at the end. On any "
+            "op failure or lint-error at commit, rolls back — disk is "
+            "byte-identical to its pre-call state. "
+            "Compare with dry_run_edit (clones to tempfile, never "
+            "touches the real file): use dry_run_edit to preview a "
+            "plan, apply_edits to land it. Returns "
+            "{applied: [{tool, ok, result|error}], verify, committed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "ops": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tool": {"type": "string"},
+                            "args": {"type": "object"},
+                        },
+                        "required": ["tool"],
+                        "additionalProperties": False,
+                    },
+                    "description": "Ordered list of tool calls to apply atomically.",
+                },
+            },
+            "required": ["path", "ops"],
+            "additionalProperties": False,
+        },
+        handler=_transactions.apply_edits,
+    )
 
     server.register_tool(
         name="get_expression_reference",

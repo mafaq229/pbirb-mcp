@@ -403,3 +403,184 @@ class TestCancelEditingTransaction:
         live.save()
         reopened = RDLDocument.open(doc.path)
         assert reopened.root.find(".//{*}CommandText").text == "EVALUATE TOPN(2, 'Sales')"
+
+
+# ---- v0.4 commit 11 — apply_edits atomic batch --------------------------
+
+
+class TestApplyEdits:
+    """apply_edits opens a transaction internally, dispatches each op
+    via JSON-RPC with transaction_id injected, commits at the end.
+    Atomic: on any op failure or lint-error commit, the disk file is
+    unchanged from its pre-call state.
+    """
+
+    def test_success_path_commits_and_writes_disk(self, doc):
+        import hashlib
+
+        from pbirb_mcp.ops.transactions import apply_edits
+
+        before = hashlib.sha256(doc.path.read_bytes()).hexdigest()
+        result = apply_edits(
+            path=str(doc.path),
+            ops=[
+                {
+                    "tool": "add_body_textbox",
+                    "args": {
+                        "name": "BatchedA",
+                        "text": "a",
+                        "top": "3in",
+                        "left": "0.5in",
+                        "width": "1in",
+                        "height": "0.3in",
+                    },
+                },
+                {
+                    "tool": "add_body_textbox",
+                    "args": {
+                        "name": "BatchedB",
+                        "text": "b",
+                        "top": "3.5in",
+                        "left": "0.5in",
+                        "width": "1in",
+                        "height": "0.3in",
+                    },
+                },
+            ],
+        )
+        assert result["committed"] is True
+        assert len(result["applied"]) == 2
+        assert all(a["ok"] for a in result["applied"])
+        # Disk was written (sha256 changed) and both textboxes landed.
+        after = hashlib.sha256(doc.path.read_bytes()).hexdigest()
+        assert before != after
+        body = doc.path.read_text()
+        assert "BatchedA" in body
+        assert "BatchedB" in body
+
+    def test_mid_batch_failure_rolls_back(self, doc):
+        import hashlib
+
+        from pbirb_mcp.ops.transactions import apply_edits
+
+        before_bytes = doc.path.read_bytes()
+        before_sha = hashlib.sha256(before_bytes).hexdigest()
+        result = apply_edits(
+            path=str(doc.path),
+            ops=[
+                {
+                    "tool": "add_body_textbox",
+                    "args": {
+                        "name": "WillNotPersist",
+                        "text": "x",
+                        "top": "3in",
+                        "left": "0.5in",
+                        "width": "1in",
+                        "height": "0.3in",
+                    },
+                },
+                {
+                    # Same name → handler raises ValueError "already exists".
+                    "tool": "add_body_textbox",
+                    "args": {
+                        "name": "WillNotPersist",
+                        "text": "y",
+                        "top": "4in",
+                        "left": "0.5in",
+                        "width": "1in",
+                        "height": "0.3in",
+                    },
+                },
+                {
+                    # Should never execute — batch stops at op #2.
+                    "tool": "add_body_textbox",
+                    "args": {
+                        "name": "NeverReached",
+                        "text": "z",
+                        "top": "5in",
+                        "left": "0.5in",
+                        "width": "1in",
+                        "height": "0.3in",
+                    },
+                },
+            ],
+        )
+        assert result["committed"] is False
+        assert len(result["applied"]) == 2
+        assert result["applied"][0]["ok"] is True
+        assert result["applied"][1]["ok"] is False
+        # Disk byte-identical to its pre-call state.
+        after_sha = hashlib.sha256(doc.path.read_bytes()).hexdigest()
+        assert after_sha == before_sha
+        assert "WillNotPersist" not in doc.path.read_text()
+        assert "NeverReached" not in doc.path.read_text()
+        # Registry is empty — the rollback path cancelled the tx.
+        assert transactions.active_transactions() == []
+
+    def test_unknown_tool_returns_failure(self, doc):
+        import hashlib
+
+        from pbirb_mcp.ops.transactions import apply_edits
+
+        before = hashlib.sha256(doc.path.read_bytes()).hexdigest()
+        result = apply_edits(
+            path=str(doc.path),
+            ops=[{"tool": "does_not_exist", "args": {}}],
+        )
+        assert result["committed"] is False
+        assert len(result["applied"]) == 1
+        assert result["applied"][0]["ok"] is False
+        assert hashlib.sha256(doc.path.read_bytes()).hexdigest() == before
+
+    def test_missing_path_raises_file_not_found(self, tmp_path):
+        from pbirb_mcp.ops.transactions import apply_edits
+
+        with pytest.raises(FileNotFoundError):
+            apply_edits(path=str(tmp_path / "ghost.rdl"), ops=[])
+
+    def test_non_list_ops_rejected(self, doc):
+        from pbirb_mcp.ops.transactions import apply_edits
+
+        with pytest.raises(ValueError, match="ops must be a list"):
+            apply_edits(path=str(doc.path), ops="not-a-list")
+
+    def test_empty_ops_commits_clean(self, doc):
+        """Zero ops = open + immediate commit. Lint runs against the
+        unmodified tree → valid. Disk MAY be touched (save_as is
+        called once) — that's OK, the call asserts the user wants a
+        round-trip-equivalent rewrite."""
+        from pbirb_mcp.ops.transactions import apply_edits
+
+        result = apply_edits(path=str(doc.path), ops=[])
+        assert result["committed"] is True
+        assert result["applied"] == []
+        assert result["verify"]["valid"] is True
+
+    def test_caller_supplied_path_in_ops_is_stripped(self, doc):
+        """Each op's args["path"] is irrelevant — apply_edits uses the
+        outer path. Caller-supplied path inside ops must be silently
+        stripped (the dispatcher would barf otherwise — it injects
+        path from the transaction)."""
+        from pbirb_mcp.ops.transactions import apply_edits
+
+        result = apply_edits(
+            path=str(doc.path),
+            ops=[
+                {
+                    "tool": "add_body_textbox",
+                    # The /completely/wrong/path here would normally
+                    # confuse the handler; apply_edits must strip it.
+                    "args": {
+                        "path": "/completely/wrong/path.rdl",
+                        "name": "PathStrippedOK",
+                        "text": "ok",
+                        "top": "3in",
+                        "left": "0.5in",
+                        "width": "1in",
+                        "height": "0.3in",
+                    },
+                }
+            ],
+        )
+        assert result["committed"] is True
+        assert "PathStrippedOK" in doc.path.read_text()

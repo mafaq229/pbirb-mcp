@@ -118,7 +118,210 @@ def cancel_editing_transaction(transaction_id: str) -> dict[str, Any]:
     }
 
 
+def _build_server():
+    """Lazy import to avoid a circular dep at module load time. Same
+    pattern as :func:`pbirb_mcp.ops.dry_run._build_server`."""
+    from pbirb_mcp.server import MCPServer
+    from pbirb_mcp.tools import register_all_tools
+
+    server = MCPServer()
+    register_all_tools(server)
+    return server
+
+
+def apply_edits(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
+    """Atomic batch: open once → apply ops → lint → save once.
+
+    Opens an internal transaction against ``path``, dispatches each
+    ``{tool, args}`` op through the JSON-RPC ``tools/call`` path with
+    ``transaction_id`` injected, and commits at the end. On any op
+    failure, cancels the transaction — the disk file is untouched
+    because no save happened. On lint-error at commit time, also
+    cancels (same outcome: zero disk mutation).
+
+    Compared with :func:`pbirb_mcp.ops.dry_run.dry_run_edit`:
+
+    * ``dry_run_edit`` clones to a tempfile, dispatches against it,
+      computes a diff, and DISCARDS — the real file is never touched
+      either way. Use it to preview a plan.
+    * ``apply_edits`` opens a transaction against the REAL file and
+      commits on success. Same atomicity guarantee (zero disk
+      mutation on failure), but the success path lands the changes.
+
+    Returns ``{applied: [...], verify: {...}, committed: bool}`` where
+    ``applied`` mirrors ``dry_run_edit``'s shape (per-op
+    ``{tool, ok, result|error}``) so an LLM can read both side by side.
+    """
+    if not isinstance(ops, list):
+        raise ValueError("ops must be a list of {tool, args} entries")
+    from pathlib import Path as _Path  # noqa: N814 — local alias
+
+    src = _Path(path)
+    if not src.is_file():
+        raise FileNotFoundError(f"path {path!r} is not a regular file")
+
+    server = _build_server()
+
+    # Start the transaction by driving the public tool — exercises the
+    # same code path the LLM does.
+    start_resp = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "tools/call",
+            "params": {
+                "name": "start_editing_transaction",
+                "arguments": {"path": str(src)},
+            },
+        }
+    )
+    if "error" in start_resp or start_resp["result"].get("isError"):
+        # Surface the failure with the canonical apply_edits shape.
+        return {
+            "applied": [],
+            "committed": False,
+            "verify": {"valid": False, "issues": [], "rules_run": []},
+            "error": _extract_payload(start_resp),
+        }
+    tx_state = _extract_payload(start_resp)
+    tx_id = tx_state["transaction_id"]
+
+    applied: list[dict[str, Any]] = []
+    failed = False
+
+    for i, op in enumerate(ops):
+        tool_name = op.get("tool")
+        args = dict(op.get("args") or {})
+        if not isinstance(tool_name, str):
+            applied.append(
+                {
+                    "tool": tool_name,
+                    "ok": False,
+                    "error": {
+                        "error_type": "ValueError",
+                        "message": f"op #{i} missing string `tool`",
+                    },
+                }
+            )
+            failed = True
+            break
+        # Strip caller-supplied path / transaction_id — the dispatcher
+        # injects the registered abspath from the transaction, and
+        # transaction_id is what tells it to do so.
+        args.pop("path", None)
+        args["transaction_id"] = tx_id
+
+        resp = server.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": i + 1,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": args},
+            }
+        )
+        if "error" in resp:
+            applied.append(
+                {
+                    "tool": tool_name,
+                    "ok": False,
+                    "error": {
+                        "error_type": "JSONRPCError",
+                        "message": resp["error"].get("message", "unknown"),
+                        "code": resp["error"].get("code"),
+                    },
+                }
+            )
+            failed = True
+            break
+        result = resp.get("result", {}) or {}
+        if result.get("isError"):
+            applied.append(
+                {
+                    "tool": tool_name,
+                    "ok": False,
+                    "error": _extract_payload(resp),
+                }
+            )
+            failed = True
+            break
+        applied.append({"tool": tool_name, "ok": True, "result": _extract_payload(resp)})
+
+    if failed:
+        # Roll back via the public cancel tool. Disk untouched because
+        # no save happened during the transaction.
+        server.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 9999,
+                "method": "tools/call",
+                "params": {
+                    "name": "cancel_editing_transaction",
+                    "arguments": {"transaction_id": tx_id},
+                },
+            }
+        )
+        return {
+            "applied": applied,
+            "committed": False,
+            "verify": {"valid": False, "issues": [], "rules_run": []},
+        }
+
+    # All ops succeeded — commit. The commit tool itself runs lint;
+    # if it returns saved=False (lint error), it leaves the tx open,
+    # but we cancel here to honour the atomicity contract: a single
+    # apply_edits call either commits everything or nothing.
+    commit_resp = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 10_000,
+            "method": "tools/call",
+            "params": {
+                "name": "commit_editing_transaction",
+                "arguments": {"transaction_id": tx_id},
+            },
+        }
+    )
+    commit_payload = _extract_payload(commit_resp)
+    if commit_resp["result"].get("isError") or not commit_payload.get("saved"):
+        # Lint failed at commit time — cancel and report.
+        server.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 10_001,
+                "method": "tools/call",
+                "params": {
+                    "name": "cancel_editing_transaction",
+                    "arguments": {"transaction_id": tx_id},
+                },
+            }
+        )
+        return {
+            "applied": applied,
+            "committed": False,
+            "verify": commit_payload.get("verify", {"valid": False, "issues": [], "rules_run": []}),
+        }
+
+    return {
+        "applied": applied,
+        "committed": True,
+        "verify": commit_payload["verify"],
+    }
+
+
+def _extract_payload(resp: dict[str, Any]) -> dict[str, Any]:
+    """Pull the JSON-decoded text payload out of a tools/call response.
+    Falls back to ``{}`` on unexpected shapes."""
+    try:
+        text = resp["result"]["content"][0]["text"]
+        import json as _json
+
+        return _json.loads(text)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return {}
+
+
 __all__ = [
+    "apply_edits",
     "cancel_editing_transaction",
     "commit_editing_transaction",
     "start_editing_transaction",
