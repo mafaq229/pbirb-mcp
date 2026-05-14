@@ -139,6 +139,152 @@ class TestCreateReport:
         assert rid_a != rid_b
 
 
+class TestCreateReportWithDatasource:
+    """v0.4 commit 14 — `datasource={workspace_url, dataset_name,
+    provider, ...}` wires a real PBI XMLA connection at create time.
+    Both provider variants emit the same shape ``add_data_source``
+    (v0.4 commit 1) produces, so the scratch-built source round-trips
+    through ``_is_pbidataset_dataset`` and the rest of the tools.
+    """
+
+    def test_pbidataset_provider_emits_modern_shape(self, tmp_path: Path):
+        from pbirb_mcp.ops.datasource import get_data_source
+
+        dst = tmp_path / "pbids.rdl"
+        create_report(
+            str(dst),
+            datasource={
+                "name": "MyDS",
+                "workspace_url": "ADNOC",
+                "dataset_name": "RAG Report",
+                "provider": "pbidataset",
+            },
+        )
+        result = get_data_source(path=str(dst), name="MyDS")
+        assert result["data_provider"] == "PBIDATASET"
+        assert "pbiazure://api.powerbi.com" in result["connect_string"]
+        assert "Integrated Security=ClaimsToken" in result["connect_string"]
+
+    def test_pbidataset_adds_workspace_and_dataset_siblings(self, tmp_path: Path):
+        from pbirb_mcp.core.xpath import RD_NS
+
+        dst = tmp_path / "pbids.rdl"
+        create_report(
+            str(dst),
+            datasource={
+                "name": "MyDS",
+                "workspace_url": "ADNOC",
+                "dataset_name": "RAG Report",
+                "provider": "pbidataset",
+            },
+        )
+        doc = RDLDocument.open(dst)
+        ds = next(d for d in doc.root.iter(f"{{{RDL_NS}}}DataSource") if d.get("Name") == "MyDS")
+        assert ds.find(f"{{{RD_NS}}}PowerBIWorkspaceName").text == "ADNOC"
+        assert ds.find(f"{{{RD_NS}}}PowerBIDatasetName").text == "RAG Report"
+
+    def test_sql_provider_emits_legacy_shape(self, tmp_path: Path):
+        from pbirb_mcp.ops.datasource import get_data_source
+
+        dst = tmp_path / "sqlds.rdl"
+        create_report(
+            str(dst),
+            datasource={
+                "name": "MyDS",
+                "workspace_url": "MyWorkspace",
+                "dataset_name": "SalesAnalytics",
+                "provider": "sql",
+            },
+        )
+        result = get_data_source(path=str(dst), name="MyDS")
+        assert result["data_provider"] == "SQL"
+        assert "powerbi://api.powerbi.com" in result["connect_string"]
+        assert "MyWorkspace" in result["connect_string"]
+        assert result["security_type"] == "Integrated"
+
+    def test_default_provider_is_sql(self, tmp_path: Path):
+        from pbirb_mcp.ops.datasource import get_data_source
+
+        dst = tmp_path / "default.rdl"
+        create_report(
+            str(dst),
+            datasource={
+                "name": "MyDS",
+                "workspace_url": "MyWS",
+                "dataset_name": "MyDS",
+            },
+        )
+        result = get_data_source(path=str(dst), name="MyDS")
+        assert result["data_provider"] == "SQL"
+
+    def test_unknown_provider_rejected(self, tmp_path: Path):
+        dst = tmp_path / "bad.rdl"
+        with pytest.raises(ValueError, match="unknown provider"):
+            create_report(
+                str(dst),
+                datasource={
+                    "name": "X",
+                    "workspace_url": "WS",
+                    "dataset_name": "DS",
+                    "provider": "not-real",
+                },
+            )
+        assert not dst.exists()
+
+    def test_unknown_datasource_key_rejected(self, tmp_path: Path):
+        dst = tmp_path / "bad.rdl"
+        with pytest.raises(ValueError, match="unknown datasource key"):
+            create_report(
+                str(dst),
+                datasource={
+                    "name": "X",
+                    "garbage_key": "no",
+                },
+            )
+        assert not dst.exists()
+
+    def test_pbidataset_source_recognised_by_is_pbidataset_helper(self, tmp_path: Path):
+        from lxml import etree
+
+        from pbirb_mcp.core.xpath import q
+        from pbirb_mcp.ops.dataset import _is_pbidataset_dataset
+
+        dst = tmp_path / "checked.rdl"
+        create_report(
+            str(dst),
+            datasource={
+                "name": "MyDS",
+                "workspace_url": "ADNOC",
+                "dataset_name": "RAG Report",
+                "provider": "pbidataset",
+            },
+        )
+        doc = RDLDocument.open(dst)
+        # Build a synthetic DataSet bound to MyDS and check the helper.
+        datasets_root = doc.root.find(f"{{{RDL_NS}}}DataSets")
+        synthetic = etree.SubElement(datasets_root, q("DataSet"), Name="Probe")
+        query = etree.SubElement(synthetic, q("Query"))
+        etree.SubElement(query, q("DataSourceName")).text = "MyDS"
+        assert _is_pbidataset_dataset(doc, synthetic) is True
+
+    def test_integrated_security_false_omits_claimstoken(self, tmp_path: Path):
+        from pbirb_mcp.ops.datasource import get_data_source
+
+        dst = tmp_path / "noauth.rdl"
+        create_report(
+            str(dst),
+            datasource={
+                "name": "MyDS",
+                "workspace_url": "ADNOC",
+                "dataset_name": "RAG Report",
+                "provider": "pbidataset",
+                "integrated_security": False,
+            },
+        )
+        result = get_data_source(path=str(dst), name="MyDS")
+        assert "Integrated Security=ClaimsToken" not in result["connect_string"]
+
+
 class TestCreateReportToolRegistration:
     def test_tool_registered(self):
         from pbirb_mcp.server import MCPServer

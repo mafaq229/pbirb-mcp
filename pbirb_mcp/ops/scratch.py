@@ -50,6 +50,81 @@ _DEFAULT_PAGE_SETUP: dict[str, str] = {
     "body_height": "2in",
 }
 
+_DATASOURCE_KEYS = frozenset(
+    {"name", "workspace_url", "dataset_name", "provider", "integrated_security"}
+)
+_VALID_PROVIDERS = ("sql", "pbidataset")
+
+
+def _emit_datasource_block(parent: etree._Element, datasource: Optional[dict[str, Any]]) -> str:
+    """Append a ``<DataSource>`` element to ``parent`` based on the
+    optional ``datasource`` payload. Returns the ``Name`` of the
+    emitted source so the DataSet can wire its ``<DataSourceName>``.
+
+    Mirrors the v0.4 commit 1 ``add_data_source`` shape for both
+    provider variants so a scratch-built source round-trips through
+    ``_is_pbidataset_dataset``, ``list_data_sources``, and the rest of
+    the existing tools without surprise.
+
+    When ``datasource`` is None or has only a ``name`` field, emits a
+    minimal placeholder (DataProvider=SQL, empty ConnectString) — the
+    commit-13 behaviour.
+    """
+    payload = datasource or {}
+    unknown = set(payload) - _DATASOURCE_KEYS
+    if unknown:
+        raise ValueError(
+            f"unknown datasource key(s) {sorted(unknown)!r}; valid keys: {sorted(_DATASOURCE_KEYS)}"
+        )
+
+    provider = payload.get("provider", "sql")
+    if provider not in _VALID_PROVIDERS:
+        raise ValueError(f"unknown provider {provider!r}; valid values: {_VALID_PROVIDERS!r}")
+
+    name = payload.get("name") or "DataSource1"
+    workspace_url = payload.get("workspace_url")
+    dataset_name = payload.get("dataset_name")
+    integrated_security = payload.get("integrated_security", True)
+
+    ds_elem = etree.SubElement(parent, q("DataSource"), Name=name)
+    cp = etree.SubElement(ds_elem, q("ConnectionProperties"))
+
+    # Decide whether to emit a real connection (when workspace_url +
+    # dataset_name are present) or the placeholder shape. Either path
+    # produces an XSD-valid file.
+    has_real_connection = workspace_url and dataset_name
+
+    if provider == "pbidataset":
+        etree.SubElement(cp, q("DataProvider")).text = "PBIDATASET"
+        if has_real_connection:
+            cs = "Data Source=pbiazure://api.powerbi.com/;Initial Catalog=" + dataset_name
+            if integrated_security:
+                cs += ";Integrated Security=ClaimsToken"
+            etree.SubElement(cp, q("ConnectString")).text = cs
+        else:
+            etree.SubElement(cp, q("ConnectString"))
+        etree.SubElement(ds_elem, qrd("DataSourceID")).text = str(uuid.uuid4())
+        if has_real_connection:
+            etree.SubElement(ds_elem, qrd("PowerBIWorkspaceName")).text = workspace_url
+            etree.SubElement(ds_elem, qrd("PowerBIDatasetName")).text = dataset_name
+    else:  # "sql"
+        etree.SubElement(cp, q("DataProvider")).text = "SQL"
+        if has_real_connection:
+            etree.SubElement(cp, q("ConnectString")).text = (
+                f"Data Source=powerbi://api.powerbi.com/v1.0/myorg/{workspace_url}"
+                f";Initial Catalog={dataset_name}"
+            )
+            if integrated_security:
+                etree.SubElement(cp, q("IntegratedSecurity")).text = "true"
+            etree.SubElement(ds_elem, qrd("SecurityType")).text = (
+                "Integrated" if integrated_security else "None"
+            )
+        else:
+            etree.SubElement(cp, q("ConnectString"))
+        etree.SubElement(ds_elem, qrd("DataSourceID")).text = str(uuid.uuid4())
+
+    return name
+
 
 def _build_minimal_rdl(
     page_setup: Optional[dict[str, str]],
@@ -72,19 +147,12 @@ def _build_minimal_rdl(
 
     etree.SubElement(root, q("AutoRefresh")).text = "0"
 
-    # DataSources / DataSets — placeholders so the structural validator
-    # passes. Commit 14 swaps in real connection bytes via add_data_source
-    # when a `datasource` payload is provided.
+    # DataSources / DataSets — structural validator requires both
+    # blocks. _emit_datasource_block produces a placeholder when
+    # `datasource` is None/sparse, or a real PBI XMLA connection
+    # when {workspace_url, dataset_name} are present.
     ds_root = etree.SubElement(root, q("DataSources"))
-    ds_name = (datasource or {}).get("name") or "DataSource1"
-    ds_elem = etree.SubElement(ds_root, q("DataSource"), Name=ds_name)
-    cp = etree.SubElement(ds_elem, q("ConnectionProperties"))
-    etree.SubElement(cp, q("DataProvider")).text = "SQL"
-    # Empty placeholder — leave .text unset (None) so the element
-    # serialises as <ConnectString /> consistently across the initial
-    # create and any subsequent open+save round-trip.
-    etree.SubElement(cp, q("ConnectString"))
-    etree.SubElement(ds_elem, qrd("DataSourceID")).text = str(uuid.uuid4())
+    ds_name = _emit_datasource_block(ds_root, datasource)
 
     datasets_root = etree.SubElement(root, q("DataSets"))
     dataset_name = "DataSet1"
