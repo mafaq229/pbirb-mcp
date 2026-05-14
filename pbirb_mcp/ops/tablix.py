@@ -827,6 +827,118 @@ def convert_to_matrix(
     }
 
 
+# ---- set_tablix_corner (v0.4 commit 18) -----------------------------------
+
+
+# Per RDL XSD, TablixCorner is the FIRST child of Tablix when present —
+# before TablixBody and the hierarchies. Inserting before any of these
+# anchors places the new element at the correct slot.
+_TABLIX_CORNER_FOLLOWED_BY = (
+    "TablixBody",
+    "TablixColumnHierarchy",
+    "TablixRowHierarchy",
+    "LayoutDirection",
+    "GroupsBeforeRowHeaders",
+    "RepeatColumnHeaders",
+    "RepeatRowHeaders",
+    "FixedColumnHeaders",
+    "FixedRowHeaders",
+    "DataSetName",
+)
+
+
+def set_tablix_corner(
+    path: str,
+    tablix_name: str,
+    text: Optional[str] = None,
+    expression: Optional[str] = None,
+) -> dict[str, Any]:
+    """Write the ``<TablixCorner>`` block with a single 1×1 textbox.
+
+    Either ``text`` (literal value) or ``expression`` (VB.NET ``=...``
+    string) — mutually exclusive. The textbox's ``Name`` is
+    deterministic: ``<tablix_name>_Corner``. Replaces any existing
+    TablixCorner block; idempotent in the "same text/expression →
+    same bytes" sense.
+
+    Refuses if the tablix has no named column-axis group — the corner
+    block is only meaningful in a matrix shape. Without a column
+    group there are no row-header rows for the corner to sit over.
+
+    Returns the canonical mutator shape
+    ``{tablix, name, kind: 'TablixCorner', changed: list[str]}``.
+    """
+    if text is None and expression is None:
+        raise ValueError(
+            "set_tablix_corner requires either text or expression (both cannot be None)"
+        )
+    if text is not None and expression is not None:
+        raise ValueError(
+            "set_tablix_corner: text and expression are mutually exclusive — pass only one"
+        )
+
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+
+    if not _has_column_group(tablix):
+        raise ValueError(
+            f"tablix {tablix_name!r} has no named column group; the "
+            "TablixCorner block is only meaningful in a matrix shape. "
+            "Call add_column_group first."
+        )
+
+    textbox_name = f"{tablix_name}_Corner"
+    value_text = expression if expression is not None else text
+
+    changed: list[str] = []
+
+    # Remove any existing TablixCorner so the rewrite is deterministic.
+    existing = find_child(tablix, "TablixCorner")
+    if existing is not None:
+        tablix.remove(existing)
+        changed.append("replaced_existing")
+
+    corner = etree.Element(q("TablixCorner"))
+    rows_root = etree.SubElement(corner, q("TablixCornerRows"))
+    row = etree.SubElement(rows_root, q("TablixCornerRow"))
+    cell = etree.SubElement(row, q("TablixCornerCell"))
+    contents = etree.SubElement(cell, q("CellContents"))
+    tb = etree.SubElement(contents, q("Textbox"), Name=textbox_name)
+    etree.SubElement(tb, q("CanGrow")).text = "true"
+    etree.SubElement(tb, q("KeepTogether")).text = "true"
+    paragraphs = etree.SubElement(tb, q("Paragraphs"))
+    paragraph = etree.SubElement(paragraphs, q("Paragraph"))
+    textruns = etree.SubElement(paragraph, q("TextRuns"))
+    textrun = etree.SubElement(textruns, q("TextRun"))
+    value_node = etree.SubElement(textrun, q("Value"))
+    value_node.text = encode_text(value_text)
+    etree.SubElement(textrun, q("Style"))
+    etree.SubElement(paragraph, q("Style"))
+    etree.SubElement(tb, qrd("DefaultName")).text = textbox_name
+    etree.SubElement(tb, q("Style"))
+
+    # Insert before the first known follower (TablixBody, hierarchies,
+    # etc.). Per RDL XSD, TablixCorner is the first Tablix child slot.
+    for local in _TABLIX_CORNER_FOLLOWED_BY:
+        anchor = find_child(tablix, local)
+        if anchor is not None:
+            anchor.addprevious(corner)
+            break
+    else:
+        # Pathological: tablix has none of the expected children. Append.
+        tablix.append(corner)
+
+    changed.append("corner_written")
+
+    doc.save()
+    return {
+        "tablix": tablix_name,
+        "name": textbox_name,
+        "kind": "TablixCorner",
+        "changed": changed,
+    }
+
+
 __all__ = [
     "add_row_group",
     "add_tablix_filter",
@@ -838,5 +950,6 @@ __all__ = [
     "set_group_sort",
     "set_group_visibility",
     "set_row_height",
+    "set_tablix_corner",
     "set_tablix_size",
 ]

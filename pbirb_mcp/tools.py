@@ -1650,6 +1650,32 @@ def register_all_tools(server: MCPServer) -> None:
         handler=tablix.convert_to_matrix,
     )
     server.register_tool(
+        name="set_tablix_corner",
+        description=(
+            "Write the <TablixCorner> block — the top-left cell of a "
+            "matrix-shaped tablix that holds the row-axis caption "
+            "(e.g. 'Type'). Pass `text` for a literal value OR "
+            "`expression` for a VB.NET '=...' formula. Mutually "
+            "exclusive. Textbox name is deterministic: "
+            "'<tablix_name>_Corner'. Refuses if the tablix has no "
+            "named column group (the corner is only meaningful in a "
+            "matrix). Replaces any existing TablixCorner block. "
+            "Returns {tablix, name, kind: 'TablixCorner', changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "text": {"type": ["string", "null"], "default": None},
+                "expression": {"type": ["string", "null"], "default": None},
+            },
+            "required": ["path", "tablix_name"],
+            "additionalProperties": False,
+        },
+        handler=tablix.set_tablix_corner,
+    )
+    server.register_tool(
         name="set_group_sort",
         description=(
             "Replace a group's <SortExpressions> with a fresh list. Each "

@@ -17,6 +17,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
@@ -28,6 +29,7 @@ from pbirb_mcp.ops.tablix import (
     remove_row_group,
     set_group_sort,
     set_group_visibility,
+    set_tablix_corner,
 )
 from pbirb_mcp.ops.tablix_columns import add_column_group
 from pbirb_mcp.server import MCPServer
@@ -525,6 +527,123 @@ class TestConvertToMatrix:
             )
 
 
+# ---- set_tablix_corner (v0.4 commit 18) -----------------------------------
+
+
+class TestSetTablixCorner:
+    """Phase F commit 18 — set_tablix_corner writes the <TablixCorner>
+    block with a single textbox at the top-left of a matrix-shaped
+    tablix. Required after convert_to_matrix (commit 17) — the corner
+    is where the LLM places the "Type" / "Region" caption.
+    """
+
+    @pytest.fixture
+    def matrix_path(self, rdl_path):
+        add_row_group(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Region",
+            group_expression="=Fields!ProductName.Value",
+        )
+        add_column_group(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Date",
+            group_expression="=Fields!ProductID.Value",
+        )
+        return rdl_path
+
+    def _corner(self, doc, tablix_name):
+        tablix = _tablix(doc, tablix_name)
+        return find_child(tablix, "TablixCorner")
+
+    def test_writes_corner_with_literal_text(self, matrix_path):
+        result = set_tablix_corner(
+            path=str(matrix_path),
+            tablix_name="MainTable",
+            text="Type",
+        )
+        assert result["tablix"] == "MainTable"
+        assert result["kind"] == "TablixCorner"
+        assert result["name"] == "MainTable_Corner"
+        assert "corner_written" in result["changed"]
+
+        doc = RDLDocument.open(matrix_path)
+        corner = self._corner(doc, "MainTable")
+        assert corner is not None
+        # Value text lands in the textbox.
+        value_node = corner.find(f".//{{{RDL_NS}}}Value")
+        assert value_node is not None
+        assert value_node.text == "Type"
+        # Textbox name is deterministic.
+        tb = corner.find(f".//{{{RDL_NS}}}Textbox")
+        assert tb.get("Name") == "MainTable_Corner"
+
+    def test_writes_corner_with_expression(self, matrix_path):
+        set_tablix_corner(
+            path=str(matrix_path),
+            tablix_name="MainTable",
+            expression="=Fields!Category.Value",
+        )
+        doc = RDLDocument.open(matrix_path)
+        value_node = self._corner(doc, "MainTable").find(f".//{{{RDL_NS}}}Value")
+        assert value_node.text == "=Fields!Category.Value"
+
+    def test_text_and_expression_mutually_exclusive(self, matrix_path):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            set_tablix_corner(
+                path=str(matrix_path),
+                tablix_name="MainTable",
+                text="a",
+                expression="=b",
+            )
+
+    def test_neither_text_nor_expression_rejected(self, matrix_path):
+        with pytest.raises(ValueError, match="either text or expression"):
+            set_tablix_corner(path=str(matrix_path), tablix_name="MainTable")
+
+    def test_refuses_without_column_group(self, rdl_path):
+        # Pristine tablix — no column group exists.
+        with pytest.raises(ValueError, match="no named column group"):
+            set_tablix_corner(
+                path=str(rdl_path),
+                tablix_name="MainTable",
+                text="Type",
+            )
+
+    def test_replace_existing_corner_is_idempotent_on_payload(self, matrix_path):
+        set_tablix_corner(path=str(matrix_path), tablix_name="MainTable", text="Type")
+        result = set_tablix_corner(
+            path=str(matrix_path),
+            tablix_name="MainTable",
+            text="Category",
+        )
+        # Second call signals it replaced an existing block.
+        assert "replaced_existing" in result["changed"]
+        doc = RDLDocument.open(matrix_path)
+        value_node = self._corner(doc, "MainTable").find(f".//{{{RDL_NS}}}Value")
+        assert value_node.text == "Category"
+
+    def test_corner_placed_before_tablix_body(self, matrix_path):
+        """Per RDL XSD, TablixCorner is the first Tablix child slot —
+        must come before TablixBody and the hierarchies."""
+        set_tablix_corner(path=str(matrix_path), tablix_name="MainTable", text="X")
+        doc = RDLDocument.open(matrix_path)
+        tablix = _tablix(doc, "MainTable")
+        children = [etree.QName(c.tag).localname for c in tablix]
+        corner_idx = children.index("TablixCorner")
+        body_idx = children.index("TablixBody")
+        assert corner_idx < body_idx
+
+    def test_round_trip_valid(self, matrix_path):
+        set_tablix_corner(path=str(matrix_path), tablix_name="MainTable", text="Type")
+        RDLDocument.open(matrix_path).validate()
+
+    def test_unknown_tablix_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            set_tablix_corner(path=str(rdl_path), tablix_name="NoSuchTable", text="X")
+
+
 # ---- registration ---------------------------------------------------------
 
 
@@ -542,4 +661,5 @@ class TestToolRegistration:
             "set_group_sort",
             "set_group_visibility",
             "convert_to_matrix",
+            "set_tablix_corner",
         } <= names
