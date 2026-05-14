@@ -162,12 +162,17 @@ class TestUpdateDatasetQueryAliasStrategy:
         )
         assert result["alias_strategy"] == "preserve_field_names"
         assert len(result["mapped"]) == 3
-        # Field NAMES are unchanged; DataFields point at the new columns.
+        # Field NAMES are unchanged; DataFields point at the new columns
+        # IN THEIR QUALIFIED FORM ("Items[ItemID]"), preserving the
+        # Table[Col] shape that RB Desktop emits. v0.4 commit 16 fixed
+        # the prior behaviour where the table prefix was stripped to
+        # the bare column name (which broke field binding at preview
+        # time).
         fields = get_datasets(str(rdl_path))[0]["fields"]
         names = [f["name"] for f in fields]
         data_fields = [f["data_field"] for f in fields]
         assert names == ["ProductID", "ProductName", "Amount"]
-        assert data_fields == ["ItemID", "ItemName", "Total"]
+        assert data_fields == ["Items[ItemID]", "Items[ItemName]", "Items[Total]"]
 
     def test_count_mismatch_more_fields_than_columns_warns(self, rdl_path):
         result = update_dataset_query(
@@ -229,12 +234,12 @@ class TestUpdateDatasetQueryAliasStrategy:
                 alias_strategy="bogus",
             )
 
-    def test_no_op_dax_with_strategy_returns_empty_mapped(self, rdl_path):
-        # Same shape as the existing fixture's DAX — DataFields end up
-        # remapped to the bare column names ("ProductID", etc.) which
-        # IS a change vs the existing "Sales[ProductID]" form.
-        # That's expected: the regex extracts column names without the
-        # table prefix.
+    def test_no_op_dax_with_strategy_is_true_noop(self, rdl_path):
+        """v0.4 commit 16 BUG FIX — when the new DAX has the same
+        Table[Col] shape as the existing DataFields, the remap is a
+        true no-op (mapped is empty). Pre-fix behaviour stripped the
+        table prefix even for matching DAX, breaking field binding."""
+        before = get_datasets(str(rdl_path))[0]["fields"]
         result = update_dataset_query(
             path=str(rdl_path),
             dataset_name="MainDataset",
@@ -244,12 +249,36 @@ class TestUpdateDatasetQueryAliasStrategy:
             ),
             alias_strategy="preserve_field_names",
         )
-        # All three remapped from "Sales[X]" to "X".
-        assert {m["new"] for m in result["mapped"]} == {
-            "ProductID",
-            "ProductName",
-            "Amount",
-        }
+        # Same shape → nothing to rewrite.
+        assert result["mapped"] == []
+        # DataFields untouched at canonical Table[Col] form.
+        after = get_datasets(str(rdl_path))[0]["fields"]
+        assert before == after
+
+    def test_bare_token_dax_preserves_existing_data_fields(self, rdl_path):
+        """v0.4 commit 16 BUG FIX — bare-token SUMMARIZECOLUMNS
+        (SUMMARIZECOLUMNS(ProductID, ProductName, Amount), no quoted
+        table prefix) used to strip the Table[Col] prefix from
+        <DataField> cells, breaking field binding. After the fix:
+        bare-token DAX leaves existing DataFields untouched."""
+        before = get_datasets(str(rdl_path))[0]["fields"]
+        result = update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            # Bare-token shape — no 'Table' prefix, no brackets.
+            dax_body="EVALUATE SUMMARIZECOLUMNS(ProductID, ProductName, Amount)",
+            alias_strategy="preserve_field_names",
+        )
+        # No qualified targets available → no rewrite, no claim of
+        # "mapped". A warning surfaces so the caller knows alias_strategy
+        # didn't do its full job.
+        assert result["mapped"] == []
+        assert any(
+            "bare-token" in w.lower() or "qualified" in w.lower() for w in result["warnings"]
+        )
+        # DataFields preserved at "Sales[ProductID]" form.
+        after = get_datasets(str(rdl_path))[0]["fields"]
+        assert before == after
 
 
 class TestUpdateDatasetQueryDesignerStateSync:
