@@ -1921,6 +1921,50 @@ def register_all_tools(server: MCPServer) -> None:
         handler=tablix_subtotals.add_subtotal_row,
     )
     server.register_tool(
+        name="add_subtotal_column",
+        description=(
+            "Column-axis mirror of add_subtotal_row. Adds a static "
+            "TablixMember inside the column-group's <TablixMembers>, "
+            "a new <TablixColumn> in TablixBody, and a cell at the "
+            "new column index in every body row. aggregates is a list "
+            "of {row, expression} entries where row is the 0-based "
+            "body row index; rows not listed get blank cells. "
+            "position='after' (default — canonical Grand Total slot, "
+            "appends to the right of the column group) or 'before' "
+            "(prepends to the group's left edge). width defaults to "
+            "'1in'. Group must have been added via add_column_group."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "aggregates": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "row": {"type": "integer"},
+                            "expression": {"type": "string"},
+                        },
+                        "required": ["row", "expression"],
+                        "additionalProperties": False,
+                    },
+                },
+                "position": {
+                    "type": "string",
+                    "enum": ["before", "after"],
+                    "default": "after",
+                },
+                "width": {"type": "string", "default": "1in"},
+            },
+            "required": ["path", "tablix_name", "group_name", "aggregates"],
+            "additionalProperties": False,
+        },
+        handler=tablix_subtotals.add_subtotal_column,
+    )
+    server.register_tool(
         name="set_cell_span",
         description=(
             "Set <RowSpan> and/or <ColSpan> on a tablix cell. The cell is "

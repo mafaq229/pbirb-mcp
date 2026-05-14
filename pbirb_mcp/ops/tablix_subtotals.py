@@ -210,4 +210,169 @@ def add_subtotal_row(
     }
 
 
-__all__ = ["add_subtotal_row"]
+# ---- add_subtotal_column (v0.4 commit 19) ---------------------------------
+
+
+_VALID_COLUMN_POSITIONS = frozenset({"before", "after"})
+
+
+def _find_column_member_wrapper(
+    tablix: etree._Element, group_name: str
+) -> Optional[etree._Element]:
+    """Mirror of :func:`_find_row_member_wrapper` for the column axis."""
+    column_hierarchy = find_child(tablix, "TablixColumnHierarchy")
+    if column_hierarchy is None:
+        return None
+    for member in column_hierarchy.iter(q("TablixMember")):
+        group = find_child(member, "Group")
+        if group is not None and group.get("Name") == group_name:
+            return member
+    return None
+
+
+def _data_column_count(tablix: etree._Element) -> int:
+    """Number of <TablixColumn> elements in TablixBody/TablixColumns."""
+    body = find_child(tablix, "TablixBody")
+    cols_root = find_child(body, "TablixColumns") if body is not None else None
+    if cols_root is None:
+        return 0
+    return len(find_children(cols_root, "TablixColumn"))
+
+
+def add_subtotal_column(
+    path: str,
+    tablix_name: str,
+    group_name: str,
+    aggregates: list[dict[str, Any]],
+    position: str = "after",
+    width: str = "1in",
+) -> dict[str, Any]:
+    """Add a subtotal column to ``group_name``'s column-axis member.
+
+    Column-axis mirror of :func:`add_subtotal_row`. Adds a new
+    ``<TablixMember>`` inside an existing column-group's
+    ``<TablixMembers>``, a new ``<TablixColumn>`` to the body, and a
+    cell at the new position in every existing body row.
+
+    ``aggregates`` is a list of ``{"row": <int>, "expression":
+    <aggregate>}`` entries. ``row`` is the 0-based body row index;
+    rows not listed get a blank cell. Negative indices and indices
+    ≥ row count raise :class:`ElementNotFoundError`.
+
+    ``position`` is ``"after"`` (default — appends as the LAST column
+    under the group, the canonical Grand Total slot) or ``"before"``
+    (prepends).
+
+    ``width`` is the RDL size string for the new ``<TablixColumn>``;
+    defaults to ``"1in"`` matching the template defaults.
+
+    Returns the canonical mutator shape
+    ``{tablix, group, position, aggregates, kind: 'TablixMember',
+    column_index, changed}``.
+    """
+    if position not in _VALID_COLUMN_POSITIONS:
+        raise ValueError(
+            f"position {position!r} not valid; expected one of {sorted(_VALID_COLUMN_POSITIONS)}"
+        )
+
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+
+    wrapper = _find_column_member_wrapper(tablix, group_name)
+    if wrapper is None:
+        raise ElementNotFoundError(
+            f"column-axis group {group_name!r} not found in tablix {tablix_name!r}"
+        )
+
+    inner_members = find_child(wrapper, "TablixMembers")
+    if inner_members is None:
+        # Mirror add_subtotal_row: no children means nothing to total.
+        raise ValueError(
+            f"column group {group_name!r} has no nested members; nothing to total. "
+            "Was the group added via add_column_group?"
+        )
+
+    body = find_child(tablix, "TablixBody")
+    if body is None:
+        raise ValueError(f"tablix {tablix_name!r} has no <TablixBody>")
+    rows_root = find_child(body, "TablixRows")
+    rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
+    row_count = len(rows)
+
+    # Validate aggregate row indices BEFORE mutating anything.
+    aggregates_by_row: dict[int, str] = {}
+    for entry in aggregates:
+        row_idx = entry.get("row")
+        expression = entry.get("expression")
+        if not isinstance(row_idx, int):
+            raise ValueError(f"aggregate entry missing integer 'row' key: {entry!r}")
+        if not isinstance(expression, str):
+            raise ValueError(f"aggregate entry missing string 'expression' key: {entry!r}")
+        if row_idx < 0 or row_idx >= row_count:
+            raise ElementNotFoundError(
+                f"aggregate row index {row_idx} out of range — tablix "
+                f"{tablix_name!r} has {row_count} body row(s)"
+            )
+        aggregates_by_row[row_idx] = expression
+
+    # New static column-hierarchy member (no <Group>, no nested children —
+    # a leaf placeholder, mirroring add_subtotal_row's static row member).
+    new_member = etree.Element(q("TablixMember"))
+
+    # New TablixColumn for the body.
+    new_column = etree.Element(q("TablixColumn"))
+    etree.SubElement(new_column, q("Width")).text = width
+
+    # Compute insertion index: number of existing leaves under the
+    # column group's inner members. For "after" we append; for "before"
+    # we insert at the position the first inner-member would render.
+    inner_leaves = find_children(inner_members, "TablixMember")
+    cols_root = find_child(body, "TablixColumns")
+    if cols_root is None:
+        cols_root = etree.SubElement(body, q("TablixColumns"))
+    existing_col_count = len(find_children(cols_root, "TablixColumn"))
+
+    # The new column's body index. For the canonical post-add_column_group
+    # shape (one column group with N existing inner leaves spanning the
+    # right-most N columns), "after" → existing_col_count (append),
+    # "before" → existing_col_count - len(inner_leaves) (the group's
+    # left edge).
+    if position == "after":
+        column_insert_index = existing_col_count
+        inner_members.append(new_member)
+    else:  # "before"
+        column_insert_index = max(0, existing_col_count - len(inner_leaves))
+        inner_members.insert(0, new_member)
+
+    if column_insert_index >= existing_col_count:
+        cols_root.append(new_column)
+    else:
+        cols_root.insert(column_insert_index, new_column)
+
+    # Subtotal-column textbox names: <group>_TotalColumn_<row>.
+    label = "TotalColumn"
+    for row_idx, row in enumerate(rows):
+        cells_root = find_child(row, "TablixCells")
+        if cells_root is None:
+            cells_root = etree.SubElement(row, q("TablixCells"))
+        cell_text = aggregates_by_row.get(row_idx, "")
+        textbox_name = f"{group_name}_{label}_{row_idx}"
+        new_cell = _build_subtotal_cell(textbox_name, cell_text)
+        if column_insert_index >= len(find_children(cells_root, "TablixCell")):
+            cells_root.append(new_cell)
+        else:
+            cells_root.insert(column_insert_index, new_cell)
+
+    doc.save()
+    return {
+        "tablix": tablix_name,
+        "group": group_name,
+        "position": position,
+        "aggregates": list(aggregates),
+        "kind": "TablixMember",
+        "column_index": column_insert_index,
+        "changed": ["member_added", "column_added", "cells_added"],
+    }
+
+
+__all__ = ["add_subtotal_column", "add_subtotal_row"]
