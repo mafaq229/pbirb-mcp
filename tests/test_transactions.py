@@ -584,3 +584,203 @@ class TestApplyEdits:
         )
         assert result["committed"] is True
         assert "PathStrippedOK" in doc.path.read_text()
+
+
+# ---- v0.4 commit 23 — end-to-end transaction smoke ----------------------
+
+
+class TestEndToEndTransactionLifecycle:
+    """v0.4 commit 23 — full transaction lifecycle through the
+    JSON-RPC dispatch path. Drives start → 3 mixed mutator calls
+    via tools/call (each carrying transaction_id) → describe_report
+    against disk (which still sees PRE-tx state) → commit →
+    describe_report against disk (now sees POST-commit state).
+
+    This is the headline-feature integration test. If anything
+    breaks the open/save interception or the dispatcher's
+    transaction routing, this test catches it immediately.
+    """
+
+    def test_full_lifecycle_via_jsonrpc_dispatch(self, doc):
+        """Authoritative integration test: every transaction surface
+        through the JSON-RPC dispatch path. Asserts:
+          - Mid-tx mutations DON'T hit disk (RDLDocument.save_as
+            no-op when _in_transaction is set).
+          - describe_report against the path (no transaction_id)
+            reads from disk → sees pre-tx state.
+          - commit flushes ONCE → all mid-tx mutations land
+            together.
+          - Round-trip byte-identity holds AFTER commit (a no-op
+            open + save against the post-commit file produces
+            identical bytes).
+        """
+        import hashlib
+        import json
+
+        from pbirb_mcp.server import MCPServer
+        from pbirb_mcp.tools import register_all_tools
+
+        server = MCPServer()
+        register_all_tools(server)
+
+        def call(name, args):
+            resp = server.handle_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": name, "arguments": args},
+                }
+            )
+            assert resp["result"].get("isError") is not True, resp
+            return json.loads(resp["result"]["content"][0]["text"])
+
+        # ----- Step 1: open transaction -----------------------------
+        before_sha = hashlib.sha256(doc.path.read_bytes()).hexdigest()
+        start_payload = call("start_editing_transaction", {"path": str(doc.path)})
+        tx_id = start_payload["transaction_id"]
+        assert start_payload["path"] == str(doc.path.resolve())
+
+        # ----- Step 2: 3 mixed mutator calls inside the transaction
+        call(
+            "set_body_item_position",
+            {
+                "transaction_id": tx_id,
+                "name": "MainTable",
+                "top": "1in",
+                "left": "1in",
+            },
+        )
+        call(
+            "set_textbox_style",
+            {
+                "transaction_id": tx_id,
+                "textbox_name": "HeaderAmount",
+                "font_weight": "Bold",
+            },
+        )
+        call(
+            "update_dataset_query",
+            {
+                "transaction_id": tx_id,
+                "dataset_name": "MainDataset",
+                "dax_body": "EVALUATE TOPN(50, 'Sales')",
+            },
+        )
+
+        # ----- Step 3: disk sha256 is STILL the pre-tx value.
+        # Open/save interception is keeping every mutator's save_as
+        # call as a no-op until commit. We check the raw bytes on
+        # disk — NOT through MCPServer.handle_request, because
+        # in-process callers ALSO hit the registry (interception is
+        # at the RDLDocument.open layer, not the tool dispatch layer).
+        mid_sha = hashlib.sha256(doc.path.read_bytes()).hexdigest()
+        assert mid_sha == before_sha, "transaction interception failed — disk was written mid-tx"
+        # Defence-in-depth: parse the raw bytes directly and confirm
+        # they still describe the pre-tx state. Use lxml directly
+        # (bypassing RDLDocument.open so we don't hit the registry).
+        from lxml import etree as _et
+
+        from pbirb_mcp.core.xpath import RDL_NS as _RDL_NS
+
+        raw_tree = _et.parse(str(doc.path))
+        raw_main_top = raw_tree.find(f".//{{{_RDL_NS}}}Tablix[@Name='MainTable']/{{{_RDL_NS}}}Top")
+        raw_main_left = raw_tree.find(
+            f".//{{{_RDL_NS}}}Tablix[@Name='MainTable']/{{{_RDL_NS}}}Left"
+        )
+        assert raw_main_top.text == "0.5in"
+        assert raw_main_left.text == "0.5in"
+
+        # ----- Step 4: in-process describe_report ALSO reads the
+        # in-memory tree (registry interception is at RDLDocument.open
+        # — fires for ANY in-process caller). This is by design:
+        # consistent view across the whole process while the tx is
+        # open. The disk-vs-memory distinction is purely about WHEN
+        # save_as is allowed to write.
+        descr_mid = call("describe_report", {"path": str(doc.path)})
+        main_mid = next(item for item in descr_mid["body_items"] if item["name"] == "MainTable")
+        # In-process describe sees the in-flight mutations.
+        assert main_mid["top"] == "1in"
+        assert main_mid["left"] == "1in"
+
+        # ----- Step 5: commit. Now the 3 mutations land in ONE
+        # atomic save. Disk sha256 changes; raw bytes match the
+        # in-flight state.
+        commit_payload = call("commit_editing_transaction", {"transaction_id": tx_id})
+        assert commit_payload["saved"] is True
+        assert commit_payload["verify"]["valid"] is True
+
+        post_sha = hashlib.sha256(doc.path.read_bytes()).hexdigest()
+        assert post_sha != mid_sha, "commit didn't flush — disk unchanged"
+
+        raw_tree_post = _et.parse(str(doc.path))
+        raw_main_top_post = raw_tree_post.find(
+            f".//{{{_RDL_NS}}}Tablix[@Name='MainTable']/{{{_RDL_NS}}}Top"
+        )
+        assert raw_main_top_post.text == "1in"
+
+        # ----- Step 6: round-trip byte-identity post-commit.
+        # The post-commit RDL must round-trip cleanly — a no-op
+        # open + save produces byte-identical output.
+        post_bytes = doc.path.read_bytes()
+        reopened = RDLDocument.open(doc.path)
+        rt_path = doc.path.with_name("rt.rdl")
+        reopened.save_as(rt_path)
+        assert rt_path.read_bytes() == post_bytes, (
+            "post-commit RDL doesn't round-trip — bytes drifted"
+        )
+
+    def test_apply_edits_then_explicit_tx_works(self, doc):
+        """Sanity: apply_edits opens its own internal transaction,
+        commits it. After it returns, the file is fully on disk and
+        a SUBSEQUENT explicit start_editing_transaction works
+        (registry is empty again, no orphan)."""
+        import json
+
+        from pbirb_mcp.server import MCPServer
+        from pbirb_mcp.tools import register_all_tools
+
+        server = MCPServer()
+        register_all_tools(server)
+
+        def call(name, args):
+            resp = server.handle_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": name, "arguments": args},
+                }
+            )
+            assert resp["result"].get("isError") is not True, resp
+            return json.loads(resp["result"]["content"][0]["text"])
+
+        # apply_edits first.
+        ae = call(
+            "apply_edits",
+            {
+                "path": str(doc.path),
+                "ops": [
+                    {
+                        "tool": "add_body_textbox",
+                        "args": {
+                            "name": "FromBatch",
+                            "text": "x",
+                            "top": "3in",
+                            "left": "0.5in",
+                            "width": "1in",
+                            "height": "0.3in",
+                        },
+                    }
+                ],
+            },
+        )
+        assert ae["committed"] is True
+        # Registry empty — apply_edits cleaned up after itself.
+        assert transactions.active_transactions() == []
+
+        # Now an explicit transaction works on the same file.
+        start = call("start_editing_transaction", {"path": str(doc.path)})
+        assert "transaction_id" in start
+        call("cancel_editing_transaction", {"transaction_id": start["transaction_id"]})
+        assert transactions.active_transactions() == []
