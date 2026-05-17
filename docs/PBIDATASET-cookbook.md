@@ -144,10 +144,62 @@ walking each dataset's `<QueryParameters>` block manually.
 Run `verify_report` to surface all three plus the other 12 rules in
 one call.
 
+## v0.4 — `add_data_source(provider="pbidataset")`
+
+Pre-v0.4, `add_data_source` always emitted the legacy
+`<DataProvider>SQL</DataProvider>` + `powerbi://api.powerbi.com/v1.0/myorg/<workspace>`
+ConnectString shape. Current Power BI Desktop emits the modern
+PBIDATASET shape directly; for fresh-report authoring, match what RB
+itself writes today.
+
+```python
+add_data_source(
+    path="/path/to/report.rdl",
+    name="PowerBIDataset",
+    workspace_url="ADNOC",
+    dataset_name="RAG Report",
+    provider="pbidataset",   # NEW in v0.4 — default is "sql" for back-compat
+)
+```
+
+Bytes:
+
+```xml
+<DataSource Name="PowerBIDataset">
+  <ConnectionProperties>
+    <DataProvider>PBIDATASET</DataProvider>
+    <ConnectString>Data Source=pbiazure://api.powerbi.com/;Initial Catalog=RAG Report;Integrated Security=ClaimsToken</ConnectString>
+  </ConnectionProperties>
+  <rd:DataSourceID>...</rd:DataSourceID>
+  <rd:PowerBIWorkspaceName>ADNOC</rd:PowerBIWorkspaceName>
+  <rd:PowerBIDatasetName>RAG Report</rd:PowerBIDatasetName>
+</DataSource>
+```
+
+Notes:
+- `<DataProvider>PBIDATASET</DataProvider>` instead of `SQL`.
+- `pbiazure://api.powerbi.com/` ConnectString with `Integrated
+  Security=ClaimsToken` (vs the legacy `powerbi://api.powerbi.com/v1.0/myorg/<workspace>`).
+- `<rd:PowerBIWorkspaceName>` and `<rd:PowerBIDatasetName>` siblings
+  for RB display.
+- No `<rd:SecurityType>` element — auth lives in the ConnectString.
+
+Both shapes round-trip through `_is_pbidataset_dataset` so the
+`@`-prefix defence kicks in regardless. The default `provider="sql"`
+preserves v0.3.x byte output exactly — existing fixtures and tests
+see no surprise.
+
+`create_report(datasource={..., "provider": "pbidataset"})` (v0.4
+commit 14) emits the same shape inside a scratch RDL, so a
+brand-new report can ship with a real PBI XMLA connection in one
+call.
+
 ## See also
 
 * `pbirb_mcp/ops/dataset.py::_is_pbidataset_dataset` — the resolver
   for "is this PBIDATASET-bound?".
 * `pbirb_mcp/ops/dataset.py::_normalise_query_parameter_name` —
   the auto-strip helper.
-* `pbirb_mcp/ops/lint.py` — the 15 static rules.
+* `pbirb_mcp/ops/lint.py` — the 16 static rules (15 v0.3.0 + 1 v0.3.1).
+* `docs/TRANSACTIONS.md` — v0.4 transaction surface for multi-edit sessions.
+* `docs/MATRIX-cookbook.md` — v0.4 matrix authoring flow.
