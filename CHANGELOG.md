@@ -1,5 +1,144 @@
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-17
+
+MINOR consolidating five phases of work (originally planned as
+v0.4 + v0.6) into one release. Eliminates the per-edit round-trip
+cost via the v0.6 transaction surface, adds scratch-creation, closes
+the v0.4 ergonomics wishlist from the 2026-04-30 sweep, AND ships
+the matrix-pivot + chart-fan-out surfaces from the 2026-05-11
+session feedback. **Tool count: 132 → 150+. Pytest: 1035 → 1188.**
+
+### Added
+
+**Transaction surface** — `pbirb_mcp/core/transactions.py` +
+`pbirb_mcp/ops/transactions.py` (Phases B + C):
+- `start_editing_transaction(path)` — open a transaction; returns
+  `{transaction_id, path, expires_at}`. Subsequent edit tools
+  accept an optional `transaction_id` to operate against the
+  in-memory tree without touching disk.
+- `commit_editing_transaction(transaction_id)` — lints the
+  in-memory tree, saves once (atomic `.tmp` + rename), deregisters.
+  Aborts (without saving) on `severity: 'error'` lint issues;
+  transaction stays open so the caller can fix + re-commit.
+- `cancel_editing_transaction(transaction_id)` — discards the
+  in-memory tree; disk untouched.
+- `apply_edits(path, ops)` — atomic batch. Opens an internal
+  transaction, dispatches each op via JSON-RPC, commits at the end.
+  On any op failure: rolls back; disk byte-identical to pre-call.
+- `PBIRB_MCP_TRANSACTION_TIMEOUT_S` env var (default 600s) controls
+  orphan expiry. Lazy sweep on every transaction-aware call.
+
+**Scratch creation** — `pbirb_mcp/ops/scratch.py` (Phase D):
+- `create_report(path, page_setup=None, datasource=None)` — emits
+  a minimal XSD-valid RDL from scratch. Refuses if `path` exists.
+  Default page_setup is US Letter portrait; pass any subset of
+  `{page_*, margin_*, body_*}` to override. Optional `datasource`
+  block wires a real PBI XMLA connection at creation time via the
+  same shape `add_data_source` produces.
+
+**v0.4 ergonomics** (Phase A):
+- `add_data_source(provider="pbidataset")` — modern PBI Desktop
+  shape (DataProvider=PBIDATASET, pbiazure:// ConnectString,
+  `<rd:PowerBIWorkspaceName>` / `<rd:PowerBIDatasetName>` siblings).
+  Default `provider="sql"` preserves v0.3.x byte output.
+- `restore_from_backup(backup_path, target_path=None, force=False)`
+  — symmetric counterpart to `backup_report`. Derives target from
+  the backup filename when not supplied. Refuses with `ValueError`
+  if target mtime > backup mtime (staleness guard); `force=True`
+  overrides.
+- `describe_report.charts` — new top-level array of chart names,
+  parity with the existing `tablixes` field.
+
+**Matrix completeness** — `pbirb_mcp/ops/tablix.py` +
+`tablix_subtotals.py` + `page.py` (Phase F):
+- `convert_to_matrix(path, tablix_name, row_group, column_group)`
+  — drops the residual `Details` row group and body row from a
+  tablix that already has a named row group + named column group.
+  Idempotent-by-explicit-refusal on second call.
+- `set_tablix_corner(path, tablix_name, text=None, expression=None)`
+  — writes the `<TablixCorner>` block with a single 1×1 textbox at
+  the top-left of a matrix. Refuses when no column group is present.
+- `add_subtotal_column(path, tablix_name, group_name, aggregates,
+  position='after', width='1in')` — column-axis mirror of
+  `add_subtotal_row`. Adds a new TablixMember + TablixColumn + cells.
+- `set_body_size(path, width=None, height=None)` — sets
+  `<Body>/<Height>` and `<ReportSection>/<Width>` (the body's width
+  sibling). Distinct from `set_page_setup` (page chrome) and
+  `set_body_item_size` (items inside the body).
+
+**Chart fan-out** — `pbirb_mcp/ops/chart.py` (Phase F):
+- `set_chart_series_grouping(path, chart_name, series_name,
+  group_field=None, group_expression=None, replace=False)` —
+  promotes a chart's static `<ChartMember>` to a dynamic-fanout
+  series by writing `<Group>/<GroupExpressions>/<GroupExpression>`.
+  One rendered series per distinct group expression value at preview
+  time.
+- `set_chart_data_labels` per-point kwargs: `visible_expression`,
+  `position` (Auto/Top/.../Outside enum), `use_value_as_label`,
+  `font_weight`, `color`. `visible` and `visible_expression`
+  mutually exclusive.
+
+### Changed
+
+- **BREAKING** — `describe_report.tablixes` shape: was bare strings
+  `["Name", ...]`, now `[{name, rows, columns, has_groups,
+  has_subtotals, has_spans}, ...]`. Migration:
+  `[t["name"] for t in r["tablixes"]]` recovers the old list.
+- `set_chart_series_type.series_subtype` default flipped from
+  `"Plain"` to `None` ("preserve existing Subtype"). Pre-v0.4
+  always wrote `Plain` on type-only edits, silently resetting
+  Bar/Stacked back to Bar/Plain. Existing callers passing
+  `series_subtype` explicitly are unaffected.
+- `RDLDocument.open` consults the transaction registry; returns the
+  registered in-memory tree by object identity when a transaction
+  owns the path. Invisible to non-transaction callers.
+- `RDLDocument.save_as` silently no-ops when the document is inside
+  an active transaction. Commit clears the flag and re-saves.
+- `MCPServer._tools_call` routes `transaction_id` to the registry;
+  pops the id before unpacking handler kwargs (leakage guard); skips
+  the auto-verify branch inside a transaction (the post-commit
+  verify covers it).
+- `add_rectangle.contained_items` schema tightened with `default: []`
+  and `minItems: 0` to help client-side Zod / JSON-schema validators
+  honour the optional intent. Server-side dispatch was always fine.
+
+### Fixed
+
+- `update_dataset_query.alias_strategy="preserve_field_names"`
+  no longer strips the `Table[Col]` prefix from `<DataField>` cells
+  when the new DAX uses bracket-token references. Bare-token DAX
+  (no qualified form recoverable) leaves existing `<DataField>`
+  untouched instead of overwriting with the bare column name —
+  pre-v0.4 silently broke field binding at preview time. From the
+  2026-05-11 matrix-report session feedback (gap #7).
+
+### Added (infrastructure, no user-facing surface)
+
+- `RDLDocument.batch(path)` context manager — open once / save
+  once on clean exit / no save on exception. Used by `create_report`
+  and the transaction commit path.
+- `pbirb_mcp.core.transactions` — in-memory registry mapping
+  `transaction_id ↔ (abspath, RDLDocument)`. Pure-data, no
+  `MCPServer` dependency. Lazy orphan sweep via `sweep_orphans`.
+- `pbirb_mcp.ops.lint._lint_doc(doc, rules=None)` — already-open-doc
+  entry point for lint; `lint_report(path)` is now a thin wrapper.
+  Used by `commit_editing_transaction` and `apply_edits` to lint
+  the in-memory tree without writing to a tempfile and re-parsing.
+
+### Notes
+
+- The matrix-pivot + chart-fan-out flow (commits 17–22) produces an
+  XSD-valid RDL end-to-end (`verify_report` returns `valid: true,
+  xsd_used: true` against the v0.4 sweep output).
+- Round-trip byte-identity (`tests/test_document.py::test_round_trip_byte_identical_to_fixture`)
+  green at every commit — the regression canary that defends the
+  open/save interception.
+- Pytest 1035 → 1188 (+153). 22+ git commits since v0.3.1; plus
+  `.local/` archival artifacts (gitignored). Three docs landed
+  under `docs/`: TRANSACTIONS.md, MATRIX-cookbook.md,
+  PBIDATASET-cookbook.md (extended).
+
 ## [0.3.1] - 2026-05-02
 
 PATCH driven by the v0.3.0 live-MCP sweep
