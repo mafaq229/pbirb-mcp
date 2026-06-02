@@ -111,6 +111,90 @@ def _dataset_query_parameters_summary(root: etree._Element) -> list[dict[str, An
     return out
 
 
+def _tablix_summary(tablix: etree._Element) -> dict[str, Any]:
+    """Compact shape hint for ``describe_report.tablixes``.
+
+    Returns ``{name, rows, columns, has_groups, has_subtotals, has_spans}``
+    — just enough to let a planner pick between ``style_tablix_row`` /
+    ``set_textbox_style`` / ``add_subtotal_row`` without first calling
+    ``get_tablixes``.
+
+    Heuristics:
+    * ``rows``/``columns`` — direct counts of ``<TablixRow>`` and
+      ``<TablixColumn>`` inside ``<TablixBody>``.
+    * ``has_groups`` — True iff any user-named ``<Group Name="...">``
+      exists in either the row or column hierarchy. The default
+      ``Details`` row group does NOT count (it ships in every
+      template-inserted tablix).
+    * ``has_subtotals`` — True iff any static ``<TablixMember>`` (no
+      ``<Group>`` child) is nested INSIDE another member's
+      ``<TablixMembers>`` that DOES have a ``<Group>``. That's exactly
+      the shape ``add_subtotal_row`` / ``add_subtotal_column`` create.
+    * ``has_spans`` — True iff any ``<ColSpan>`` or ``<RowSpan>``
+      element exists anywhere inside the tablix.
+    """
+    name = tablix.get("Name")
+    body = find_child(tablix, "TablixBody")
+    rows = 0
+    columns = 0
+    if body is not None:
+        rows_root = find_child(body, "TablixRows")
+        cols_root = find_child(body, "TablixColumns")
+        if rows_root is not None:
+            rows = sum(1 for _ in find_children(rows_root, "TablixRow"))
+        if cols_root is not None:
+            columns = sum(1 for _ in find_children(cols_root, "TablixColumn"))
+
+    has_groups = False
+    for hierarchy_local in ("TablixRowHierarchy", "TablixColumnHierarchy"):
+        h = find_child(tablix, hierarchy_local)
+        if h is None:
+            continue
+        for group in h.iter(f"{{{RDL_NS}}}Group"):
+            if (group.get("Name") or "") != "Details":
+                has_groups = True
+                break
+        if has_groups:
+            break
+
+    has_subtotals = False
+    for hierarchy_local in ("TablixRowHierarchy", "TablixColumnHierarchy"):
+        h = find_child(tablix, hierarchy_local)
+        if h is None:
+            continue
+        for outer_member in h.iter(f"{{{RDL_NS}}}TablixMember"):
+            if find_child(outer_member, "Group") is None:
+                continue
+            inner_members = find_child(outer_member, "TablixMembers")
+            if inner_members is None:
+                continue
+            for child in find_children(inner_members, "TablixMember"):
+                if find_child(child, "Group") is None:
+                    has_subtotals = True
+                    break
+            if has_subtotals:
+                break
+        if has_subtotals:
+            break
+
+    has_spans = any(
+        e is not None
+        for e in (
+            next(iter(tablix.iter(f"{{{RDL_NS}}}ColSpan")), None),
+            next(iter(tablix.iter(f"{{{RDL_NS}}}RowSpan")), None),
+        )
+    )
+
+    return {
+        "name": name,
+        "rows": rows,
+        "columns": columns,
+        "has_groups": has_groups,
+        "has_subtotals": has_subtotals,
+        "has_spans": has_spans,
+    }
+
+
 def _designer_state_present(root: etree._Element) -> bool:
     """``True`` iff any ``<DataSet>/<Query>/<rd:DesignerState>`` exists.
     Useful for detecting PBI Query Designer-authored datasets — those
@@ -149,7 +233,17 @@ def describe_report(path: str) -> dict[str, Any]:
         "data_sources": [ds.get("Name") for ds in root.iter(f"{{{RDL_NS}}}DataSource")],
         "datasets": [ds.get("Name") for ds in root.iter(f"{{{RDL_NS}}}DataSet")],
         "parameters": [p.get("Name") for p in root.iter(f"{{{RDL_NS}}}ReportParameter")],
-        "tablixes": [t.get("Name") for t in root.iter(f"{{{RDL_NS}}}Tablix")],
+        # v0.4 BREAKING — tablixes is now [{name, rows, columns,
+        # has_groups, has_subtotals, has_spans}, ...] (was [name, ...]).
+        # Migration: `[t["name"] for t in out["tablixes"]]` recovers
+        # the old shape. The richer shape lets planners pick between
+        # style_tablix_row / set_textbox_style / add_subtotal_row
+        # without an intermediate get_tablixes call.
+        "tablixes": [_tablix_summary(t) for t in root.iter(f"{{{RDL_NS}}}Tablix")],
+        # v0.4: top-level charts array — parity with tablixes. Saves a
+        # filter step ("body_items where type==Chart") when the LLM is
+        # planning a chart-targeted edit.
+        "charts": [c.get("Name") for c in root.iter(f"{{{RDL_NS}}}Chart")],
         # v0.2: full body / header / footer item enumeration so the LLM can
         # see every named ReportItem (Tablix, Textbox, Image, Rectangle, etc.)
         # without a follow-up list_*_items call.

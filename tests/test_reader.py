@@ -43,9 +43,100 @@ class TestDescribeReport:
         assert out["data_sources"] == ["PowerBIDataset"]
         assert out["datasets"] == ["MainDataset"]
         assert out["parameters"] == ["DateFrom", "DateTo"]
-        assert out["tablixes"] == ["MainTable"]
+        # v0.4 BREAKING — tablixes is a list of rich shape dicts, not
+        # bare strings. Use [t["name"] for t in out["tablixes"]] to
+        # recover the old shape.
+        assert len(out["tablixes"]) == 1
+        assert out["tablixes"][0]["name"] == "MainTable"
         assert out["page"]["height"] == "11in"
         assert out["page"]["width"] == "8.5in"
+
+    def test_tablixes_carry_shape_hints(self, rdl_path):
+        """v0.4 BREAKING — each tablix entry is now
+        {name, rows, columns, has_groups, has_subtotals, has_spans}.
+        Saves a follow-up get_tablixes round-trip when planning edits
+        (e.g. choose style_tablix_row vs set_textbox_style).
+        Minimal fixture: 1 header row + 1 details row, 3 columns, no
+        named groups, no subtotals, no spans.
+        """
+        out = describe_report(path=str(rdl_path))
+        t = out["tablixes"][0]
+        assert set(t.keys()) == {
+            "name",
+            "rows",
+            "columns",
+            "has_groups",
+            "has_subtotals",
+            "has_spans",
+        }
+        assert t["name"] == "MainTable"
+        assert t["rows"] == 2
+        assert t["columns"] == 3
+        assert t["has_groups"] is False
+        assert t["has_subtotals"] is False
+        assert t["has_spans"] is False
+
+    def test_has_groups_true_after_add_row_group(self, rdl_path):
+        from pbirb_mcp.ops.tablix import add_row_group
+
+        add_row_group(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Region",
+            group_expression="=Fields!ProductName.Value",
+        )
+        out = describe_report(path=str(rdl_path))
+        t = out["tablixes"][0]
+        assert t["has_groups"] is True
+
+    def test_has_spans_true_after_set_cell_span(self, rdl_path):
+        from pbirb_mcp.ops.tablix_cells import set_cell_span
+
+        set_cell_span(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            row_index=0,
+            column_name="HeaderProductID",
+            col_span=2,
+        )
+        out = describe_report(path=str(rdl_path))
+        assert out["tablixes"][0]["has_spans"] is True
+
+    def test_has_subtotals_true_after_add_subtotal_row(self, rdl_path):
+        from pbirb_mcp.ops.tablix import add_row_group
+        from pbirb_mcp.ops.tablix_subtotals import add_subtotal_row
+
+        add_row_group(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Region",
+            group_expression="=Fields!ProductName.Value",
+        )
+        add_subtotal_row(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Region",
+            position="footer",
+            aggregates=[{"column": "Amount", "expression": "=Sum(Fields!Amount.Value)"}],
+        )
+        out = describe_report(path=str(rdl_path))
+        assert out["tablixes"][0]["has_subtotals"] is True
+
+    def test_charts_empty_on_minimal_fixture(self, rdl_path):
+        """v0.4 — charts is a top-level array parallel to tablixes.
+        Minimal fixture has no Chart elements -> empty list."""
+        out = describe_report(path=str(rdl_path))
+        assert out["charts"] == []
+
+    def test_charts_lists_named_charts(self, tmp_path):
+        """v0.4 — chart-rich fixture surfaces every <Chart Name="..."> as
+        a bare name in the new top-level ``charts`` array (same shape as
+        ``tablixes``)."""
+        chart_fixture = Path(__file__).parent / "fixtures" / "pbi_chart_rich.rdl"
+        dest = tmp_path / "report.rdl"
+        shutil.copy(chart_fixture, dest)
+        out = describe_report(path=str(dest))
+        assert "SalesByProduct" in out["charts"]
 
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):

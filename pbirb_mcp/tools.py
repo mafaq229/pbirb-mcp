@@ -39,6 +39,8 @@ from pbirb_mcp.ops import escape as _escape
 from pbirb_mcp.ops import expressions as _expressions
 from pbirb_mcp.ops import layout as _layout
 from pbirb_mcp.ops import lint as _lint
+from pbirb_mcp.ops import scratch as _scratch
+from pbirb_mcp.ops import transactions as _transactions
 
 if TYPE_CHECKING:
     from pbirb_mcp.server import MCPServer
@@ -62,7 +64,11 @@ def register_all_tools(server: MCPServer) -> None:
         name="describe_report",
         description=(
             "Top-level inventory of an RDL: data sources, datasets, parameters, "
-            "tablixes, and page setup. Always the first call when planning edits."
+            "tablixes, charts, and page setup. Always the first call when "
+            "planning edits. v0.4: `tablixes` returns rich shape hints "
+            "[{name, rows, columns, has_groups, has_subtotals, has_spans}] "
+            "(was bare strings — migrate with `[t['name'] for t in tablixes]`). "
+            "`charts` (new in v0.4) is a top-level array of chart names."
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=reader.describe_report,
@@ -246,7 +252,13 @@ def register_all_tools(server: MCPServer) -> None:
             "Create a new <DataSource> for a Power BI XMLA endpoint. "
             "workspace_url accepts a bare workspace name or a full "
             "powerbi:// URL. Generates a fresh rd:DataSourceID GUID. "
-            "Refuses if a DataSource of the same name already exists."
+            "Refuses if a DataSource of the same name already exists. "
+            "provider='sql' (default) emits the legacy DataProvider=SQL "
+            "+ powerbi:// ConnectString + <rd:SecurityType> shape; "
+            "provider='pbidataset' emits the modern PBI Desktop shape — "
+            "DataProvider=PBIDATASET, pbiazure:// ConnectString with "
+            "ClaimsToken auth, plus <rd:PowerBIWorkspaceName> / "
+            "<rd:PowerBIDatasetName> siblings, no <rd:SecurityType>."
         ),
         input_schema={
             "type": "object",
@@ -256,6 +268,11 @@ def register_all_tools(server: MCPServer) -> None:
                 "workspace_url": {"type": "string"},
                 "dataset_name": {"type": "string"},
                 "integrated_security": {"type": "boolean", "default": True},
+                "provider": {
+                    "type": "string",
+                    "enum": ["sql", "pbidataset"],
+                    "default": "sql",
+                },
             },
             "required": ["path", "name", "workspace_url", "dataset_name"],
             "additionalProperties": False,
@@ -857,6 +874,131 @@ def register_all_tools(server: MCPServer) -> None:
         handler=_dry_run.dry_run_edit,
     )
 
+    # ---- v0.4 transactions (commit 10) -----------------------------------
+    server.register_tool(
+        name="start_editing_transaction",
+        description=(
+            "Open the report and start an editing transaction. Returns "
+            "{transaction_id, path, expires_at}. Pass transaction_id to "
+            "subsequent edit tools to mutate the live in-memory tree "
+            "WITHOUT touching disk between calls — eliminates the "
+            "per-edit parse+serialize round-trip. The transaction times "
+            "out after PBIRB_MCP_TRANSACTION_TIMEOUT_S seconds (default "
+            "600); call commit_editing_transaction to flush or "
+            "cancel_editing_transaction to discard. Refuses if an active "
+            "transaction already owns this path."
+        ),
+        input_schema=_PATH_ONLY_SCHEMA,
+        handler=_transactions.start_editing_transaction,
+    )
+    server.register_tool(
+        name="commit_editing_transaction",
+        description=(
+            "Lint the in-memory tree, save to disk once (atomic .tmp + "
+            "rename), and deregister. Aborts (saved=False) if lint "
+            "surfaces any severity='error' issue — the transaction "
+            "stays OPEN so the caller can fix the offending state and "
+            "re-commit. Returns {transaction_id, path, saved, verify}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"transaction_id": {"type": "string"}},
+            "required": ["transaction_id"],
+            "additionalProperties": False,
+        },
+        handler=_transactions.commit_editing_transaction,
+    )
+    server.register_tool(
+        name="cancel_editing_transaction",
+        description=(
+            "Discard a transaction. The in-memory tree is dropped; the "
+            "on-disk file is unchanged from when the transaction was "
+            "started. Returns {transaction_id, path, discarded}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"transaction_id": {"type": "string"}},
+            "required": ["transaction_id"],
+            "additionalProperties": False,
+        },
+        handler=_transactions.cancel_editing_transaction,
+    )
+    server.register_tool(
+        name="apply_edits",
+        description=(
+            "Atomic batch: open once → apply ops → lint → save once. "
+            "Opens an internal transaction against path, dispatches each "
+            "{tool, args} op through the JSON-RPC tools/call path with "
+            "transaction_id injected, and commits at the end. On any "
+            "op failure or lint-error at commit, rolls back — disk is "
+            "byte-identical to its pre-call state. "
+            "Compare with dry_run_edit (clones to tempfile, never "
+            "touches the real file): use dry_run_edit to preview a "
+            "plan, apply_edits to land it. Returns "
+            "{applied: [{tool, ok, result|error}], verify, committed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "ops": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tool": {"type": "string"},
+                            "args": {"type": "object"},
+                        },
+                        "required": ["tool"],
+                        "additionalProperties": False,
+                    },
+                    "description": "Ordered list of tool calls to apply atomically.",
+                },
+            },
+            "required": ["path", "ops"],
+            "additionalProperties": False,
+        },
+        handler=_transactions.apply_edits,
+    )
+
+    # ---- v0.4 scratch creation (commits 13 + 14) -------------------------
+    server.register_tool(
+        name="create_report",
+        description=(
+            "Emit a minimal valid RDL from scratch at `path`. Refuses "
+            "if `path` exists (no clobbering). Default page_setup is "
+            "US Letter portrait with 1in margins; pass any subset of "
+            "{page_height, page_width, margin_top, margin_bottom, "
+            "margin_left, margin_right, body_width, body_height} to "
+            "override. `datasource` is a forward-compat hook — pass "
+            "{name, workspace_url, dataset_name, provider, "
+            "integrated_security} to wire a real PBI XMLA endpoint "
+            "(v0.4 commit 14); omit for a placeholder DataSource1 + "
+            "DataSet1 stub the caller fills in via subsequent tools. "
+            "Validates structurally + against the bundled XSD before "
+            "saving (atomic .tmp + rename). Returns "
+            "{path, validated, size_bytes}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "page_setup": {
+                    "type": ["object", "null"],
+                    "additionalProperties": {"type": "string"},
+                    "default": None,
+                },
+                "datasource": {
+                    "type": ["object", "null"],
+                    "default": None,
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=_scratch.create_report,
+    )
+
     server.register_tool(
         name="get_expression_reference",
         description=(
@@ -1073,9 +1215,12 @@ def register_all_tools(server: MCPServer) -> None:
                 "contained_items": {
                     "type": "array",
                     "items": {"type": "string"},
+                    "minItems": 0,
+                    "default": [],
                     "description": (
-                        "Names of existing body items to move into the "
-                        "rectangle. Empty list / omitted → empty rectangle."
+                        "Optional names of existing body items to move "
+                        "into the rectangle. Omit or pass [] for an "
+                        "empty rectangle (visual frame)."
                     ),
                 },
             },
@@ -1476,6 +1621,61 @@ def register_all_tools(server: MCPServer) -> None:
         handler=tablix.remove_row_group,
     )
     server.register_tool(
+        name="convert_to_matrix",
+        description=(
+            "Convert a row-grouped + column-grouped tablix into a matrix "
+            "by dropping the residual Details row group and its body "
+            "row. Pre-conditions (all checked): the named row_group and "
+            "column_group must already exist (call add_row_group + "
+            "add_column_group first); a <Group Name='Details'> must "
+            "still be present in the row hierarchy. Refuses on second "
+            "call (already a matrix). Use this after the standard "
+            "insert_tablix_from_template + add_row_group + "
+            "add_column_group flow to make the leaf the row group "
+            "instead of Details — without this, cells render at detail "
+            "granularity. Pair with set_tablix_corner (v0.4 commit 18) "
+            "to author the top-left label."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "row_group": {"type": "string"},
+                "column_group": {"type": "string"},
+            },
+            "required": ["path", "tablix_name", "row_group", "column_group"],
+            "additionalProperties": False,
+        },
+        handler=tablix.convert_to_matrix,
+    )
+    server.register_tool(
+        name="set_tablix_corner",
+        description=(
+            "Write the <TablixCorner> block — the top-left cell of a "
+            "matrix-shaped tablix that holds the row-axis caption "
+            "(e.g. 'Type'). Pass `text` for a literal value OR "
+            "`expression` for a VB.NET '=...' formula. Mutually "
+            "exclusive. Textbox name is deterministic: "
+            "'<tablix_name>_Corner'. Refuses if the tablix has no "
+            "named column group (the corner is only meaningful in a "
+            "matrix). Replaces any existing TablixCorner block. "
+            "Returns {tablix, name, kind: 'TablixCorner', changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "text": {"type": ["string", "null"], "default": None},
+                "expression": {"type": ["string", "null"], "default": None},
+            },
+            "required": ["path", "tablix_name"],
+            "additionalProperties": False,
+        },
+        handler=tablix.set_tablix_corner,
+    )
+    server.register_tool(
         name="set_group_sort",
         description=(
             "Replace a group's <SortExpressions> with a fresh list. Each "
@@ -1719,6 +1919,50 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_subtotals.add_subtotal_row,
+    )
+    server.register_tool(
+        name="add_subtotal_column",
+        description=(
+            "Column-axis mirror of add_subtotal_row. Adds a static "
+            "TablixMember inside the column-group's <TablixMembers>, "
+            "a new <TablixColumn> in TablixBody, and a cell at the "
+            "new column index in every body row. aggregates is a list "
+            "of {row, expression} entries where row is the 0-based "
+            "body row index; rows not listed get blank cells. "
+            "position='after' (default — canonical Grand Total slot, "
+            "appends to the right of the column group) or 'before' "
+            "(prepends to the group's left edge). width defaults to "
+            "'1in'. Group must have been added via add_column_group."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "aggregates": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "row": {"type": "integer"},
+                            "expression": {"type": "string"},
+                        },
+                        "required": ["row", "expression"],
+                        "additionalProperties": False,
+                    },
+                },
+                "position": {
+                    "type": "string",
+                    "enum": ["before", "after"],
+                    "default": "after",
+                },
+                "width": {"type": "string", "default": "1in"},
+            },
+            "required": ["path", "tablix_name", "group_name", "aggregates"],
+            "additionalProperties": False,
+        },
+        handler=tablix_subtotals.add_subtotal_column,
     )
     server.register_tool(
         name="set_cell_span",
@@ -2033,7 +2277,7 @@ def register_all_tools(server: MCPServer) -> None:
         handler=reader.get_chart,
     )
 
-    # ---- snapshot (v0.2 commit 14) ----------------------------------------
+    # ---- snapshot (v0.2 commit 14, v0.4 restore) --------------------------
     server.register_tool(
         name="backup_report",
         description=(
@@ -2045,6 +2289,29 @@ def register_all_tools(server: MCPServer) -> None:
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=snapshot.backup_report,
+    )
+    server.register_tool(
+        name="restore_from_backup",
+        description=(
+            "Restore a backup file over its original target. target_path "
+            "defaults to the path implied by the backup's "
+            "<target>.bak.<UTC-timestamp> filename; pass target_path "
+            "explicitly when the backup name doesn't match that shape. "
+            "Refuses if target mtime is newer than backup (staleness "
+            "guard) — pass force=True to override. Returns "
+            "{source, restored_to, bytes_restored}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "backup_path": {"type": "string"},
+                "target_path": {"type": ["string", "null"], "default": None},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["backup_path"],
+            "additionalProperties": False,
+        },
+        handler=snapshot.restore_from_backup,
     )
 
     # ---- parameter CRUD (v0.2 commits 15-19) ------------------------------
@@ -2282,6 +2549,33 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=page.set_page_orientation,
+    )
+    server.register_tool(
+        name="set_body_size",
+        description=(
+            "Set the body's rendering region inside the page. "
+            "<Body>/<Height> and <ReportSection>/<Width> (the sibling "
+            "of <Body>) — both are RDL size strings (e.g. '14in', "
+            "'9in', '297mm'). Either or both kwargs required. "
+            "Distinct from set_page_setup (which sets the paper "
+            "chrome <Page>/<PageWidth>/<PageHeight>) and "
+            "set_body_item_size (size of items inside the body). "
+            "Use this when a wide tablix or chart needs the body "
+            "region expanded — without it the right edge is clipped "
+            "at preview time. Idempotent: same value → empty changed. "
+            "Returns {kind: 'Body', changed: list[str]}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "width": {"type": ["string", "null"], "default": None},
+                "height": {"type": ["string", "null"], "default": None},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=page.set_body_size,
     )
 
     _SECTION_FLAGS_SCHEMA = {
@@ -2965,11 +3259,16 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_chart_series_type",
         description=(
-            "Update <Type> and <Subtype> on a named ChartSeries. Combo "
-            "charts work by setting different types per series in the "
-            "same chart (e.g. one Bar series and one Line series). "
-            "Returns {chart, series, kind, changed: list[str]} — empty "
-            "when inputs match existing values (no-op short-circuit)."
+            "Update <Type> and optionally <Subtype> on a named "
+            "ChartSeries. Combo charts work by setting different "
+            "types per series in the same chart (e.g. one Bar series "
+            "and one Line series). v0.4: series_subtype defaults to "
+            "null/None — omit to PRESERVE the existing subtype. "
+            "Pass 'Stacked' / 'PercentStacked' / 'Plain' / etc. to "
+            "override. Pre-v0.4 always wrote 'Plain' by default, "
+            "silently resetting stacked-bar charts on type-only edits. "
+            "Returns {chart, series, kind, changed: list[str]} — "
+            "empty when inputs match existing values."
         ),
         input_schema={
             "type": "object",
@@ -2978,12 +3277,46 @@ def register_all_tools(server: MCPServer) -> None:
                 "chart_name": {"type": "string"},
                 "series_name": {"type": "string"},
                 "series_type": {"type": "string"},
-                "series_subtype": {"type": "string", "default": "Plain"},
+                "series_subtype": {"type": ["string", "null"], "default": None},
             },
             "required": ["path", "chart_name", "series_name", "series_type"],
             "additionalProperties": False,
         },
         handler=chart.set_chart_series_type,
+    )
+    server.register_tool(
+        name="set_chart_series_grouping",
+        description=(
+            "Promote a chart's static ChartMember to a dynamic-fanout "
+            "series. Writes <ChartSeriesHierarchy>/<ChartMembers>/"
+            "<ChartMember>/<Group Name='<series>_Group'>/<GroupExpressions>/"
+            "<GroupExpression>. At render time, one rendered series is "
+            "produced per distinct value of the group expression — the "
+            "'13 violation types unknown at design time' fan-out. "
+            "group_field='Type' is a shorthand for "
+            "=Fields!Type.Value; group_expression accepts any VB.NET. "
+            "Mutually exclusive. replace=False (default) refuses if "
+            "the ChartMember already has a <Group>; pass replace=True "
+            "to overwrite. Operates on the FIRST ChartMember in the "
+            "hierarchy (v0.4 commit 21 scope; multi-member chains "
+            "aren't reachable from any v0.4 tool). Returns "
+            "{chart, series, kind: 'ChartGroup', group_name, "
+            "expression, changed}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+                "group_field": {"type": ["string", "null"], "default": None},
+                "group_expression": {"type": ["string", "null"], "default": None},
+                "replace": {"type": "boolean", "default": False},
+            },
+            "required": ["path", "chart_name", "series_name"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_series_grouping,
     )
     server.register_tool(
         name="set_chart_axis",
@@ -3054,10 +3387,16 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Configure <ChartDataLabel> on one or all series in a chart. "
             "When series_name is None, the change applies to every "
-            "series; otherwise only the named series. visible writes "
-            "<Visible>true|false</Visible>; format writes <Style>/<Format>. "
-            "Pass format='' to clear the format. Returns {chart, series, "
-            "kind, changed}; series lists affected series names."
+            "series; otherwise only the named series. "
+            "visible writes <Visible>true|false</Visible>; "
+            "visible_expression writes the same element with a VB.NET "
+            "=IIf(...) expression (mutually exclusive with visible). "
+            "format writes <Style>/<Format>; pass '' to clear. "
+            "v0.4: position ∈ Auto/Top/TopLeft/TopCenter/TopRight/Left/"
+            "Center/Right/BottomLeft/BottomCenter/BottomRight/Bottom/"
+            "Outside; use_value_as_label ∈ true/false; font_weight + "
+            "color write to <Style>/<FontWeight> and <Style>/<Color> "
+            "(pass '' to clear). Returns {chart, series, kind, changed}."
         ),
         input_schema={
             "type": "object",
@@ -3067,6 +3406,28 @@ def register_all_tools(server: MCPServer) -> None:
                 "series_name": {"type": "string"},
                 "visible": {"type": "boolean"},
                 "format": {"type": "string"},
+                "visible_expression": {"type": "string"},
+                "position": {
+                    "type": "string",
+                    "enum": [
+                        "Auto",
+                        "Top",
+                        "TopLeft",
+                        "TopCenter",
+                        "TopRight",
+                        "Left",
+                        "Center",
+                        "Right",
+                        "BottomLeft",
+                        "BottomCenter",
+                        "BottomRight",
+                        "Bottom",
+                        "Outside",
+                    ],
+                },
+                "use_value_as_label": {"type": "boolean"},
+                "font_weight": {"type": "string"},
+                "color": {"type": "string"},
             },
             "required": ["path", "chart_name"],
             "additionalProperties": False,

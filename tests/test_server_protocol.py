@@ -120,6 +120,222 @@ class TestToolsCall:
         assert payload == {"hello": "world"}
 
 
+class TestTransactionIdDispatch:
+    """v0.4 commit 9 — dispatcher honours `transaction_id` in args.
+
+    When a tool call's arguments contain ``transaction_id``:
+      1. The dispatcher pops it (handlers never see it — their
+         signature stays the same).
+      2. Looks up the registered transaction; on miss → isError with
+         error_type="TransactionError".
+      3. Substitutes ``arguments["path"]`` with the registered abspath.
+      4. Sweeps orphans before the lookup so expired entries are
+         cleaned up lazily.
+      5. Skips the auto-verify branch — intermediate trees aren't on
+         disk, so verifying would inspect stale bytes.
+    """
+
+    def _make_path_tool(self, server, captured):
+        def handler(path=None, **kwargs):
+            captured["path"] = path
+            captured["kwargs"] = kwargs
+            return {"ok": True, "received_path": path}
+
+        server.register_tool(
+            name="set_thing",  # `set_` prefix → mutating per _MUTATING_PREFIXES
+            description="captures what it got",
+            input_schema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": True,
+            },
+            handler=handler,
+        )
+
+    def test_unknown_transaction_id_returns_iserror(self, server):
+        self._make_path_tool(server, {})
+        resp = server.handle_request(
+            _request(
+                "tools/call",
+                {
+                    "name": "set_thing",
+                    "arguments": {"transaction_id": "not-a-real-id"},
+                },
+            )
+        )
+        assert "error" not in resp
+        assert resp["result"]["isError"] is True
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        assert payload["error_type"] == "TransactionError"
+        # Don't echo the id back — that's the leakage guard.
+        assert "not-a-real-id" not in payload["message"]
+
+    def test_transaction_id_substitutes_path_and_strips_kwarg(self, server, tmp_path):
+        import shutil
+
+        from pbirb_mcp.core import transactions
+        from pbirb_mcp.core.document import RDLDocument
+
+        transactions._reset_for_tests()
+        try:
+            fixture = (
+                __import__("pathlib").Path(__file__).parent
+                / "fixtures"
+                / "pbi_paginated_minimal.rdl"
+            )
+            rdl = tmp_path / "report.rdl"
+            shutil.copy(fixture, rdl)
+            doc = RDLDocument.open(rdl)
+            tx_id = transactions.register(doc)
+
+            captured = {}
+            self._make_path_tool(server, captured)
+            resp = server.handle_request(
+                _request(
+                    "tools/call",
+                    {
+                        "name": "set_thing",
+                        "arguments": {"transaction_id": tx_id, "path": "/should-be-ignored"},
+                    },
+                )
+            )
+            assert "error" not in resp
+            assert resp["result"].get("isError") is not True, resp
+            # Path was substituted from the registry, not from the
+            # caller's "/should-be-ignored" placeholder.
+            assert captured["path"] == str(rdl.resolve())
+            # transaction_id was stripped — handler doesn't see it.
+            assert "transaction_id" not in captured["kwargs"]
+        finally:
+            transactions._reset_for_tests()
+
+    def test_expired_transaction_id_returns_iserror(self, server, tmp_path):
+        import shutil
+
+        from pbirb_mcp.core import transactions
+        from pbirb_mcp.core.document import RDLDocument
+
+        transactions._reset_for_tests()
+        try:
+            fixture = (
+                __import__("pathlib").Path(__file__).parent
+                / "fixtures"
+                / "pbi_paginated_minimal.rdl"
+            )
+            rdl = tmp_path / "report.rdl"
+            shutil.copy(fixture, rdl)
+            doc = RDLDocument.open(rdl)
+            # Register at an arbitrary anchor time, then expire manually.
+            tx_id = transactions.register(doc, now=0.0)
+            # Force the entry's expires_at into the past so the
+            # dispatcher's lazy sweep_orphans on the next call clears it.
+            tx = transactions.lookup_by_id(tx_id)
+            tx.expires_at = -1.0
+
+            self._make_path_tool(server, {})
+            resp = server.handle_request(
+                _request(
+                    "tools/call",
+                    {"name": "set_thing", "arguments": {"transaction_id": tx_id}},
+                )
+            )
+            assert resp["result"]["isError"] is True
+            payload = json.loads(resp["result"]["content"][0]["text"])
+            assert payload["error_type"] == "TransactionError"
+        finally:
+            transactions._reset_for_tests()
+
+    def test_no_transaction_id_path_unchanged(self, server):
+        captured = {}
+        self._make_path_tool(server, captured)
+        resp = server.handle_request(
+            _request(
+                "tools/call",
+                {"name": "set_thing", "arguments": {"path": "/explicit/path.rdl"}},
+            )
+        )
+        assert "error" not in resp
+        assert resp["result"].get("isError") is not True, resp
+        # No tx → caller-supplied path used verbatim.
+        assert captured["path"] == "/explicit/path.rdl"
+
+    def test_auto_verify_skipped_when_in_transaction(self, server, tmp_path, monkeypatch):
+        """Inside a transaction, intermediate trees aren't on disk;
+        running verify_report against the disk file would inspect
+        stale bytes. The dispatcher must skip the auto-verify branch."""
+        import shutil
+
+        from pbirb_mcp.core import transactions
+        from pbirb_mcp.core.document import RDLDocument
+
+        transactions._reset_for_tests()
+        verify_calls = {"n": 0}
+        try:
+            fixture = (
+                __import__("pathlib").Path(__file__).parent
+                / "fixtures"
+                / "pbi_paginated_minimal.rdl"
+            )
+            rdl = tmp_path / "report.rdl"
+            shutil.copy(fixture, rdl)
+            doc = RDLDocument.open(rdl)
+            tx_id = transactions.register(doc)
+
+            # Force auto-verify ON.
+            monkeypatch.setenv("PBIRB_MCP_AUTO_VERIFY", "1")
+
+            def fake_verify(*args, **kwargs):
+                verify_calls["n"] += 1
+                return {"valid": True, "issues": [], "xsd_used": True}
+
+            monkeypatch.setattr("pbirb_mcp.ops.validate.verify_report", fake_verify)
+
+            self._make_path_tool(server, {})
+            resp = server.handle_request(
+                _request(
+                    "tools/call",
+                    {"name": "set_thing", "arguments": {"transaction_id": tx_id}},
+                )
+            )
+            assert "error" not in resp
+            # No auto-verify wrapping when transaction_id was set —
+            # response has the raw shape, not {result, verify}.
+            payload = json.loads(resp["result"]["content"][0]["text"])
+            assert "result" not in payload  # raw handler return, not wrapped
+            assert "verify" not in payload
+            assert verify_calls["n"] == 0
+        finally:
+            transactions._reset_for_tests()
+
+    def test_auto_verify_still_runs_outside_transaction(self, server, monkeypatch):
+        """Regression canary for the v0.3.0 auto-verify behaviour:
+        when there's no transaction_id, the auto-verify branch fires
+        exactly as before."""
+        verify_calls = {"n": 0}
+
+        def fake_verify(path, *args, **kwargs):
+            verify_calls["n"] += 1
+            return {"valid": True, "issues": [], "xsd_used": True}
+
+        monkeypatch.setenv("PBIRB_MCP_AUTO_VERIFY", "1")
+        monkeypatch.setattr("pbirb_mcp.ops.validate.verify_report", fake_verify)
+
+        self._make_path_tool(server, {})
+        resp = server.handle_request(
+            _request(
+                "tools/call",
+                {"name": "set_thing", "arguments": {"path": "/tmp/anything.rdl"}},
+            )
+        )
+        assert "error" not in resp
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        # Auto-verify wrapped the response.
+        assert "result" in payload
+        assert "verify" in payload
+        assert verify_calls["n"] == 1
+
+
 class TestNotifications:
     def test_initialized_notification_returns_none(self, server):
         # JSON-RPC notifications have no id and expect no response.

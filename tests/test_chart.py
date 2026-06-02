@@ -25,6 +25,7 @@ from pbirb_mcp.ops.chart import (
     set_chart_data_labels,
     set_chart_legend,
     set_chart_palette,
+    set_chart_series_grouping,
     set_chart_series_type,
     set_chart_title,
     set_series_color,
@@ -806,6 +807,150 @@ class TestSetChartDataLabels:
             )
 
 
+class TestSetChartDataLabelsPerPoint:
+    """v0.4 commit 22 — per-point kwargs on set_chart_data_labels.
+    Closes 2026-05-11 session gap #5.
+
+    Adds visible_expression, position, use_value_as_label, font_weight,
+    color. The pre-v0.4 surface only supported visible+format which
+    forced raw-XML edits for any expression-driven label.
+    """
+
+    def _label(self, rdl_path, chart_name, series_name):
+        doc = RDLDocument.open(rdl_path)
+        chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='{chart_name}']")
+        for s in chart.find(f"{q('ChartData')}/{q('ChartSeriesCollection')}").findall(
+            q("ChartSeries")
+        ):
+            if s.get("Name") == series_name:
+                return find_child(s, "ChartDataLabel")
+        return None
+
+    def test_visible_expression_writes_iif_form(self, rich_path):
+        result = set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            visible_expression="=IIf(Sum(Fields!Amount.Value)>=3, true, false)",
+        )
+        assert "Visible" in result["changed"]
+        label = self._label(rich_path, "SalesByProduct", "Amount")
+        visible = find_child(label, "Visible")
+        assert visible.text == "=IIf(Sum(Fields!Amount.Value)>=3, true, false)"
+
+    def test_position_writes_enum_value(self, rich_path):
+        set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            position="Center",
+        )
+        label = self._label(rich_path, "SalesByProduct", "Amount")
+        assert find_child(label, "Position").text == "Center"
+
+    def test_invalid_position_rejected(self, rich_path):
+        with pytest.raises(ValueError, match="position"):
+            set_chart_data_labels(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="Amount",
+                position="NotAValue",
+            )
+
+    def test_use_value_as_label_true(self, rich_path):
+        set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            use_value_as_label=True,
+        )
+        label = self._label(rich_path, "SalesByProduct", "Amount")
+        assert find_child(label, "UseValueAsLabel").text == "true"
+
+    def test_style_font_weight_and_color(self, rich_path):
+        set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            font_weight="Bold",
+            color="White",
+        )
+        label = self._label(rich_path, "SalesByProduct", "Amount")
+        style = find_child(label, "Style")
+        assert find_child(style, "FontWeight").text == "Bold"
+        assert find_child(style, "Color").text == "White"
+
+    def test_visible_and_visible_expression_mutually_exclusive(self, rich_path):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            set_chart_data_labels(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="Amount",
+                visible=True,
+                visible_expression="=IIf(true, true, false)",
+            )
+
+    def test_combination_lands_all_at_once(self, rich_path):
+        """The headline 2026-05-11 use case — single call configures
+        visible expression + position + use_value_as_label + bold
+        white style."""
+        result = set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            visible_expression="=IIf(Sum(Fields!Amount.Value)>=3, true, false)",
+            position="Center",
+            use_value_as_label=True,
+            font_weight="Bold",
+            color="White",
+        )
+        assert set(result["changed"]) >= {
+            "Visible",
+            "Position",
+            "UseValueAsLabel",
+            "Style.FontWeight",
+            "Style.Color",
+        }
+
+    def test_round_trip_valid(self, rich_path):
+        set_chart_data_labels(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            visible_expression="=IIf(true, true, false)",
+            position="Center",
+            use_value_as_label=True,
+            font_weight="Bold",
+            color="White",
+        )
+        RDLDocument.open(rich_path).validate()
+
+
+class TestSetChartSeriesTypePreserveSubtype:
+    """v0.4 commit 22 — series_subtype default flipped from 'Plain' to
+    None ('preserve existing'). Pre-v0.4 always overwrote Subtype to
+    Plain on type changes — silently resetting Bar/Stacked back to
+    Bar/Plain when the caller only meant to change type. After v0.4,
+    omitting series_subtype preserves the existing value.
+    """
+
+    def test_omitting_subtype_preserves_existing(self, rich_path):
+        # Fixture: Total is Bar/Stacked.
+        result = set_chart_series_type(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Total",
+            series_type="Column",
+            # Don't pass series_subtype — should preserve "Stacked".
+        )
+        assert "Type" in result["changed"]
+        assert "Subtype" not in result["changed"]
+        c = get_chart(path=str(rich_path), name="SalesByProduct")
+        total = next(s for s in c["series"] if s["name"] == "Total")
+        assert total["type"] == "Column"
+        assert total["subtype"] == "Stacked"  # preserved
+
+
 class TestSetChartPalette:
     def test_changes_palette(self, rich_path):
         result = set_chart_palette(
@@ -1032,6 +1177,144 @@ class TestBackwardCompatibleImport:
             height="2in",
         )
         assert result["name"] == "ReExport"
+
+
+class TestSetChartSeriesGrouping:
+    """v0.4 commit 21 — promote a chart's static ChartMember to a
+    dynamic-fanout series by writing
+    <ChartMember>/<Group>/<GroupExpressions>/<GroupExpression>. The
+    canonical 'one rendered series per distinct field value, list
+    unknown at design time' pattern (e.g. violation-type fan-out).
+    """
+
+    def _series_chartmember(self, rdl_path, chart_name):
+        doc = RDLDocument.open(rdl_path)
+        chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='{chart_name}']")
+        return chart.find(f"{q('ChartSeriesHierarchy')}/{q('ChartMembers')}/{q('ChartMember')}")
+
+    def test_writes_group_with_field_shorthand(self, rich_path):
+        result = set_chart_series_grouping(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            group_field="Type",
+        )
+        assert result["chart"] == "SalesByProduct"
+        assert result["series"] == "Amount"
+        assert result["kind"] == "ChartGroup"
+        assert result["group_name"] == "Amount_Group"
+        assert result["expression"] == "=Fields!Type.Value"
+        assert "group_written" in result["changed"]
+
+        member = self._series_chartmember(rich_path, "SalesByProduct")
+        group = find_child(member, "Group")
+        assert group is not None
+        assert group.get("Name") == "Amount_Group"
+        expr = group.find(f"{q('GroupExpressions')}/{q('GroupExpression')}")
+        assert expr.text == "=Fields!Type.Value"
+
+    def test_writes_group_with_raw_expression(self, rich_path):
+        result = set_chart_series_grouping(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            group_expression="=IIf(Fields!N.Value > 0, 'Big', 'Small')",
+        )
+        assert result["expression"] == "=IIf(Fields!N.Value > 0, 'Big', 'Small')"
+        member = self._series_chartmember(rich_path, "SalesByProduct")
+        expr = member.find(f"{q('Group')}/{q('GroupExpressions')}/{q('GroupExpression')}")
+        assert expr.text == "=IIf(Fields!N.Value > 0, 'Big', 'Small')"
+
+    def test_group_inserted_before_label(self, rich_path):
+        """RDL XSD: inside ChartMember, Group comes BEFORE Label."""
+        set_chart_series_grouping(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            group_field="Type",
+        )
+        member = self._series_chartmember(rich_path, "SalesByProduct")
+        locals_ = [etree.QName(c.tag).localname for c in member]
+        assert locals_.index("Group") < locals_.index("Label")
+
+    def test_neither_shorthand_nor_expression_rejected(self, rich_path):
+        with pytest.raises(ValueError, match="group_field or"):
+            set_chart_series_grouping(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="Amount",
+            )
+
+    def test_field_and_expression_mutually_exclusive(self, rich_path):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            set_chart_series_grouping(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="Amount",
+                group_field="Type",
+                group_expression="=Fields!Type.Value",
+            )
+
+    def test_unknown_series_name_rejected(self, rich_path):
+        with pytest.raises(ElementNotFoundError, match="series"):
+            set_chart_series_grouping(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="NoSuchSeries",
+                group_field="Type",
+            )
+
+    def test_unknown_chart_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            set_chart_series_grouping(
+                path=str(rdl_path),
+                chart_name="NoSuchChart",
+                series_name="Amount",
+                group_field="Type",
+            )
+
+    def test_replace_false_refuses_when_group_exists(self, rich_path):
+        set_chart_series_grouping(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            group_field="Type",
+        )
+        with pytest.raises(ValueError, match="already has a"):
+            set_chart_series_grouping(
+                path=str(rich_path),
+                chart_name="SalesByProduct",
+                series_name="Amount",
+                group_field="Region",
+            )
+
+    def test_replace_true_overwrites(self, rich_path):
+        set_chart_series_grouping(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            group_field="Type",
+        )
+        result = set_chart_series_grouping(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            group_field="Region",
+            replace=True,
+        )
+        assert "replaced_existing_group" in result["changed"]
+        member = self._series_chartmember(rich_path, "SalesByProduct")
+        expr = member.find(f"{q('Group')}/{q('GroupExpressions')}/{q('GroupExpression')}")
+        assert expr.text == "=Fields!Region.Value"
+
+    def test_round_trip_valid(self, rich_path):
+        set_chart_series_grouping(
+            path=str(rich_path),
+            chart_name="SalesByProduct",
+            series_name="Amount",
+            group_field="Type",
+        )
+        RDLDocument.open(rich_path).validate()
 
 
 class TestToolRegistration:

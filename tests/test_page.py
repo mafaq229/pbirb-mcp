@@ -16,7 +16,7 @@ import pytest
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.xpath import RDL_NS, find_child
-from pbirb_mcp.ops.page import set_page_orientation, set_page_setup
+from pbirb_mcp.ops.page import set_body_size, set_page_orientation, set_page_setup
 from pbirb_mcp.ops.reader import describe_report
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
@@ -139,6 +139,65 @@ class TestSetPageOrientation:
 # ---- registration ---------------------------------------------------------
 
 
+class TestSetBodySize:
+    """v0.4 commit 20 — set_body_size targets <Body>/<Height> and
+    <ReportSection>/<Width> (sibling of Body). Distinct from
+    set_page_setup (which sets <Page>/<PageWidth>/<PageHeight>, the
+    paper chrome) and set_body_item_size (which sets size of items
+    INSIDE the body).
+    """
+
+    def _section(self, rdl_path):
+        doc = RDLDocument.open(rdl_path)
+        return doc.root.find(f".//{{{RDL_NS}}}ReportSection")
+
+    def test_sets_both_width_and_height(self, rdl_path):
+        result = set_body_size(path=str(rdl_path), width="14in", height="9in")
+        assert result == {"kind": "Body", "changed": ["Width", "Height"]}
+        section = self._section(rdl_path)
+        assert find_child(section, "Width").text == "14in"
+        assert find_child(find_child(section, "Body"), "Height").text == "9in"
+
+    def test_sets_only_width(self, rdl_path):
+        result = set_body_size(path=str(rdl_path), width="16in")
+        assert result == {"kind": "Body", "changed": ["Width"]}
+        # Body Height untouched.
+        body = find_child(self._section(rdl_path), "Body")
+        assert find_child(body, "Height").text == "2in"
+
+    def test_sets_only_height(self, rdl_path):
+        result = set_body_size(path=str(rdl_path), height="10in")
+        assert result == {"kind": "Body", "changed": ["Height"]}
+        # ReportSection Width untouched.
+        section = self._section(rdl_path)
+        assert find_child(section, "Width").text == "5in"
+
+    def test_idempotent_when_value_unchanged(self, rdl_path):
+        # Set first.
+        set_body_size(path=str(rdl_path), width="8in", height="3in")
+        # Same values again → no change recorded.
+        result = set_body_size(path=str(rdl_path), width="8in", height="3in")
+        assert result == {"kind": "Body", "changed": []}
+
+    def test_requires_at_least_one_arg(self, rdl_path):
+        with pytest.raises(ValueError, match="at least one"):
+            set_body_size(path=str(rdl_path))
+
+    def test_distinct_from_set_page_setup(self, rdl_path):
+        """set_body_size must NOT touch <Page>/<PageWidth>/<PageHeight>.
+        Regression guard against conflating page chrome with body
+        bounds."""
+        set_body_size(path=str(rdl_path), width="20in", height="15in")
+        page = _page(rdl_path)
+        # Page chrome unchanged.
+        assert find_child(page, "PageWidth").text == "8.5in"
+        assert find_child(page, "PageHeight").text == "11in"
+
+    def test_round_trip_valid(self, rdl_path):
+        set_body_size(path=str(rdl_path), width="14in", height="9in")
+        RDLDocument.open(rdl_path).validate()
+
+
 class TestToolRegistration:
     def test_page_tools_registered(self):
         srv = MCPServer()
@@ -147,4 +206,4 @@ class TestToolRegistration:
             "tools"
         ]
         names = {t["name"] for t in listing}
-        assert {"set_page_setup", "set_page_orientation"} <= names
+        assert {"set_page_setup", "set_page_orientation", "set_body_size"} <= names

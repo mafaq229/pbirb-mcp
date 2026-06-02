@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "pbirb-mcp"
-SERVER_VERSION = "0.3.0"
+SERVER_VERSION = "0.4.0"
 
 # Tool-name prefixes treated as mutating for auto-verify routing. All RDL-
 # state-changing tools in the codebase start with one of these. Read-only
@@ -152,6 +152,44 @@ class MCPServer:
         if not isinstance(arguments, dict):
             raise _MCPError(INVALID_PARAMS, "tools/call `arguments` must be an object")
 
+        # v0.4 commit 9 — transaction routing. When `transaction_id` is in
+        # arguments AND the tool is an EDIT tool (i.e. its schema declares
+        # `path` but NOT `transaction_id`), swap arguments["path"] with
+        # the registered abspath and strip the id from kwargs. The
+        # transaction-control tools (commit/cancel_editing_transaction)
+        # declare `transaction_id` as their first-class argument; the
+        # dispatcher leaves those alone and lets the handler look up the
+        # transaction itself.
+        # On miss → structured isError that does NOT echo the opaque id
+        # back (leakage guard). Orphans are swept lazily before every
+        # transaction-aware lookup.
+        in_transaction = False
+        schema_props = (tool.input_schema or {}).get("properties", {})
+        if "transaction_id" in arguments and "transaction_id" not in schema_props:
+            import time as _time
+
+            from pbirb_mcp.core import transactions as _tx
+
+            tx_id = arguments.pop("transaction_id")
+            _tx.sweep_orphans(_time.time())
+            tx = _tx.lookup_by_id(tx_id) if isinstance(tx_id, str) else None
+            if tx is None:
+                payload = {
+                    "error_type": "TransactionError",
+                    "message": (
+                        "transaction is unknown, expired, or already "
+                        "committed; call start_editing_transaction to "
+                        "open a fresh one"
+                    ),
+                }
+                return {
+                    "content": [{"type": "text", "text": json.dumps(payload, default=str)}],
+                    "isError": True,
+                }
+            if "path" in schema_props:
+                arguments["path"] = tx.abspath
+            in_transaction = True
+
         # Per MCP spec, tool-handler exceptions are surfaced in the result
         # content with `isError: true`, NOT as JSON-RPC errors. JSON-RPC errors
         # are reserved for protocol issues (bad envelope, unknown method, bad
@@ -176,8 +214,13 @@ class MCPServer:
         # and the tool is mutating + has a `path` arg, run verify_report
         # against the post-mutation file and merge into the response. Off
         # by default — v0.2 callers see no shape change.
+        # v0.4: skip when the request was inside a transaction —
+        # intermediate trees aren't on disk, so verifying would inspect
+        # stale bytes. commit_editing_transaction runs its own verify
+        # against the post-commit on-disk file.
         if (
-            _auto_verify_enabled()
+            not in_transaction
+            and _auto_verify_enabled()
             and _is_mutating_tool(name)
             and isinstance(arguments.get("path"), str)
         ):

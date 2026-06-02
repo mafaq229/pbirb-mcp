@@ -11,7 +11,8 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
 from pbirb_mcp.ops.tablix import add_row_group
-from pbirb_mcp.ops.tablix_subtotals import add_subtotal_row
+from pbirb_mcp.ops.tablix_columns import add_column_group
+from pbirb_mcp.ops.tablix_subtotals import add_subtotal_column, add_subtotal_row
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
 
@@ -212,8 +213,135 @@ class TestAddSubtotalRow:
         assert _textrun_value(sub2[2]) == "=Avg(Fields!Amount.Value)"
 
 
+class TestAddSubtotalColumn:
+    """Phase F commit 19 — column-axis mirror of add_subtotal_row.
+    Adds a new TablixMember inside a column-group's <TablixMembers>,
+    a new <TablixColumn> in TablixBody/TablixColumns, and a cell at
+    the new column index in every existing body row."""
+
+    @pytest.fixture
+    def rdl_with_column_group(self, rdl_path):
+        add_column_group(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Date",
+            group_expression="=Fields!ProductID.Value",
+        )
+        return rdl_path
+
+    def test_appends_total_column_after_group(self, rdl_with_column_group):
+        result = add_subtotal_column(
+            path=str(rdl_with_column_group),
+            tablix_name="MainTable",
+            group_name="Date",
+            aggregates=[
+                {"row": 1, "expression": "=Sum(Fields!Amount.Value)"},
+            ],
+        )
+        assert result["tablix"] == "MainTable"
+        assert result["kind"] == "TablixMember"
+        assert result["position"] == "after"
+        assert "member_added" in result["changed"]
+        assert "column_added" in result["changed"]
+
+        doc = RDLDocument.open(rdl_with_column_group)
+        tablix = _tablix(doc, "MainTable")
+        # Body has one more column than before.
+        cols = find_children(tablix.find(f"{q('TablixBody')}/{q('TablixColumns')}"), "TablixColumn")
+        # Minimal fixture 3 cols → add_column_group adds 1 → 4 cols →
+        # add_subtotal_column adds 1 → 5 cols.
+        assert len(cols) == 5
+        # Row 1's last cell holds the aggregate expression.
+        rows = _body_rows(tablix)
+        last_cell = _row_cell_textboxes(rows[1])[-1]
+        assert _textrun_value(last_cell) == "=Sum(Fields!Amount.Value)"
+
+    def test_unlisted_rows_get_blank_cells(self, rdl_with_column_group):
+        add_subtotal_column(
+            path=str(rdl_with_column_group),
+            tablix_name="MainTable",
+            group_name="Date",
+            # No aggregate for row 0 — should be blank.
+            aggregates=[{"row": 1, "expression": "=Sum(Fields!Amount.Value)"}],
+        )
+        doc = RDLDocument.open(rdl_with_column_group)
+        tablix = _tablix(doc, "MainTable")
+        rows = _body_rows(tablix)
+        # Row 0 last cell exists but is blank.
+        last_cell = _row_cell_textboxes(rows[0])[-1]
+        assert _textrun_value(last_cell) == ""
+
+    def test_unknown_column_group_raises(self, rdl_with_column_group):
+        with pytest.raises(ElementNotFoundError, match="column-axis group"):
+            add_subtotal_column(
+                path=str(rdl_with_column_group),
+                tablix_name="MainTable",
+                group_name="NoSuchGroup",
+                aggregates=[{"row": 0, "expression": "=1"}],
+            )
+
+    def test_invalid_position_rejected(self, rdl_with_column_group):
+        with pytest.raises(ValueError, match="position"):
+            add_subtotal_column(
+                path=str(rdl_with_column_group),
+                tablix_name="MainTable",
+                group_name="Date",
+                aggregates=[{"row": 0, "expression": "=1"}],
+                position="middle",
+            )
+
+    def test_row_index_out_of_range_raises(self, rdl_with_column_group):
+        with pytest.raises(ElementNotFoundError, match="out of range"):
+            add_subtotal_column(
+                path=str(rdl_with_column_group),
+                tablix_name="MainTable",
+                group_name="Date",
+                aggregates=[{"row": 99, "expression": "=1"}],
+            )
+
+    def test_malformed_aggregate_entry_rejected(self, rdl_with_column_group):
+        with pytest.raises(ValueError, match="aggregate entry"):
+            add_subtotal_column(
+                path=str(rdl_with_column_group),
+                tablix_name="MainTable",
+                group_name="Date",
+                aggregates=[{"expression": "=1"}],  # missing 'row'
+            )
+
+    def test_round_trip_valid(self, rdl_with_column_group):
+        add_subtotal_column(
+            path=str(rdl_with_column_group),
+            tablix_name="MainTable",
+            group_name="Date",
+            aggregates=[{"row": 1, "expression": "=Sum(Fields!Amount.Value)"}],
+        )
+        RDLDocument.open(rdl_with_column_group).validate()
+
+    def test_position_before_prepends(self, rdl_with_column_group):
+        result = add_subtotal_column(
+            path=str(rdl_with_column_group),
+            tablix_name="MainTable",
+            group_name="Date",
+            aggregates=[{"row": 1, "expression": "=Sum(Fields!Amount.Value)"}],
+            position="before",
+        )
+        assert result["position"] == "before"
+        # Insertion before the group → column_index sits at the left
+        # edge of the group, never at the very end.
+        doc = RDLDocument.open(rdl_with_column_group)
+        tablix = _tablix(doc, "MainTable")
+        cols = find_children(tablix.find(f"{q('TablixBody')}/{q('TablixColumns')}"), "TablixColumn")
+        # 3 (fixture) + 1 (add_column_group) + 1 (add_subtotal_column) = 5.
+        assert len(cols) == 5
+
+
 class TestToolRegistration:
     def test_tool_registered(self):
         server = MCPServer()
         register_all_tools(server)
         assert "add_subtotal_row" in server._tools
+
+    def test_add_subtotal_column_registered(self):
+        server = MCPServer()
+        register_all_tools(server)
+        assert "add_subtotal_column" in server._tools

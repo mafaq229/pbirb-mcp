@@ -188,4 +188,111 @@ def set_page_orientation(path: str, orientation: str) -> dict[str, Any]:
     }
 
 
-__all__ = ["set_page_orientation", "set_page_setup"]
+# ---- set_body_size (v0.4 commit 20) --------------------------------------
+
+
+# Per RDL XSD, <Body> contains <Height> (and <ReportItems> + <Style>).
+# The body's <Width> is a SIBLING of <Body> inside <ReportSection> —
+# the ReportSection itself has children {Body, Width, Page, ...}. Both
+# control the rendering region; the asymmetry is a historical RDL quirk
+# rather than something we can paper over.
+_REPORT_SECTION_WIDTH_PRECEDED_BY = ("Body",)
+_REPORT_SECTION_WIDTH_FOLLOWED_BY = ("Page",)
+
+
+def _resolve_report_section(doc: RDLDocument) -> etree._Element:
+    section = doc.root.find(f".//{{{RDL_NS}}}ReportSections/{{{RDL_NS}}}ReportSection")
+    if section is None:
+        raise ValueError("report has no <ReportSection>")
+    return section
+
+
+def _set_or_create_text_in_section(section: etree._Element, local: str, value: str) -> bool:
+    """Set the text of a <ReportSection>/<local> element, creating it in
+    the right slot if absent. Returns True iff the value changed."""
+    node = find_child(section, local)
+    if node is not None:
+        if node.text == value:
+            return False
+        node.text = value
+        return True
+    node = etree.Element(q(local))
+    # Place at the canonical RDL position. <Width> goes after <Body>,
+    # before <Page>; we walk both lists to find the right anchor.
+    for follower_local in _REPORT_SECTION_WIDTH_FOLLOWED_BY:
+        anchor = find_child(section, follower_local)
+        if anchor is not None:
+            anchor.addprevious(node)
+            node.text = value
+            return True
+    for preceder_local in _REPORT_SECTION_WIDTH_PRECEDED_BY:
+        anchor = find_child(section, preceder_local)
+        if anchor is not None:
+            anchor.addnext(node)
+            node.text = value
+            return True
+    section.append(node)
+    node.text = value
+    return True
+
+
+def set_body_size(
+    path: str,
+    width: Optional[str] = None,
+    height: Optional[str] = None,
+) -> dict[str, Any]:
+    """Set the body's rendering region — distinct from page chrome.
+
+    ``<Body>/<Height>`` and ``<ReportSection>/<Width>`` (the body's
+    width sibling) are the canonical RDL elements for the body's
+    rendering bounds inside the page. ``set_page_setup`` touches
+    ``<Page>/<PageWidth>`` and ``<Page>/<PageHeight>`` (the paper
+    size); ``set_body_item_size`` touches the size of items INSIDE
+    the body. ``set_body_size`` is the missing third tool that the
+    2026-05-11 matrix-report session needed for a 16in landscape
+    page where the default 5in body width clipped the matrix.
+
+    Either or both kwargs must be supplied. Returns the canonical
+    mutator shape ``{kind: 'Body', changed: list[str]}``. ``changed``
+    lists ``'Width'`` / ``'Height'`` for whichever element was
+    rewritten (idempotent: same value → empty ``changed``).
+    """
+    if width is None and height is None:
+        raise ValueError("set_body_size requires at least one of width / height")
+
+    doc = RDLDocument.open(path)
+    section = _resolve_report_section(doc)
+
+    changed: list[str] = []
+
+    if width is not None and _set_or_create_text_in_section(section, "Width", width):
+        changed.append("Width")
+
+    if height is not None:
+        body = find_child(section, "Body")
+        if body is None:
+            raise ValueError("ReportSection has no <Body> element")
+        h_node = find_child(body, "Height")
+        if h_node is None:
+            # Per BodyType XSD, Height comes after ReportItems and
+            # before Style. Use the existing helper from page.py
+            # set_page_setup, which knows the canonical child-order.
+            h_node = etree.Element(q("Height"))
+            # Place before Style (the only sibling that comes after
+            # Height in BodyType).
+            style_anchor = find_child(body, "Style")
+            if style_anchor is not None:
+                style_anchor.addprevious(h_node)
+            else:
+                body.append(h_node)
+        if (h_node.text or "") != height:
+            h_node.text = height
+            changed.append("Height")
+
+    if changed:
+        doc.save()
+
+    return {"kind": "Body", "changed": changed}
+
+
+__all__ = ["set_body_size", "set_page_orientation", "set_page_setup"]

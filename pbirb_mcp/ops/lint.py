@@ -768,6 +768,36 @@ _RULES: dict[str, Callable[[RDLDocument], list[Issue]]] = {
 ALL_RULES = tuple(_RULES.keys())
 
 
+def _resolve_rules(rules: list[str] | None) -> list[str]:
+    """Validate and expand a ``rules`` selector. Unknown names raise."""
+    if rules is None:
+        return list(_RULES.keys())
+    unknown = [r for r in rules if r not in _RULES]
+    if unknown:
+        raise ValueError(f"unknown lint rule(s): {unknown}; known rules: {ALL_RULES}")
+    return list(rules)
+
+
+def _lint_doc(doc: RDLDocument, rules: list[str] | None = None) -> dict[str, Any]:
+    """Run lint rules against an already-open document.
+
+    The transaction commit path (v0.4 commit 10) and ``apply_edits``
+    (v0.4 commit 11) call this directly so they can lint the in-memory
+    tree without writing to a tempfile and re-parsing — important
+    because the on-disk file is intentionally stale during a
+    transaction.
+
+    Behaves identically to :func:`lint_report` but skips the
+    ``RDLDocument.open(path)`` step. Returns the same shape:
+    ``{issues, rules_run}``.
+    """
+    run = _resolve_rules(rules)
+    issues: list[Issue] = []
+    for name in run:
+        issues.extend(_RULES[name](doc))
+    return {"issues": issues, "rules_run": run}
+
+
 def lint_report(path: str, rules: list[str] | None = None) -> dict[str, Any]:
     """Run lint rules against an RDL.
 
@@ -778,19 +808,8 @@ def lint_report(path: str, rules: list[str] | None = None) -> dict[str, Any]:
     Returns ``{issues, rules_run}`` where ``issues`` is a list of
     ``{severity, rule, location, message, suggestion?}`` dicts.
     """
-    if rules is not None:
-        unknown = [r for r in rules if r not in _RULES]
-        if unknown:
-            raise ValueError(f"unknown lint rule(s): {unknown}; known rules: {ALL_RULES}")
-        run = list(rules)
-    else:
-        run = list(_RULES.keys())
-
     doc = RDLDocument.open(path)
-    issues: list[Issue] = []
-    for name in run:
-        issues.extend(_RULES[name](doc))
-    return {"issues": issues, "rules_run": run}
+    return _lint_doc(doc, rules)
 
 
-__all__ = ["lint_report", "ALL_RULES"]
+__all__ = ["_lint_doc", "lint_report", "ALL_RULES"]

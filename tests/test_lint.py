@@ -74,6 +74,40 @@ class TestLintRegistry:
         assert result["rules_run"] == ["unused-data-source"]
 
 
+class TestLintDoc:
+    """v0.4 commit 12 — _lint_doc(doc) entry point.
+
+    Lets the transaction commit path (v0.4 commit 10) and apply_edits
+    (v0.4 commit 11) lint the in-memory tree without writing to a
+    tempfile and re-parsing. lint_report(path) is now a thin wrapper.
+    """
+
+    def test_lint_doc_matches_lint_report(self, rdl_path):
+        from pbirb_mcp.core.document import RDLDocument
+        from pbirb_mcp.ops.lint import _lint_doc
+
+        via_path = lint_report(str(rdl_path))
+        doc = RDLDocument.open(rdl_path)
+        via_doc = _lint_doc(doc)
+        assert via_path == via_doc
+
+    def test_lint_doc_honours_rules_subset(self, rdl_path):
+        from pbirb_mcp.core.document import RDLDocument
+        from pbirb_mcp.ops.lint import _lint_doc
+
+        doc = RDLDocument.open(rdl_path)
+        result = _lint_doc(doc, rules=["unused-data-source"])
+        assert result["rules_run"] == ["unused-data-source"]
+
+    def test_lint_doc_rejects_unknown_rule(self, rdl_path):
+        from pbirb_mcp.core.document import RDLDocument
+        from pbirb_mcp.ops.lint import _lint_doc
+
+        doc = RDLDocument.open(rdl_path)
+        with pytest.raises(ValueError, match="unknown lint rule"):
+            _lint_doc(doc, rules=["nope"])
+
+
 # ---- helpers for mutating the fixture -----------------------------------
 
 

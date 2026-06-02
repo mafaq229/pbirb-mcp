@@ -158,3 +158,93 @@ class TestEditAndRoundTrip:
         doc2 = RDLDocument.open(tmp_rdl)
         cmd2 = doc2.root.find(f".//{{{RDL_NS}}}CommandText")
         assert cmd2.text == "EVALUATE TOPN(10, 'Sales')"
+
+
+class TestBatch:
+    """v0.4 commit 6 — RDLDocument.batch context manager.
+
+    Building block for create_report (commit 13) and the transaction
+    commit path (commit 10). Independent of the transaction registry
+    that lands in commit 7 — this is just the "open once / save once
+    on clean exit / no save on exception" wrapper every multi-mutation
+    caller wants.
+    """
+
+    def test_two_mutations_one_save(self, tmp_rdl, monkeypatch):
+        """Multiple mutations inside one batch produce exactly one
+        on-disk write. We count save_as invocations to make the
+        single-save guarantee unambiguous (mtime checks are racy on
+        same-second writes)."""
+        call_count = {"n": 0}
+        original_save_as = RDLDocument.save_as
+
+        def counting_save_as(self, path):
+            call_count["n"] += 1
+            return original_save_as(self, path)
+
+        monkeypatch.setattr(RDLDocument, "save_as", counting_save_as)
+
+        with RDLDocument.batch(tmp_rdl) as doc:
+            # Two distinct in-memory mutations.
+            cmd = doc.root.find(f".//{{{RDL_NS}}}CommandText")
+            cmd.text = "EVALUATE TOPN(5, 'Sales')"
+            for ds in doc.root.iter(f"{{{RDL_NS}}}DataSet"):
+                ds.set("Name", ds.get("Name") + "_BATCHED")
+                break
+
+        assert call_count["n"] == 1, f"expected exactly one save_as call, got {call_count['n']}"
+
+        # Both mutations landed on disk.
+        reopened = RDLDocument.open(tmp_rdl)
+        assert reopened.root.find(f".//{{{RDL_NS}}}CommandText").text == "EVALUATE TOPN(5, 'Sales')"
+        assert any(
+            ds.get("Name", "").endswith("_BATCHED")
+            for ds in reopened.root.iter(f"{{{RDL_NS}}}DataSet")
+        )
+
+    def test_exception_inside_batch_leaves_file_untouched(self, tmp_rdl):
+        """The whole point of the batch wrapper: a half-applied edit
+        on failure must NEVER reach disk. The original bytes survive
+        verbatim — same sha256 as before the with-block."""
+        import hashlib
+
+        before = tmp_rdl.read_bytes()
+        before_sha = hashlib.sha256(before).hexdigest()
+        before_mtime = tmp_rdl.stat().st_mtime_ns
+
+        class _Boom(RuntimeError):
+            pass
+
+        with pytest.raises(_Boom), RDLDocument.batch(tmp_rdl) as doc:
+            cmd = doc.root.find(f".//{{{RDL_NS}}}CommandText")
+            cmd.text = "EVALUATE TOPN(99, 'Sales')"
+            raise _Boom("partway through")
+
+        after = tmp_rdl.read_bytes()
+        assert hashlib.sha256(after).hexdigest() == before_sha
+        assert tmp_rdl.stat().st_mtime_ns == before_mtime
+
+    def test_yields_a_real_rdldocument(self, tmp_rdl):
+        """The yielded object is the same RDLDocument shape every
+        handler already knows how to work with."""
+        with RDLDocument.batch(tmp_rdl) as doc:
+            assert isinstance(doc, RDLDocument)
+            assert doc.root.tag.endswith("}Report")
+            # Trivially valid — no edits.
+
+    def test_no_op_batch_still_saves_once(self, tmp_rdl, monkeypatch):
+        """Even an empty batch saves once on exit. The cost (re-serialize
+        + atomic rename) is acceptable: an empty batch is the caller's
+        intent to validate the round-trip, and skipping the save would
+        be a surprising silent no-op."""
+        call_count = {"n": 0}
+        original_save_as = RDLDocument.save_as
+
+        def counting_save_as(self, path):
+            call_count["n"] += 1
+            return original_save_as(self, path)
+
+        monkeypatch.setattr(RDLDocument, "save_as", counting_save_as)
+        with RDLDocument.batch(tmp_rdl):
+            pass
+        assert call_count["n"] == 1

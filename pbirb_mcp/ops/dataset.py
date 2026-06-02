@@ -239,8 +239,15 @@ def update_dataset_query(
     }
 
     if alias_strategy == "preserve_field_names":
-        new_columns, dax_warnings = _extract_dax_field_names(dax_body)
-        mapped, warnings = _remap_data_fields_positional(dataset, new_columns)
+        # v0.4 commit 16 BUG FIX — extract qualified Table[Col] DataField
+        # targets, not just bare column names. The pre-fix behaviour
+        # stripped the table prefix from <DataField> cells whenever the
+        # new DAX used bracket-token references, breaking field binding
+        # at preview time. For bare-token DAX (where no qualified form
+        # is recoverable), targets are None → the remap leaves the
+        # existing <DataField> untouched and surfaces a warning.
+        qualified_targets, dax_warnings = _extract_dax_qualified_data_fields(dax_body)
+        mapped, warnings = _remap_data_fields_positional(dataset, qualified_targets)
         result["alias_strategy"] = "preserve_field_names"
         result["mapped"] = mapped
         # Surface DAX-shape warnings alongside mapping warnings; they're
@@ -252,18 +259,32 @@ def update_dataset_query(
 
 
 def _remap_data_fields_positional(
-    dataset: etree._Element, new_columns: list[str]
+    dataset: etree._Element, qualified_targets: list[Optional[str]]
 ) -> tuple[list[dict[str, str]], list[str]]:
     """Zip a dataset's data-bound ``<Field>`` entries against the new
-    DAX column list and rewrite each ``<DataField>`` to the matching
-    new column. Calculated fields (``<Value>`` instead of ``<DataField>``)
-    are skipped — they're derived, not directly bound.
+    DAX qualified-target list and rewrite each ``<DataField>`` to the
+    matching new target.
+
+    ``qualified_targets[i]`` is either:
+
+    * A ``Table[Col]`` string (when the new DAX gave us a qualified
+      form to rewrite to). The corresponding ``<DataField>`` is
+      rewritten and the change recorded in ``mapped``.
+    * ``None`` (when the new DAX is bare-token / SELECTCOLUMNS-only
+      / otherwise unrecoverable to qualified form). The
+      corresponding ``<DataField>`` is left untouched — silently
+      stripping the table prefix used to break field binding
+      (v0.4 commit 16 bug fix).
+
+    Calculated fields (``<Value>`` instead of ``<DataField>``) are
+    skipped — they're derived, not directly bound.
 
     Returns ``(mapped, warnings)``:
 
     * ``mapped`` — list of ``{name, old, new}`` for each Field whose
       DataField was rewritten (only entries where old != new).
-    * ``warnings`` — count-mismatch and unmapped messages.
+    * ``warnings`` — count-mismatch, unmapped, and qualified-target-
+      unavailable messages.
     """
     fields_block = find_child(dataset, "Fields")
     data_fields: list[etree._Element] = []
@@ -276,29 +297,48 @@ def _remap_data_fields_positional(
     mapped: list[dict[str, str]] = []
     warnings: list[str] = []
     n_fields = len(data_fields)
-    n_cols = len(new_columns)
-    n_pairs = min(n_fields, n_cols)
+    n_targets = len(qualified_targets)
+    n_pairs = min(n_fields, n_targets)
 
+    skipped_for_lack_of_qualified = 0
     for i in range(n_pairs):
         field = data_fields[i]
         df = find_child(field, "DataField")
         old = df.text or ""
-        new = new_columns[i]
+        new = qualified_targets[i]
+        if new is None:
+            # The new DAX has no qualified form for this position
+            # (bare-token SUMMARIZECOLUMNS or SELECTCOLUMNS alias).
+            # Preserve the existing DataField — overwriting with a
+            # bare column name would break field binding at preview.
+            skipped_for_lack_of_qualified += 1
+            continue
         if old != new:
             df.text = encode_text(new)
             mapped.append({"name": field.get("Name") or "", "old": old, "new": new})
 
-    if n_fields > n_cols:
-        for f in data_fields[n_cols:]:
+    if skipped_for_lack_of_qualified:
+        warnings.append(
+            f"{skipped_for_lack_of_qualified} Field(s) left at their existing DataField "
+            "because the new DAX uses bare-token / SELECTCOLUMNS-alias shape "
+            "(no qualified Table[Col] form recoverable). Re-run "
+            "update_dataset_query with a bracketed-token DAX, or set "
+            "DataFields explicitly via add_dataset_field."
+        )
+
+    if n_fields > n_targets:
+        for f in data_fields[n_targets:]:
             warnings.append(
                 f"existing Field {f.get('Name')!r} unmapped — new DAX has only "
-                f"{n_cols} column(s); pass alias_strategy=None to keep its DataField as-is, "
+                f"{n_targets} column(s); pass alias_strategy=None to keep its DataField as-is, "
                 "or remove the Field."
             )
-    if n_cols > n_fields:
-        for col in new_columns[n_fields:]:
+    if n_targets > n_fields:
+        for target in qualified_targets[n_fields:]:
+            if target is None:
+                continue
             warnings.append(
-                f"new DAX column {col!r} has no Field — call add_dataset_field "
+                f"new DAX column {target!r} has no Field — call add_dataset_field "
                 "or refresh_dataset_fields to add bindings."
             )
 
@@ -1093,6 +1133,92 @@ def _extract_dax_field_names(command_text: str) -> tuple[list[str], list[str]]:
             )
 
     return fields, warnings
+
+
+def _extract_dax_qualified_data_fields(
+    command_text: str,
+) -> tuple[list[Optional[str]], list[str]]:
+    """Extract DataField *targets* from a DAX ``<CommandText>``.
+
+    Companion to :func:`_extract_dax_field_names` for the alias-remap
+    path: where the former returns bare column names (the Field's
+    ``Name`` attribute), this returns the qualified ``Table[Col]``
+    shape (the ``<DataField>`` text) — preserving the table prefix
+    RB Desktop writes.
+
+    Returns ``(targets, warnings)`` where ``targets[i]`` is either:
+
+    * A ``Table[Col]`` string (when the DAX uses
+      ``'Table'[Col]`` or ``Table[Col]`` bracket-token references).
+    * ``None`` (when the position came from a SELECTCOLUMNS quoted
+      alias or a bare-token reference — no qualified form
+      recoverable; the caller must NOT rewrite the existing
+      ``<DataField>`` for that position).
+
+    Warning shape matches :func:`_extract_dax_field_names` so the
+    caller can union the two streams without reshaping.
+    """
+    warnings: list[str] = []
+    targets: list[Optional[str]] = []
+    seen: set[str] = set()
+
+    def _add(value: Optional[str], dedup_key: str) -> None:
+        if dedup_key in seen:
+            return
+        seen.add(dedup_key)
+        targets.append(value)
+
+    # SELECTCOLUMNS path: aliases drive Field NAMES but give NO
+    # qualified DataField shape. Each alias-position contributes None
+    # to the targets list.
+    selectcolumns_matched = False
+    m = _DAX_SELECTCOLUMNS_RE.search(command_text)
+    if m is not None:
+        depth = 0
+        start = m.end() - 1
+        end = None
+        for i in range(start, len(command_text)):
+            ch = command_text[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        body = command_text[start + 1 : end] if end is not None else command_text[start + 1 :]
+        for alias in _DAX_QUOTED_ALIAS_RE.findall(body):
+            _add(None, alias)
+            selectcolumns_matched = True
+
+    # Bracket-token path: each 'Table'[Col] becomes a qualified
+    # Table[Col] target (the unquoted form RDL DataField uses).
+    if not selectcolumns_matched:
+        for token in _DAX_TABLE_COLUMN_RE.finditer(command_text):
+            col = (token.group("col") or "").strip()
+            quoted = token.group("quoted")
+            unquoted = token.group("unquoted")
+            table = (quoted if quoted is not None else unquoted) or ""
+            qualified = f"{table}[{col}]"
+            _add(qualified, col)
+
+    if not targets:
+        # Mirror the message style of _extract_dax_field_names so the
+        # warnings union sensibly.
+        if "EVALUATE" in command_text.upper() and "(" not in command_text:
+            warnings.append(
+                "DAX is a bare EVALUATE 'Table' shape — alias_strategy "
+                "cannot recover qualified DataField targets. DataFields "
+                "left untouched; use add_dataset_field explicitly per column."
+            )
+        else:
+            warnings.append(
+                "DAX shape has no recoverable qualified Table[Col] form "
+                "(bare-token / SELECTCOLUMNS-alias only). DataFields left "
+                "untouched to avoid breaking field binding."
+            )
+
+    return targets, warnings
 
 
 def refresh_dataset_fields(

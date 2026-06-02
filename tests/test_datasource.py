@@ -268,6 +268,137 @@ class TestAddDataSource:
         )
         RDLDocument.open(rdl_path).validate()
 
+    def test_provider_sql_is_default_back_compat(self, rdl_path):
+        """The default provider must stay 'sql' so existing callers see
+        no byte-level surprise — same DataProvider, same ConnectString
+        shape, same <rd:SecurityType> as before v0.4.
+        """
+        add_data_source(
+            path=str(rdl_path),
+            name="LegacyDefault",
+            workspace_url="LegacyWS",
+            dataset_name="LegacyDS",
+        )
+        result = get_data_source(path=str(rdl_path), name="LegacyDefault")
+        assert result["data_provider"] == "SQL"
+        assert "powerbi://api.powerbi.com" in result["connect_string"]
+        assert "LegacyWS" in result["connect_string"]
+        # SQL shape keeps the legacy <rd:SecurityType> element.
+        assert result["security_type"] == "Integrated"
+
+
+class TestAddDataSourcePbidataset:
+    """v0.4 — `provider="pbidataset"` emits the modern PBI Desktop shape:
+
+    * ``<DataProvider>PBIDATASET</DataProvider>``
+    * ``<ConnectString>Data Source=pbiazure://api.powerbi.com/;Initial
+      Catalog=<dataset>;Integrated Security=ClaimsToken``
+    * Adds ``<rd:PowerBIWorkspaceName>`` and ``<rd:PowerBIDatasetName>``
+      siblings for human-readable display in Report Builder.
+    * Omits ``<rd:SecurityType>`` (auth lives in the ConnectString).
+
+    Recognised round-trip-safe by ``_is_pbidataset_dataset`` so the
+    PBIDATASET ``@``-prefix defence kicks in on datasets bound to this
+    source.
+    """
+
+    def test_emits_modern_pbidataset_shape(self, rdl_path):
+        result = add_data_source(
+            path=str(rdl_path),
+            name="ModernSource",
+            workspace_url="ADNOC",
+            dataset_name="RAG Report",
+            provider="pbidataset",
+        )
+        assert result["data_provider"] == "PBIDATASET"
+        assert "pbiazure://api.powerbi.com" in result["connect_string"]
+        assert "Initial Catalog=RAG Report" in result["connect_string"]
+        assert "Integrated Security=ClaimsToken" in result["connect_string"]
+
+    def test_emits_human_readable_workspace_and_dataset_siblings(self, rdl_path):
+        from pbirb_mcp.core.xpath import RD_NS
+
+        add_data_source(
+            path=str(rdl_path),
+            name="ModernSource",
+            workspace_url="ADNOC",
+            dataset_name="RAG Report",
+            provider="pbidataset",
+        )
+        doc = RDLDocument.open(rdl_path)
+        ds = next(
+            d for d in doc.root.iter(f"{{{RDL_NS}}}DataSource") if d.get("Name") == "ModernSource"
+        )
+        assert ds.find(f"{{{RD_NS}}}PowerBIWorkspaceName").text == "ADNOC"
+        assert ds.find(f"{{{RD_NS}}}PowerBIDatasetName").text == "RAG Report"
+
+    def test_pbidataset_shape_recognised_by_is_pbidataset_helper(self, rdl_path):
+        """The ``@``-prefix defence depends on `_is_pbidataset_dataset`
+        recognising the new shape. Verify it does by adding a query
+        parameter with a leading '@' and asserting it gets stripped.
+        """
+        from pbirb_mcp.ops.dataset import _is_pbidataset_dataset
+
+        add_data_source(
+            path=str(rdl_path),
+            name="ModernSource",
+            workspace_url="ADNOC",
+            dataset_name="RAG Report",
+            provider="pbidataset",
+        )
+        doc = RDLDocument.open(rdl_path)
+        # Build a synthetic dataset bound to ModernSource and check the
+        # helper directly — cheaper than driving the full DAX path.
+        from lxml import etree
+
+        from pbirb_mcp.core.xpath import q
+
+        ds_root = doc.root.find(f"{{{RDL_NS}}}DataSets")
+        synthetic = etree.SubElement(ds_root, q("DataSet"), Name="Probe")
+        query = etree.SubElement(synthetic, q("Query"))
+        etree.SubElement(query, q("DataSourceName")).text = "ModernSource"
+        assert _is_pbidataset_dataset(doc, synthetic) is True
+
+    def test_pbidataset_omits_security_type_element(self, rdl_path):
+        """The real PBIDATASET shape (see fixtures/RAG Report.rdl) does
+        NOT carry an <rd:SecurityType> element — auth is encoded in
+        Integrated Security=ClaimsToken inside the ConnectString.
+        """
+        from pbirb_mcp.core.xpath import RD_NS
+
+        add_data_source(
+            path=str(rdl_path),
+            name="ModernSource",
+            workspace_url="ADNOC",
+            dataset_name="RAG Report",
+            provider="pbidataset",
+        )
+        doc = RDLDocument.open(rdl_path)
+        ds = next(
+            d for d in doc.root.iter(f"{{{RDL_NS}}}DataSource") if d.get("Name") == "ModernSource"
+        )
+        assert ds.find(f"{{{RD_NS}}}SecurityType") is None
+
+    def test_unknown_provider_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="unknown provider"):
+            add_data_source(
+                path=str(rdl_path),
+                name="X",
+                workspace_url="W",
+                dataset_name="C",
+                provider="not-a-provider",
+            )
+
+    def test_round_trip_safe(self, rdl_path):
+        add_data_source(
+            path=str(rdl_path),
+            name="ModernSource",
+            workspace_url="ADNOC",
+            dataset_name="RAG Report",
+            provider="pbidataset",
+        )
+        RDLDocument.open(rdl_path).validate()
+
 
 class TestRemoveDataSource:
     def test_refuses_when_referenced(self, multi_path):

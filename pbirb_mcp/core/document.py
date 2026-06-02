@@ -59,6 +59,17 @@ class RDLDocument:
         path = Path(path)
         if not path.is_file():
             raise FileNotFoundError(path)
+        # v0.4 transaction interception: when an active editing
+        # transaction owns this path, return the live in-memory tree
+        # instead of re-parsing. Identity-equal across repeated open()
+        # calls — handlers that do `doc = RDLDocument.open(path)` reuse
+        # the same in-memory tree all transaction-aware tool calls
+        # share. Local import dodges the module-load circular dep.
+        from pbirb_mcp.core import transactions as _tx
+
+        existing = _tx.lookup_by_path(str(path.resolve()))
+        if existing is not None:
+            return existing.doc
         # Preserve everything: comments, CDATA, whitespace.
         parser = etree.XMLParser(
             remove_blank_text=False,
@@ -94,7 +105,49 @@ class RDLDocument:
     def save(self) -> None:
         self.save_as(self.path)
 
+    @classmethod
+    @contextlib.contextmanager
+    def batch(cls, path: PathLike):
+        """Open once / mutate many / save once on clean exit.
+
+        Building block for ``create_report`` and the transaction commit
+        path. Independent of the transaction registry (v0.4 commit 7) —
+        this is just the "open once / save once on clean exit / no save
+        on exception" wrapper.
+
+        Semantics:
+
+        * Yields a live :class:`RDLDocument` parsed from ``path``.
+        * Calls :meth:`save` exactly once when the ``with``-block exits
+          cleanly — even when no mutations happened (an empty batch is
+          a valid round-trip check).
+        * On exception inside the ``with``-block, propagates the
+          exception and does NOT call :meth:`save`. The file on disk
+          stays byte-identical to its pre-call state.
+
+        Use this whenever a caller plans more than one mutation against
+        the same RDL — a 5-edit sequence inside one ``batch`` does one
+        parse + one serialize + one atomic rename, instead of 5.
+        """
+        doc = cls.open(path)
+        try:
+            yield doc
+        except Exception:
+            # Re-raise without saving. Disk file untouched.
+            raise
+        else:
+            doc.save()
+
     def save_as(self, path: PathLike) -> None:
+        # v0.4 transaction interception: while this document is inside
+        # an active editing transaction, every save_as call silently
+        # no-ops. commit_editing_transaction clears the flag and re-
+        # calls save_as so the actual on-disk write happens exactly
+        # once, at commit time. Default-False on RDLDocument instances
+        # that never enter a transaction — no impact on existing
+        # callers.
+        if getattr(self, "_in_transaction", False):
+            return
         path = Path(path)
         tmp = path.with_name(path.name + ".tmp")
         try:
