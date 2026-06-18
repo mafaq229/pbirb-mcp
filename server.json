@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.mafaq229/pbirb-mcp",
+  "description": "MCP server for editing Power BI Report Builder paginated reports (RDL)",
+  "repository": {
+    "url": "https://github.com/mafaq229/pbirb-mcp",
+    "source": "github"
+  },
+  "version": "0.4.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "pbirb-mcp",
+      "version": "0.4.1",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

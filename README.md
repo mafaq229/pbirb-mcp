@@ -538,3 +538,12 @@ paginated reports use the same RDL 2016 schema as SSRS, but:
 `pbirb-mcp` is built around lxml so a no-op edit produces a byte-identical
 file, addresses every element by stable name (never index), and treats
 "opens cleanly in Report Builder" as the actual integration test.
+
+---
+
+<!-- Ownership marker read by registry.modelcontextprotocol.io to verify this
+     PyPI package maps to the io.github.mafaq229/pbirb-mcp registry entry. -->
+
+```
+mcp-name: io.github.mafaq229/pbirb-mcp
+```

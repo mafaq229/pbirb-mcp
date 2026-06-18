@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-18
+
+### Added
+- `server.json` manifest and an `mcp-name` marker in the README, enabling
+  submission to the official
+  [MCP Registry](https://registry.modelcontextprotocol.io).
+
+### Changed
+- `SERVER_VERSION` bumped to 0.4.1 to stay in lockstep with the package
+  version reported in `initialize` responses.
+
 ## [0.4.0] - 2026-05-17
 
 MINOR consolidating five phases of work (originally planned as
