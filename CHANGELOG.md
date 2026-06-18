@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+### Added
+- Claude Code plugin distribution. The repo now self-hosts a marketplace via
+  `.claude-plugin/marketplace.json` + `.claude-plugin/plugin.json`, so Claude
+  Code users can install with `/plugin marketplace add mafaq229/pbirb-mcp`
+  then `/plugin install pbirb-mcp@pbirb` (wires up the `uvx pbirb-mcp` server
+  automatically). No change to the published Python package.
+
 ## [0.4.1] - 2026-06-18
 
 ### Added

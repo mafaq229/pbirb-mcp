@@ -1,0 +1,28 @@
+{
+  "name": "pbirb-mcp",
+  "displayName": "Power BI Report Builder (RDL)",
+  "version": "0.4.1",
+  "description": "MCP server for editing Power BI Report Builder paginated reports (RDL)",
+  "author": {
+    "name": "Muhammad Afaq",
+    "email": "muhammadafaq1999@gmail.com",
+    "url": "https://github.com/mafaq229"
+  },
+  "homepage": "https://github.com/mafaq229/pbirb-mcp",
+  "repository": "https://github.com/mafaq229/pbirb-mcp",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "power-bi",
+    "report-builder",
+    "paginated-reports",
+    "rdl",
+    "ssrs"
+  ],
+  "mcpServers": {
+    "pbirb": {
+      "command": "uvx",
+      "args": ["pbirb-mcp"]
+    }
+  }
+}

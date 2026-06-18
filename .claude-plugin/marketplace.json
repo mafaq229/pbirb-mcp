@@ -1,0 +1,26 @@
+{
+  "name": "pbirb",
+  "description": "Power BI Report Builder paginated-report (RDL) tooling for Claude Code",
+  "owner": {
+    "name": "Muhammad Afaq",
+    "email": "muhammadafaq1999@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "pbirb-mcp",
+      "source": "./",
+      "description": "MCP server for editing Power BI Report Builder paginated reports (RDL) — 150+ tools covering datasets, layout, grouping, sorting, styling, page setup, and parameters.",
+      "version": "0.4.1",
+      "homepage": "https://github.com/mafaq229/pbirb-mcp",
+      "license": "MIT",
+      "keywords": [
+        "mcp",
+        "power-bi",
+        "report-builder",
+        "paginated-reports",
+        "rdl",
+        "ssrs"
+      ]
+    }
+  ]
+}

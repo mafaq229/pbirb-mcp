@@ -110,6 +110,14 @@ Or add to `.mcp.json` at the workspace root:
 }
 ```
 
+**Or install it as a Claude Code plugin** — one command instead of editing
+config by hand (it wires up the same `uvx pbirb-mcp` server for you):
+
+```bash
+/plugin marketplace add mafaq229/pbirb-mcp
+/plugin install pbirb-mcp@pbirb
+```
+
 ### 4. Smoke test
 
 In any chat, ask the model:
