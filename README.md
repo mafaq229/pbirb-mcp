@@ -6,10 +6,13 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 An MCP server for editing **Power BI Report Builder paginated reports** (`.rdl`)
-through Claude (Desktop, CLI, or any MCP client). Forty-plus tools cover the
-gaps that otherwise force hand-written XML: dataset filters, headers and
-footers, body composition, groupings, sorting, row visibility, conditional
-expressions, styling, page setup, advanced parameters, and embedded images.
+through Claude (Desktop, CLI, or any MCP client). 140+ tools cover the gaps
+that otherwise force hand-written XML: report creation, data sources and
+datasets, calculated fields, dataset and tablix filters, groupings (row,
+column, matrix), sorting, charts, headers and footers, body composition,
+layout containers, positioning, styling, page setup, pagination, advanced
+parameters, embedded images, interactivity (actions, tooltips, document
+map), transactions, and validation.
 
 The server speaks JSON-RPC 2.0 over stdio. It opens an `.rdl` from disk,
 mutates it in place via lxml, validates structure, and writes atomically — a
@@ -74,18 +77,20 @@ or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
   "mcpServers": {
     "pbirb": {
       "command": "uvx",
-      "args": ["pbirb-mcp"],
-      "env": {
-        "PBIRB_MCP_LOG_LEVEL": "INFO",
-        "PBIRB_MCP_LOG_FILE": "/tmp/pbirb-mcp.log"
-      }
+      "args": ["pbirb-mcp"]
     }
   }
 }
 ```
 
-Restart Claude Desktop. The hammer icon should show `pbirb` and the 40+ tools
+Restart Claude Desktop. The hammer icon should show `pbirb` and the 140+ tools
 listed below.
+
+To enable file logging, add an `env` block — but keep it platform-appropriate.
+`PBIRB_MCP_LOG_FILE` takes an OS-native path: a Unix path like
+`/tmp/pbirb-mcp.log` only works on macOS/Linux. On Windows use a Windows path
+(e.g. `%TEMP%\\pbirb-mcp.log`). See [Logging](#logging). When unset, logs go to
+stderr, which Claude Desktop captures in its MCP debug pane on every platform.
 
 For development against a local checkout, swap the `args` for
 `["--from", "/absolute/path/to/pbirb-mcp", "pbirb-mcp"]` so uvx runs
@@ -177,9 +182,14 @@ designer and renders in Preview against the bound dataset.
 
 ## Tool reference
 
-42 tools, grouped by RDL concern. Every tool takes a `path` argument
-(absolute path to the `.rdl`); the rest of the schema is in `tools/list`
-output and visible to the LLM at registration time.
+143 tools, grouped by RDL concern. The highlights of each group are tabled
+below; the authoritative, always-current list with full schemas is the
+server's `tools/list` output, visible to the LLM at registration time. Every
+tool takes a `path` argument (absolute path to the `.rdl`).
+
+Most mutating tools also accept an optional `transaction_id` so a multi-step
+edit batches into a single atomic save — see [Transactions](#transactions--validation)
+and [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md).
 
 ### Read-only inventory
 
@@ -189,21 +199,30 @@ multi-step edit.
 | Tool | Returns |
 |------|---------|
 | `describe_report` | Top-level inventory: data sources, datasets, parameters, tablixes, page setup |
-| `get_datasets` | Full DAX command text, fields, query parameters, dataset filters |
+| `get_datasets` / `get_dataset` | Full DAX command text, fields, query parameters, dataset filters (all, or one by name) |
+| `list_data_sources` / `get_data_source` | Data source inventory; one source's connection details |
 | `get_parameters` | Report parameters with data type, prompt, and flags (multi-value, hidden, nullable, allow-blank) |
 | `get_tablixes` | Tablix layout: columns, row/column groups, sort expressions, filters, visibility |
-| `list_tablix_filters` | Filters on a tablix in document order with stable indices |
-| `list_embedded_images` | Embedded image names + MIME types |
+| `list_tablix_filters` / `list_dataset_filters` | Filters in document order with stable indices |
+| `list_body_items` / `list_header_items` / `list_footer_items` | Named report items in each region |
+| `get_textbox` / `get_image` / `get_rectangle` / `get_chart` | Full properties of a named report item |
+| `list_embedded_images` / `get_embedded_image_data` | Embedded image names + MIME types; base64 bytes of one |
+| `get_expression_reference` | Cheat-sheet of common RDL expression patterns (`count_where`, `sum_where`, `iif_format` helpers build these) |
 
 ### Datasource & dataset
 
 | Tool | What it edits |
 |------|---------------|
 | `set_datasource_connection` | Repoint a `<DataSource>` at a Power BI XMLA endpoint. `DataProvider=SQL` (the AS provider id). |
+| `add_data_source` / `remove_data_source` / `rename_data_source` | Manage `<DataSource>` elements |
 | `update_dataset_query` | Replace `<DataSet>/<Query>/<CommandText>` with a DAX expression |
 | `add_query_parameter` | Append `<QueryParameter>` (e.g. `=Parameters!DateFrom.Value`) |
 | `update_query_parameter` | Change the value expression of an existing query parameter |
 | `remove_query_parameter` | Drop a query parameter (and clean up empty `<QueryParameters>`) |
+| `add_dataset_field` / `remove_dataset_field` | Manage `<Field>` entries on a dataset |
+| `add_calculated_field` / `remove_calculated_field` | Manage `<Value>`-backed calculated fields |
+| `refresh_dataset_fields` | Re-derive the `<Fields>` list from the query's column metadata |
+| `add_dataset_filter` / `remove_dataset_filter` | Filters applied at the dataset level (vs. tablix) |
 
 ### Tablix
 
@@ -211,12 +230,19 @@ multi-step edit.
 |------|---------------|
 | `add_tablix_filter` | Append a `<Filter>`. Operators: Equal, NotEqual, GreaterThan, In, Between, Like, TopN, ... |
 | `remove_tablix_filter` | Remove by ordinal index from `list_tablix_filters` |
-| `add_row_group` | Wrap the current row hierarchy in a new outer group + insert a header row |
-| `remove_row_group` | Inverse of `add_row_group` |
-| `set_group_sort` | Replace `<SortExpressions>` on a group |
-| `set_group_visibility` | Set `<Visibility>` on a group's TablixMember |
+| `add_row_group` / `remove_row_group` | Wrap the row hierarchy in a new outer group + header row (and its inverse) |
+| `add_column_group` / `remove_column_group` | Same, on the column axis |
+| `convert_to_matrix` | Promote a table to a matrix (row + column groups) — see [docs/MATRIX-cookbook.md](docs/MATRIX-cookbook.md) |
+| `set_tablix_corner` | Set the matrix corner cell text/expression |
+| `set_group_sort` / `set_column_group_sort` | Replace `<SortExpressions>` on a group |
+| `set_group_visibility` / `set_column_group_visibility` | Set `<Visibility>` on a group's TablixMember |
 | `set_detail_row_visibility` | Set `<Visibility>` on the Details group |
-| `set_row_height` | Set `<Height>` on the Nth body row |
+| `add_tablix_column` / `remove_tablix_column` | Add/drop a column across the tablix grid |
+| `add_static_row` / `add_static_column` | Insert a non-grouped row/column |
+| `add_subtotal_row` / `add_subtotal_column` | Insert an aggregate row/column on a group |
+| `set_cell_span` | Set `RowSpan` / `ColSpan` on a cell |
+| `set_column_width` / `set_row_height` | Set `<Width>` / `<Height>` on the Nth column/row |
+| `set_tablix_size` | Set the tablix's overall `<Width>` / `<Height>` |
 
 ### Page
 
@@ -255,12 +281,33 @@ appended to the body.
 | `insert_tablix_from_template` | A basic Tablix mirroring the fixture's shape — header row with the column name as a static label, detail row binding to `=Fields!<column>.Value`. One column per requested field. |
 | `insert_chart_from_template` | A basic Column chart: single category axis grouped by `category_field`, single Y series `=Sum(Fields!<value_field>.Value)`. Change `<Type>` post-insert (Bar / Line / Pie / etc.). |
 
+### Charts
+
+Refine a chart after `insert_chart_from_template` (or any existing `<Chart>`).
+
+| Tool | What it edits |
+|------|---------------|
+| `add_chart_series` / `remove_chart_series` | Manage Y-axis `<ChartSeries>` |
+| `set_chart_series_type` | Column / Bar / Line / Area / Pie / ... per series |
+| `set_chart_series_grouping` | Category/series grouping expression |
+| `set_chart_axis` | Category / value axis title, scale, format |
+| `set_chart_legend` | Legend visibility and placement |
+| `set_chart_data_labels` | Toggle and format data labels |
+| `set_chart_title` | Chart title text/expression |
+| `set_chart_palette` / `set_series_color` | Palette name; explicit per-series color |
+
 ### Styling
 
 | Tool | What it edits |
 |------|---------------|
 | `set_textbox_style` | Routes properties to the right nested `<Style>` node automatically: box-level (BackgroundColor, Border, VerticalAlign), paragraph-level (TextAlign), run-level (FontFamily, FontSize, FontWeight, Color, Format) |
+| `set_textbox_style_bulk` | Apply one style to many textboxes in a single call |
+| `set_textbox_runs` / `set_textbox_value` | Rich multi-run paragraph content; or replace the value |
+| `find_textboxes_by_style` / `find_textbox_by_value` | Locate textboxes to target follow-up edits |
+| `style_tablix_row` | Style every cell of a tablix row at once (header / detail / footer) |
 | `set_alternating_row_color` | Zebra-stripe a tablix's detail row with `BackgroundColor=IIf(RowNumber(Nothing) Mod 2, "<a>", "<b>")` |
+| `set_conditional_row_color` | Drive detail-row `BackgroundColor` from an expression |
+| `set_image_sizing` / `set_image_source` | Image `<Sizing>`; switch External / Embedded / Database source |
 
 ### Visibility
 
@@ -268,13 +315,52 @@ appended to the body.
 |------|---------------|
 | `set_element_visibility` | Set `<Visibility>` on any named ReportItem (Tablix, Textbox, Image, Rectangle, Subreport, Chart). Group / detail-row visibility have their own tools. |
 
+### Layout containers
+
+| Tool | What it builds |
+|------|----------------|
+| `add_rectangle` | A `<Rectangle>` container (group other items, control page breaks) |
+| `add_list` | A list region (single-column tablix template) |
+| `add_line` | A `<Line>` report item |
+
+### Positioning & sizing
+
+Move and resize named items in each region. Coordinates are RDL sizes
+(`"1in"`, `"2.5cm"`, ...).
+
+| Tool | What it edits |
+|------|---------------|
+| `set_body_item_position` / `set_header_item_position` / `set_footer_item_position` | `Top` / `Left` of a named item |
+| `set_body_item_size` / `set_header_item_size` / `set_footer_item_size` | `Width` / `Height` of a named item |
+| `set_body_size` | The `<Body>` region's overall height |
+
+### Interactivity
+
+| Tool | What it edits |
+|------|---------------|
+| `set_textbox_action` / `set_image_action` / `set_chart_series_action` | `<Action>`: hyperlink, drill-through, or bookmark |
+| `set_textbox_tooltip` | Textbox `<ToolTip>` |
+| `set_document_map_label` | `<DocumentMapLabel>` for the navigation pane |
+
+### Pagination
+
+| Tool | What it edits |
+|------|---------------|
+| `set_group_page_break` | `<Group><PageBreak>` (Start / End / Between) |
+| `set_repeat_on_new_page` | Repeat a group header/footer on each page |
+| `set_keep_together` / `set_keep_with_group` | Keep-together rendering hints |
+
 ### Parameters (advanced)
 
 | Tool | What it edits |
 |------|---------------|
+| `add_parameter` / `remove_parameter` / `rename_parameter` | Manage `<ReportParameter>` elements |
+| `set_parameter_prompt` / `set_parameter_type` | Prompt text; data type (Boolean / DateTime / Integer / Float / Text) |
 | `set_parameter_available_values` | Static `<ParameterValues>` list (strings or `{value, label}` dicts) **or** `<DataSetReference>` to a lookup dataset |
 | `set_parameter_default_values` | Static `<Values>` list **or** `<DataSetReference>` (defaults take ValueField only — defaults are values, not display strings) |
 | `update_parameter_advanced` | Toggle the four boolean flags: `multi_value`, `hidden`, `allow_null` (writes `<Nullable>`), `allow_blank` |
+| `reorder_parameters` | Reorder `<ReportParameters>` (controls prompt order) |
+| `set_parameter_layout` / `sync_parameter_layout` | Position parameters in the `<ReportParametersLayout>` grid |
 
 #### Cascading parameters
 
@@ -297,6 +383,44 @@ Report Builder figures out the dependency graph by parsing those expressions.
 
 Reference an embedded image with
 `add_*_image(image_source="Embedded", value="<image-name>")`.
+
+### Report lifecycle
+
+| Tool | What it does |
+|------|--------------|
+| `create_report` | Scratch-create a minimal valid `.rdl` to start from |
+| `duplicate_report` | Copy a report to a new path |
+| `backup_report` / `restore_from_backup` | Snapshot a report and roll back to it |
+
+### Expression helpers
+
+These don't mutate the report — they build correct RDL expression strings to
+pass into other tools (text, filters, conditional styling).
+
+| Tool | What it returns |
+|------|-----------------|
+| `count_where` / `sum_where` | A `Count`/`Sum` aggregate expression with an inline condition |
+| `iif_format` | An `IIf(...)` expression for conditional values/formatting |
+| `get_expression_reference` | A reference sheet of common RDL expression patterns |
+
+### Transactions & validation
+
+Batch many edits into one atomic save, and check correctness before/after.
+
+| Tool | What it does |
+|------|--------------|
+| `start_editing_transaction` / `commit_editing_transaction` / `cancel_editing_transaction` | Open an in-memory transaction, lint-and-save once, or discard. See [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md). |
+| `apply_edits` | Apply a list of tool calls in one transaction |
+| `dry_run_edit` | Preview an edit's effect without writing to disk |
+| `validate_report` / `verify_report` | Structural validation (and opt-in XSD validation against the bundled `reportdefinition.xsd`) |
+| `lint_report` | Surface warnings/errors Report Builder would flag |
+
+### Raw XML escape hatch
+
+| Tool | What it does |
+|------|--------------|
+| `raw_xml_view` | Read the XML under an XPath |
+| `raw_xml_replace` | Replace the XML at an XPath — last resort for anything without a dedicated tool |
 
 ---
 
@@ -379,25 +503,46 @@ pbirb-mcp/
 │   │   ├── document.py         # RDLDocument: open/save (lxml), atomic write
 │   │   ├── xpath.py            # Namespace-aware XPath helpers
 │   │   ├── ids.py              # Stable element addressing
+│   │   ├── encoding.py         # XML declaration / self-closing-tag fidelity
+│   │   ├── transactions.py     # In-memory transaction registry
 │   │   └── schema.py           # Structural + opt-in XSD validation
-│   ├── ops/
+│   ├── ops/                    # One module per RDL concern; wired into tools.py
 │   │   ├── reader.py           # describe / get_datasets / get_params / get_tablixes
-│   │   ├── datasource.py       # PBI XMLA connection authoring
-│   │   ├── dataset.py          # DAX body + query parameters
-│   │   ├── tablix.py           # Filters, groupings, sort, visibility, height
+│   │   ├── datasource.py       # PBI XMLA connection + data-source management
+│   │   ├── dataset.py          # DAX body, query params, fields, calc fields, filters
+│   │   ├── tablix.py           # Row/column groups, sort, visibility, matrix
+│   │   ├── tablix_columns.py   # Add/remove tablix columns
+│   │   ├── tablix_cells.py     # Cell span
+│   │   ├── tablix_static.py    # Static rows / columns
+│   │   ├── tablix_subtotals.py # Subtotal rows / columns
+│   │   ├── chart.py            # Chart series, axes, legend, labels, palette
 │   │   ├── page.py             # Page setup + orientation
+│   │   ├── layout.py           # Pagination (page breaks, keep-together, repeat)
 │   │   ├── header_footer.py    # Page header / footer authoring
-│   │   ├── body.py             # Body textboxes / images / removal
+│   │   ├── body.py             # Body textboxes / images / containers / removal
+│   │   ├── positioning.py      # Move / resize named items per region
 │   │   ├── templates.py        # Chart + tablix snippet builders
-│   │   ├── styling.py          # set_textbox_style + alternating row color
+│   │   ├── styling.py          # Textbox styles, runs, bulk, row styling, find
+│   │   ├── images.py           # Image sizing / source
+│   │   ├── actions.py          # Actions, tooltips, document-map labels
 │   │   ├── visibility.py       # Element-level visibility
-│   │   ├── parameters.py       # Available / default values, advanced flags
-│   │   └── embedded_images.py  # Base64 image embedding
-│   └── schemas/                # (Empty — drop the official RDL XSD here for opt-in XSD validation)
+│   │   ├── parameters.py       # Lifecycle, values, advanced flags, layout
+│   │   ├── embedded_images.py  # Base64 image embedding
+│   │   ├── expressions.py      # Expression-builder helpers (count/sum/iif)
+│   │   ├── filter_types.py     # Filter operator definitions
+│   │   ├── clone.py            # duplicate_report
+│   │   ├── scratch.py          # create_report
+│   │   ├── snapshot.py         # backup / restore
+│   │   ├── transactions.py     # start/commit/cancel + apply_edits
+│   │   ├── dry_run.py          # dry_run_edit
+│   │   ├── validate.py         # validate / verify
+│   │   ├── lint.py             # lint_report
+│   │   └── escape.py           # raw_xml_view / raw_xml_replace
+│   └── schemas/                # Bundled RDL 2016 XSD (reportdefinition.xsd) for opt-in validation
 └── tests/
     ├── fixtures/
     │   └── pbi_paginated_minimal.rdl  # Hand-tuned to match Report Builder's emitted style
-    └── test_*.py               # 270+ tests — every commit's tool plus round-trip invariants
+    └── test_*.py               # 1188 tests — every tool plus round-trip invariants
 ```
 
 ### Hard rules (enforced by tests)
@@ -460,7 +605,7 @@ PBIRB_MCP_LOG_LEVEL=DEBUG PBIRB_MCP_LOG_FILE=/tmp/pbirb-mcp.log pbirb-mcp
 .venv/bin/python -m pytest tests/ -v
 ```
 
-The suite is fast (~0.3s for 270+ tests) so re-run on every change.
+The suite is fast (~1.7s for 1188 tests) so re-run on every change.
 
 ### Smoke testing the live binary
 
