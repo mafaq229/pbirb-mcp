@@ -1,0 +1,18 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-x02-bp2mupru/report.rdl\n\nExport page 1 of this report as a PDF for me."
+ },
+ {
+  "role": "assistant",
+  "content": "I can't export this report to PDF. My tools edit the .rdl file's structure (datasets, parameters, tablixes, textboxes, charts, and so on) but cannot render pages or produce output files. I haven't changed anything in the report.\n\nYou can export page 1 yourself in a few ways:\n\n- **Power BI Report Builder:** Open `report.rdl`, select **View > Report** (or Run), then choose **Export > PDF**. In the export settings, set the page range to `1` to get only the first page.\n- **Power BI service:** If the report is published to a workspace, open it, select **Export > PDF**, and choose the page range in the export dialog.\n- **SQL Server Reporting Services (if you use it):** Open the report in the web portal, select **Export > PDF**, and set the page range.\n\nIf you want, I can make layout changes first, such as page size, margins, or page breaks, so that the content you want lands on page 1 before you export."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]

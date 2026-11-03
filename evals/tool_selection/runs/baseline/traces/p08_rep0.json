@@ -1,0 +1,58 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p08-yzluo4vq/report.rdl\n\nLay the parameter prompts out on a single row: DateFrom, DateTo, then Site."
+ },
+ {
+  "role": "tool_call",
+  "name": "get_parameters",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p08-yzluo4vq/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "[{\"name\": \"DateFrom\", \"data_type\": \"String\", \"prompt\": \"Date From\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}, {\"name\": \"DateTo\", \"data_type\": \"String\", \"prompt\": \"Date To\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}, {\"name\": \"Site\", \"data_type\": \"String\", \"prompt\": \"Site\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}]"
+ },
+ {
+  "role": "tool_call",
+  "name": "raw_xml_view",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p08-yzluo4vq/report.rdl\",\n  \"xpath\": \"r:ReportParametersLayout\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "[]"
+ },
+ {
+  "role": "assistant",
+  "content": "No parameter layout exists yet, so I'll create one with a single row of three cells in the requested order."
+ },
+ {
+  "role": "tool_call",
+  "name": "set_parameter_layout",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p08-yzluo4vq/report.rdl\",\n  \"rows\": 1,\n  \"columns\": 3,\n  \"parameter_order\": [\n    \"DateFrom\",\n    \"DateTo\",\n    \"Site\"\n  ]\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"rows\": 1, \"columns\": 3, \"order\": [\"DateFrom\", \"DateTo\", \"Site\"], \"kind\": \"ReportParametersLayout\", \"changed\": true}"
+ },
+ {
+  "role": "tool_call",
+  "name": "verify_report",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p08-yzluo4vq/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"valid\": true, \"issues\": [{\"severity\": \"warning\", \"rule\": \"unused-data-source\", \"location\": \"DataSource[Name='LegacySQL']\", \"message\": \"DataSource 'LegacySQL' has no DataSet that references it\", \"suggestion\": \"remove the unused DataSource or wire a DataSet to it\"}, {\"severity\": \"warning\", \"rule\": \"unused-data-source\", \"location\": \"DataSource[Name='ScratchPowerQuery']\", \"message\": \"DataSource 'ScratchPowerQuery' has no DataSet that references it\", \"suggestion\": \"remove the unused DataSource or wire a DataSet to it\"}, {\"severity\": \"warning\", \"rule\": \"date-param-as-string\", \"location\": \"ReportParameter[Name='DateFrom']\", \"message\": \"parameter 'DateFrom' looks date-like but is typed as String; string equality with a Date column will mismatch at runtime\", \"suggestion\": \"set DataType to DateTime\"}, {\"severity\": \"warning\", \"rule\": \"date-param-as-string\", \"location\": \"ReportParameter[Name='DateTo']\", \"message\": \"parameter 'DateTo' looks date-like but is typed as String; string equality with a Date column will mismatch at runtime\", \"suggestion\": \"set DataType to DateTime\"}, {\"severity\": \"warning\", \"rule\": \"dataset-fields-out-of-sync\", \"location\": \"DataSet[Name='DataSet1']/Fields/Field[Name='Utilization']\", \"message\": \"<Field Name='Utilization'> is declared but the DAX <CommandText> does not appear to return that column\", \"suggestion\": \"rewrite the dataset query (update_dataset_query) or remove the orphan field (remove_dataset_field)\"}], \"xsd_used\": true}"
+ },
+ {
+  "role": "assistant",
+  "content": "The three parameter prompts now sit on one row, in the order Date From, Date To, Site. The report had no parameter layout before, so I created one with a single row and three columns. Nothing else in the report changed.\n\nThe validation pass flagged some existing issues I didn't touch: DateFrom and DateTo are typed as String though they look date-like, two unused data sources (LegacySQL and ScratchPowerQuery), and a `Utilization` field that the dataset query doesn't return. I can address any of those if you want."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]

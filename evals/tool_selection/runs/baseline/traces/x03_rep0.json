@@ -1,0 +1,18 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-x03-3o1owgti/report.rdl\n\nSet up an email subscription that sends this report every Monday at 8am."
+ },
+ {
+  "role": "assistant",
+  "content": "I can't set up that subscription with the tools I have. They edit the .rdl file itself (datasets, parameters, tablixes, charts, layout), but email subscriptions are stored on the Power BI Report Server or Power BI Service, not in the report file. I haven't changed the report.\n\nTo set it up manually:\n\n1. Publish the report to a Power BI workspace (or to Report Server) if it isn't there already.\n2. Open the report in the Power BI Service and select **Subscribe** (or **Subscriptions** > **Add subscription**). On Report Server, use **Subscriptions** > **New Subscription** > **Email**.\n3. Add recipients, set the subject and message, and attach or embed the format you want.\n4. Set the schedule to **Weekly**, with **Monday** selected and the time set to **8:00 AM**, then save.\n\nIf the report has parameters, set their values in the subscription before saving, since subscriptions run without anyone entering them."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]

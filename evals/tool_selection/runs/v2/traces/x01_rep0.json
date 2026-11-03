@@ -1,0 +1,18 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-x01-zf8glsmv/report.rdl\n\nPublish this report to the Finance workspace in the Power BI service."
+ },
+ {
+  "role": "assistant",
+  "content": "I can't publish this report to the Power BI service or the Finance workspace. My tools only read and edit the .rdl file on your machine. They have no connection to Power BI or workspaces.\n\nYou can publish it yourself in one of these ways:\n\n- **Power BI service:** Sign in at app.powerbi.com, open the Finance workspace, select **Upload** > **Browse**, and choose the .rdl file. Note that the upload may need a supported Power BI Pro or Premium Per User license, depending on your tenant.\n- **Power BI Report Builder:** Open the file, select **File** > **Save As** > **Power BI Report Server** or **Power BI service**, then choose the Finance workspace.\n- **PowerShell:** Use the MicrosoftPowerBIMgmt module and `New-PowerBIReport -Path <file> -WorkspaceId <id> -Name <name>`. You'll need the Finance workspace ID.\n\nBefore you upload, I can run a static check on the file to catch structural problems. I can also review the data sources, since paginated reports in the service need credentials configured for them after upload."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]

@@ -1,0 +1,45 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p08-rqdynx0a/report.rdl\n\nLay the parameter prompts out on a single row: DateFrom, DateTo, then Site."
+ },
+ {
+  "role": "tool_call",
+  "name": "get_parameters",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p08-rqdynx0a/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "[{\"name\": \"DateFrom\", \"data_type\": \"String\", \"prompt\": \"Date From\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}, {\"name\": \"DateTo\", \"data_type\": \"String\", \"prompt\": \"Date To\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}, {\"name\": \"Site\", \"data_type\": \"String\", \"prompt\": \"Site\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}]"
+ },
+ {
+  "role": "tool_call",
+  "name": "set_parameter_layout",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p08-rqdynx0a/report.rdl\",\n  \"rows\": 1,\n  \"columns\": 3,\n  \"parameter_order\": [\n    \"DateFrom\",\n    \"DateTo\",\n    \"Site\"\n  ]\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"rows\": 1, \"columns\": 3, \"order\": [\"DateFrom\", \"DateTo\", \"Site\"], \"kind\": \"ReportParametersLayout\", \"changed\": true}"
+ },
+ {
+  "role": "tool_call",
+  "name": "verify_report",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p08-rqdynx0a/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"valid\": true, \"issues\": [{\"severity\": \"warning\", \"rule\": \"unused-data-source\", \"location\": \"DataSource[Name='LegacySQL']\", \"message\": \"DataSource 'LegacySQL' has no DataSet that references it\", \"suggestion\": \"remove the unused DataSource or wire a DataSet to it\"}, {\"severity\": \"warning\", \"rule\": \"unused-data-source\", \"location\": \"DataSource[Name='ScratchPowerQuery']\", \"message\": \"DataSource 'ScratchPowerQuery' has no DataSet that references it\", \"suggestion\": \"remove the unused DataSource or wire a DataSet to it\"}, {\"severity\": \"warning\", \"rule\": \"date-param-as-string\", \"location\": \"ReportParameter[Name='DateFrom']\", \"message\": \"parameter 'DateFrom' looks date-like but is typed as String; string equality with a Date column will mismatch at runtime\", \"suggestion\": \"set DataType to DateTime\"}, {\"severity\": \"warning\", \"rule\": \"date-param-as-string\", \"location\": \"ReportParameter[Name='DateTo']\", \"message\": \"parameter 'DateTo' looks date-like but is typed as String; string equality with a Date column will mismatch at runtime\", \"suggestion\": \"set DataType to DateTime\"}, {\"severity\": \"warning\", \"rule\": \"dataset-fields-out-of-sync\", \"location\": \"DataSet[Name='DataSet1']/Fields/Field[Name='Utilization']\", \"message\": \"<Field Name='Utilization'> is declared but the DAX <CommandText> does not appear to return that column\", \"suggestion\": \"rewrite the dataset query (update_dataset_query) or remove the orphan field (remove_dataset_field)\"}], \"xsd_used\": true}"
+ },
+ {
+  "role": "assistant",
+  "content": "The three parameter prompts are now set up to display on one row, in this order: Date From (DateFrom), Date To (DateTo), Site. The layout is one row by three columns, and the report is still valid.\n\nVerification raised some warnings I didn't act on, since they weren't part of the request:\n- **Date parameters typed as String:** DateFrom and DateTo are String parameters. The checker flags that string comparisons against a date column may not match at runtime. Changing them to DateTime would be a separate edit.\n- **Unused data sources:** LegacySQL and ScratchPowerQuery aren't referenced by any dataset.\n- **Orphan field:** DataSet1 declares a `Utilization` field that its DAX query doesn't appear to return."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]

@@ -1,0 +1,27 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-q01-whzod9iq/report.rdl\n\nWhat parameters does this report take, and what data type is each one?"
+ },
+ {
+  "role": "tool_call",
+  "name": "get_parameters",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-q01-whzod9iq/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "[{\"name\": \"DateFrom\", \"data_type\": \"String\", \"prompt\": \"Date From\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}, {\"name\": \"DateTo\", \"data_type\": \"String\", \"prompt\": \"Date To\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}, {\"name\": \"Site\", \"data_type\": \"String\", \"prompt\": \"Site\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}]"
+ },
+ {
+  "role": "assistant",
+  "content": "The report takes three parameters, all declared as **String**:\n\n| Parameter | Data type | Prompt | Nullable | Allow blank | Multi-value |\n|---|---|---|---|---|---|\n| `DateFrom` | String | Date From | No | No | No |\n| `DateTo` | String | Date To | No | No | No |\n| `Site` | String | Site | No | No | No |\n\nThe two date parameters are typed as String, not DateTime. If the dataset expects real dates, the values will need converting in the DAX or the parameter type will need changing."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]

@@ -1,0 +1,121 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d01-6m_qfi76/report.rdl\n\nClean up this report: remove the two data sources that nothing uses."
+ },
+ {
+  "role": "tool_call",
+  "name": "describe_report",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d01-6m_qfi76/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d01-6m_qfi76/report.rdl\", \"data_sources\": [\"FleetModel\", \"LegacySQL\", \"ScratchPowerQuery\"], \"datasets\": [\"DataSet1\"], \"parameters\": [\"DateFrom\", \"DateTo\", \"Site\"], \"tablixes\": [{\"name\": \"FleetTable\", \"rows\": 2, \"columns\": 6, \"has_groups\": false, \"has_subtotals\": false, \"has_spans\": false}], \"charts\": [\"HoursBySite\"], \"body_items\": [{\"name\": \"ReportTitle\", \"type\": \"Textbox\", \"top\": \"0in\", \"left\": \"0in\", \"width\": \"5in\", \"height\": \"0.4in\"}, {\"name\": \"FleetTable\", \"type\": \"Tablix\", \"top\": \"0.6in\", \"left\": \"0in\", \"width\": \"6in\", \"height\": \"0.5in\"}, {\"name\": \"TotalHoursLabel\", \"type\": \"Textbox\", \"top\": \"1.3in\", \"left\": \"3in\", \"width\": \"1in\", \"height\": \"0.25in\"}, {\"name\": \"TotalHoursValue\", \"type\": \"Textbox\", \"top\": \"1.3in\", \"left\": \"4in\", \"width\": \"1in\", \"height\": \"0.25in\"}, {\"name\": \"HoursBySite\", \"type\": \"Chart\", \"top\": \"2in\", \"left\": \"0in\", \"width\": \"6in\", \"height\": \"3in\"}], \"header_items\": [], \"footer_items\": [], \"page\": {\"height\": \"11in\", \"width\": \"8.5in\", \"margin_top\": \"1in\", \"margin_bottom\": \"1in\", \"margin_left\": \"1in\", \"margin_right\": \"1in\"}, \"parameter_layout\": null, \"embedded_images\": [], \"dataset_query_parameters\": [], \"designer_state_present\": false}"
+ },
+ {
+  "role": "tool_call",
+  "name": "tool_search_tool_bm25",
+  "content": "{\n  \"query\": \"delete data source remove dataset query data source reference\",\n  \"limit\": 10\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"found\": [\"describe_report\", \"remove_calculated_field\", \"remove_dataset_field\", \"add_calculated_field\", \"add_dataset_field\", \"set_parameter_available_values\", \"set_keep_with_group\", \"set_parameter_default_values\", \"get_parameters\", \"remove_query_parameter\"]}"
+ },
+ {
+  "role": "tool_call",
+  "name": "tool_search_tool_bm25",
+  "content": "{\n  \"query\": \"remove data source\",\n  \"limit\": 10\n}"
+ },
+ {
+  "role": "tool_call",
+  "name": "tool_search_tool_bm25",
+  "content": "{\n  \"query\": \"get dataset query data source name\",\n  \"limit\": 10\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"found\": [\"describe_report\", \"set_keep_with_group\", \"remove_calculated_field\", \"get_parameters\", \"set_parameter_default_values\", \"remove_chart_series\", \"remove_embedded_image\", \"set_parameter_available_values\", \"get_image\", \"remove_tablix_column\"]}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"found\": [\"remove_calculated_field\", \"describe_report\", \"add_calculated_field\", \"add_tablix_column\", \"set_parameter_available_values\", \"add_dataset_field\", \"get_datasets\", \"set_parameter_default_values\", \"remove_query_parameter\", \"add_query_parameter\"]}"
+ },
+ {
+  "role": "tool_call",
+  "name": "get_datasets",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d01-6m_qfi76/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "[{\"name\": \"DataSet1\", \"data_source\": \"FleetModel\", \"command_text\": \"EVALUATE\\nSUMMARIZECOLUMNS(\\n    'Assets'[AssetID],\\n    'Assets'[AssetName],\\n    'Assets'[Site],\\n    'Assets'[EquipmentType],\\n    'Usage'[ReportDate],\\n    \\\"OperatingHours\\\", SUM('Usage'[OperatingHours]),\\n    \\\"IdleHours\\\", SUM('Usage'[IdleHours]),\\n    \\\"FuelLitres\\\", SUM('Usage'[FuelLitres]),\\n    \\\"Utilization\\\", DIVIDE(SUM('Usage'[OperatingHours]), SUM('Usage'[ScheduledHours]))\\n)\", \"fields\": [{\"name\": \"AssetID\", \"data_field\": \"Assets[AssetID]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"AssetName\", \"data_field\": \"Assets[AssetName]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"Site\", \"data_field\": \"Assets[Site]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"EquipmentType\", \"data_field\": \"Assets[EquipmentType]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"ReportDate\", \"data_field\": \"Usage[ReportDate]\", \"value\": null, \"type_name\": \"System.DateTime\"}, {\"name\": \"OperatingHours\", \"data_field\": \"[OperatingHours]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"IdleHours\", \"data_field\": \"[IdleHours]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"FuelLitres\", \"data_field\": \"[FuelLitres]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"Utilization\", \"data_field\": \"[Utilization]\", \"value\": null, \"type_name\": \"System.Decimal\"}], \"query_parameters\": [], \"filters\": []}]"
+ },
+ {
+  "role": "tool_call",
+  "name": "tool_search_tool_bm25",
+  "content": "{\n  \"query\": \"delete DataSource connection string element from report\",\n  \"limit\": 10\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"found\": [\"remove_dataset_field\", \"set_datasource_connection\", \"list_data_sources\", \"raw_xml_replace\", \"raw_xml_view\", \"set_document_map_label\", \"get_embedded_image_data\", \"add_data_source\", \"get_dataset\", \"create_report\"]}"
+ },
+ {
+  "role": "tool_call",
+  "name": "list_data_sources",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d01-6m_qfi76/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "[{\"name\": \"FleetModel\", \"data_provider\": \"PBIDATASET\", \"connect_string\": \"Data Source=pbiazure://api.powerbi.com/;Initial Catalog=FleetOps;Integrated Security=ClaimsToken\", \"integrated_security\": null, \"shared_reference\": null, \"security_type\": null, \"data_source_id\": \"c0ec5c98-6471-41ac-94b1-48bdd919f61f\"}, {\"name\": \"LegacySQL\", \"data_provider\": \"SQL\", \"connect_string\": \"Data Source=powerbi://api.powerbi.com/v1.0/myorg/OldWorkspace;Initial Catalog=FleetOpsV1\", \"integrated_security\": true, \"shared_reference\": null, \"security_type\": \"Integrated\", \"data_source_id\": \"5618ab1a-ee70-48e9-9675-830cfa3a7d50\"}, {\"name\": \"ScratchPowerQuery\", \"data_provider\": \"SQL\", \"connect_string\": \"Data Source=powerbi://api.powerbi.com/v1.0/myorg/Sandbox;Initial Catalog=Scratch\", \"integrated_security\": true, \"shared_reference\": null, \"security_type\": \"Integrated\", \"data_source_id\": \"58e5e2a6-a1c1-485f-8a4c-311691c3625b\"}]"
+ },
+ {
+  "role": "tool_call",
+  "name": "raw_xml_view",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d01-6m_qfi76/report.rdl\",\n  \"xpath\": \".//r:DataSets/r:DataSet/r:Query/r:DataSourceName | .//r:*[contains(text(),'LegacySQL') or contains(text(),'ScratchPowerQuery')]\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "[\"<DataSourceName xmlns=\\\"http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition\\\" xmlns:rd=\\\"http://schemas.microsoft.com/SQLServer/reporting/reportdesigner\\\">FleetModel</DataSourceName>\"]"
+ },
+ {
+  "role": "tool_call",
+  "name": "raw_xml_view",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d01-6m_qfi76/report.rdl\",\n  \"xpath\": \"r:DataSources\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "[\"<DataSources xmlns=\\\"http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition\\\" xmlns:rd=\\\"http://schemas.microsoft.com/SQLServer/reporting/reportdesigner\\\"><DataSource Name=\\\"FleetModel\\\"><ConnectionProperties><DataProvider>PBIDATASET</DataProvider><ConnectString>Data Source=pbiazure://api.powerbi.com/;Initial Catalog=FleetOps;Integrated Security=ClaimsToken</ConnectString></ConnectionProperties><rd:DataSourceID>c0ec5c98-6471-41ac-94b1-48bdd919f61f</rd:DataSourceID><rd:PowerBIWorkspaceName>FleetAnalytics</rd:PowerBIWorkspaceName><rd:PowerBIDatasetName>FleetOps</rd:PowerBIDatasetName></DataSource><DataSource Name=\\\"LegacySQL\\\"><ConnectionProperties><DataProvider>SQL</DataProvider><ConnectString>Data Source=powerbi://api.powerbi.com/v1.0/myorg/OldWorkspace;Initial Catalog=FleetOpsV1</ConnectString><IntegratedSecurity>true</IntegratedSecurity></ConnectionProperties><rd:SecurityType>Integrated</rd:SecurityType><rd:DataSourceID>5618ab1a-ee70-48e9-9675-830cfa3a7d50</rd:DataSourceID></DataSource><DataSource Name=\\\"ScratchPowerQuery\\\"><ConnectionProperties><DataProvider>SQL</DataProvider><ConnectString>Data Source=powerbi://api.powerbi.com/v1.0/myorg/Sandbox;Initial Catalog=Scratch</ConnectString><IntegratedSecurity>true</IntegratedSecurity></ConnectionProperties><rd:SecurityType>Integrated</rd:SecurityType><rd:DataSourceID>58e5e2a6-a1c1-485f-8a4c-311691c3625b</rd:DataSourceID></DataSource></DataSources>\"]"
+ },
+ {
+  "role": "assistant",
+  "content": "No tool deletes a data source directly, but the `<DataSources>` block is plain XML, so I can rewrite it to keep only FleetModel, the one source DataSet1 uses."
+ },
+ {
+  "role": "tool_call",
+  "name": "raw_xml_replace",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d01-6m_qfi76/report.rdl\",\n  \"xpath\": \"r:DataSources\",\n  \"content\": \"<DataSources xmlns=\\\"http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition\\\" xmlns:rd=\\\"http://schemas.microsoft.com/SQLServer/reporting/reportdesigner\\\"><DataSource Name=\\\"FleetModel\\\"><ConnectionProperties><DataProvider>PBIDATASET</DataProvider><ConnectString>Data Source=pbiazure://api.powerbi.com/;Initial Catalog=FleetOps;Integrated Security=ClaimsToken</ConnectString></ConnectionProperties><rd:DataSourceID>c0ec5c98-6471-41ac-94b1-48bdd919f61f</rd:DataSourceID><rd:PowerBIWorkspaceName>FleetAnalytics</rd:PowerBIWorkspaceName><rd:PowerBIDatasetName>FleetOps</rd:PowerBIDatasetName></DataSource></DataSources>\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"xpath\": \"r:DataSources\", \"kind\": \"DataSources\", \"changed\": true}"
+ },
+ {
+  "role": "tool_call",
+  "name": "list_data_sources",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d01-6m_qfi76/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "[{\"name\": \"FleetModel\", \"data_provider\": \"PBIDATASET\", \"connect_string\": \"Data Source=pbiazure://api.powerbi.com/;Initial Catalog=FleetOps;Integrated Security=ClaimsToken\", \"integrated_security\": null, \"shared_reference\": null, \"security_type\": null, \"data_source_id\": \"c0ec5c98-6471-41ac-94b1-48bdd919f61f\"}]"
+ },
+ {
+  "role": "assistant",
+  "content": "I removed the two unused data sources, LegacySQL and ScratchPowerQuery. Only FleetModel is left, and it's the source DataSet1 reads from. I checked the report for any other references to the two removed sources and found none.\n\nNo tool in this toolset deletes a data source, so I rewrote the `<DataSources>` block directly in the report XML. FleetModel's definition is unchanged, and nothing else in the report was touched."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 0.0, 'raw_xml': 1.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]
