@@ -64,7 +64,11 @@ class TestLintRegistry:
         result = lint_report(str(rdl_path))
         assert result["issues"] == []
         assert set(result["rules_run"]) == set(ALL_RULES)
-        assert len(ALL_RULES) == 19
+        assert len(ALL_RULES) == len(set(ALL_RULES))
+        # The core rules are always present (families in ops/lint_rules/ add more).
+        from pbirb_mcp.ops.lint import _RULES
+
+        assert len(_RULES) >= 19
 
     def test_unknown_rule_rejected(self, rdl_path):
         with pytest.raises(ValueError, match="unknown lint rule"):
@@ -589,3 +593,22 @@ def test_ancestor_chain_keeps_three_nearest_named_ancestors():
     assert _ancestor_chain(leaf) == "B[Name='b']>C[Name='c']>D[Name='d']>F"
     assert _ancestor_chain(root.find(".//D")) == "B[Name='b']>C[Name='c']>D[Name='d']"
     assert _ancestor_chain(etree.fromstring("<X><Y/></X>").find("Y")) == "(unnamed)"
+
+
+def test_lint_rules_package_modules_are_registered(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from pbirb_mcp.ops import lint_rules
+
+    fake = types.ModuleType("pbirb_mcp.ops.lint_rules.zz_fake")
+    fake.RULES = {"zz-fake-rule": lambda doc: []}
+    monkeypatch.setitem(sys.modules, "pbirb_mcp.ops.lint_rules.zz_fake", fake)
+    real_iter = lint_rules.pkgutil.iter_modules
+
+    def iter_modules(path):
+        yield from real_iter(path)
+        yield types.SimpleNamespace(name="zz_fake")
+
+    monkeypatch.setattr(lint_rules.pkgutil, "iter_modules", iter_modules)
+    assert "zz-fake-rule" in lint_rules.load()

@@ -1,6 +1,8 @@
 """Static-analysis lint rules (Phase 7 commit 31; v0.3.1 added rule 16; #20 rules 17-18; #42 rule 19).
 
-Nineteen rules driven by the v0.2/v0.3 sweep feedback. Each rule is a
+Core rules driven by the v0.2/v0.3 sweep feedback live here; further
+rule families live in :mod:`pbirb_mcp.ops.lint_rules` (one module each,
+auto-registered). Each rule is a
 small pure function that takes the open :class:`RDLDocument` and
 returns a list of issue dicts:
 
@@ -13,7 +15,7 @@ returns a list of issue dicts:
 The shape mirrors :mod:`pbirb_mcp.ops.validate` so :func:`verify_report`
 (commit 33) can union the two streams without reshaping.
 
-Rules (19):
+Core rules (19):
 
 * ``multi-value-eq`` (warn) — multi-value param compared with ``=``.
 * ``unused-data-source`` (warn) — DataSource never referenced.
@@ -974,6 +976,16 @@ _RULES: dict[str, Callable[[RDLDocument], list[Issue]]] = {
     "invalid-identifier": _rule_invalid_identifier,
     "dangling-toggle-item": _rule_dangling_toggle_item,
 }
+
+# Rule families in pbirb_mcp/ops/lint_rules/ (auto-discovered). Imported
+# here, after every helper above is defined, because those modules import
+# helpers from this one.
+from pbirb_mcp.ops import lint_rules as _lint_rules  # noqa: E402
+
+for _name, _fn in _lint_rules.load().items():
+    if _name in _RULES:
+        raise ValueError(f"lint rule {_name!r} defined twice")
+    _RULES[_name] = _fn
 
 ALL_RULES = tuple(_RULES.keys())
 
