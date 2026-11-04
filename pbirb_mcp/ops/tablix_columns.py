@@ -505,14 +505,24 @@ def add_tablix_column(
         else:
             cells_root.insert(insert_at, new_cell)
 
+    # A column beside a column group (whose caption is a TablixHeader)
+    # needs a header of its own so every column keeps the same header
+    # depth (#29).
+    column_headers = tablix_headers.pad_header_levels(
+        tablix, tablix_headers.COLUMN, registry, f"{column_name}_Header"
+    )
+
     doc.save()
-    return {
+    result: dict[str, Any] = {
         "tablix": tablix_name,
         "column_name": column_name,
         "position": insert_at,
         "width": width,
         "textboxes": emitted,
     }
+    if column_headers:
+        result["column_header_textboxes"] = column_headers
+    return result
 
 
 def remove_tablix_column(

@@ -563,6 +563,25 @@ class TestColumnGroupShapeInvariant:
         # A table without row headers has no corner to grow.
         assert tablix.find(q("TablixCorner")) is None
 
+    @pytest.mark.parametrize("position", [None, 0])
+    def test_column_added_beside_the_group_gets_a_header(self, rdl_path, position):
+        from pbirb_mcp.ops.tablix_columns import add_tablix_column, remove_tablix_column
+
+        add_column_group(str(rdl_path), "MainTable", "Region", "=1")
+        result = add_tablix_column(
+            str(rdl_path), "MainTable", "Qty", "=Fields!Amount.Value", position=position
+        )
+        assert result["column_header_textboxes"] == ["Qty_Header"]
+        tablix = _tablix(RDLDocument.open(rdl_path), "MainTable")
+        assert shape_problems(tablix) == []
+        assert validate_report(str(rdl_path))["valid"]
+        if position == 0:
+            # (Removing a column by top-level member index past a group is
+            # remove_tablix_column's own leaf-indexing fix, #33.)
+            remove_tablix_column(str(rdl_path), "MainTable", "Qty")
+            tablix = _tablix(RDLDocument.open(rdl_path), "MainTable")
+            assert shape_problems(tablix) == []
+
     def test_refuses_tablix_whose_columns_already_disagree(self, rdl_path):
         doc = RDLDocument.open(rdl_path)
         members = _tablix(doc, "MainTable").find(
