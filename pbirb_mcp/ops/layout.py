@@ -30,7 +30,7 @@ from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_group
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, q
-from pbirb_mcp.ops.body import _ensure_body_report_items, _names_in, _resolve_body
+from pbirb_mcp.ops.body import _ensure_body_report_items, _resolve_body
 from pbirb_mcp.ops.tablix import _insert_member_child
 
 # ---- set_group_page_break -----------------------------------------------
@@ -391,6 +391,42 @@ def _coord_subtract(child_coord: str, container_coord: str) -> str:
     return units.format_size(units.to_inches(child_coord) - units.to_inches(container_coord), unit)
 
 
+# Slack for float round-off when comparing positions in inches (~0.00003mm).
+_CONTAIN_EPS_IN = 1e-6
+
+
+def _item_size_in(item: etree._Element, local: str) -> float:
+    """``item``'s ``<local>`` size in inches; a missing value counts as 0."""
+    node = find_child(item, local)
+    if node is None or not (node.text or "").strip():
+        return 0.0
+    try:
+        return units.to_inches(node.text)
+    except ValueError:
+        raise ValueError(
+            f"cannot place {item.get('Name')!r} in a rectangle: its <{local}> "
+            f"{node.text!r} is not a valid RDL size"
+        ) from None
+
+
+def _item_bbox_in(item: etree._Element) -> tuple[float, float, float, float]:
+    """``(top, left, bottom, right)`` of a body item in inches.
+
+    A missing ``Top`` / ``Left`` counts as 0 (the RDL default). A
+    ``<Line>``'s ``Width`` / ``Height`` are the vector from its start
+    point and may be negative, so its box is the span of both ends.
+    """
+    top = _item_size_in(item, "Top")
+    left = _item_size_in(item, "Left")
+    bottom = top + _item_size_in(item, "Height")
+    right = left + _item_size_in(item, "Width")
+    return (min(top, bottom), min(left, right), max(top, bottom), max(left, right))
+
+
+def _fmt_in(inches: float) -> str:
+    return units.format_size(inches, "in")
+
+
 def add_rectangle(
     path: str,
     name: str,
@@ -399,6 +435,7 @@ def add_rectangle(
     width: str,
     height: str,
     contained_items: list[str] | None = None,
+    fit: bool = False,
 ) -> dict[str, Any]:
     """Add a ``<Rectangle Name=name>`` to ``<Body>/<ReportItems>``.
 
@@ -411,16 +448,28 @@ def add_rectangle(
     from ``<Body>/<ReportItems>`` into the rectangle's
     ``<ReportItems>``, and its ``<Top>`` / ``<Left>`` are recalculated
     so the on-screen position is preserved (rectangle-local coords =
-    body-coords − rectangle-coords).
+    body-coords − rectangle-coords, written in the rectangle's unit).
+    Repeated names are moved once.
+
+    Every moved item must lie inside the rectangle — otherwise its
+    rectangle-local ``Top`` / ``Left`` would be negative, or it would
+    overflow the rectangle, and Report Builder rejects the file. A
+    misfit is refused, naming each offending item and by how much it
+    overflows. With ``fit=True`` the rectangle instead grows to the
+    union of the requested box and its children's boxes.
 
     Refuses if any named item isn't found in ``<Body>/<ReportItems>``,
-    or if a name collision exists at the body level.
+    or if a name collision exists at the body level. Nothing is
+    written on refusal.
 
-    Returns ``{name, kind: 'Rectangle', moved: list[str]}``.
+    Returns ``{name, kind: 'Rectangle', moved: list[str]}``; with
+    ``fit=True`` also ``{fitted: bool, top, left, width, height}`` —
+    the rectangle's final box and whether it had to grow.
     """
     names.validate_identifier(name, "rectangle")
     top, left, width, height = units.box(top, left, width, height)
-    contained_items = list(contained_items or [])
+    # De-duplicate while keeping the caller's order.
+    contained_items = list(dict.fromkeys(contained_items or []))
 
     doc = RDLDocument.open(path)
     names.ensure_unique(doc, name)
@@ -428,32 +477,78 @@ def add_rectangle(
     items = _ensure_body_report_items(body)
 
     # Resolve every contained item up front — fail before mutating the tree.
+    children: list[etree._Element] = []
     if contained_items:
-        present = _names_in(items)
-        missing = [n for n in contained_items if n not in present]
+        by_name = {el.get("Name"): el for el in list(items) if el.get("Name") is not None}
+        missing = [n for n in contained_items if n not in by_name]
         if missing:
             raise ElementNotFoundError(
                 f"cannot move into rectangle — items not in <Body>/<ReportItems>: {missing}"
             )
+        children = [by_name[n] for n in contained_items]
+
+    # ---- containment (#43) ---------------------------------------------
+    r_top, r_left = units.to_inches(top), units.to_inches(left)
+    r_bottom = r_top + units.to_inches(height)
+    r_right = r_left + units.to_inches(width)
+    boxes = [(child.get("Name"), _item_bbox_in(child)) for child in children]
+    fitted = False
+    if boxes:
+        u_top = min([r_top] + [b[0] for _, b in boxes])
+        u_left = min([r_left] + [b[1] for _, b in boxes])
+        u_bottom = max([r_bottom] + [b[2] for _, b in boxes])
+        u_right = max([r_right] + [b[3] for _, b in boxes])
+        grows = (
+            u_top < r_top - _CONTAIN_EPS_IN
+            or u_left < r_left - _CONTAIN_EPS_IN
+            or u_bottom > r_bottom + _CONTAIN_EPS_IN
+            or u_right > r_right + _CONTAIN_EPS_IN
+        )
+        if grows and not fit:
+            problems = []
+            for item_name, (b_top, b_left, b_bottom, b_right) in boxes:
+                over = []
+                for amount, side in (
+                    (r_top - b_top, "above"),
+                    (r_left - b_left, "left of"),
+                    (b_bottom - r_bottom, "below"),
+                    (b_right - r_right, "right of"),
+                ):
+                    if amount > _CONTAIN_EPS_IN:
+                        over.append(f"{_fmt_in(amount)} {side}")
+                if over:
+                    problems.append(f"{item_name!r} extends {', '.join(over)} the rectangle")
+            raise ValueError(
+                f"rectangle {name!r} (top {top}, left {left}, {width} x {height}) does "
+                f"not contain every item: {'; '.join(problems)}. Enlarge or move the "
+                "rectangle, or pass fit=true to grow it to its children."
+            )
+        if grows:
+            fitted = True
+            # Re-render only the edges that moved, in the caller's units.
+            if u_top < r_top - _CONTAIN_EPS_IN:
+                top = units.format_size(u_top, units.parse_size(top).unit)
+            if u_left < r_left - _CONTAIN_EPS_IN:
+                left = units.format_size(u_left, units.parse_size(left).unit)
+            r_top, r_left = units.to_inches(top), units.to_inches(left)
+            if u_bottom - r_top > units.to_inches(height) + _CONTAIN_EPS_IN:
+                height = units.format_size(u_bottom - r_top, units.parse_size(height).unit)
+            if u_right - r_left > units.to_inches(width) + _CONTAIN_EPS_IN:
+                width = units.format_size(u_right - r_left, units.parse_size(width).unit)
 
     rect = etree.Element(q("Rectangle"), Name=name)
 
-    if contained_items:
+    if children:
         rect_items = etree.SubElement(rect, q("ReportItems"))
-        # Find each child by name, recompute its position, move it.
-        for item_name in contained_items:
-            for child in list(items):
-                if child.get("Name") != item_name:
-                    continue
-                child_top = find_child(child, "Top")
-                child_left = find_child(child, "Left")
-                if child_top is not None and child_top.text:
-                    child_top.text = _coord_subtract(child_top.text, top)
-                if child_left is not None and child_left.text:
-                    child_left.text = _coord_subtract(child_left.text, left)
-                items.remove(child)
-                rect_items.append(child)
-                break
+        for child in children:
+            child_top = find_child(child, "Top")
+            child_left = find_child(child, "Left")
+            if child_top is not None and child_top.text:
+                child_top.text = _coord_subtract(child_top.text, top)
+            if child_left is not None and child_left.text:
+                child_left.text = _coord_subtract(child_left.text, left)
+            items.remove(child)
+            rect_items.append(child)
 
     # Per RDL XSD Rectangle child order — positional/style at the end.
     etree.SubElement(rect, q("KeepTogether")).text = "true"
@@ -467,11 +562,14 @@ def add_rectangle(
 
     items.append(rect)
     doc.save()
-    return {
+    result: dict[str, Any] = {
         "name": name,
         "kind": "Rectangle",
         "moved": list(contained_items),
     }
+    if fit:
+        result.update(fitted=fitted, top=top, left=left, width=width, height=height)
+    return result
 
 
 # ---- add_list (Phase 11 commit 42) --------------------------------------

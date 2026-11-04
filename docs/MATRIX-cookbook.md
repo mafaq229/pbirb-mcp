@@ -29,7 +29,7 @@ insert_tablix_from_template(
     path="/path/to/report.rdl",
     name="MainTable",
     dataset_name="MainDataset",
-    column_names=["ProductID", "ProductName", "Amount"],
+    columns=["ProductID", "ProductName", "Amount"],
     top="0.5in",
     left="0.5in",
     width="4in",
@@ -52,27 +52,31 @@ add_column_group(
     group_expression="=Fields!ProductID.Value",
 )
 
-# v0.4: drop the Details leaf so cells aggregate at the row-group level.
+# Turn it into a matrix: group captions become TablixHeaders, the
+# Details row aggregates at the row-group level (=Sum(Fields!Amount.Value)),
+# and the TablixCorner is created.
 convert_to_matrix(
     path="/path/to/report.rdl",
     tablix_name="MainTable",
     row_group="Region",
     column_group="Date",
+    aggregate="Sum",  # default
 )
 
-# v0.4: write the corner caption.
+# Write the corner caption (edits the corner cell in place).
 set_tablix_corner(
     path="/path/to/report.rdl",
     tablix_name="MainTable",
     text="Type",
 )
 
-# v0.4: add a Grand Total column with the aggregate per row.
+# Add a Grand Total column with the aggregate per row. The matrix body
+# is now a single row (row 0).
 add_subtotal_column(
     path="/path/to/report.rdl",
     tablix_name="MainTable",
     group_name="Date",
-    aggregates=[{"row": 1, "expression": "=Sum(Fields!Amount.Value)"}],
+    aggregates=[{"row": 0, "expression": "=Sum(Fields!Amount.Value)"}],
     position="after",  # canonical Grand Total slot
     width="1in",
 )
@@ -117,36 +121,61 @@ state. See `docs/TRANSACTIONS.md` for the full atomicity contract.
 
 ## Tool reference
 
-### `convert_to_matrix(path, tablix_name, row_group, column_group)`
+### `convert_to_matrix(path, tablix_name, row_group, column_group, aggregate='Sum')`
 
-Drops the `Details` `<TablixMember>` from the row hierarchy and
-removes the corresponding body row.
+Turns the grouped table into Report Builder's matrix shape:
 
-**Pre-conditions (all checked, ValueError on miss):**
-- `tablix_name` exists.
-- `row_group` is the `Name` of an existing
-  `<TablixMember>/<Group>` in the row hierarchy.
-- `column_group` is the `Name` of an existing
-  `<TablixMember>/<Group>` in the column hierarchy.
-- A `<Group Name="Details">` is still present in the row hierarchy.
+- **Row headers.** Every row group around the detail rows gets a
+  `<TablixHeader>`. The caption row `add_row_group` created moves into
+  it (the textbox keeps its name and style) and that row is deleted.
+- **Caption columns.** A body column whose data cell is exactly a row or
+  column group expression (here `ProductName` and `ProductID`) only
+  repeats a header, so it is removed. Its width becomes the row
+  header's `Size`. It stays, with a warning, when another kept row has
+  content in it or it is the column group's only column.
+- **Column titles.** The column-title row (`Product ID | … | Amount`) is
+  deleted. When two or more value columns remain, its captions become
+  column headers below the column group instead.
+- **Data row.** The `Details` row is kept and now renders once per
+  group. Its `=Fields!X.Value` cells (and plain arithmetic over fields)
+  become `=<aggregate>(…)`. Cells that already aggregate are left
+  alone, and anything more complex is left with a warning. Total and
+  footer rows are untouched.
+- **Corner.** Header levels are padded, and the `<TablixCorner>` is
+  created at column-header depth × row-header depth.
+
+**Pre-conditions (ValueError, file untouched):**
+- `row_group` is a dynamic row group that encloses the detail rows. It
+  can't be the detail group itself.
+- `column_group` is a dynamic column group.
+- A detail group (a leaf `<Group>` without `<GroupExpressions>`, any
+  name) is still present.
+- At least one body column holds a value to aggregate.
+- The result passes the matrix shape check.
 
 **Idempotency:** second call refuses with `"already a matrix"` —
 the verb is idempotent-by-explicit-refusal.
 
-**Returns:** `{tablix, kind: 'Tablix', changed: ['details_member_removed', 'details_body_row_removed']}`.
+**Returns:** `{tablix, kind: 'Tablix', changed, row_headers,
+column_headers, aggregated, removed_rows, removed_columns,
+removed_textboxes, corner_textboxes, warnings}`.
 
-### `set_tablix_corner(path, tablix_name, text=None, expression=None)`
+### `set_tablix_corner(path, tablix_name, text=None, expression=None, row=0, col=0)`
 
-Writes the `<TablixCorner>` block with a single 1×1 textbox.
+Sets one `<TablixCorner>` cell (`row` / `col`, 0-based; default the
+top-left one).
 
 - Either `text` (literal) OR `expression` (`'=...'` VB.NET) — mutually
   exclusive.
-- Textbox name is deterministic: `<tablix_name>_Corner`.
-- Refuses if the tablix has no named column-axis group — the corner
-  is only meaningful in a matrix.
-- Replaces any existing TablixCorner block.
+- The corner is created or resized to column-header depth × row-header
+  depth first. New cells are textboxes named `<tablix_name>_Corner`.
+- The value is set in place, so the cell's textbox keeps its name and
+  style. An identical call returns `changed: []`.
+- Refuses when the tablix has no row headers or no column headers (run
+  `convert_to_matrix` first). Also refuses a cell that is outside the
+  corner, covered by a span, or not a textbox.
 
-**Returns:** `{tablix, name, kind: 'TablixCorner', changed}`.
+**Returns:** `{tablix, name, kind: 'TablixCorner', row, col, changed}`.
 
 ### `add_subtotal_column(path, tablix_name, group_name, aggregates, position='after', width='1in')`
 

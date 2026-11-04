@@ -64,7 +64,7 @@ class TestLintRegistry:
         result = lint_report(str(rdl_path))
         assert result["issues"] == []
         assert set(result["rules_run"]) == set(ALL_RULES)
-        assert len(ALL_RULES) == 18
+        assert len(ALL_RULES) == 19
 
     def test_unknown_rule_rejected(self, rdl_path):
         with pytest.raises(ValueError, match="unknown lint rule"):

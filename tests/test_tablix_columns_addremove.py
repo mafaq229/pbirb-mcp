@@ -26,11 +26,13 @@ import pytest
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
+from pbirb_mcp.core.tablix_shape import column_leaves
 from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
 from pbirb_mcp.ops.tablix_columns import (
     add_tablix_column,
     remove_tablix_column,
 )
+from pbirb_mcp.ops.validate import validate_report
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
 
@@ -358,6 +360,135 @@ class TestRemoveTablixColumn:
                 tablix_name="NoSuch",
                 column_name="X",
             )
+
+
+# ---- remove_tablix_column: group columns and the last column (#35) ---------
+
+_COLUMN_MEMBERS = (
+    "<TablixMember />\n                <TablixMember />\n                <TablixMember />"
+)
+
+
+def _cg(name: str = "CG") -> str:
+    return (
+        f'<Group Name="{name}"><GroupExpressions><GroupExpression>=1</GroupExpression>'
+        "</GroupExpressions></Group>"
+    )
+
+
+def _patch_columns(rdl_path: Path, members: str) -> Path:
+    text = rdl_path.read_text(encoding="utf-8")
+    assert text.count(_COLUMN_MEMBERS) == 1
+    rdl_path.write_text(text.replace(_COLUMN_MEMBERS, members), encoding="utf-8")
+    return rdl_path
+
+
+def _column_bindings(path) -> list[tuple[str, str]]:
+    tablix = _tablix(RDLDocument.open(path), "MainTable")
+    leaves = column_leaves(tablix)
+    cells = _row_cells(_body_rows(tablix)[1])
+    assert len(leaves) == len(_body_columns(tablix)) == len(cells)
+    out = []
+    for leaf, cell in zip(leaves, cells):
+        names, node = [], leaf
+        while node is not None and node.tag == q("TablixMember"):
+            group = find_child(node, "Group")
+            if group is not None:
+                names.append(group.get("Name"))
+            node = node.getparent().getparent()
+        out.append(("/".join(reversed(names)) or "static", _cell_textbox(cell).get("Name")))
+    return out
+
+
+class TestRemoveTablixColumnHierarchy:
+    def test_only_column_of_group_refused(self, rdl_path):
+        _patch_columns(
+            rdl_path,
+            f"<TablixMember /><TablixMember>{_cg()}<TablixMembers><TablixMember />"
+            "</TablixMembers></TablixMember><TablixMember />",
+        )
+        raw = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="column group 'CG'"):
+            remove_tablix_column(str(rdl_path), "MainTable", "ProductName")
+        assert rdl_path.read_bytes() == raw
+
+    def test_only_column_of_group_with_remove_group(self, rdl_path):
+        _patch_columns(
+            rdl_path,
+            f"<TablixMember /><TablixMember>{_cg()}<TablixMembers><TablixMember />"
+            "</TablixMembers></TablixMember><TablixMember />",
+        )
+        result = remove_tablix_column(str(rdl_path), "MainTable", "ProductName", remove_group=True)
+        assert result["removed_groups"] == ["CG"]
+        assert _column_bindings(rdl_path) == [("static", "ProductID"), ("static", "Amount")]
+        assert 'Name="CG"' not in rdl_path.read_text(encoding="utf-8")
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_group_that_is_its_own_leaf_refused(self, rdl_path):
+        # Matrix-style column group whose member is itself the leaf.
+        _patch_columns(
+            rdl_path, f"<TablixMember /><TablixMember>{_cg()}</TablixMember><TablixMember />"
+        )
+        with pytest.raises(ValueError, match="'CG'"):
+            remove_tablix_column(str(rdl_path), "MainTable", "ProductName")
+        remove_tablix_column(str(rdl_path), "MainTable", "ProductName", remove_group=True)
+        assert _column_bindings(rdl_path) == [("static", "ProductID"), ("static", "Amount")]
+
+    def test_column_inside_multi_column_group_removes_its_leaf(self, rdl_path):
+        _patch_columns(
+            rdl_path,
+            f"<TablixMember /><TablixMember>{_cg()}<TablixMembers><TablixMember />"
+            "<TablixMember /></TablixMembers></TablixMember>",
+        )
+        result = remove_tablix_column(str(rdl_path), "MainTable", "ProductName")
+        assert result["removed_groups"] == []
+        assert _column_bindings(rdl_path) == [("static", "ProductID"), ("CG", "Amount")]
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_column_after_group_removes_the_right_leaf(self, rdl_path):
+        # Top-level index 2 doesn't exist here: CG wraps columns 0-1.
+        _patch_columns(
+            rdl_path,
+            f"<TablixMember>{_cg()}<TablixMembers><TablixMember /><TablixMember />"
+            "</TablixMembers></TablixMember><TablixMember />",
+        )
+        remove_tablix_column(str(rdl_path), "MainTable", "Amount")
+        assert _column_bindings(rdl_path) == [("CG", "ProductID"), ("CG", "ProductName")]
+
+    def test_nested_static_wrapper_left_non_empty(self, rdl_path):
+        # A static wrapper holding one leaf: removing that column takes the
+        # wrapper too (an empty <TablixMembers/> is invalid); no group lost.
+        _patch_columns(
+            rdl_path,
+            "<TablixMember /><TablixMember><TablixMembers><TablixMember />"
+            "</TablixMembers></TablixMember><TablixMember />",
+        )
+        result = remove_tablix_column(str(rdl_path), "MainTable", "ProductName")
+        assert result["removed_groups"] == []
+        assert _column_bindings(rdl_path) == [("static", "ProductID"), ("static", "Amount")]
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_last_column_refused_bytes_unchanged(self, rdl_path):
+        remove_tablix_column(str(rdl_path), "MainTable", "ProductID")
+        remove_tablix_column(str(rdl_path), "MainTable", "ProductName")
+        raw = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="only column"):
+            remove_tablix_column(str(rdl_path), "MainTable", "Amount")
+        assert rdl_path.read_bytes() == raw
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_inconsistent_hierarchy_refused(self, rdl_path):
+        _patch_columns(rdl_path, "<TablixMember /><TablixMember />")
+        raw = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="2 column-hierarchy leaves for 3 body columns"):
+            remove_tablix_column(str(rdl_path), "MainTable", "Amount")
+        assert rdl_path.read_bytes() == raw
+
+    def test_add_then_remove_is_byte_identical(self, rdl_path):
+        raw = rdl_path.read_bytes()
+        add_tablix_column(str(rdl_path), "MainTable", "Extra", "=1", position=1)
+        remove_tablix_column(str(rdl_path), "MainTable", "Extra")
+        assert rdl_path.read_bytes() == raw
 
 
 # ---- tools.py registration smoke ------------------------------------------

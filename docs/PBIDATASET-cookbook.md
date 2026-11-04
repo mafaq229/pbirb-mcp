@@ -83,15 +83,22 @@ The `<Field>` declarations in `<DataSet>/<Fields>` use the **alias**
 bracketed source-column names. `Fields!Order_ID.Value` resolves; a
 typo like `Fields!Order ID.Value` does not.
 
-`refresh_dataset_fields` recognises both shapes:
+`refresh_dataset_fields` reads the query's result columns with a DAX
+tokenizer (columns used only in FILTER / ORDER BY / measure arguments /
+comments don't count) and matches existing `<Field>`s by `<DataField>`,
+the way Report Builder does:
 
-* SELECTCOLUMNS pairs → quoted aliases become field names.
-* SUMMARIZECOLUMNS / ad-hoc `Table[Col]` references → the bracketed
-  column name becomes the field name (Table prefix stripped).
-* Bare `EVALUATE 'Table'` shapes return a warning recommending an
-  explicit SELECTCOLUMNS / SUMMARIZECOLUMNS rewrite or manual
-  `add_dataset_field` calls — the column list isn't extractable
-  without a metadata fetch.
+* SELECTCOLUMNS / ADDCOLUMNS / SUMMARIZECOLUMNS / GROUPBY name–expression
+  pairs → `<DataField>[Alias]</DataField>`; the field name is the alias
+  with non-identifier characters turned into `_` (`Amount (USD)` →
+  `Amount__USD_`).
+* Group-by column references → `<DataField>Table[Col]</DataField>`
+  (quotes dropped); the field name is the column name. Same-named columns
+  from two tables become `Name` and `Name1`.
+* Bare `EVALUATE 'Table'` shapes (and anything else the parser can't
+  resolve) return a warning and change nothing — the column list isn't
+  extractable without a metadata fetch; rewrite with an explicit
+  SELECTCOLUMNS / SUMMARIZECOLUMNS or call `add_dataset_field`.
 
 ## Common patterns
 

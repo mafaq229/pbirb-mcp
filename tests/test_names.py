@@ -334,9 +334,9 @@ class TestGeneratedNames:
         assert _dupes(rdl_path) == {}
 
     def test_column_group_header_textboxes_suffixed(self, rdl_path):
-        body.add_body_textbox(str(rdl_path), "Year_HeaderCol_1", "x", *BOX)
+        body.add_body_textbox(str(rdl_path), "Year_Header", "x", *BOX)
         r = tablix_columns.add_column_group(str(rdl_path), "MainTable", "Year", "=1")
-        assert r["header_textboxes"] == ["Year_HeaderCol_0", "Year_HeaderCol_1_1"]
+        assert r["header_textboxes"] == ["Year_Header1"]
         assert _dupes(rdl_path) == {}
 
     def test_tablix_column_row_cells_suffixed(self, rdl_path):
@@ -369,8 +369,13 @@ class TestGeneratedNames:
             [{"column": "Amount", "expression": "=Sum(Fields!Amount.Value)"}],
             position="header",
         )
-        # add_row_group already emitted Region_Header_0..2.
-        assert r["textboxes"] == ["Region_Header_0_1", "Region_Header_1_1", "Region_Header_2_1"]
+        # add_row_group already emitted Region_Header_0..2; subtotal rows
+        # use their own stem (#32) so they can't be mistaken for it.
+        assert r["textboxes"] == [
+            "Region_SubtotalHeader_0",
+            "Region_SubtotalHeader_1",
+            "Region_SubtotalHeader_2",
+        ]
         assert _dupes(rdl_path) == {}
 
     def test_subtotal_footer_row_twice(self, rdl_path):
@@ -378,8 +383,16 @@ class TestGeneratedNames:
         aggs = [{"column": "Amount", "expression": "=Sum(Fields!Amount.Value)"}]
         r1 = tablix_subtotals.add_subtotal_row(str(rdl_path), "MainTable", "Region", aggs)
         r2 = tablix_subtotals.add_subtotal_row(str(rdl_path), "MainTable", "Region", aggs)
-        assert r1["textboxes"] == ["Region_Footer_0", "Region_Footer_1", "Region_Footer_2"]
-        assert r2["textboxes"] == ["Region_Footer_0_1", "Region_Footer_1_1", "Region_Footer_2_1"]
+        assert r1["textboxes"] == [
+            "Region_SubtotalFooter_0",
+            "Region_SubtotalFooter_1",
+            "Region_SubtotalFooter_2",
+        ]
+        assert r2["textboxes"] == [
+            "Region_SubtotalFooter_0_1",
+            "Region_SubtotalFooter_1_1",
+            "Region_SubtotalFooter_2_1",
+        ]
         assert _dupes(rdl_path) == {}
 
     def test_subtotal_column_twice(self, rdl_path):
@@ -392,15 +405,19 @@ class TestGeneratedNames:
 
     def test_tablix_corner_suffixed_and_idempotent(self, rdl_path):
         _matrix(rdl_path)
+        tablix.convert_to_matrix(str(rdl_path), "MainTable", "Region", "Year")
         r1 = tablix.set_tablix_corner(str(rdl_path), "MainTable", text="a")
         assert r1["name"] == "MainTable_Corner"
         r2 = tablix.set_tablix_corner(str(rdl_path), "MainTable", text="a")
-        assert r2["name"] == "MainTable_Corner"  # replaced corner isn't a clash
+        assert r2["name"] == "MainTable_Corner"  # edited in place (#31)
+        assert r2["changed"] == []
         assert _dupes(rdl_path) == {}
 
     def test_tablix_corner_suffixed_on_foreign_clash(self, rdl_path):
-        _matrix(rdl_path)
+        # The corner textbox is now emitted by convert_to_matrix (#31).
         body.add_body_textbox(str(rdl_path), "MainTable_Corner", "x", *BOX)
+        _matrix(rdl_path)
+        tablix.convert_to_matrix(str(rdl_path), "MainTable", "Region", "Year")
         r = tablix.set_tablix_corner(str(rdl_path), "MainTable", text="a")
         assert r["name"] == "MainTable_Corner1"
         assert _dupes(rdl_path) == {}
@@ -433,11 +450,12 @@ class TestGeneratedNames:
             "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], \"Total Sales\", [Amt])",
         )
         r = dataset.refresh_dataset_fields(str(rdl_path), "MainDataset")
-        assert r["added"] == ["Total_Sales"]
+        # #37: the alias binds as [Total Sales] (Report Builder's shape).
+        assert r["added"] == [{"name": "Total_Sales", "data_field": "[Total Sales]"}]
         assert any("Total Sales" in w for w in r["warnings"])
         doc = RDLDocument.open(rdl_path)
         field = [f for f in doc.root.iter(q("Field")) if f.get("Name") == "Total_Sales"][0]
-        assert field.find(q("DataField")).text == "Total Sales"
+        assert field.find(q("DataField")).text == "[Total Sales]"
         assert _rules(rdl_path, "invalid-identifier") == []
         out_of_sync = _rules(rdl_path, "dataset-fields-out-of-sync")
         assert not [i for i in out_of_sync if "Total_Sales" in i["location"]]

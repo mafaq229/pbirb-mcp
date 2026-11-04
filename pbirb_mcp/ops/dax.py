@@ -39,6 +39,8 @@ __all__ = [
     "Column",
     "ResultColumns",
     "Token",
+    "data_field_matches",
+    "normalize_data_field",
     "result_columns",
     "tokenize",
 ]
@@ -717,6 +719,51 @@ def _dedupe(msgs: list[str]) -> list[str]:
             seen.add(m)
             out.append(m)
     return out
+
+
+def normalize_data_field(data_field: Optional[str]) -> str:
+    """Canonical comparison key for a ``<DataField>`` value or a
+    :attr:`Column.data_field`.
+
+    ``Table[Col]``, ``'Table'[Col]`` (``''`` escape) and ``[Alias]`` are
+    reduced to ``table[col]`` / ``[alias]``, case-folded (DAX names are
+    case-insensitive) and stripped of surrounding whitespace. A value
+    with no bracket part (a bare legacy ``Col`` DataField) is just
+    case-folded.
+    """
+    text = (data_field or "").strip()
+    table = ""
+    rest = text
+    if text.startswith("'"):
+        table, end, terminated = _scan_delimited(text, 0, "'")
+        if not terminated:
+            return text.casefold()
+        rest = text[end:].lstrip()
+    else:
+        i = text.find("[")
+        if i < 0:
+            return text.casefold()
+        table, rest = text[:i].strip(), text[i:]
+    if not (rest.startswith("[") and rest.endswith("]")):
+        return text.casefold()
+    return f"{table.casefold()}[{rest[1:-1].casefold()}]"
+
+
+def data_field_matches(data_field: Optional[str], column: Column) -> bool:
+    """True when a Field's ``<DataField>`` text binds to ``column``.
+
+    Matches on :func:`normalize_data_field` (so ``'Sales'[Amount]``,
+    ``Sales[amount]`` and ``Sales[Amount]`` are one binding; ``[Total]``
+    matches the alias column ``Total``). A bare ``<DataField>`` with no
+    brackets (written by older versions of this server) also matches a
+    column of the same name.
+    """
+    if data_field is None or not data_field.strip():
+        return False
+    key = normalize_data_field(data_field)
+    if key == normalize_data_field(column.data_field):
+        return True
+    return "[" not in data_field and key == column.name.strip().casefold()
 
 
 def result_columns(dax: str) -> ResultColumns:

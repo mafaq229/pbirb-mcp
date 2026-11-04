@@ -13,6 +13,7 @@ plan flags this commit as the heaviest already.
 
 from __future__ import annotations
 
+import copy
 import shutil
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
+from pbirb_mcp.core.tablix_shape import row_leaves
 from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
 from pbirb_mcp.ops.reader import get_tablixes
 from pbirb_mcp.ops.tablix import (
@@ -32,6 +34,9 @@ from pbirb_mcp.ops.tablix import (
     set_tablix_corner,
 )
 from pbirb_mcp.ops.tablix_columns import add_column_group
+from pbirb_mcp.ops.tablix_static import add_static_row
+from pbirb_mcp.ops.tablix_subtotals import add_subtotal_row
+from pbirb_mcp.ops.validate import validate_report
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
 
@@ -209,6 +214,191 @@ class TestRemoveRowGroup:
             )
 
 
+# ---- remove_row_group: the group's own rows, located by leaf (#30) ----------
+
+_DETAIL = '<Group Name="Details" />'
+_FIXTURES = sorted((Path(__file__).parent / "fixtures").glob("*.rdl"))
+
+
+def _leaf_rows(path) -> list[tuple[str, str]]:
+    """(leaf group path, first textbox of the bound body row) per row."""
+    tablix = _tablix(RDLDocument.open(path), "MainTable")
+    rows = find_children(tablix.find(f"{q('TablixBody')}/{q('TablixRows')}"), "TablixRow")
+    leaves = row_leaves(tablix)
+    assert len(leaves) == len(rows)
+    out = []
+    for leaf, row in zip(leaves, rows):
+        names, node = [], leaf
+        while node is not None and node.tag == q("TablixMember"):
+            group = find_child(node, "Group")
+            if group is not None:
+                names.append(group.get("Name"))
+            node = node.getparent().getparent()
+        out.append(
+            ("/".join(reversed(names)) or "static", row.find(f".//{q('Textbox')}").get("Name"))
+        )
+    return out
+
+
+def _rb_group(rdl_path: Path, extra_members: str = "") -> Path:
+    """Report Builder shape: a Product group wrapping just the data leaf."""
+    text = rdl_path.read_text(encoding="utf-8")
+    text = text.replace(
+        _DETAIL,
+        '<Group Name="Product"><GroupExpressions><GroupExpression>=Fields!ProductName.Value'
+        "</GroupExpression></GroupExpressions></Group><TablixMembers><TablixMember />"
+        f"{extra_members}</TablixMembers>",
+    )
+    rdl_path.write_text(text, encoding="utf-8")
+    return rdl_path
+
+
+class TestRemoveRowGroupLocatesOwnRows:
+    def test_report_builder_group_without_header_deletes_no_row(self, rdl_path):
+        _rb_group(rdl_path)
+        result = remove_row_group(str(rdl_path), "MainTable", "Product")
+        assert result["removed_rows"] == []
+        assert _leaf_rows(rdl_path) == [
+            ("static", "HeaderProductID"),
+            ("static", "ProductID"),
+        ]
+        tablix = _tablix(RDLDocument.open(rdl_path), "MainTable")
+        assert not tablix.findall(f".//{q('Group')}")
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_nested_groups_remove_inner_header_only(self, rdl_path):
+        add_row_group(str(rdl_path), "MainTable", "A", "=1")
+        add_row_group(str(rdl_path), "MainTable", "B", "=2")
+        result = remove_row_group(str(rdl_path), "MainTable", "A")
+        assert result["removed_rows"] == [1]
+        assert _leaf_rows(rdl_path) == [
+            ("B", "B_Header_0"),
+            ("B", "HeaderProductID"),
+            ("B/Details", "ProductID"),
+        ]
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_nested_groups_remove_outer(self, rdl_path):
+        add_row_group(str(rdl_path), "MainTable", "A", "=1")
+        add_row_group(str(rdl_path), "MainTable", "B", "=2")
+        remove_row_group(str(rdl_path), "MainTable", "B")
+        assert _leaf_rows(rdl_path) == [
+            ("A", "A_Header_0"),
+            ("A", "HeaderProductID"),
+            ("A/Details", "ProductID"),
+        ]
+
+    def test_subtotal_rows_removed_with_their_group(self, rdl_path):
+        add_row_group(str(rdl_path), "MainTable", "G", "=1")
+        add_subtotal_row(
+            str(rdl_path),
+            "MainTable",
+            "G",
+            [{"column": "Amount", "expression": "=Sum(Fields!Amount.Value)"}],
+        )
+        add_subtotal_row(str(rdl_path), "MainTable", "G", [], position="header")
+        remove_row_group(str(rdl_path), "MainTable", "G")
+        rows = _leaf_rows(rdl_path)
+        assert rows == [("static", "HeaderProductID"), ("Details", "ProductID")]
+        assert "G_" not in rdl_path.read_text(encoding="utf-8")
+
+    def test_keep_subtotals(self, rdl_path):
+        add_row_group(str(rdl_path), "MainTable", "G", "=1")
+        add_subtotal_row(
+            str(rdl_path),
+            "MainTable",
+            "G",
+            [{"column": "Amount", "expression": "=Sum(Fields!Amount.Value)"}],
+        )
+        footer_row = len(_leaf_rows(rdl_path)) - 1
+        result = remove_row_group(str(rdl_path), "MainTable", "G", keep_subtotals=True)
+        assert result["kept_subtotal_rows"] == [footer_row]
+        rows = _leaf_rows(rdl_path)
+        assert rows[:2] == [("static", "HeaderProductID"), ("Details", "ProductID")]
+        assert len(rows) == 3 and rows[2][0] == "static"
+
+    def test_report_builder_total_is_kept_with_warning(self, rdl_path):
+        # RB "Add Total > After" inside the group: a static leaf with
+        # KeepWithGroup=Before after the data, plus its own body row.
+        _rb_group(
+            rdl_path,
+            extra_members="<TablixMember><KeepWithGroup>Before</KeepWithGroup></TablixMember>",
+        )
+        doc = RDLDocument.open(rdl_path)
+        rows_root = _tablix(doc, "MainTable").find(f"{q('TablixBody')}/{q('TablixRows')}")
+        total = copy.deepcopy(find_children(rows_root, "TablixRow")[-1])
+        for tb in total.iter(q("Textbox")):
+            tb.set("Name", "Total" + tb.get("Name"))
+        rows_root.append(total)
+        doc.save()
+        assert _leaf_rows(rdl_path)[-1] == ("Product", "TotalProductID")
+
+        # Not tool-emitted, so kept (RB uses the same marker for table
+        # footers) — but the payload warns that its scope changed.
+        result = remove_row_group(str(rdl_path), "MainTable", "Product")
+        assert result["removed_rows"] == []
+        assert "KeepWithGroup=Before" in result["warnings"][0]
+        assert _leaf_rows(rdl_path) == [
+            ("static", "HeaderProductID"),
+            ("static", "ProductID"),
+            ("static", "TotalProductID"),
+        ]
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_report_builder_group_with_subtotal_keeps_data_row(self, rdl_path):
+        # Product[data leaf, subtotal]: the lone data leaf is not a header.
+        _rb_group(rdl_path)
+        add_subtotal_row(str(rdl_path), "MainTable", "Product", [])
+        result = remove_row_group(str(rdl_path), "MainTable", "Product")
+        assert result["removed_rows"] == [2]
+        assert _leaf_rows(rdl_path) == [("static", "HeaderProductID"), ("static", "ProductID")]
+
+    def test_wrapped_table_footer_is_kept(self, rdl_path):
+        # A plain static footer the group wrapped is not a subtotal.
+        add_static_row(str(rdl_path), "MainTable", "TableFooter", ["end"])
+        add_row_group(str(rdl_path), "MainTable", "G", "=1")
+        result = remove_row_group(str(rdl_path), "MainTable", "G")
+        assert result["removed_rows"] == [0]
+        assert _leaf_rows(rdl_path)[-1] == ("static", "TableFooter")
+
+    def test_group_that_is_its_own_leaf_refused(self, rdl_path):
+        text = rdl_path.read_text(encoding="utf-8").replace(
+            _DETAIL,
+            '<Group Name="Leafy"><GroupExpressions><GroupExpression>=1'
+            "</GroupExpression></GroupExpressions></Group>",
+        )
+        rdl_path.write_text(text, encoding="utf-8")
+        raw = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="owns a body row"):
+            remove_row_group(str(rdl_path), "MainTable", "Leafy")
+        assert rdl_path.read_bytes() == raw
+
+    def test_group_holding_only_subtotals_refused(self, rdl_path):
+        _rb_group(rdl_path)
+        text = rdl_path.read_text(encoding="utf-8")
+        for name in ("ProductID", "ProductName", "Amount"):
+            text = text.replace(f'Name="{name}"', f'Name="Product_SubtotalFooter_{name}"')
+        rdl_path.write_text(text, encoding="utf-8")
+        raw = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="only its own header/subtotal rows"):
+            remove_row_group(str(rdl_path), "MainTable", "Product")
+        assert rdl_path.read_bytes() == raw
+        # keep_subtotals keeps the row, so there is something to unwrap.
+        remove_row_group(str(rdl_path), "MainTable", "Product", keep_subtotals=True)
+        assert len(_leaf_rows(rdl_path)) == 2
+
+    @pytest.mark.parametrize("fixture", _FIXTURES, ids=lambda p: p.name)
+    def test_add_then_remove_is_byte_identical(self, tmp_path, fixture):
+        dest = tmp_path / fixture.name
+        shutil.copy(fixture, dest)
+        raw = dest.read_bytes()
+        for tablix in RDLDocument.open(dest).root.iter(f"{{{RDL_NS}}}Tablix"):
+            name = tablix.get("Name")
+            add_row_group(str(dest), name, "RoundTripGroup", "=1")
+            remove_row_group(str(dest), name, "RoundTripGroup")
+        assert dest.read_bytes() == raw
+
+
 # ---- set_group_sort -------------------------------------------------------
 
 
@@ -314,12 +504,17 @@ class TestSetGroupVisibility:
             group_name="Region",
             group_expression="=Fields!Region.Value",
         )
+        # add_row_group currently wraps the header row too, so a header cell
+        # would sit in the rows the group hides — toggle from the body.
+        from pbirb_mcp.ops.body import add_body_textbox
+
+        add_body_textbox(str(rdl_path), "HeaderProductID2", "+", "0in", "6in", "0.3in", "0.25in")
         set_group_visibility(
             path=str(rdl_path),
             tablix_name="MainTable",
             group_name="Region",
             visibility_expression="true",
-            toggle_textbox="HeaderProductID",
+            toggle_textbox="HeaderProductID2",
         )
         doc = RDLDocument.open(rdl_path)
         tablix = _tablix(doc, "MainTable")
@@ -329,7 +524,7 @@ class TestSetGroupVisibility:
             if m.find(q("Group")) is not None and m.find(q("Group")).get("Name") == "Region"
         )
         vis = find_child(member, "Visibility")
-        assert find_child(vis, "ToggleItem").text == "HeaderProductID"
+        assert find_child(vis, "ToggleItem").text == "HeaderProductID2"
 
     def test_unknown_group_raises(self, rdl_path):
         with pytest.raises(ElementNotFoundError):
@@ -441,9 +636,10 @@ class TestConvertToMatrix:
                 return member
         return None
 
-    def test_removes_details_member_and_body_row(self, matrix_path):
+    def test_removes_details_member_keeps_aggregated_data_row(self, matrix_path):
         doc_before = RDLDocument.open(matrix_path)
-        rows_before = _body_row_count(_tablix(doc_before, "MainTable"))
+        # Region caption row, column-title row, detail row.
+        assert _body_row_count(_tablix(doc_before, "MainTable")) == 3
         assert self._details_member(doc_before, "MainTable") is not None
 
         result = convert_to_matrix(
@@ -457,12 +653,15 @@ class TestConvertToMatrix:
         assert result["tablix"] == "MainTable"
         assert result["kind"] == "Tablix"
         assert "details_member_removed" in result["changed"]
-        assert "details_body_row_removed" in result["changed"]
+        assert result["removed_rows"] == [0, 1]
 
         doc_after = RDLDocument.open(matrix_path)
         assert self._details_member(doc_after, "MainTable") is None
-        # Exactly one body row dropped.
-        assert _body_row_count(_tablix(doc_after, "MainTable")) == rows_before - 1
+        # The caption rows went; the detail row stayed, aggregated (#31).
+        tablix = _tablix(doc_after, "MainTable")
+        assert _body_row_count(tablix) == 1
+        values = [v.text for v in tablix.find(f"{{{RDL_NS}}}TablixBody").iter(f"{{{RDL_NS}}}Value")]
+        assert values == ["=Sum(Fields!Amount.Value)"]
 
     def test_round_trip_valid(self, matrix_path):
         convert_to_matrix(
@@ -531,10 +730,10 @@ class TestConvertToMatrix:
 
 
 class TestSetTablixCorner:
-    """Phase F commit 18 — set_tablix_corner writes the <TablixCorner>
-    block with a single textbox at the top-left of a matrix-shaped
-    tablix. Required after convert_to_matrix (commit 17) — the corner
-    is where the LLM places the "Type" / "Region" caption.
+    """Phase F commit 18 — set_tablix_corner sets the top-left
+    <TablixCorner> cell of a matrix-shaped tablix. Requires the matrix
+    convert_to_matrix builds (row headers; #31) — the corner is where the
+    LLM places the "Type" / "Region" caption.
     """
 
     @pytest.fixture
@@ -550,6 +749,9 @@ class TestSetTablixCorner:
             tablix_name="MainTable",
             group_name="Date",
             group_expression="=Fields!ProductID.Value",
+        )
+        convert_to_matrix(
+            path=str(rdl_path), tablix_name="MainTable", row_group="Region", column_group="Date"
         )
         return rdl_path
 
@@ -603,8 +805,8 @@ class TestSetTablixCorner:
             set_tablix_corner(path=str(matrix_path), tablix_name="MainTable")
 
     def test_refuses_without_column_group(self, rdl_path):
-        # Pristine tablix — no column group exists.
-        with pytest.raises(ValueError, match="no named column group"):
+        # Pristine tablix — no column group, so no column headers.
+        with pytest.raises(ValueError, match="0 column-header row"):
             set_tablix_corner(
                 path=str(rdl_path),
                 tablix_name="MainTable",
@@ -618,8 +820,9 @@ class TestSetTablixCorner:
             tablix_name="MainTable",
             text="Category",
         )
-        # Second call signals it replaced an existing block.
-        assert "replaced_existing" in result["changed"]
+        # Second call edits the existing cell in place (#31).
+        assert result["changed"] == ["corner_written"]
+        assert result["name"] == "MainTable_Corner"
         doc = RDLDocument.open(matrix_path)
         value_node = self._corner(doc, "MainTable").find(f".//{{{RDL_NS}}}Value")
         assert value_node.text == "Category"

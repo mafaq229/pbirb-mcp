@@ -103,10 +103,15 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Replace the DAX command text of a named dataset. The full DAX "
             "expression is accepted verbatim; empty bodies are rejected. "
-            "Optional alias_strategy='preserve_field_names' positionally "
-            "rewrites <DataField> cells to the new DAX columns while "
-            "keeping existing <Field Name> identifiers — so "
-            "Fields!X.Value references in expressions keep resolving."
+            "Optional alias_strategy='preserve_field_names' keeps every "
+            "<Field Name> (so Fields!X.Value references keep resolving) "
+            "and re-aims <DataField> cells at the new DAX columns "
+            "(Table[Col] or [Alias]): Fields whose column is still "
+            "returned stay as they are (any order); a Field whose column "
+            "vanished is re-aimed only when exactly one new column took "
+            "its slot in the old DAX's column order; everything else is "
+            "left untouched and reported in warnings. dry_run=true "
+            "returns the result (including mapped) without saving."
         ),
         input_schema={
             "type": "object",
@@ -121,9 +126,14 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": ["string", "null"],
                     "enum": [None, "preserve_field_names"],
                     "description": (
-                        "When 'preserve_field_names', positionally remap "
-                        "<DataField> cells to the new DAX column list."
+                        "When 'preserve_field_names', re-aim <DataField> "
+                        "cells at the new DAX columns (identity first, "
+                        "then old-DAX slot position)."
                     ),
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Compute the result (and mapped list) without saving.",
                 },
             },
             "required": ["path", "dataset_name", "dax_body"],
@@ -564,12 +574,16 @@ def register_all_tools(server: MCPServer) -> None:
             "Sync a dataset's <Fields> block against the shape detected "
             "in its DAX <CommandText>. Eliminates the manual 'open "
             "Report Builder → right-click → Refresh Fields' step after "
-            "a query rewrite. Recognises SELECTCOLUMNS aliases and "
-            "Table[Col] tokens (SUMMARIZECOLUMNS / ad-hoc). Adds missing "
-            "fields; lists orphans without auto-removing (caller decides "
-            "what to drop). Returns {added, orphans, unchanged, "
-            "warnings}. Cheap regex-based detection — bare EVALUATE "
-            "'Table' returns a warning."
+            "a query rewrite. Matches existing Fields to the query's "
+            "result columns by <DataField> (Table[Col] / [Alias]), not by "
+            "Name. Adds a Field per unbound column the way Report Builder "
+            "does: Name sanitised (Amount (USD) -> Amount__USD_; "
+            "duplicates Name1, Name2 ...), DataField Table[Col] or "
+            "[Alias]. Lists orphans without auto-removing (caller decides "
+            "what to drop). Returns {added: [{name, data_field}], "
+            "orphans: [{name, data_field}], unchanged: [names], "
+            "warnings}. When the DAX can't be fully analysed (e.g. bare "
+            "EVALUATE 'Table') nothing is added and warnings explain why."
         ),
         input_schema={
             "type": "object",
@@ -850,7 +864,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="lint_report",
         description=(
-            "Run static-analysis lint rules against an .rdl. Eighteen "
+            "Run static-analysis lint rules against an .rdl. Nineteen "
             "rules cover the v0.2/v0.3 sweep bug classes (multi-value-eq, "
             "missing-field-reference, dangling-embedded-image, "
             "pbidataset-at-prefix, parameter-layout-out-of-sync, "
@@ -868,7 +882,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "rules": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional subset of rule names; default runs all 18.",
+                    "description": "Optional subset of rule names; default runs all 19.",
                 },
             },
             "required": ["path"],
@@ -1254,9 +1268,14 @@ def register_all_tools(server: MCPServer) -> None:
             "With contained_items=[name1, name2, ...], each named "
             "body item is MOVED into the rectangle's <ReportItems> "
             "and its <Top>/<Left> recalculated so the on-screen "
-            "position is preserved. Refuses on duplicate name or "
-            "if any contained_item isn't in <Body>/<ReportItems>. "
-            "Returns {name, kind: 'Rectangle', moved}."
+            "position is preserved. Every moved item must lie inside "
+            "the rectangle's box: a misfit is refused (naming each "
+            "item and how far it overflows) unless fit=true, which "
+            "grows the rectangle to enclose them. Refuses on duplicate "
+            "name or if any contained_item isn't in <Body>/<ReportItems>; "
+            "nothing is written on refusal. Returns {name, kind: "
+            "'Rectangle', moved}, plus {fitted, top, left, width, "
+            "height} when fit is passed."
         ),
         input_schema={
             "type": "object",
@@ -1276,6 +1295,14 @@ def register_all_tools(server: MCPServer) -> None:
                         "Optional names of existing body items to move "
                         "into the rectangle. Omit or pass [] for an "
                         "empty rectangle (visual frame)."
+                    ),
+                },
+                "fit": {
+                    "type": "boolean",
+                    "description": (
+                        "Grow the rectangle to the union of its box and "
+                        "the contained items' boxes instead of refusing "
+                        "a misfit (default false)."
                     ),
                 },
             },
@@ -1671,9 +1698,15 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_row_group",
         description=(
-            "Inverse of add_row_group: unwraps a group's children back to "
-            "its parent hierarchy and removes the matching header row at "
-            "body row 0. Refuses to remove the conventional Details group."
+            "Remove a row group: its wrapped members move up to where the "
+            "group was and keep their body rows; the group's own header row "
+            "(found via the row hierarchy, any nesting depth) and its "
+            "add_subtotal_row subtotal rows are deleted. A group with no "
+            "header row (e.g. a Report Builder group wrapping just the data "
+            "row) is unwrapped without deleting any row. keep_subtotals=true "
+            "keeps subtotal rows (their aggregates then cover the parent "
+            "scope). Refuses the detail group, a group whose member is itself "
+            "a leaf, and a matrix group carrying a row-header cell."
         ),
         input_schema={
             "type": "object",
@@ -1681,6 +1714,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "tablix_name": {"type": "string"},
                 "group_name": {"type": "string"},
+                "keep_subtotals": {"type": "boolean", "default": False},
             },
             "required": ["path", "tablix_name", "group_name"],
             "additionalProperties": False,
@@ -1691,19 +1725,26 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="convert_to_matrix",
         description=(
-            "Convert a row-grouped + column-grouped tablix into a matrix "
-            "by dropping the residual Details row group and its body "
-            "row. Pre-conditions (all checked): the named row_group and "
-            "column_group must already exist (call add_row_group + "
-            "add_column_group first); a detail group (leaf Group without "
-            "GroupExpressions, any name) must still be present in the row "
-            "hierarchy. Refuses on second "
-            "call (already a matrix). Use this after the standard "
-            "insert_tablix_from_template + add_row_group + "
-            "add_column_group flow to make the leaf the row group "
-            "instead of Details — without this, cells render at detail "
-            "granularity. Pair with set_tablix_corner (v0.4 commit 18) "
-            "to author the top-left label."
+            "Turn a grouped table into a Report Builder-shaped matrix "
+            "(run after insert_tablix_from_template + add_row_group + "
+            "add_column_group). The detail rows aggregate into the row "
+            "group: the detail row is kept and its =Fields!X.Value cells "
+            "become =<aggregate>(Fields!X.Value) (default Sum; cells that "
+            "already aggregate are left alone, complex ones are left with a "
+            "warning). Group captions become TablixHeader cells: the row "
+            "group's caption row moves into a row header; body columns that "
+            "only repeat a row/column group expression and the column-title "
+            "row are removed (with 2+ value columns left, the titles become "
+            "column headers instead). Rows such as totals/footers are kept. "
+            "Creates the TablixCorner (column-header depth x row-header "
+            "depth). Refuses: row_group that is the detail group or does "
+            "not enclose the detail rows, unknown column_group, a tablix "
+            "already without a detail group (second call), or a result "
+            "that would not be a consistent matrix — file untouched. "
+            "Returns {tablix, kind, changed, row_headers, column_headers, "
+            "aggregated, removed_rows, removed_columns, removed_textboxes, "
+            "corner_textboxes, warnings}. Then set_tablix_corner for the "
+            "top-left label."
         ),
         input_schema={
             "type": "object",
@@ -1712,6 +1753,11 @@ def register_all_tools(server: MCPServer) -> None:
                 "tablix_name": {"type": "string"},
                 "row_group": {"type": "string"},
                 "column_group": {"type": "string"},
+                "aggregate": {
+                    "type": "string",
+                    "enum": list(tablix.MATRIX_AGGREGATES),
+                    "default": "Sum",
+                },
             },
             "required": ["path", "tablix_name", "row_group", "column_group"],
             "additionalProperties": False,
@@ -1722,15 +1768,20 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_tablix_corner",
         description=(
-            "Write the <TablixCorner> block — the top-left cell of a "
-            "matrix-shaped tablix that holds the row-axis caption "
-            "(e.g. 'Type'). Pass `text` for a literal value OR "
-            "`expression` for a VB.NET '=...' formula. Mutually "
-            "exclusive. Textbox name is deterministic: "
-            "'<tablix_name>_Corner'. Refuses if the tablix has no "
-            "named column group (the corner is only meaningful in a "
-            "matrix). Replaces any existing TablixCorner block. "
-            "Returns {tablix, name, kind: 'TablixCorner', changed}."
+            "Set the value of a <TablixCorner> cell — the top-left block "
+            "of a matrix, column-header depth x row-header depth, that "
+            "holds the row-axis caption (e.g. 'Type'). Pass `text` for a "
+            "literal value OR `expression` for a VB.NET '=...' formula "
+            "(mutually exclusive); `row`/`col` (0-based, default 0/0) "
+            "pick the cell. The corner is created or resized to the "
+            "header depths first (new cells: '<tablix_name>_Corner' "
+            "textboxes); the value is set in place, keeping the cell "
+            "textbox's name and style; an identical call changes nothing "
+            "(changed: []). Refuses when the tablix has no row headers or "
+            "no column headers (run convert_to_matrix first), and for a "
+            "cell outside the corner, covered by a span, or not holding a "
+            "textbox. Returns {tablix, name, kind: 'TablixCorner', row, "
+            "col, changed}."
         ),
         input_schema={
             "type": "object",
@@ -1739,6 +1790,8 @@ def register_all_tools(server: MCPServer) -> None:
                 "tablix_name": {"type": "string"},
                 "text": {"type": ["string", "null"], "default": None},
                 "expression": {"type": ["string", "null"], "default": None},
+                "row": {"type": "integer", "minimum": 0, "default": 0},
+                "col": {"type": "integer", "minimum": 0, "default": 0},
             },
             "required": ["path", "tablix_name"],
             "additionalProperties": False,
@@ -1779,7 +1832,9 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Set <Visibility> on a group's TablixMember. Accepts a Hidden "
             "expression and an optional ToggleItem (a textbox name that "
-            "toggles the group expand/collapse)."
+            "toggles the group expand/collapse). "
+            "Hidden must be true/false or an =expression. toggle_textbox must be an existing textbox in the same region/tablix scope and NOT in the rows/columns being hidden (e.g. use the parent group's header cell); omit it to keep the current toggle, pass null or "
+            " to remove it. Returns changed; no write when nothing changed."
         ),
         input_schema={
             "type": "object",
@@ -1807,10 +1862,15 @@ def register_all_tools(server: MCPServer) -> None:
         name="add_column_group",
         description=(
             "Add a column group that wraps the current top-level column "
-            "hierarchy. Inserts a matching column at body column 0 (default "
-            "1in width) and a header cell at column 0 of every existing row "
-            "with the group expression in the topmost cell. Mirrors "
-            "add_row_group on the column axis. parent_group nesting is "
+            "hierarchy. The group's caption is a TablixHeader on the new "
+            "group member (a 0.25in header row above the body, textbox "
+            "<group>_Header showing the group expression); body columns and "
+            "cells are not changed, so column-hierarchy leaves keep matching "
+            "body columns. If the tablix has row headers the TablixCorner "
+            "gains a row (or is created). Returns {tablix, group, "
+            "expression, header_textbox, header_textboxes, "
+            "corner_textboxes}. Refuses a tablix whose column leaves already "
+            "disagree with its body columns. parent_group nesting is "
             "reserved for a future commit and currently raises "
             "NotImplementedError."
         ),
@@ -1835,10 +1895,15 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_column_group",
         description=(
-            "Inverse of add_column_group: unwraps a column-axis group's "
-            "children back to the top of the column hierarchy and removes "
-            "the matching body column at position 0 (along with each row's "
-            "first cell). Errors if group_name only exists on the row axis."
+            "Exact inverse of add_column_group: unwraps a column-axis "
+            "group's children back into its parent (its TablixHeader goes "
+            "with it) and shrinks the TablixCorner by that header row; body "
+            "columns are untouched. Unwrapped columns that sit beside other "
+            "columns get blank headers so header depth stays uniform. Also "
+            "removes the <group>_HeaderCol_<i> body column that older "
+            "versions of add_column_group inserted. Returns {tablix, "
+            "removed, removed_textboxes}. Errors if group_name only exists "
+            "on the row axis."
         ),
         input_schema={
             "type": "object",
@@ -1883,7 +1948,9 @@ def register_all_tools(server: MCPServer) -> None:
             "Set <Visibility> on a column-axis group's TablixMember. Accepts "
             "a Hidden expression and an optional ToggleItem (textbox name "
             "that toggles expand/collapse). Mirrors set_group_visibility "
-            "but refuses up front if group_name is on the row axis."
+            "but refuses up front if group_name is on the row axis. "
+            "Hidden must be true/false or an =expression. toggle_textbox must be an existing textbox in the same region/tablix scope and NOT in the rows/columns being hidden (e.g. use the parent group's header cell); omit it to keep the current toggle, pass null or "
+            " to remove it. Returns changed; no write when nothing changed."
         ),
         input_schema={
             "type": "object",
@@ -1914,9 +1981,15 @@ def register_all_tools(server: MCPServer) -> None:
             "(typically =Fields!X.Value). For a tablix with >= 2 rows the "
             "first row gets header_text (default = column_name) as a literal, "
             "middle rows get blank cells, and the last row gets expression. "
-            "position is 0-indexed; default appends at end. width defaults to "
-            "1in. Inserts a matching top-level TablixMember in the column "
-            "hierarchy at the same index."
+            "position is the 0-indexed body column; default appends at end. "
+            "width defaults to 1in. The column's hierarchy member is placed "
+            "so it owns that body column and stays outside every column "
+            "group: a position strictly inside a group is moved to just "
+            "before that group (the result's position/warnings say so) "
+            "unless inside_group names it. Existing columns keep their "
+            "group membership. A position inside a merged "
+            "(ColSpan) cell widens that span instead of adding a textbox "
+            "under it (refused if the data row is merged there)."
         ),
         input_schema={
             "type": "object",
@@ -1928,6 +2001,12 @@ def register_all_tools(server: MCPServer) -> None:
                 "position": {"type": ["integer", "null"], "minimum": 0},
                 "width": {"type": ["string", "null"]},
                 "header_text": {"type": ["string", "null"]},
+                "inside_group": {
+                    "type": ["string", "null"],
+                    "description": "Column group to insert inside on purpose (the column "
+                    "then repeats per group instance); position must lie within that group's "
+                    "columns or just past them. Default: the column stays outside every group.",
+                },
             },
             "required": ["path", "tablix_name", "column_name", "expression"],
             "additionalProperties": False,
@@ -1938,12 +2017,17 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_tablix_column",
         description=(
-            "Remove the tablix column whose data-row cell holds a textbox "
-            "named column_name. Drops the matching TablixColumn, removes the "
-            "top-level TablixMember at that column index (only if it's a "
-            "leaf, never a column group wrapper), and removes the cell at "
-            "that index from every TablixRow. Errors if no row contains a "
-            "textbox with the given name."
+            "Remove the tablix column whose body cell holds a textbox named "
+            "column_name: drops its TablixColumn, the cell at that index "
+            "from every row, and the column's own leaf in the column "
+            "hierarchy (found through any column groups, so leaves and "
+            "columns stay equal). Refuses the tablix's last column, and a "
+            "column that is the only column of a column group unless "
+            "remove_group=true (then the group member and its header go "
+            "too). Merged (ColSpan) cells shrink by one instead of losing their "
+            "contents. Refuses to delete a textbox a ToggleItem points at "
+            "unless force=true (which drops those toggles). Errors if no row "
+            "contains a textbox with the given name."
         ),
         input_schema={
             "type": "object",
@@ -1951,6 +2035,15 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "tablix_name": {"type": "string"},
                 "column_name": {"type": "string"},
+                "remove_group": {"type": "boolean", "default": False},
+                "force": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Also remove ToggleItems that point at a textbox this "
+                        "removal deletes (otherwise such a removal is refused)."
+                    ),
+                },
             },
             "required": ["path", "tablix_name", "column_name"],
             "additionalProperties": False,
@@ -1961,14 +2054,19 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_subtotal_row",
         description=(
-            "Append a subtotal row to a row-axis group. aggregates is a list "
+            "Add a subtotal row for a row-axis group. aggregates is a list "
             "of {column, expression} entries; column matches against the "
-            "Details row's textbox names (the same names add_tablix_column "
+            "group's data-row textbox names (the same names add_tablix_column "
             "uses as column_name — NOT field names). expression is the "
             "aggregate (e.g. =Sum(Fields!X.Value)). Columns not listed get "
-            "blank cells. position='footer' (default) appends; 'header' "
-            "inserts at body row 1 (right after the group-header row). "
-            "Group must have been added via add_row_group."
+            "blank cells. position='footer' (default) puts the row just after "
+            "the group's last row; 'header' at the group's first row (after "
+            "its own group-header row, if any). scope='group' (default) "
+            "places it inside the group: one subtotal per group instance. "
+            "scope='total' places it next to the group: once per parent "
+            "instance — a grand total for an outermost group (Report "
+            "Builder's Add Total). Existing rows keep their group binding. "
+            "Returns row_index and the emitted textbox names."
         ),
         input_schema={
             "type": "object",
@@ -1993,6 +2091,11 @@ def register_all_tools(server: MCPServer) -> None:
                     "enum": ["header", "footer"],
                     "default": "footer",
                 },
+                "scope": {
+                    "type": "string",
+                    "enum": ["group", "total"],
+                    "default": "group",
+                },
             },
             "required": ["path", "tablix_name", "group_name", "aggregates"],
             "additionalProperties": False,
@@ -2003,16 +2106,17 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_subtotal_column",
         description=(
-            "Column-axis mirror of add_subtotal_row. Adds a static "
-            "TablixMember inside the column-group's <TablixMembers>, "
-            "a new <TablixColumn> in TablixBody, and a cell at the "
-            "new column index in every body row. aggregates is a list "
-            "of {row, expression} entries where row is the 0-based "
-            "body row index; rows not listed get blank cells. "
-            "position='after' (default — canonical Grand Total slot, "
-            "appends to the right of the column group) or 'before' "
-            "(prepends to the group's left edge). width defaults to "
-            "'1in'. Group must have been added via add_column_group."
+            "Column-axis mirror of add_subtotal_row: adds a static column "
+            "member, a TablixColumn and a cell in every body row at the "
+            "column the new member owns. aggregates is a list of {row, "
+            "expression} entries where row is the 0-based body row index; "
+            "rows not listed get blank cells. position='after' (default — "
+            "just right of the group's last column) or 'before' (at its "
+            "first column). scope='group' (default) puts the column inside "
+            "the group (one per group instance); scope='total' next to the "
+            "group (once per parent instance — a grand total column for an "
+            "outermost group). Static columns beside the group stay "
+            "outside it. width defaults to '1in'."
         ),
         input_schema={
             "type": "object",
@@ -2038,6 +2142,11 @@ def register_all_tools(server: MCPServer) -> None:
                     "default": "after",
                 },
                 "width": {"type": "string", "default": "1in"},
+                "scope": {
+                    "type": "string",
+                    "enum": ["group", "total"],
+                    "default": "group",
+                },
             },
             "required": ["path", "tablix_name", "group_name", "aggregates"],
             "additionalProperties": False,
@@ -2048,11 +2157,18 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_cell_span",
         description=(
-            "Set <RowSpan> and/or <ColSpan> on a tablix cell. The cell is "
-            "addressed by (row_index, column_name) where column_name is the "
-            "textbox name inside the cell. At least one of row_span / "
-            "col_span must be supplied; both must be >= 1. Pass 1 to "
-            "explicitly reset a span. Replaces existing values if present."
+            "Set <ColSpan> on a tablix body cell (merge it with the cells "
+            "to its right). The cell is addressed by (row_index, "
+            "column_name) where column_name is the textbox name inside the "
+            "cell. At least one of row_span / col_span must be supplied; "
+            "both must be integers >= 1. col_span may not run past the last "
+            "column. Covered cells become empty placeholders: blank ones are "
+            "cleared, a covered cell with content is refused unless "
+            "force=true deletes it. Shrinking a span gives the uncovered "
+            "cells blank textboxes. row_span > 1 is refused (body cells "
+            "cannot span rows; RowSpan only applies in a TablixCorner); "
+            "pass 1 to reset. Returns {..., cleared, created} - the textbox "
+            "names deleted / created."
         ),
         input_schema={
             "type": "object",
@@ -2063,6 +2179,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "column_name": {"type": "string"},
                 "row_span": {"type": ["integer", "null"], "minimum": 1},
                 "col_span": {"type": ["integer", "null"], "minimum": 1},
+                "force": {"type": "boolean", "default": False},
             },
             "required": ["path", "tablix_name", "row_index", "column_name"],
             "additionalProperties": False,
@@ -2078,8 +2195,12 @@ def register_all_tools(server: MCPServer) -> None:
             "(left to right); shorter list = blank trailing cells, longer "
             "list errors. Cell textboxes are named row_name (col 0) and "
             "row_name_<col_index> (others) — unique report-wide so row_name "
-            "must not clash with any existing textbox. position is "
-            "0-indexed; default appends. height defaults to 0.25in."
+            "must not clash with any existing textbox. position is the "
+            "0-indexed body row; default appends. The row stays outside "
+            "every row group: a position strictly inside a group is moved "
+            "to just before that group (the result's position/warnings say "
+            "so) unless inside_group names it. Existing rows keep their "
+            "group membership. height defaults to 0.25in."
         ),
         input_schema={
             "type": "object",
@@ -2093,6 +2214,12 @@ def register_all_tools(server: MCPServer) -> None:
                 },
                 "position": {"type": ["integer", "null"], "minimum": 0},
                 "height": {"type": ["string", "null"]},
+                "inside_group": {
+                    "type": ["string", "null"],
+                    "description": "Row group to insert inside on purpose (the row then "
+                    "repeats per group instance); position must lie within that group's rows "
+                    "or just past them. Default: the row stays outside every group.",
+                },
             },
             "required": ["path", "tablix_name", "row_name"],
             "additionalProperties": False,
@@ -2107,8 +2234,13 @@ def register_all_tools(server: MCPServer) -> None:
             "literal text. cells is a list of strings, one per body row "
             "(top to bottom); shorter list = blank trailing cells, longer "
             "list errors. Cell textboxes are named column_name (row 0) and "
-            "column_name_<row_index> (others). position is 0-indexed; "
-            "default appends. width defaults to 1in."
+            "column_name_<row_index> (others). position is the 0-indexed "
+            "body column; default appends. The column stays outside every "
+            "column group: a position strictly inside a group is moved to "
+            "just before that group (the result's position/warnings say "
+            "so) unless inside_group names it. In a matrix the new member "
+            "gets column-header cells matching its siblings. width "
+            "defaults to 1in."
         ),
         input_schema={
             "type": "object",
@@ -2122,6 +2254,12 @@ def register_all_tools(server: MCPServer) -> None:
                 },
                 "position": {"type": ["integer", "null"], "minimum": 0},
                 "width": {"type": ["string", "null"]},
+                "inside_group": {
+                    "type": ["string", "null"],
+                    "description": "Column group to insert inside on purpose (the column "
+                    "then repeats per group instance); position must lie within that group's "
+                    "columns or just past them. Default: the column stays outside every group.",
+                },
             },
             "required": ["path", "tablix_name", "column_name"],
             "additionalProperties": False,
@@ -2547,7 +2685,9 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Set <Visibility> on the tablix's Details group, optionally with "
             "a ToggleItem textbox name. Use to hide detail rows by expression "
-            "without restructuring the row hierarchy."
+            "without restructuring the row hierarchy. "
+            "Hidden must be true/false or an =expression. toggle_textbox must be an existing textbox in the same region/tablix scope and NOT in the rows/columns being hidden (e.g. use the parent group's header cell); omit it to keep the current toggle, pass null or "
+            " to remove it. Returns changed; no write when nothing changed."
         ),
         input_schema={
             "type": "object",
@@ -2914,16 +3054,24 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_textbox_runs",
         description=(
-            "Replace a textbox's content with multiple <TextRun> children "
-            "for mixed styling within one display — e.g. '**Asset(s):** "
-            "value' with a bold prefix + regular value in a single "
-            "textbox. Each run is a dict with required 'text' and optional "
+            "Set a textbox's text runs for mixed styling within one "
+            "display — e.g. '**Asset(s):** value' with a bold prefix + "
+            "regular value in a single textbox — or for multi-paragraph "
+            "content. Each run is a dict with required 'text' (or "
+            "'value') and optional paragraph_index (default 0) / "
             "font_family / font_size / font_weight / font_style / color / "
-            "format / text_decoration. Replaces the entire <Paragraphs> "
-            "subtree (single-paragraph in v0.3; multi-paragraph deferred). "
-            "Round-trip contract: get_textbox.runs[] returns the same "
-            "shape this tool writes. Idempotent — identical input is a "
-            "no-op short-circuit. Returns {textbox, kind, runs, changed}. "
+            "format / text_decoration / markup_type, or a 'style' dict "
+            "keyed by RDL names (FontWeight, ...). Edits in place: run i "
+            "of paragraph j overwrites the existing run there and keeps "
+            "every field you don't pass (MarkupType, ToolTip, ActionInfo, "
+            "other style keys; pass a style key as null to remove it); "
+            "paragraph properties (TextAlign, ListStyle, indents) are "
+            "kept, new paragraphs inherit the previous one's. Refuses "
+            "(file untouched) when existing paragraphs would be left "
+            "unaddressed, unless drop_extra_paragraphs=true. "
+            "get_textbox.runs[] is accepted verbatim, so feeding it back "
+            "is a no-op. Returns {textbox, kind, runs, paragraphs, "
+            "changed}. "
             "Pass raw text in each run's `text` — encoding is handled; "
             "don't pre-encode XML entities (use `&` not `&amp;`, "
             "including for the VB.NET string-concat operator)."
@@ -2940,17 +3088,57 @@ def register_all_tools(server: MCPServer) -> None:
                         "type": "object",
                         "properties": {
                             "text": {"type": "string"},
-                            "font_family": {"type": "string"},
-                            "font_size": {"type": "string"},
-                            "font_weight": {"type": "string"},
-                            "font_style": {"type": "string"},
-                            "color": {"type": "string"},
-                            "format": {"type": "string"},
-                            "text_decoration": {"type": "string"},
+                            "value": {
+                                "type": ["string", "null"],
+                                "description": "Alias of text (the key get_textbox returns).",
+                            },
+                            "paragraph_index": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "Paragraph this run belongs to (default 0).",
+                            },
+                            "font_family": {"type": ["string", "null"]},
+                            "font_size": {"type": ["string", "null"]},
+                            "font_weight": {"type": ["string", "null"]},
+                            "font_style": {"type": ["string", "null"]},
+                            "color": {"type": ["string", "null"]},
+                            "format": {"type": ["string", "null"]},
+                            "text_decoration": {"type": ["string", "null"]},
+                            "markup_type": {
+                                "type": ["string", "null"],
+                                "enum": ["None", "HTML", None],
+                                "description": "HTML renders the run's tags; null removes it.",
+                            },
+                            "style": {
+                                "type": "object",
+                                "description": (
+                                    "Run style keyed by RDL name (get_textbox shape); "
+                                    "null removes a key."
+                                ),
+                                "properties": {
+                                    local: {"type": ["string", "null"]}
+                                    for local in (
+                                        "FontFamily",
+                                        "FontSize",
+                                        "FontWeight",
+                                        "FontStyle",
+                                        "Color",
+                                        "Format",
+                                        "TextDecoration",
+                                    )
+                                },
+                                "additionalProperties": False,
+                            },
                         },
-                        "required": ["text"],
                         "additionalProperties": False,
                     },
+                },
+                "drop_extra_paragraphs": {
+                    "type": "boolean",
+                    "description": (
+                        "Delete existing trailing paragraphs that runs don't "
+                        "address (default false: refuse instead)."
+                    ),
                 },
             },
             "required": ["path", "textbox_name", "runs"],
@@ -2967,8 +3155,8 @@ def register_all_tools(server: MCPServer) -> None:
             "'change the textbox content' case (swap a literal label, "
             "update a stale parameter reference, replace a broken "
             "aggregate). Refuses with a redirect to set_textbox_runs when "
-            "the textbox has multiple text runs (multi-run content needs "
-            "the rich-text editor). Idempotent: identical value → "
+            "the textbox has multiple text runs or paragraphs (multi-run "
+            "content needs the rich-text editor). Idempotent: identical value → "
             "{changed: false} no-op. Returns {textbox, kind, changed}. "
             "Pass raw text — encoding is handled; don't pre-encode XML "
             "entities (use `&` not `&amp;`, including for the VB.NET "
@@ -3243,9 +3431,15 @@ def register_all_tools(server: MCPServer) -> None:
         name="insert_tablix_from_template",
         description=(
             "Build and append a basic Tablix to <Body>/<ReportItems>. One "
-            "column per name in `columns`; header row gets the column "
-            "name as a static label, detail row binds to "
-            "=Fields!<column>.Value. dataset_name must already exist. "
+            "column per entry in `columns`: a field name of the dataset, or "
+            '{"field": <field name>, "header": <caption>} for a display '
+            "caption that is not an identifier (e.g. 'Unit Price (USD)'). "
+            "The header row shows the caption (default: the field name), the "
+            "detail row binds to =Fields!<field>.Value. dataset_name must "
+            "already exist and every field must be declared in it (unknown "
+            "fields are refused, listing the available ones). The tablix "
+            "name must be unused report-wide; generated textbox and detail "
+            "group names are suffixed until unique. "
             "`width` is the tablix outer width — each column defaults to "
             "1in regardless, so for a 3-column tablix the columns sum to "
             "3in even if you pass width=10cm. Resize columns afterwards "
@@ -3259,7 +3453,20 @@ def register_all_tools(server: MCPServer) -> None:
                 "dataset_name": {"type": "string"},
                 "columns": {
                     "type": "array",
-                    "items": {"type": "string"},
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "field": {"type": "string"},
+                                    "header": {"type": "string"},
+                                },
+                                "required": ["field"],
+                                "additionalProperties": False,
+                            },
+                        ]
+                    },
                     "minItems": 1,
                 },
                 "top": {"type": "string"},
@@ -3288,8 +3495,11 @@ def register_all_tools(server: MCPServer) -> None:
             "Build and append a basic Column chart to <Body>/<ReportItems>. "
             "Single category axis grouped by category_field; single Y series "
             "Sum(Fields!<value_field>.Value). dataset_name must already exist. "
-            "Change <Type> post-insert (e.g. to Bar / Line / Pie) by "
-            "editing the chart directly."
+            "The series is Column/Plain; change it post-insert with "
+            "set_chart_series_type (RDL Types: Column, Bar, Line, Area, "
+            "Shape, Scatter, Range, Polar — e.g. a pie chart is "
+            "Shape/Pie, a doughnut Shape/Doughnut, a stepped line "
+            "Line/Stepped)."
         ),
         input_schema={
             "type": "object",
@@ -3328,7 +3538,17 @@ def register_all_tools(server: MCPServer) -> None:
             "(=Sum(Fields!<value_field>.Value)). series_type defaults to "
             "Column; combine series of different types in one chart for "
             "combo charts (e.g. Bar + Line). series_subtype defaults to "
-            "Plain. Refuses if series_name already exists."
+            "the type's default (Plain; Pie for Shape). The pair must be "
+            "a real RDL Type/Subtype (see set_chart_series_type); "
+            "shorthands like Pie or Bubble are normalised and the "
+            "canonical type/subtype returned. Also creates the series' ChartSeriesHierarchy member "
+            "(<ChartMember><Label>series_name</Label>, the legend text; a "
+            "sibling of any dynamic series group) and one ChartDataPoint "
+            "per category leaf, so series and members stay matched by "
+            "position. Trailing series that lack a member (files written "
+            "by older versions) get one first, listed in repaired_members. "
+            "Refuses if series_name is already used by a series or a "
+            "derived series."
         ),
         input_schema={
             "type": "object",
@@ -3339,18 +3559,13 @@ def register_all_tools(server: MCPServer) -> None:
                 "value_field": {"type": "string"},
                 "series_type": {
                     "type": "string",
-                    "description": (
-                        "Column / Bar / Line / Area / Pie / Doughnut / "
-                        "Range / Scatter / Bubble / Stock / Polar / Radar "
-                        "/ Funnel / Pyramid"
-                    ),
+                    "default": "Column",
+                    "description": chart.SERIES_TYPE_DOC,
                 },
                 "series_subtype": {
-                    "type": "string",
-                    "description": (
-                        "Plain / Stacked / PercentStacked / Smooth / "
-                        "Exploded / SmoothLine / 100 / Line / Spline"
-                    ),
+                    "type": ["string", "null"],
+                    "default": None,
+                    "description": chart.SERIES_SUBTYPE_DOC,
                 },
             },
             "required": ["path", "chart_name", "series_name", "value_field"],
@@ -3362,9 +3577,16 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_chart_series",
         description=(
-            "Remove a named <ChartSeries> from a chart. Refuses to remove "
-            "the last remaining series (use remove_body_item to drop the "
-            "whole chart instead). Returns {chart, removed, remaining}."
+            "Remove a named <ChartSeries> from a chart together with its "
+            "ChartSeriesHierarchy leaf member; parent members left empty "
+            "are pruned (their groups listed in pruned_groups), so the "
+            "remaining series keep their own labels and groups. Refuses "
+            "to remove the last remaining series (use remove_body_item to "
+            "drop the whole chart instead). Refuses when a derived series "
+            "(ChartDerivedSeries) uses it as SourceChartSeriesName unless "
+            "cascade=true, which removes those derived series too. Returns "
+            "{chart, removed, remaining, removed_derived, pruned_groups, "
+            "repaired_members}."
         ),
         input_schema={
             "type": "object",
@@ -3372,6 +3594,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "chart_name": {"type": "string"},
                 "series_name": {"type": "string"},
+                "cascade": {"type": "boolean", "default": False},
             },
             "required": ["path", "chart_name", "series_name"],
             "additionalProperties": False,
@@ -3385,12 +3608,21 @@ def register_all_tools(server: MCPServer) -> None:
             "Update <Type> and optionally <Subtype> on a named "
             "ChartSeries. Combo charts work by setting different "
             "types per series in the same chart (e.g. one Bar series "
-            "and one Line series). v0.4: series_subtype defaults to "
-            "null/None — omit to PRESERVE the existing subtype. "
-            "Pass 'Stacked' / 'PercentStacked' / 'Plain' / etc. to "
-            "override. Pre-v0.4 always wrote 'Plain' by default, "
-            "silently resetting stacked-bar charts on type-only edits. "
-            "Returns {chart, series, kind, changed: list[str]} — "
+            "and one Line series). Only real RDL pairs are written — "
+            "Column/Bar: Plain|Stacked|PercentStacked; Line: "
+            "Plain|Smooth|Stepped; Area: Plain|Smooth|Stacked|"
+            "PercentStacked; Shape: Pie|ExplodedPie|Doughnut|"
+            "ExplodedDoughnut|Funnel|Pyramid|TreeMap|Sunburst; Scatter: "
+            "Plain|Bubble; Range: Plain|Smooth|Column|Bar|Stock|"
+            "Candlestick|BoxPlot|ErrorBar; Polar: Plain|Radar. "
+            "Shorthands are normalised (Pie -> Shape/Pie, Bubble -> "
+            "Scatter/Bubble, Radar -> Polar/Radar, Stock -> Range/Stock, "
+            "SmoothLine -> Line/Smooth, subtype 100 -> PercentStacked). "
+            "series_subtype null/omitted keeps the existing subtype when "
+            "it suits the new type, otherwise resets it to the type's "
+            "default (Plain; Pie for Shape) and reports 'Subtype' in "
+            "changed. Returns {chart, series, kind, type, subtype, "
+            "changed: list[str]} with the canonical pair — changed is "
             "empty when inputs match existing values."
         ),
         input_schema={
@@ -3399,8 +3631,15 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "chart_name": {"type": "string"},
                 "series_name": {"type": "string"},
-                "series_type": {"type": "string"},
-                "series_subtype": {"type": ["string", "null"], "default": None},
+                "series_type": {
+                    "type": "string",
+                    "description": chart.SERIES_TYPE_DOC,
+                },
+                "series_subtype": {
+                    "type": ["string", "null"],
+                    "default": None,
+                    "description": chart.SERIES_SUBTYPE_DOC,
+                },
             },
             "required": ["path", "chart_name", "series_name", "series_type"],
             "additionalProperties": False,
@@ -3897,20 +4136,38 @@ def register_all_tools(server: MCPServer) -> None:
         name="set_element_visibility",
         description=(
             "Set <Visibility> on any named ReportItem (Tablix, Textbox, "
-            "Image, Rectangle, Subreport, Chart). For group-level "
-            "visibility use set_group_visibility; for detail-row use "
-            "set_detail_row_visibility. toggle_textbox optionally points "
-            "at a textbox name that toggles expand/collapse."
+            "Image, Rectangle, Subreport, Chart, Line, Map, GaugePanel). "
+            "For group-level visibility use set_group_visibility; for "
+            "detail-row use set_detail_row_visibility. hidden_expression "
+            "is 'true' / 'false' or an =expression (required unless "
+            "clear). toggle_textbox names the textbox that toggles "
+            "expand/collapse: it must exist, not be the item or inside "
+            "it, be in the same region (body/header/footer), and if it "
+            "is a tablix cell the item must be inside that tablix. Omit "
+            "toggle_textbox to keep the existing toggle; pass '' or null "
+            "to remove it. clear=true removes <Visibility>. Invalid "
+            "input is refused with the file untouched. Returns {element, "
+            "kind, hidden_expression, toggle_textbox, changed}."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "element_name": {"type": "string"},
-                "hidden_expression": {"type": "string"},
-                "toggle_textbox": {"type": ["string", "null"]},
+                "hidden_expression": {
+                    "type": "string",
+                    "description": "'true' / 'false' or an =expression.",
+                },
+                "toggle_textbox": {
+                    "type": ["string", "null"],
+                    "description": "Omit to keep the existing toggle; '' or null removes it.",
+                },
+                "clear": {
+                    "type": "boolean",
+                    "description": "Remove <Visibility> entirely (default false).",
+                },
             },
-            "required": ["path", "element_name", "hidden_expression"],
+            "required": ["path", "element_name"],
             "additionalProperties": False,
         },
         handler=visibility.set_element_visibility,
