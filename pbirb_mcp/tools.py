@@ -130,6 +130,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=dataset.update_dataset_query,
+        mutating=True,
     )
     server.register_tool(
         name="add_query_parameter",
@@ -160,6 +161,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=dataset.add_query_parameter,
+        mutating=True,
     )
     server.register_tool(
         name="update_query_parameter",
@@ -182,6 +184,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=dataset.update_query_parameter,
+        mutating=True,
     )
     server.register_tool(
         name="set_datasource_connection",
@@ -215,6 +218,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=datasource.set_datasource_connection,
+        mutating=True,
     )
     server.register_tool(
         name="list_data_sources",
@@ -278,6 +282,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=datasource.add_data_source,
+        mutating=True,
     )
     server.register_tool(
         name="remove_data_source",
@@ -298,6 +303,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=datasource.remove_data_source,
+        mutating=True,
     )
     server.register_tool(
         name="rename_data_source",
@@ -319,6 +325,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=datasource.rename_data_source,
+        mutating=True,
     )
     server.register_tool(
         name="list_dataset_filters",
@@ -388,6 +395,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=dataset.add_dataset_filter,
+        mutating=True,
     )
     server.register_tool(
         name="remove_dataset_filter",
@@ -407,6 +415,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=dataset.remove_dataset_filter,
+        mutating=True,
     )
     server.register_tool(
         name="get_dataset",
@@ -453,6 +462,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=dataset.add_calculated_field,
+        mutating=True,
     )
     server.register_tool(
         name="remove_calculated_field",
@@ -474,6 +484,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=dataset.remove_calculated_field,
+        mutating=True,
     )
     server.register_tool(
         name="remove_dataset_field",
@@ -507,6 +518,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=dataset.remove_dataset_field,
+        mutating=True,
     )
     server.register_tool(
         name="add_dataset_field",
@@ -544,6 +556,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=dataset.add_dataset_field,
+        mutating=True,
     )
     server.register_tool(
         name="refresh_dataset_fields",
@@ -568,6 +581,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=dataset.refresh_dataset_fields,
+        mutating=True,
     )
     server.register_tool(
         name="set_image_sizing",
@@ -593,6 +607,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=images.set_image_sizing,
+        mutating=True,
     )
     server.register_tool(
         name="set_image_source",
@@ -617,6 +632,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=images.set_image_source,
+        mutating=True,
     )
     server.register_tool(
         name="set_column_width",
@@ -645,6 +661,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_columns.set_column_width,
+        mutating=True,
     )
     server.register_tool(
         name="set_tablix_size",
@@ -668,6 +685,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix.set_tablix_size,
+        mutating=True,
     )
     server.register_tool(
         name="reorder_parameters",
@@ -696,6 +714,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=parameters.reorder_parameters,
+        mutating=True,
     )
     server.register_tool(
         name="set_parameter_layout",
@@ -727,6 +746,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=parameters.set_parameter_layout,
+        mutating=True,
     )
     server.register_tool(
         name="duplicate_report",
@@ -750,6 +770,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=clone.duplicate_report,
+        mutating=True,
     )
     server.register_tool(
         name="get_embedded_image_data",
@@ -804,9 +825,25 @@ def register_all_tools(server: MCPServer) -> None:
             "file is missing) don't invalidate the report. Use this as "
             "the single 'is the report OK?' tool, or set "
             "PBIRB_MCP_AUTO_VERIFY=1 to have it run after every "
-            "mutating call."
+            "mutating call. With baseline_path (e.g. a backup taken "
+            "before an edit), or inside a transaction, each issue gets "
+            "new: true|false plus introduced_count / preexisting_count."
         ),
-        input_schema=_PATH_ONLY_SCHEMA,
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "baseline_path": {
+                    "type": "string",
+                    "description": (
+                        "Optional earlier version of the report; issues "
+                        "already present there are marked new: false."
+                    ),
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
         handler=validate.verify_report,
     )
 
@@ -970,6 +1007,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_transactions.apply_edits,
+        mutating=True,
     )
 
     # ---- v0.4 scratch creation (commits 13 + 14) -------------------------
@@ -1008,6 +1046,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_scratch.create_report,
+        mutating=True,
     )
 
     server.register_tool(
@@ -1125,6 +1164,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_layout.set_group_page_break,
+        mutating=True,
     )
 
     server.register_tool(
@@ -1149,6 +1189,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_layout.set_repeat_on_new_page,
+        mutating=True,
     )
 
     server.register_tool(
@@ -1172,6 +1213,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_layout.set_keep_together,
+        mutating=True,
     )
 
     server.register_tool(
@@ -1198,6 +1240,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_layout.set_keep_with_group,
+        mutating=True,
     )
 
     # ---- layout containers (Phase 11) -----------------------------------
@@ -1239,6 +1282,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_layout.add_rectangle,
+        mutating=True,
     )
 
     server.register_tool(
@@ -1267,6 +1311,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_layout.add_list,
+        mutating=True,
     )
 
     server.register_tool(
@@ -1299,6 +1344,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_layout.add_line,
+        mutating=True,
     )
 
     # ---- xpath escape hatch (Phase 12 commit 45) ------------------------
@@ -1353,6 +1399,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_escape.raw_xml_replace,
+        mutating=True,
     )
 
     # ---- actions / tooltip / document-map (Phase 5) ---------------------
@@ -1402,6 +1449,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=actions.set_textbox_action,
+        mutating=True,
     )
     server.register_tool(
         name="set_image_action",
@@ -1434,6 +1482,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=actions.set_image_action,
+        mutating=True,
     )
     server.register_tool(
         name="set_textbox_tooltip",
@@ -1453,6 +1502,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=actions.set_textbox_tooltip,
+        mutating=True,
     )
     server.register_tool(
         name="set_document_map_label",
@@ -1474,6 +1524,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=actions.set_document_map_label,
+        mutating=True,
     )
     server.register_tool(
         name="set_chart_series_action",
@@ -1511,6 +1562,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=actions.set_chart_series_action,
+        mutating=True,
     )
 
     server.register_tool(
@@ -1530,6 +1582,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=dataset.remove_query_parameter,
+        mutating=True,
     )
 
     server.register_tool(
@@ -1585,6 +1638,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix.add_tablix_filter,
+        mutating=True,
     )
     server.register_tool(
         name="add_row_group",
@@ -1611,6 +1665,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix.add_row_group,
+        mutating=True,
     )
     server.register_tool(
         name="remove_row_group",
@@ -1630,6 +1685,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix.remove_row_group,
+        mutating=True,
     )
     server.register_tool(
         name="convert_to_matrix",
@@ -1660,6 +1716,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix.convert_to_matrix,
+        mutating=True,
     )
     server.register_tool(
         name="set_tablix_corner",
@@ -1686,6 +1743,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix.set_tablix_corner,
+        mutating=True,
     )
     server.register_tool(
         name="set_group_sort",
@@ -1713,6 +1771,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix.set_group_sort,
+        mutating=True,
     )
     server.register_tool(
         name="set_group_visibility",
@@ -1739,6 +1798,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix.set_group_visibility,
+        mutating=True,
     )
 
     # ---- column-axis groups (v0.2) ----------------------------------------
@@ -1769,6 +1829,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_columns.add_column_group,
+        mutating=True,
     )
     server.register_tool(
         name="remove_column_group",
@@ -1789,6 +1850,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_columns.remove_column_group,
+        mutating=True,
     )
     server.register_tool(
         name="set_column_group_sort",
@@ -1812,6 +1874,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_columns.set_column_group_sort,
+        mutating=True,
     )
     server.register_tool(
         name="set_column_group_visibility",
@@ -1839,6 +1902,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_columns.set_column_group_visibility,
+        mutating=True,
     )
     server.register_tool(
         name="add_tablix_column",
@@ -1868,6 +1932,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_columns.add_tablix_column,
+        mutating=True,
     )
     server.register_tool(
         name="remove_tablix_column",
@@ -1890,6 +1955,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_columns.remove_tablix_column,
+        mutating=True,
     )
     server.register_tool(
         name="add_subtotal_row",
@@ -1931,6 +1997,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_subtotals.add_subtotal_row,
+        mutating=True,
     )
     server.register_tool(
         name="add_subtotal_column",
@@ -1975,6 +2042,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_subtotals.add_subtotal_column,
+        mutating=True,
     )
     server.register_tool(
         name="set_cell_span",
@@ -1999,6 +2067,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_cells.set_cell_span,
+        mutating=True,
     )
     server.register_tool(
         name="add_static_row",
@@ -2028,6 +2097,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_static.add_static_row,
+        mutating=True,
     )
     server.register_tool(
         name="add_static_column",
@@ -2056,6 +2126,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix_static.add_static_column,
+        mutating=True,
     )
 
     # ---- positioning (v0.2 commits 6-8) -----------------------------------
@@ -2079,6 +2150,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=positioning.set_body_item_position,
+        mutating=True,
     )
     server.register_tool(
         name="set_header_item_position",
@@ -2099,6 +2171,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=positioning.set_header_item_position,
+        mutating=True,
     )
     server.register_tool(
         name="set_footer_item_position",
@@ -2119,6 +2192,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=positioning.set_footer_item_position,
+        mutating=True,
     )
     server.register_tool(
         name="set_body_item_size",
@@ -2140,6 +2214,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=positioning.set_body_item_size,
+        mutating=True,
     )
     server.register_tool(
         name="set_header_item_size",
@@ -2162,6 +2237,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=positioning.set_header_item_size,
+        mutating=True,
     )
     server.register_tool(
         name="set_footer_item_size",
@@ -2180,6 +2256,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=positioning.set_footer_item_size,
+        mutating=True,
     )
 
     # ---- reader extensions (v0.2) -----------------------------------------
@@ -2324,6 +2401,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=snapshot.restore_from_backup,
+        mutating=True,
     )
 
     # ---- parameter CRUD (v0.2 commits 15-19) ------------------------------
@@ -2345,6 +2423,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=parameters.set_parameter_prompt,
+        mutating=True,
     )
     server.register_tool(
         name="set_parameter_type",
@@ -2369,6 +2448,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=parameters.set_parameter_type,
+        mutating=True,
     )
     server.register_tool(
         name="add_parameter",
@@ -2398,6 +2478,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=parameters.add_parameter,
+        mutating=True,
     )
     server.register_tool(
         name="remove_parameter",
@@ -2418,6 +2499,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=parameters.remove_parameter,
+        mutating=True,
     )
     server.register_tool(
         name="rename_parameter",
@@ -2439,6 +2521,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=parameters.rename_parameter,
+        mutating=True,
     )
     server.register_tool(
         name="sync_parameter_layout",
@@ -2455,6 +2538,7 @@ def register_all_tools(server: MCPServer) -> None:
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=parameters.sync_parameter_layout,
+        mutating=True,
     )
 
     server.register_tool(
@@ -2476,6 +2560,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix.set_detail_row_visibility,
+        mutating=True,
     )
     server.register_tool(
         name="set_row_height",
@@ -2495,6 +2580,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix.set_row_height,
+        mutating=True,
     )
 
     server.register_tool(
@@ -2515,6 +2601,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=tablix.remove_tablix_filter,
+        mutating=True,
     )
 
     server.register_tool(
@@ -2540,6 +2627,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=page.set_page_setup,
+        mutating=True,
     )
     server.register_tool(
         name="set_page_orientation",
@@ -2561,6 +2649,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=page.set_page_orientation,
+        mutating=True,
     )
     server.register_tool(
         name="set_body_size",
@@ -2588,6 +2677,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=page.set_body_size,
+        mutating=True,
     )
 
     _SECTION_FLAGS_SCHEMA = {
@@ -2670,12 +2760,14 @@ def register_all_tools(server: MCPServer) -> None:
         ),
         input_schema=_SECTION_FLAGS_SCHEMA,
         handler=header_footer.set_page_header,
+        mutating=True,
     )
     server.register_tool(
         name="set_page_footer",
         description="Same as set_page_header, for <PageFooter>.",
         input_schema=_SECTION_FLAGS_SCHEMA,
         handler=header_footer.set_page_footer,
+        mutating=True,
     )
     server.register_tool(
         name="add_header_textbox",
@@ -2688,12 +2780,14 @@ def register_all_tools(server: MCPServer) -> None:
         ),
         input_schema=_TEXTBOX_SCHEMA,
         handler=header_footer.add_header_textbox,
+        mutating=True,
     )
     server.register_tool(
         name="add_footer_textbox",
         description="Same as add_header_textbox, for <PageFooter>.",
         input_schema=_TEXTBOX_SCHEMA,
         handler=header_footer.add_footer_textbox,
+        mutating=True,
     )
     server.register_tool(
         name="add_header_image",
@@ -2704,12 +2798,14 @@ def register_all_tools(server: MCPServer) -> None:
         ),
         input_schema=_IMAGE_SCHEMA,
         handler=header_footer.add_header_image,
+        mutating=True,
     )
     server.register_tool(
         name="add_footer_image",
         description="Same as add_header_image, for <PageFooter>.",
         input_schema=_IMAGE_SCHEMA,
         handler=header_footer.add_footer_image,
+        mutating=True,
     )
     server.register_tool(
         name="remove_header_item",
@@ -2719,12 +2815,14 @@ def register_all_tools(server: MCPServer) -> None:
         ),
         input_schema=_NAMED_REMOVE_SCHEMA,
         handler=header_footer.remove_header_item,
+        mutating=True,
     )
     server.register_tool(
         name="remove_footer_item",
         description="Same as remove_header_item, for <PageFooter>.",
         input_schema=_NAMED_REMOVE_SCHEMA,
         handler=header_footer.remove_footer_item,
+        mutating=True,
     )
 
     server.register_tool(
@@ -2810,6 +2908,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=styling.set_textbox_style,
+        mutating=True,
     )
     server.register_tool(
         name="set_textbox_runs",
@@ -2857,6 +2956,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=styling.set_textbox_runs,
+        mutating=True,
     )
     server.register_tool(
         name="set_textbox_value",
@@ -2884,6 +2984,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=styling.set_textbox_value,
+        mutating=True,
     )
     server.register_tool(
         name="set_textbox_style_bulk",
@@ -2926,6 +3027,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=styling.set_textbox_style_bulk,
+        mutating=True,
     )
     server.register_tool(
         name="find_textboxes_by_style",
@@ -3044,6 +3146,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=styling.style_tablix_row,
+        mutating=True,
     )
 
     _BODY_TEXTBOX_SCHEMA = {
@@ -3102,6 +3205,7 @@ def register_all_tools(server: MCPServer) -> None:
         ),
         input_schema=_BODY_TEXTBOX_SCHEMA,
         handler=body.add_body_textbox,
+        mutating=True,
     )
     server.register_tool(
         name="add_body_image",
@@ -3112,6 +3216,7 @@ def register_all_tools(server: MCPServer) -> None:
         ),
         input_schema=_BODY_IMAGE_SCHEMA,
         handler=body.add_body_image,
+        mutating=True,
     )
     server.register_tool(
         name="remove_body_item",
@@ -3130,6 +3235,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=body.remove_body_item,
+        mutating=True,
     )
 
     server.register_tool(
@@ -3173,6 +3279,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=templates.insert_tablix_from_template,
+        mutating=True,
     )
     server.register_tool(
         name="insert_chart_from_template",
@@ -3210,6 +3317,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=chart.insert_chart_from_template,
+        mutating=True,
     )
     server.register_tool(
         name="add_chart_series",
@@ -3248,6 +3356,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=chart.add_chart_series,
+        mutating=True,
     )
     server.register_tool(
         name="remove_chart_series",
@@ -3267,6 +3376,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=chart.remove_chart_series,
+        mutating=True,
     )
     server.register_tool(
         name="set_chart_series_type",
@@ -3295,6 +3405,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=chart.set_chart_series_type,
+        mutating=True,
     )
     server.register_tool(
         name="set_chart_series_grouping",
@@ -3329,6 +3440,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=chart.set_chart_series_grouping,
+        mutating=True,
     )
     server.register_tool(
         name="set_chart_axis",
@@ -3368,6 +3480,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=chart.set_chart_axis,
+        mutating=True,
     )
     server.register_tool(
         name="set_chart_legend",
@@ -3393,6 +3506,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=chart.set_chart_legend,
+        mutating=True,
     )
     server.register_tool(
         name="set_chart_data_labels",
@@ -3445,6 +3559,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=chart.set_chart_data_labels,
+        mutating=True,
     )
     server.register_tool(
         name="set_chart_palette",
@@ -3466,6 +3581,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=chart.set_chart_palette,
+        mutating=True,
     )
     server.register_tool(
         name="set_series_color",
@@ -3488,6 +3604,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=chart.set_series_color,
+        mutating=True,
     )
     server.register_tool(
         name="set_chart_title",
@@ -3509,6 +3626,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=chart.set_chart_title,
+        mutating=True,
     )
 
     _STATIC_VALUE_ITEM = {
@@ -3555,6 +3673,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=parameters.set_parameter_available_values,
+        mutating=True,
     )
     server.register_tool(
         name="set_parameter_default_values",
@@ -3585,6 +3704,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=parameters.set_parameter_default_values,
+        mutating=True,
     )
 
     server.register_tool(
@@ -3612,6 +3732,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=parameters.update_parameter_advanced,
+        mutating=True,
     )
 
     server.register_tool(
@@ -3649,6 +3770,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=embedded_images.add_embedded_image,
+        mutating=True,
     )
     server.register_tool(
         name="list_embedded_images",
@@ -3684,6 +3806,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=embedded_images.remove_embedded_image,
+        mutating=True,
     )
 
     server.register_tool(
@@ -3713,6 +3836,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=styling.set_alternating_row_color,
+        mutating=True,
     )
     server.register_tool(
         name="set_conditional_row_color",
@@ -3765,6 +3889,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=styling.set_conditional_row_color,
+        mutating=True,
     )
 
     server.register_tool(
@@ -3788,6 +3913,7 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=visibility.set_element_visibility,
+        mutating=True,
     )
 
 

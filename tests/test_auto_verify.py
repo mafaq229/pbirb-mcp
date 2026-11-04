@@ -176,3 +176,104 @@ class TestAutoVerifyOn:
         # This test stays as a regression guard against a future
         # mutating tool that drops `path`.
         assert True
+
+
+def _p(server: MCPServer, name: str, args: dict) -> dict:
+    return _call(server, name, args)["payload"]
+
+
+class TestMutatingFlagRouting:
+    """Issue #28: AUTO_VERIFY routes on the explicit `mutating` flag, so
+    tools without a set_/add_/... prefix — and tools whose written file
+    isn't `path` — are verified too."""
+
+    @pytest.fixture(autouse=True)
+    def _env(self, monkeypatch):
+        monkeypatch.setenv("PBIRB_MCP_AUTO_VERIFY", "1")
+
+    def test_raw_xml_replace(self, server, rdl_path):
+        out = _p(
+            server,
+            "raw_xml_replace",
+            {
+                "path": str(rdl_path),
+                "xpath": ".//r:Textbox[@Name='HeaderAmount']/r:CanGrow",
+                "content": "<Bogus>1</Bogus>",
+            },
+        )
+        assert set(out) == {"result", "verify"}
+        assert out["verify"]["valid"] is False
+
+    def test_apply_edits(self, server, rdl_path):
+        out = _p(
+            server,
+            "apply_edits",
+            {
+                "path": str(rdl_path),
+                "ops": [
+                    {
+                        "tool": "set_textbox_value",
+                        "args": {"textbox_name": "HeaderAmount", "value": "v"},
+                    }
+                ],
+            },
+        )
+        assert set(out) == {"result", "verify"}
+
+    def test_create_report(self, server, tmp_path):
+        out = _p(server, "create_report", {"path": str(tmp_path / "new.rdl")})
+        assert set(out) == {"result", "verify"}
+
+    def test_duplicate_report_verifies_dst(self, server, rdl_path, tmp_path):
+        dst = tmp_path / "dup.rdl"
+        out = _p(server, "duplicate_report", {"src_path": str(rdl_path), "dst_path": str(dst)})
+        assert set(out) == {"result", "verify"}
+        assert out["verify"]["valid"] is True
+
+    def test_restore_from_backup_verifies_target(self, server, rdl_path):
+        backup = _p(server, "backup_report", {"path": str(rdl_path)})
+        out = _p(server, "restore_from_backup", {"backup_path": backup["backup"], "force": True})
+        assert set(out) == {"result", "verify"}
+
+    def test_refresh_dataset_fields(self, server, rdl_path):
+        out = _p(
+            server, "refresh_dataset_fields", {"path": str(rdl_path), "dataset_name": "MainDataset"}
+        )
+        assert set(out) == {"result", "verify"}
+
+    def test_convert_to_matrix(self, server, rdl_path):
+        _p(
+            server,
+            "add_column_group",
+            {
+                "path": str(rdl_path),
+                "tablix_name": "MainTable",
+                "group_name": "ByID",
+                "group_expression": "=Fields!ProductID.Value",
+            },
+        )
+        _p(
+            server,
+            "add_row_group",
+            {
+                "path": str(rdl_path),
+                "tablix_name": "MainTable",
+                "group_name": "ByProduct",
+                "group_expression": "=Fields!ProductName.Value",
+            },
+        )
+        out = _p(
+            server,
+            "convert_to_matrix",
+            {
+                "path": str(rdl_path),
+                "tablix_name": "MainTable",
+                "row_group": "ByProduct",
+                "column_group": "ByID",
+            },
+        )
+        assert set(out) == {"result", "verify"}, out
+
+    def test_read_only_tools_unwrapped(self, server, rdl_path):
+        out = _p(server, "describe_report", {"path": str(rdl_path)})
+        assert "verify" not in out

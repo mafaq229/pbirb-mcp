@@ -4,15 +4,17 @@
   return a ``transaction_id``. Subsequent edit tools that include
   ``transaction_id`` in their arguments operate against the same
   in-memory tree without touching disk.
-* :func:`commit_editing_transaction` — lint the in-memory tree;
-  abort on any error-severity issue; clear the in-transaction flag;
-  call ``doc.save()`` once (atomic .tmp + rename); deregister.
+* :func:`commit_editing_transaction` — verify (XSD + structural + lint)
+  the in-memory tree; abort on any error-severity issue the transaction
+  INTRODUCED (issues already in the file at start are reported with
+  ``new: false`` but don't block); clear the in-transaction flag; call
+  ``doc.save()`` once (atomic .tmp + rename); deregister.
 * :func:`cancel_editing_transaction` — deregister without saving.
   The in-memory tree is GC'd; the on-disk file is unchanged.
 
 These are thin shims over :mod:`pbirb_mcp.core.transactions` (the
-pure-data registry) and :func:`pbirb_mcp.ops.lint._lint_doc` (the
-already-open-doc lint entry point added in v0.4 commit 12).
+pure-data registry) and :func:`pbirb_mcp.ops.validate.verify_doc` (the
+already-open-doc verify entry point).
 
 See also :func:`apply_edits` (v0.4 commit 11) for the single-call
 atomic-batch flavour.
@@ -24,7 +26,7 @@ from typing import Any
 
 from pbirb_mcp.core import transactions as _registry
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.ops.lint import _lint_doc
+from pbirb_mcp.ops.validate import baseline_of, mark_new_issues, verify_doc
 
 
 def start_editing_transaction(path: str) -> dict[str, Any]:
@@ -42,6 +44,9 @@ def start_editing_transaction(path: str) -> dict[str, Any]:
     tx_id = _registry.register(doc)
     tx = _registry.lookup_by_id(tx_id)
     assert tx is not None  # noqa: S101 — defensive sanity
+    # Baseline: what's already wrong with the file. Commit only blocks on
+    # errors the transaction introduces.
+    tx.baseline = baseline_of(verify_doc(doc))
     return {
         "transaction_id": tx_id,
         "path": tx.abspath,
@@ -50,16 +55,19 @@ def start_editing_transaction(path: str) -> dict[str, Any]:
 
 
 def commit_editing_transaction(transaction_id: str, force: bool = False) -> dict[str, Any]:
-    """Lint the in-memory tree, save once, deregister.
+    """Verify the in-memory tree, save once, deregister.
 
-    Aborts (without saving) if lint surfaces any ``severity=='error'``
-    issue — the caller can fix the offending state via additional
-    transaction-aware edits and re-commit. Warnings do not abort.
+    Runs XSD + structural checks + lint on the in-memory tree. Aborts
+    (without saving) if that surfaces any ``severity=='error'`` issue
+    that wasn't already in the file when the transaction started — the
+    caller can fix the offending state via additional transaction-aware
+    edits and re-commit. Warnings and pre-existing errors do not abort.
 
-    Returns ``{transaction_id, path, saved, verify}``. ``verify``
-    mirrors the shape :func:`pbirb_mcp.ops.validate.verify_report`
-    returns: ``{valid, issues, rules_run}``. On lint-error abort,
-    ``saved`` is ``False`` and ``verify.valid`` is ``False``.
+    Returns ``{transaction_id, path, saved, verify}``. ``verify`` is
+    ``{valid, issues, rules_run, xsd_used, introduced_count,
+    preexisting_count, introduced_error_count}``; every issue carries
+    ``new: true|false``. ``valid`` is ``False`` whenever any error remains
+    (pre-existing ones included). On abort ``saved`` is ``False``.
 
     Refuses (``saved: False`` plus an ``error`` message, transaction
     left open) when the file changed on disk since the transaction
@@ -93,9 +101,12 @@ def commit_editing_transaction(transaction_id: str, force: bool = False) -> dict
                 ),
             }
 
-    lint_result = _lint_doc(tx.doc)
-    has_error = any(i.get("severity") == "error" for i in lint_result["issues"])
-    if has_error:
+    verify = verify_doc(tx.doc)
+    if tx.baseline is not None:
+        verify = mark_new_issues(verify, tx.baseline)
+    else:
+        verify = mark_new_issues(verify, baseline_of({"issues": []}))
+    if verify["introduced_error_count"]:
         # Do NOT save. Leave the transaction open so the caller can fix
         # the offending state via additional transaction-aware calls
         # and re-commit. Return shape matches the success path so the
@@ -104,7 +115,7 @@ def commit_editing_transaction(transaction_id: str, force: bool = False) -> dict
             "transaction_id": transaction_id,
             "path": tx.abspath,
             "saved": False,
-            "verify": {"valid": False, **lint_result},
+            "verify": verify,
         }
 
     # Clear the flag so save_as actually writes; commit() then
@@ -122,7 +133,7 @@ def commit_editing_transaction(transaction_id: str, force: bool = False) -> dict
         "transaction_id": transaction_id,
         "path": tx.abspath,
         "saved": True,
-        "verify": {"valid": True, **lint_result},
+        "verify": verify,
     }
 
 

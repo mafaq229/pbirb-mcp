@@ -47,6 +47,7 @@ import hashlib
 import os
 import time
 import uuid
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
@@ -69,6 +70,9 @@ class _Transaction:
     inode: Optional[tuple] = None
     # File fingerprint at start; commit refuses when the file changed.
     fingerprint: Optional[tuple] = None
+    # Multiset of verify-issue keys present at start (see
+    # pbirb_mcp.ops.validate.issue_key). Commit blocks only on new errors.
+    baseline: Optional[Counter] = None
 
 
 _BY_ID: dict[str, _Transaction] = {}

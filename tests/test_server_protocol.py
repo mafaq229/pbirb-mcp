@@ -142,7 +142,7 @@ class TestTransactionIdDispatch:
             return {"ok": True, "received_path": path}
 
         server.register_tool(
-            name="set_thing",  # `set_` prefix → mutating per _MUTATING_PREFIXES
+            name="set_thing",
             description="captures what it got",
             input_schema={
                 "type": "object",
@@ -151,6 +151,7 @@ class TestTransactionIdDispatch:
                 "additionalProperties": True,
             },
             handler=handler,
+            mutating=True,
         )
 
     def test_unknown_transaction_id_returns_iserror(self, server):

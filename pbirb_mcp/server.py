@@ -7,8 +7,11 @@ exposes no tools — feature commits add them.
 Optional :envvar:`PBIRB_MCP_AUTO_VERIFY` (Phase 7 commit 34): when set to a
 truthy value (``1``, ``true``, ``yes``, ``on``, case-insensitive) the server
 runs :func:`pbirb_mcp.ops.validate.verify_report` after every successful
-mutating-tool call and merges the result into the response:
-``{result, verify}``. Default off — v0.2 callers see no shape change.
+call of a tool registered with ``mutating=True`` and merges the result into
+the response: ``{result, verify}``. The verified file is the tool's
+``path``, else its ``dst_path`` (duplicate_report), else the
+``restored_to`` it returned (restore_from_backup). Default off — v0.2
+callers see no shape change.
 """
 
 from __future__ import annotations
@@ -26,31 +29,20 @@ PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "pbirb-mcp"
 SERVER_VERSION = "0.4.1"
 
-# Tool-name prefixes treated as mutating for auto-verify routing. All RDL-
-# state-changing tools in the codebase start with one of these. Read-only
-# tools (get_*, list_*, describe_*, find_*, validate_*, lint_*, verify_*,
-# dry_run_edit, backup_report) are explicitly out — they don't write.
-_MUTATING_PREFIXES = (
-    "set_",
-    "add_",
-    "remove_",
-    "update_",
-    "rename_",
-    "reorder_",
-    "insert_",
-    "style_",
-    "duplicate_",
-    "sync_",
-)
-
 
 def _auto_verify_enabled() -> bool:
     val = os.environ.get("PBIRB_MCP_AUTO_VERIFY", "").strip().lower()
     return val in ("1", "true", "yes", "on")
 
 
-def _is_mutating_tool(name: str) -> bool:
-    return any(name.startswith(p) for p in _MUTATING_PREFIXES)
+def _verify_target(arguments: dict, result: Any) -> Optional[str]:
+    """The file a mutating call wrote, for auto-verify."""
+    if isinstance(result, dict) and isinstance(result.get("restored_to"), str):
+        return result["restored_to"]
+    for key in ("dst_path", "path"):
+        if isinstance(arguments.get(key), str):
+            return arguments[key]
+    return None
 
 
 # JSON-RPC 2.0 standard error codes
@@ -90,6 +82,8 @@ class Tool:
     handler: ToolHandler
     # May this tool run as an op inside apply_edits / dry_run_edit?
     batchable: bool = False
+    # Does this tool write an RDL file? (drives PBIRB_MCP_AUTO_VERIFY)
+    mutating: bool = False
 
 
 class MCPServer:
@@ -104,19 +98,26 @@ class MCPServer:
         handler: ToolHandler,
         *,
         batchable: Optional[bool] = None,
+        mutating: bool = False,
     ) -> None:
         """Register a tool.
 
         ``batchable`` — may the tool run as an op in ``apply_edits`` /
         ``dry_run_edit``. Defaults to: the schema declares ``path`` and the
         tool isn't in :data:`NON_BATCHABLE_TOOLS`.
+
+        ``mutating`` — the tool writes an RDL file; with
+        ``PBIRB_MCP_AUTO_VERIFY`` on, the written file is verified after
+        every successful call.
         """
         if name in self._tools:
             raise ValueError(f"tool already registered: {name}")
         if batchable is None:
             props = (input_schema or {}).get("properties", {})
             batchable = "path" in props and name not in NON_BATCHABLE_TOOLS
-        self._tools[name] = Tool(name, description, input_schema, handler, batchable=batchable)
+        self._tools[name] = Tool(
+            name, description, input_schema, handler, batchable=batchable, mutating=mutating
+        )
 
     def is_batchable(self, name: str) -> bool:
         tool = self._tools.get(name)
@@ -274,23 +275,19 @@ class MCPServer:
             }
 
         # Auto-verify (Phase 7 commit 34): when PBIRB_MCP_AUTO_VERIFY is on
-        # and the tool is mutating + has a `path` arg, run verify_report
-        # against the post-mutation file and merge into the response. Off
-        # by default — v0.2 callers see no shape change.
+        # and the tool is registered mutating=True, run verify_report
+        # against the file it wrote and merge into the response. Off by
+        # default — v0.2 callers see no shape change.
         # v0.4: skip when the request was inside a transaction —
         # intermediate trees aren't on disk, so verifying would inspect
         # stale bytes. commit_editing_transaction runs its own verify
         # against the post-commit on-disk file.
-        if (
-            not in_transaction
-            and _auto_verify_enabled()
-            and _is_mutating_tool(name)
-            and isinstance(arguments.get("path"), str)
-        ):
+        target = _verify_target(arguments, result) if tool.mutating else None
+        if not in_transaction and _auto_verify_enabled() and target is not None:
             from pbirb_mcp.ops.validate import verify_report
 
             try:
-                verify = verify_report(arguments["path"])
+                verify = verify_report(target)
             except Exception as exc:  # noqa: BLE001
                 # Don't fail the mutating call because verify barfed.
                 logger.warning("auto-verify failed for %s: %s", name, exc)
