@@ -136,6 +136,11 @@ def restore_from_backup(
                 "to restore anyway."
             )
 
+    # A held path may only change through its transaction's commit —
+    # otherwise the commit would silently overwrite the restore.
+    from pbirb_mcp.core import transactions as _tx
+
+    _tx.check_writable(str(dst.resolve()), None)
     shutil.copy2(src, dst)
     return {
         "source": str(src),

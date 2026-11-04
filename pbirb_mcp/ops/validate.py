@@ -41,6 +41,14 @@ def _load_tree(path: str) -> tuple[etree._ElementTree | None, dict | None]:
     failure — issue uses the canonical lint shape.
     """
     p = Path(path)
+    # Inside the owning transaction, validate the live in-memory tree —
+    # the on-disk file doesn't have the transaction's edits yet.
+    from pbirb_mcp.core import transactions as _tx
+
+    if p.is_file():
+        tx = _tx.owned_transaction(str(p.resolve()))
+        if tx is not None:
+            return tx.doc.tree, None
     if not p.is_file():
         return None, {
             "severity": "error",

@@ -232,15 +232,18 @@ class RDLDocument:
         path = Path(path)
         if not path.is_file():
             raise FileNotFoundError(path)
-        # v0.4 transaction interception: when an active editing
-        # transaction owns this path, return the live in-memory tree
-        # instead of re-parsing. Identity-equal across repeated open()
-        # calls — handlers that do `doc = RDLDocument.open(path)` reuse
-        # the same in-memory tree all transaction-aware tool calls
-        # share. Local import dodges the module-load circular dep.
+        # v0.4 transaction interception: when the current call runs
+        # under the editing transaction that owns this path, return the
+        # live in-memory tree instead of re-parsing. Identity-equal
+        # across repeated open() calls — handlers that do
+        # `doc = RDLDocument.open(path)` reuse the same in-memory tree
+        # all calls of that transaction share. Calls without the
+        # transaction's id read the on-disk file; saving that copy back
+        # over the held path is refused (see save_as). Local import
+        # dodges the module-load circular dep.
         from pbirb_mcp.core import transactions as _tx
 
-        existing = _tx.lookup_by_path(str(path.resolve()))
+        existing = _tx.owned_transaction(str(path.resolve()))
         if existing is not None:
             return existing.doc
         # Preserve everything: comments, CDATA, whitespace.
@@ -275,6 +278,22 @@ class RDLDocument:
             known = [mapping[i] for i in self._known if i in mapping]
         expanded = [mapping[id(e)] for e in self._expanded if id(e) in mapping]
         return (tree_copy, known, expanded)
+
+    def copy_to(self, path: PathLike) -> RDLDocument:
+        """An independent document (deep-copied tree, same byte form)
+        that saves to ``path``. Never part of a transaction."""
+        tree_copy, known, expanded = self.snapshot()
+        doc = RDLDocument(
+            path=Path(path),
+            tree=tree_copy,
+            encoding=self.encoding,
+            source_form=self.source_form,
+        )
+        doc._expanded = expanded
+        if known is not None:
+            doc._known_refs = known
+            doc._known = {id(e) for e in known}
+        return doc
 
     def restore(self, snap: tuple) -> None:
         """Put back a tree captured by :meth:`snapshot`.
@@ -369,15 +388,19 @@ class RDLDocument:
 
     def save_as(self, path: PathLike) -> None:
         # v0.4 transaction interception: while this document is inside
-        # an active editing transaction, every save_as call silently
-        # no-ops. commit_editing_transaction clears the flag and re-
-        # calls save_as so the actual on-disk write happens exactly
-        # once, at commit time. Default-False on RDLDocument instances
-        # that never enter a transaction — no impact on existing
-        # callers.
-        if getattr(self, "_in_transaction", False):
-            return
+        # an active editing transaction, saving it back to its own path
+        # silently no-ops. commit_editing_transaction clears the flag and
+        # re-calls save_as so the actual on-disk write happens exactly
+        # once, at commit time. Saving to any OTHER path writes normally.
+        # A document that isn't the holding transaction's tree may not be
+        # saved over a held path at all (TransactionConflictError).
+        from pbirb_mcp.core import transactions as _tx
+
         path = Path(path)
+        target = str(path.resolve())
+        if getattr(self, "_in_transaction", False) and target == str(self.path.resolve()):
+            return
+        _tx.check_writable(target, self)
         tmp = path.with_name(path.name + ".tmp")
         try:
             data = self.to_bytes()

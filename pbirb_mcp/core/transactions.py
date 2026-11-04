@@ -42,9 +42,11 @@ bridge when it comes.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import os
 import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
@@ -66,6 +68,54 @@ class _Transaction:
 
 _BY_ID: dict[str, _Transaction] = {}
 _BY_PATH: dict[str, str] = {}  # abspath → transaction_id
+
+# The transaction the current tool call was routed through (set by the
+# dispatcher only when the call carried a valid ``transaction_id``).
+# :meth:`RDLDocument.open` hands out a transaction's live tree only to
+# calls running under that transaction's id; everyone else reads the
+# on-disk file and is refused on save (see :func:`check_writable`).
+_ACTIVE_TX: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "pbirb_active_transaction", default=None
+)
+
+
+class TransactionConflictError(ValueError):
+    """A write targeted a path held by an open transaction the call
+    wasn't routed through."""
+
+
+@contextlib.contextmanager
+def activate(transaction_id: Optional[str]) -> Iterator[None]:
+    """Run the enclosed block as part of ``transaction_id``."""
+    token = _ACTIVE_TX.set(transaction_id)
+    try:
+        yield
+    finally:
+        _ACTIVE_TX.reset(token)
+
+
+def active_transaction_id() -> Optional[str]:
+    return _ACTIVE_TX.get()
+
+
+def owned_transaction(abspath: str) -> Optional[_Transaction]:
+    """The transaction holding ``abspath`` iff the current call runs
+    under it; ``None`` otherwise (not held, or held by someone else)."""
+    tx = lookup_by_path(abspath)
+    if tx is not None and tx.transaction_id == _ACTIVE_TX.get():
+        return tx
+    return None
+
+
+def check_writable(abspath: str, doc: object) -> None:
+    """Raise :class:`TransactionConflictError` when ``abspath`` is held
+    by an open transaction and ``doc`` isn't that transaction's tree."""
+    tx = lookup_by_path(abspath)
+    if tx is not None and tx.doc is not doc:
+        raise TransactionConflictError(
+            f"{abspath!r} is held by an open editing transaction; pass its "
+            "transaction_id to edit it, or commit/cancel the transaction first"
+        )
 
 
 def _timeout_seconds() -> int:
@@ -114,10 +164,14 @@ def register(doc: RDLDocument, *, now: Optional[float] = None) -> str:
 
 
 def lookup_by_id(transaction_id: str) -> Optional[_Transaction]:
+    # Expiry is enforced on every lookup, so commit/cancel/edits all see
+    # an expired transaction as gone.
+    sweep_orphans()
     return _BY_ID.get(transaction_id)
 
 
 def lookup_by_path(abspath: str) -> Optional[_Transaction]:
+    sweep_orphans()
     tx_id = _BY_PATH.get(abspath)
     if tx_id is None:
         return None
@@ -180,12 +234,17 @@ def _reset_for_tests() -> None:
 
 
 __all__ = [
+    "TransactionConflictError",
     "_Transaction",
+    "activate",
+    "active_transaction_id",
     "active_transactions",
+    "check_writable",
     "cancel",
     "commit",
     "lookup_by_id",
     "lookup_by_path",
+    "owned_transaction",
     "register",
     "sweep_orphans",
 ]

@@ -227,9 +227,9 @@ class TestTransactionIdDispatch:
             shutil.copy(fixture, rdl)
             doc = RDLDocument.open(rdl)
             # Register at an arbitrary anchor time, then expire manually.
-            tx_id = transactions.register(doc, now=0.0)
+            tx_id = transactions.register(doc)
             # Force the entry's expires_at into the past so the
-            # dispatcher's lazy sweep_orphans on the next call clears it.
+            # lazy sweep on the dispatcher's lookup clears it.
             tx = transactions.lookup_by_id(tx_id)
             tx.expires_at = -1.0
 

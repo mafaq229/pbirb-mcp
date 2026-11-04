@@ -164,14 +164,13 @@ class MCPServer:
         # back (leakage guard). Orphans are swept lazily before every
         # transaction-aware lookup.
         in_transaction = False
+        tx_id = None
         schema_props = (tool.input_schema or {}).get("properties", {})
         if "transaction_id" in arguments and "transaction_id" not in schema_props:
-            import time as _time
-
             from pbirb_mcp.core import transactions as _tx
 
             tx_id = arguments.pop("transaction_id")
-            _tx.sweep_orphans(_time.time())
+            # lookup_by_id sweeps expired transactions first.
             tx = _tx.lookup_by_id(tx_id) if isinstance(tx_id, str) else None
             if tx is None:
                 payload = {
@@ -198,7 +197,15 @@ class MCPServer:
         # hiding the rich messages tools already raise (locators in
         # remove_parameter, missing-column hints in add_subtotal_row, etc.).
         try:
-            result = tool.handler(**arguments)
+            if in_transaction:
+                from pbirb_mcp.core import transactions as _tx
+
+                # RDLDocument.open hands out the transaction's live tree
+                # only to calls running under its id.
+                with _tx.activate(tx_id):
+                    result = tool.handler(**arguments)
+            else:
+                result = tool.handler(**arguments)
         except Exception as exc:  # noqa: BLE001
             logger.exception("tool %s raised", name)
             payload = {
