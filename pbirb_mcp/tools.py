@@ -3342,7 +3342,14 @@ def register_all_tools(server: MCPServer) -> None:
             "(=Sum(Fields!<value_field>.Value)). series_type defaults to "
             "Column; combine series of different types in one chart for "
             "combo charts (e.g. Bar + Line). series_subtype defaults to "
-            "Plain. Refuses if series_name already exists."
+            "Plain. Also creates the series' ChartSeriesHierarchy member "
+            "(<ChartMember><Label>series_name</Label>, the legend text; a "
+            "sibling of any dynamic series group) and one ChartDataPoint "
+            "per category leaf, so series and members stay matched by "
+            "position. Trailing series that lack a member (files written "
+            "by older versions) get one first, listed in repaired_members. "
+            "Refuses if series_name is already used by a series or a "
+            "derived series."
         ),
         input_schema={
             "type": "object",
@@ -3376,9 +3383,16 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_chart_series",
         description=(
-            "Remove a named <ChartSeries> from a chart. Refuses to remove "
-            "the last remaining series (use remove_body_item to drop the "
-            "whole chart instead). Returns {chart, removed, remaining}."
+            "Remove a named <ChartSeries> from a chart together with its "
+            "ChartSeriesHierarchy leaf member; parent members left empty "
+            "are pruned (their groups listed in pruned_groups), so the "
+            "remaining series keep their own labels and groups. Refuses "
+            "to remove the last remaining series (use remove_body_item to "
+            "drop the whole chart instead). Refuses when a derived series "
+            "(ChartDerivedSeries) uses it as SourceChartSeriesName unless "
+            "cascade=true, which removes those derived series too. Returns "
+            "{chart, removed, remaining, removed_derived, pruned_groups, "
+            "repaired_members}."
         ),
         input_schema={
             "type": "object",
@@ -3386,6 +3400,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "chart_name": {"type": "string"},
                 "series_name": {"type": "string"},
+                "cascade": {"type": "boolean", "default": False},
             },
             "required": ["path", "chart_name", "series_name"],
             "additionalProperties": False,

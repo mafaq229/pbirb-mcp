@@ -55,7 +55,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import names, units
+from pbirb_mcp.core import chart_shape, names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError, resolve_dataset
@@ -520,6 +520,101 @@ def set_chart_axis(
     }
 
 
+# ---- series <-> ChartSeriesHierarchy bookkeeping -------------------------
+
+
+def _static_series_member(label: str) -> etree._Element:
+    """A static series ``<ChartMember>`` whose ``<Label>`` (the legend text)
+    is ``label``. ``Label`` is mandatory on every ChartMember."""
+    member = etree.Element(q("ChartMember"))
+    etree.SubElement(member, q("Label")).text = encode_text(label)
+    return member
+
+
+def _ensure_series_members_root(chart: etree._Element) -> etree._Element:
+    """Return the top-level ``ChartSeriesHierarchy/ChartMembers``, creating
+    the hierarchy (right before ``<ChartData>``) when it is missing."""
+    members_root = chart_shape.series_hierarchy_members(chart)
+    if members_root is not None:
+        return members_root
+    hierarchy = find_child(chart, "ChartSeriesHierarchy")
+    if hierarchy is None:
+        hierarchy = etree.Element(q("ChartSeriesHierarchy"))
+        anchor = find_child(chart, "ChartData")
+        if anchor is not None:
+            anchor.addprevious(hierarchy)
+        else:
+            chart.insert(0, hierarchy)
+    return etree.SubElement(hierarchy, q("ChartMembers"))
+
+
+def _sync_series_members(chart: etree._Element) -> list[str]:
+    """Make the series hierarchy cover every ``ChartSeries`` before a
+    series is added or removed.
+
+    Series match leaf members by position, so a chart with fewer leaves
+    than series is missing the members of its trailing series — the shape
+    earlier versions of ``add_chart_series`` left behind (they appended a
+    series but no member). Those trailing series get static members
+    labelled with their names, which is what the fixed tool gives them.
+    Returns the names of the series that got a member.
+
+    A chart with MORE leaves than series cannot be repaired unambiguously
+    (any leaf could be the stale one), so that raises ``ValueError``.
+    """
+    all_series = chart_shape.series_list(chart)
+    leaves = chart_shape.series_leaf_members(chart)
+    if len(leaves) > len(all_series):
+        raise ValueError(
+            f"chart {chart.get('Name')!r} has {len(leaves)} leaf ChartMember(s) in "
+            f"ChartSeriesHierarchy but only {len(all_series)} ChartSeries; series are "
+            "matched to members by position, so the stale member(s) cannot be "
+            "identified automatically. Remove the extra ChartMember(s) first."
+        )
+    missing = all_series[len(leaves) :]
+    if not missing:
+        return []
+    members_root = _ensure_series_members_root(chart)
+    for series in missing:
+        members_root.append(_static_series_member(series.get("Name")))
+    return [s.get("Name") for s in missing]
+
+
+def _remove_series_member(leaf: etree._Element) -> list[str]:
+    """Remove leaf ``leaf`` from the series hierarchy and prune every
+    ancestor ``ChartMembers`` / ``ChartMember`` left without children (an
+    emptied parent member would otherwise turn into a leaf and take over
+    some other series' position). Returns the names of the ``<Group>``
+    elements removed with pruned ancestors."""
+    pruned_groups: list[str] = []
+    node = leaf
+    while True:
+        members_root = node.getparent()
+        members_root.remove(node)
+        if find_children(members_root, "ChartMember"):
+            break
+        owner = members_root.getparent()
+        if owner is None or owner.tag != q("ChartMember"):
+            # The hierarchy's top-level <ChartMembers>; callers never empty
+            # it (a chart keeps at least one series).
+            break
+        owner.remove(members_root)
+        group = find_child(owner, "Group")
+        if group is not None and group.get("Name"):
+            pruned_groups.append(group.get("Name"))
+        node = owner
+    return pruned_groups
+
+
+def _remove_derived(derived: list[etree._Element]) -> None:
+    """Drop ``ChartDerivedSeries`` elements, and their collection if emptied."""
+    for d in derived:
+        collection = d.getparent()
+        collection.remove(d)
+        if not find_children(collection, "ChartDerivedSeries"):
+            collection.getparent().remove(collection)
+
+
 # ---- add_chart_series -----------------------------------------------------
 
 
@@ -528,19 +623,22 @@ def _build_chart_series(
     value_field: str,
     series_type: str = "Column",
     series_subtype: str = "Plain",
+    data_points: int = 1,
 ) -> etree._Element:
     """Construct a single ``<ChartSeries>`` with the canonical shape.
 
     Mirrors the structure :func:`insert_chart_from_template` builds for
     the initial series, so a chart with N series via this tool reads
-    consistently via :func:`get_chart`.
+    consistently via :func:`get_chart`. ``data_points`` is the number of
+    ``<ChartDataPoint>`` to emit — one per category leaf member.
     """
     series = etree.Element(q("ChartSeries"), Name=series_name)
-    data_points = etree.SubElement(series, q("ChartDataPoints"))
-    data_point = etree.SubElement(data_points, q("ChartDataPoint"))
-    values = etree.SubElement(data_point, q("ChartDataPointValues"))
-    y_node = etree.SubElement(values, q("Y"))
-    y_node.text = encode_text(f"=Sum(Fields!{value_field}.Value)")
+    points_root = etree.SubElement(series, q("ChartDataPoints"))
+    for _ in range(max(data_points, 1)):
+        data_point = etree.SubElement(points_root, q("ChartDataPoint"))
+        values = etree.SubElement(data_point, q("ChartDataPointValues"))
+        y_node = etree.SubElement(values, q("Y"))
+        y_node.text = encode_text(f"=Sum(Fields!{value_field}.Value)")
     etree.SubElement(series, q("Type")).text = series_type
     etree.SubElement(series, q("Subtype")).text = series_subtype
     return series
@@ -554,14 +652,25 @@ def add_chart_series(
     series_type: str = "Column",
     series_subtype: str = "Plain",
 ) -> dict[str, Any]:
-    """Append a new ``<ChartSeries>`` to the named chart.
+    """Append a new ``<ChartSeries>`` to the named chart, together with its
+    ``ChartSeriesHierarchy`` member.
 
     The series is built with ``Y = Sum(Fields!<value_field>.Value)`` —
     same shape :func:`insert_chart_from_template` emits for the first
-    series. Override after the fact via :func:`set_chart_series_type`
-    or by editing the data point values.
+    series — and one ``<ChartDataPoint>`` per category leaf member. A
+    static ``<ChartMember><Label>series_name</Label></ChartMember>`` is
+    appended to the top-level series ``<ChartMembers>``: series and leaf
+    members are matched by position, and the member's label is the
+    legend text. When the existing top-level member is a dynamic series
+    group, the new static member becomes its sibling — Report Builder's
+    layout for mixed static + dynamic series.
 
-    Refuses if ``series_name`` already exists in the chart.
+    A chart whose hierarchy lacks the members of trailing series (left by
+    earlier versions of this tool) is repaired first; the result's
+    ``repaired_members`` lists those series.
+
+    Refuses if ``series_name`` is already used by a series or a derived
+    series of the chart.
     """
     if series_type not in _VALID_SERIES_TYPES:
         raise ValueError(
@@ -579,15 +688,23 @@ def add_chart_series(
 
     if series_name in _series_names(sc):
         raise ValueError(f"chart {chart_name!r} already has a series named {series_name!r}")
+    if series_name in chart_shape.series_names(chart, include_derived=True):
+        raise ValueError(
+            f"chart {chart_name!r} already has a derived series named {series_name!r}; "
+            "series and derived series share one name space"
+        )
 
+    repaired = _sync_series_members(chart)
     sc.append(
         _build_chart_series(
             series_name=series_name,
             value_field=value_field,
             series_type=series_type,
             series_subtype=series_subtype,
+            data_points=len(chart_shape.category_leaf_members(chart)),
         )
     )
+    _ensure_series_members_root(chart).append(_static_series_member(series_name))
     doc.save()
     return {
         "chart": chart_name,
@@ -596,6 +713,7 @@ def add_chart_series(
         "type": series_type,
         "subtype": series_subtype,
         "value_field": value_field,
+        "repaired_members": repaired,
     }
 
 
@@ -606,15 +724,34 @@ def remove_chart_series(
     path: str,
     chart_name: str,
     series_name: str,
+    cascade: bool = False,
 ) -> dict[str, Any]:
-    """Remove a ``<ChartSeries>`` by name. Refuses if removing it would
-    leave the chart with zero series — RB renders a chart with no series
-    as an empty box, which is rarely the user's intent. Use
-    :func:`add_chart_series` first if you really want to swap series.
+    """Remove a ``<ChartSeries>`` by name, together with its leaf
+    ``ChartSeriesHierarchy`` member.
+
+    Any parent ``ChartMember`` left without children is pruned too (with
+    its ``<Group>``, reported in ``pruned_groups``) — otherwise it would
+    become a leaf and shift every later series onto the wrong label or
+    group. The remaining series keep their own members.
+
+    Refuses if removing it would leave the chart with zero series — RB
+    renders a chart with no series as an empty box, which is rarely the
+    user's intent. Use :func:`add_chart_series` first if you really want
+    to swap series.
+
+    A ``ChartDerivedSeries`` (moving average, ...) whose
+    ``SourceChartSeriesName`` is this series would dangle: the call
+    refuses, naming it, unless ``cascade=True``, which removes those
+    derived series too (transitively; listed in ``removed_derived``).
     """
     doc = RDLDocument.open(path)
     chart = _resolve_chart(doc, chart_name)
     sc = _series_collection(chart)
+    if series_name not in _series_names(sc) and series_name in chart_shape.series_names(chart):
+        raise ValueError(
+            f"{series_name!r} is a derived series (ChartDerivedSeries) of chart "
+            f"{chart_name!r}; remove_chart_series only removes regular series"
+        )
     target = _find_series(sc, series_name)
 
     remaining = [s for s in find_children(sc, "ChartSeries") if s is not target]
@@ -625,12 +762,28 @@ def remove_chart_series(
             "via remove_body_item."
         )
 
+    dependents = chart_shape.derived_dependents(chart, series_name)
+    dependent_names = [chart_shape.derived_series_name(d) for d in dependents]
+    if dependents and not cascade:
+        raise ValueError(
+            f"series {series_name!r} is the source (SourceChartSeriesName) of derived "
+            f"series {dependent_names} in chart {chart_name!r}; removing it would leave "
+            "a dangling reference. Pass cascade=True to remove the derived series too."
+        )
+
+    repaired = _sync_series_members(chart)
+    leaf = chart_shape.series_member(chart, target)
+    pruned_groups = _remove_series_member(leaf) if leaf is not None else []
     sc.remove(target)
+    _remove_derived(dependents)
     doc.save()
     return {
         "chart": chart_name,
         "removed": series_name,
         "remaining": [s.get("Name") for s in remaining],
+        "removed_derived": dependent_names,
+        "pruned_groups": pruned_groups,
+        "repaired_members": repaired,
     }
 
 
