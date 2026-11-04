@@ -11,6 +11,14 @@ Per RDL XSD, the child order inside a ``PageSection`` is:
 
 Insertions respect that order via :func:`_set_or_create_text_in_order`,
 mirroring the ordering helper in :mod:`pbirb_mcp.ops.page`.
+
+Band sizing (#50): RDL requires ``<Height>`` on a page section, so every
+tool that creates one writes it (the given height, else ``0.5in``). The
+``add_*`` tools grow the band to ``max(0.5in, top + height)`` when the new
+item would hang below it; :func:`fit_band` is the shared check the
+positioning tools use to warn (or, with ``grow_band``, grow) when a moved
+or resized item no longer fits. An item whose right edge passes the
+page's printable width only warns.
 """
 
 from __future__ import annotations
@@ -25,7 +33,7 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import find_child, q, qrd
-from pbirb_mcp.ops.page import _resolve_page  # type: ignore[attr-defined]
+from pbirb_mcp.ops.page import _resolve_page, printable_width_in  # type: ignore[attr-defined]
 
 _VALID_IMAGE_SOURCES = ("External", "Embedded", "Database")
 
@@ -65,6 +73,10 @@ class _Region:
 
 HEADER = _Region("header", "PageHeader")
 FOOTER = _Region("footer", "PageFooter")
+
+# Height written for a band created without an explicit one.
+DEFAULT_BAND_HEIGHT = "0.5in"
+_EPS = 1e-6
 
 
 # ---- section + ReportItems plumbing --------------------------------------
@@ -126,6 +138,108 @@ def _ensure_report_items(section: etree._Element) -> etree._Element:
             return items
     section.append(items)
     return items
+
+
+# ---- band sizing (#50) ----------------------------------------------------
+
+
+def _inches(node: Optional[etree._Element]) -> Optional[float]:
+    """``node``'s text in inches, or ``None`` when absent / not a plain size."""
+    if node is None:
+        return None
+    try:
+        return units.to_inches((node.text or "").strip())
+    except ValueError:
+        return None
+
+
+def _unit(node: Optional[etree._Element]) -> Optional[str]:
+    if node is None:
+        return None
+    try:
+        return units.parse_size((node.text or "").strip()).unit
+    except ValueError:
+        return None
+
+
+def item_extent(item: etree._Element) -> tuple[Optional[float], Optional[float]]:
+    """``(bottom, right)`` of a report item in inches — ``Top + Height`` and
+    ``Left + Width`` (a Line's negative Height/Width points up/left, so it
+    doesn't extend the item). A missing Top/Left counts as 0; a missing or
+    non-literal Height/Width (or Top/Left expression) gives ``None`` for
+    that edge.
+    """
+
+    def edge(origin: str, extent: str) -> Optional[float]:
+        o_node = find_child(item, origin)
+        o = 0.0 if o_node is None else _inches(o_node)
+        e = _inches(find_child(item, extent))
+        if o is None or e is None:
+            return None
+        return o + max(0.0, e)
+
+    return edge("Top", "Height"), edge("Left", "Width")
+
+
+def fit_band(
+    page: etree._Element,
+    section: etree._Element,
+    item: etree._Element,
+    *,
+    grow: bool,
+) -> tuple[list[str], Optional[str]]:
+    """Check that ``item`` fits inside its page section ``section``.
+
+    When the item's bottom passes the band's ``<Height>`` (or the band has
+    none), ``grow=True`` rewrites Height to ``max(0.5in, bottom)`` — in the
+    band's existing unit, else the item's Height unit — and returns it as
+    the second element; ``grow=False`` returns a warning instead. A right
+    edge past the page's printable width (``PageWidth`` minus margins)
+    always just warns. Returns ``(warnings, new_height_or_None)``.
+    """
+    warnings: list[str] = []
+    new_height: Optional[str] = None
+    section_local = etree.QName(section).localname
+    label = f"{etree.QName(item).localname} {item.get('Name')!r}"
+    bottom, right = item_extent(item)
+    height_node = find_child(section, "Height")
+    band = _inches(height_node)
+    if bottom is not None and (band is None or bottom > band + _EPS):
+        if grow:
+            floor = units.to_inches(DEFAULT_BAND_HEIGHT)
+            if bottom <= floor + _EPS:
+                new_height = DEFAULT_BAND_HEIGHT
+            else:
+                unit = _unit(height_node) or _unit(find_child(item, "Height")) or "in"
+                new_height = units.format_size(bottom, unit)
+            _set_or_create_text_in_order(section, "Height", new_height)
+        else:
+            have = (
+                f"Height {(height_node.text or '').strip()!r}"
+                if band is not None and height_node is not None
+                else "no usable Height"
+            )
+            warnings.append(
+                f"{label} ends at {units.format_size(bottom)} but <{section_local}> has "
+                f"{have}, so the item is clipped. Pass grow_band=true, or set the band "
+                "height with set_page_header / set_page_footer."
+            )
+    printable = printable_width_in(page)
+    if right is not None and printable is not None and right > printable + _EPS:
+        warnings.append(
+            f"{label} ends at {units.format_size(right)} from the left, past the page's "
+            f"printable width of {units.format_size(printable)} (PageWidth minus margins)."
+        )
+    return warnings, new_height
+
+
+def _lowest_item_bottom(section: etree._Element) -> Optional[float]:
+    items = find_child(section, "ReportItems")
+    if items is None:
+        return None
+    extents = (item_extent(el) for el in items if isinstance(el.tag, str))
+    bottoms = [b for b, _ in extents if b is not None]
+    return max(bottoms) if bottoms else None
 
 
 # ---- builders -------------------------------------------------------------
@@ -196,8 +310,21 @@ def _set_section(
     page = _resolve_page(doc)
     section = _ensure_page_section(page, region)
     changed: list[str] = []
+    warnings: list[str] = []
     if height is not None and _set_or_create_text_in_order(section, "Height", height):
         changed.append("Height")
+    if find_child(section, "Height") is None:
+        # RDL requires Height on a page section (#50); the XSD's choice
+        # model lets a flags-only section through, Report Builder doesn't.
+        _set_or_create_text_in_order(section, "Height", DEFAULT_BAND_HEIGHT)
+        changed.append("Height")
+    if height is not None:
+        lowest = _lowest_item_bottom(section)
+        if lowest is not None and lowest > units.to_inches(height) + _EPS:
+            warnings.append(
+                f"<{region.section_local}> Height {height!r} is shorter than its items, "
+                f"which reach {units.format_size(lowest)}; they will be clipped."
+            )
     if print_on_first_page is not None:
         text = "true" if print_on_first_page else "false"
         if _set_or_create_text_in_order(section, "PrintOnFirstPage", text):
@@ -208,7 +335,43 @@ def _set_section(
             changed.append("PrintOnLastPage")
     if changed:
         doc.save()
-    return {"path": str(doc.path), "region": region.name, "changed": changed}
+    result: dict[str, Any] = {"path": str(doc.path), "region": region.name, "changed": changed}
+    if warnings:
+        result["warnings"] = warnings
+    return result
+
+
+def _place_item(
+    doc: RDLDocument, region: _Region, item: etree._Element, name: str
+) -> dict[str, Any]:
+    """Append ``item`` to the region's band, growing the band to fit it
+    (``max(0.5in, top + height)``), and save. Shared by the add tools."""
+    page = _resolve_page(doc)
+    section = _ensure_page_section(page, region)
+    existing = find_child(section, "Height")
+    old_height = existing.text if existing is not None else None
+    _ensure_report_items(section).append(item)
+    warnings, grown = fit_band(page, section, item, grow=True)
+    height_node = find_child(section, "Height")
+    if height_node is None:
+        # Item size not a plain literal: still never leave a band without Height.
+        _set_or_create_text_in_order(section, "Height", DEFAULT_BAND_HEIGHT)
+        height_node = find_child(section, "Height")
+    if grown is not None and old_height is not None:
+        warnings.insert(
+            0,
+            f"<{region.section_local}> Height grown from {old_height!r} to {grown!r} "
+            f"to fit {name!r}.",
+        )
+    doc.save()
+    result: dict[str, Any] = {
+        "region": region.name,
+        "name": name,
+        "band_height": height_node.text,
+    }
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def _add_textbox(
@@ -225,16 +388,7 @@ def _add_textbox(
     top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
     names.ensure_unique(doc, name)
-    page = _resolve_page(doc)
-    section = _ensure_page_section(page, region)
-    # Default Height keeps Report Builder from rendering a 0in band when the
-    # caller adds an item without first calling set_page_header/footer.
-    if find_child(section, "Height") is None:
-        _set_or_create_text_in_order(section, "Height", "0.5in")
-    items = _ensure_report_items(section)
-    items.append(_build_textbox(name, text, top, left, width, height))
-    doc.save()
-    return {"region": region.name, "name": name}
+    return _place_item(doc, region, _build_textbox(name, text, top, left, width, height), name)
 
 
 def _add_image(
@@ -256,14 +410,8 @@ def _add_image(
     top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
     names.ensure_unique(doc, name)
-    page = _resolve_page(doc)
-    section = _ensure_page_section(page, region)
-    if find_child(section, "Height") is None:
-        _set_or_create_text_in_order(section, "Height", "0.5in")
-    items = _ensure_report_items(section)
-    items.append(_build_image(name, image_source, value, top, left, width, height))
-    doc.save()
-    return {"region": region.name, "name": name}
+    img = _build_image(name, image_source, value, top, left, width, height)
+    return _place_item(doc, region, img, name)
 
 
 def _remove_item(path: str, region: _Region, name: str) -> dict[str, Any]:
@@ -366,10 +514,13 @@ def remove_footer_item(path: str, name: str) -> dict[str, Any]:
 
 
 __all__ = [
+    "DEFAULT_BAND_HEIGHT",
     "add_footer_image",
     "add_footer_textbox",
     "add_header_image",
     "add_header_textbox",
+    "fit_band",
+    "item_extent",
     "remove_footer_item",
     "remove_header_item",
     "set_page_footer",

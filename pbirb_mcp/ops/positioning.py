@@ -12,6 +12,12 @@ Containers covered:
 * ``set_header_item_position`` — items inside ``<Page>/<PageHeader>/<ReportItems>``.
 * ``set_footer_item_position`` — items inside ``<Page>/<PageFooter>/<ReportItems>``.
 
+The header / footer variants check the result against the band (#50,
+:func:`pbirb_mcp.ops.header_footer.fit_band`): an item whose bottom passes
+the band's ``<Height>`` returns a ``warnings`` entry, or — with
+``grow_band=True`` — grows the band to fit (``band_height`` in the
+result). A right edge past the page's printable width always warns.
+
 Position / size values are validated by :mod:`pbirb_mcp.core.units`
 (``<number><unit>``; positions >= 0; sizes > 0 except a Line's
 width / height, which may be zero or negative) and then written
@@ -34,6 +40,7 @@ from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
+from pbirb_mcp.ops.header_footer import fit_band
 from pbirb_mcp.ops.page import _resolve_page  # type: ignore[attr-defined]
 
 # Layout-related ReportItem child order per RDL XSD. We only emit the
@@ -149,6 +156,26 @@ def _resolve_footer(doc: RDLDocument) -> etree._Element:
 # ---- public tools (commit 6) ---------------------------------------------
 
 
+def _fit_chrome_band(
+    doc: RDLDocument,
+    container: etree._Element,
+    item: etree._Element,
+    grow_band: Optional[bool],
+) -> dict[str, Any]:
+    """Run the #50 band check for a header/footer item (``grow_band`` is
+    ``None`` for body items: no check). Returns the extra result keys:
+    ``band_height`` when the band grew, ``warnings`` when non-empty."""
+    if grow_band is None:
+        return {}
+    warnings, grown = fit_band(_resolve_page(doc), container, item, grow=bool(grow_band))
+    extras: dict[str, Any] = {}
+    if grown is not None:
+        extras["band_height"] = grown
+    if warnings:
+        extras["warnings"] = warnings
+    return extras
+
+
 def _move_named_item(
     path: str,
     resolve_container: Callable[[RDLDocument], etree._Element],
@@ -156,12 +183,14 @@ def _move_named_item(
     name: str,
     top: str,
     left: str,
+    grow_band: Optional[bool] = None,
 ) -> dict[str, Any]:
     # Validate before opening the document: a bad value never writes.
     top = units.validate_size(top, field="top")
     left = units.validate_size(left, field="left")
     doc = RDLDocument.open(path)
-    item = _find_named_item(resolve_container(doc), name)
+    container = resolve_container(doc)
+    item = _find_named_item(container, name)
     if item is None:
         raise ElementNotFoundError(f"{container_label} has no named item {name!r}")
     changed_fields: list[str] = []
@@ -169,6 +198,9 @@ def _move_named_item(
         changed_fields.append("Top")
     if _set_layout_value(item, "Left", left):
         changed_fields.append("Left")
+    extras = _fit_chrome_band(doc, container, item, grow_band)
+    if "band_height" in extras:
+        changed_fields.append("BandHeight")
     if changed_fields:
         doc.save()
     return {
@@ -177,6 +209,7 @@ def _move_named_item(
         "top": top,
         "left": left,
         "changed": bool(changed_fields),
+        **extras,
     }
 
 
@@ -203,10 +236,13 @@ def set_header_item_position(
     name: str,
     top: str,
     left: str,
+    grow_band: bool = False,
 ) -> dict[str, Any]:
     """Move a named item inside ``<PageHeader>``. Idempotent — see
-    ``set_body_item_position`` for the ``changed`` semantics."""
-    return _move_named_item(path, _resolve_header, "header", name, top, left)
+    ``set_body_item_position`` for the ``changed`` semantics. Warns when
+    the item no longer fits the band; ``grow_band=True`` grows the band
+    instead (#50)."""
+    return _move_named_item(path, _resolve_header, "header", name, top, left, grow_band)
 
 
 def set_footer_item_position(
@@ -214,10 +250,13 @@ def set_footer_item_position(
     name: str,
     top: str,
     left: str,
+    grow_band: bool = False,
 ) -> dict[str, Any]:
     """Move a named item inside ``<PageFooter>``. Idempotent — see
-    ``set_body_item_position`` for the ``changed`` semantics."""
-    return _move_named_item(path, _resolve_footer, "footer", name, top, left)
+    ``set_body_item_position`` for the ``changed`` semantics. Warns when
+    the item no longer fits the band; ``grow_band=True`` grows the band
+    instead (#50)."""
+    return _move_named_item(path, _resolve_footer, "footer", name, top, left, grow_band)
 
 
 # ---- public tools (commit 8) ---------------------------------------------
@@ -230,6 +269,7 @@ def _resize_named_item(
     name: str,
     width: Optional[str],
     height: Optional[str],
+    grow_band: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Shared resize helper used by set_body_item_size /
     set_header_item_size / set_footer_item_size. Either width or height
@@ -243,7 +283,8 @@ def _resize_named_item(
     units.validate_optional_size(width, field="width", allow_negative=True)
     units.validate_optional_size(height, field="height", allow_negative=True)
     doc = RDLDocument.open(path)
-    item = _find_named_item(resolve_container(doc), name)
+    container = resolve_container(doc)
+    item = _find_named_item(container, name)
     if item is None:
         raise ElementNotFoundError(f"{container_label} has no named item {name!r}")
     line = etree.QName(item).localname == "Line"
@@ -256,6 +297,9 @@ def _resize_named_item(
         changed_fields.append("Width")
     if height is not None and _set_layout_value(item, "Height", height):
         changed_fields.append("Height")
+    extras = _fit_chrome_band(doc, container, item, grow_band)
+    if "band_height" in extras:
+        changed_fields.append("BandHeight")
     if changed_fields:
         doc.save()
     return {
@@ -264,6 +308,7 @@ def _resize_named_item(
         "width": width,
         "height": height,
         "changed": bool(changed_fields),
+        **extras,
     }
 
 
@@ -288,6 +333,7 @@ def set_header_item_size(
     name: str,
     width: Optional[str] = None,
     height: Optional[str] = None,
+    grow_band: bool = False,
 ) -> dict[str, Any]:
     """Resize a named item inside ``<PageHeader>``. Mirrors the contract
     of :func:`set_body_item_size` — at least one of width / height; missing
@@ -295,8 +341,11 @@ def set_header_item_size(
 
     Closes the v0.2 parity gap where only ``set_body_item_size`` existed
     and resizing a header logo / banner forced a manual ``str_replace``.
+
+    Warns when the item no longer fits the band (or the page's printable
+    width); ``grow_band=True`` grows the band instead (#50).
     """
-    return _resize_named_item(path, _resolve_header, "header", name, width, height)
+    return _resize_named_item(path, _resolve_header, "header", name, width, height, grow_band)
 
 
 def set_footer_item_size(
@@ -304,10 +353,11 @@ def set_footer_item_size(
     name: str,
     width: Optional[str] = None,
     height: Optional[str] = None,
+    grow_band: bool = False,
 ) -> dict[str, Any]:
     """Resize a named item inside ``<PageFooter>``. Same shape as
     :func:`set_header_item_size`."""
-    return _resize_named_item(path, _resolve_footer, "footer", name, width, height)
+    return _resize_named_item(path, _resolve_footer, "footer", name, width, height, grow_band)
 
 
 __all__ = [

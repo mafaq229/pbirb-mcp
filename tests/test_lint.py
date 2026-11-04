@@ -723,3 +723,165 @@ def test_lint_rules_package_modules_are_registered(tmp_path, monkeypatch):
 
     monkeypatch.setattr(lint_rules.pkgutil, "iter_modules", iter_modules)
     assert "zz-fake-rule" in lint_rules.load()
+
+
+# ---- #50: page-chrome rules (lint_rules/page_chrome.py) -------------------
+
+_CHROME_RULES = [
+    "page-number-out-of-chrome",
+    "page-global-out-of-chrome",
+    "field-in-page-chrome",
+    "page-section-missing-height",
+]
+
+
+def _chrome_issues(path: str) -> list[tuple[str, str]]:
+    return [(i["rule"], i["location"]) for i in lint_report(path, rules=_CHROME_RULES)["issues"]]
+
+
+class TestPageChromeRules:
+    def test_fixtures_are_clean(self):
+        for fixture in sorted((Path(__file__).parent / "fixtures").glob("*.rdl")):
+            assert _chrome_issues(str(fixture)) == [], fixture.name
+
+    def test_issue_50_repro(self, rdl_path):
+        from pbirb_mcp.ops.body import add_body_textbox
+        from pbirb_mcp.ops.header_footer import add_header_textbox, set_page_header
+
+        p = str(rdl_path)
+        set_page_header(p, print_on_first_page=False)
+        add_header_textbox(
+            p, "HdrField", "=Fields!ProductName.Value", "0in", "0in", "2in", "0.25in"
+        )
+        add_body_textbox(
+            p,
+            "Pg1",
+            '=Globals!OverallPageNumber & "/" & Globals!OverallTotalPages',
+            "1.2in",
+            "0.5in",
+            "2in",
+            "0.25in",
+        )
+        add_body_textbox(p, "Pg2", "=Globals!PageName", "1.5in", "0.5in", "2in", "0.25in")
+        add_body_textbox(p, "Pg3", "=Globals!PageNumber", "1.8in", "0.5in", "2in", "0.25in")
+        found = _chrome_issues(p)
+        assert sorted(found) == sorted(
+            [
+                ("field-in-page-chrome", "Textbox[Name='HdrField']>Value"),
+                ("page-global-out-of-chrome", "Textbox[Name='Pg1']>Value"),
+                ("page-global-out-of-chrome", "Textbox[Name='Pg2']>Value"),
+                ("page-number-out-of-chrome", "Textbox[Name='Pg3']>Value"),
+            ]
+        )
+        issue = next(
+            i for i in lint_report(p)["issues"] if i["rule"] == "page-global-out-of-chrome"
+        )
+        assert issue["severity"] == "error"
+        assert "OverallPageNumber" in issue["message"]
+        assert "OverallTotalPages" in issue["message"]
+
+    def test_page_globals_inside_chrome_are_fine(self, rdl_path):
+        from pbirb_mcp.ops.header_footer import add_footer_textbox
+
+        add_footer_textbox(
+            str(rdl_path),
+            "Pager",
+            '=Globals!PageName & " " & Globals!OverallPageNumber',
+            "0in",
+            "0in",
+            "3in",
+            "0.25in",
+        )
+        assert _chrome_issues(str(rdl_path)) == []
+
+    def test_page_global_in_string_literal_is_ignored(self, rdl_path):
+        from pbirb_mcp.ops.body import add_body_textbox
+
+        add_body_textbox(
+            str(rdl_path), "Lit", '="Globals!PageName"', "1.2in", "0.5in", "2in", "0.25in"
+        )
+        assert _chrome_issues(str(rdl_path)) == []
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            '=First(Fields!ProductName.Value, "MainDataset")',
+            '=Sum(Fields!Amount.Value, "MainDataset")',
+            '="Total: " & Format(Sum(Fields!Amount.Value, "maindataset"), "N0")',
+            '=Max(Fields!Amount.Value + First(Fields!Amount.Value, "MainDataset"), "MainDataset")',
+            "=ReportItems!Title.Value",
+        ],
+    )
+    def test_scoped_aggregate_in_header_is_not_flagged(self, rdl_path, expr):
+        from pbirb_mcp.ops.header_footer import add_header_textbox
+
+        add_header_textbox(str(rdl_path), "Hdr", expr, "0in", "0in", "2in", "0.25in")
+        assert _chrome_issues(str(rdl_path)) == []
+
+    @pytest.mark.parametrize(
+        "expr,needle",
+        [
+            ("=Fields!ProductName.Value", "not inside an aggregate"),
+            ("=First(Fields!ProductName.Value)", "not inside an aggregate"),
+            ('=First(Fields!ProductName.Value, "NoSuchSet")', "'NoSuchSet' is not a dataset"),
+            ('=Format(Fields!Amount.Value, "N0")', "not inside an aggregate"),
+            (
+                '=First(Fields!Amount.Value, "MainDataset") & Fields!ProductName.Value',
+                "Fields!ProductName",
+            ),
+        ],
+    )
+    def test_unscoped_field_in_footer_is_flagged(self, rdl_path, expr, needle):
+        from pbirb_mcp.ops.header_footer import add_footer_textbox
+
+        add_footer_textbox(str(rdl_path), "Ftr", expr, "0in", "0in", "2in", "0.25in")
+        issues = lint_report(str(rdl_path), rules=["field-in-page-chrome"])["issues"]
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "error"
+        assert issues[0]["location"] == "Textbox[Name='Ftr']>Value"
+        assert needle in issues[0]["message"]
+        assert "MainDataset" in issues[0]["suggestion"]
+
+    def test_field_in_chrome_style_expression_is_flagged(self, rdl_path):
+        from pbirb_mcp.ops.header_footer import add_header_textbox
+
+        add_header_textbox(str(rdl_path), "Hdr", "x", "0in", "0in", "2in", "0.25in")
+        doc = RDLDocument.open(rdl_path)
+        tb = next(t for t in doc.root.iter(q("Textbox")) if t.get("Name") == "Hdr")
+        etree.SubElement(
+            tb.find(q("Style")), q("Color")
+        ).text = '=IIf(Fields!Amount.Value > 0, "Black", "Red")'
+        _save(doc)
+        assert _chrome_issues(str(rdl_path)) == [
+            ("field-in-page-chrome", "Textbox[Name='Hdr']>Color")
+        ]
+
+    def test_field_in_body_is_not_a_chrome_issue(self, rdl_path):
+        assert lint_report(str(rdl_path), rules=["field-in-page-chrome"])["issues"] == []
+
+    def test_page_section_missing_height(self, rdl_path):
+        from pbirb_mcp.ops.validate import validate_report
+
+        doc = RDLDocument.open(rdl_path)
+        page = doc.root.find(f".//{{{RDL_NS}}}Page")
+        footer = etree.Element(q("PageFooter"))
+        etree.SubElement(footer, q("PrintOnFirstPage")).text = "true"
+        page.insert(0, footer)
+        _save(doc)
+        # The XSD's choice model lets it through; the lint rule doesn't.
+        assert validate_report(str(rdl_path))["valid"]
+        issues = lint_report(str(rdl_path), rules=["page-section-missing-height"])["issues"]
+        assert [(i["severity"], i["location"]) for i in issues] == [("error", "Page>PageFooter")]
+        assert "<PageFooter> has no <Height>" in issues[0]["message"]
+
+    def test_set_page_footer_fixes_missing_height(self, rdl_path):
+        from pbirb_mcp.ops.header_footer import set_page_footer
+
+        doc = RDLDocument.open(rdl_path)
+        page = doc.root.find(f".//{{{RDL_NS}}}Page")
+        footer = etree.Element(q("PageFooter"))
+        etree.SubElement(footer, q("PrintOnFirstPage")).text = "true"
+        page.insert(0, footer)
+        _save(doc)
+        set_page_footer(str(rdl_path), print_on_last_page=False)
+        assert lint_report(str(rdl_path), rules=["page-section-missing-height"])["issues"] == []

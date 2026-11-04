@@ -2299,7 +2299,10 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Move an existing named ReportItem inside <PageHeader> to "
             "(top, left). Errors if there is no <PageHeader> (call "
-            "set_page_header first) or no item by that name."
+            "set_page_header first) or no item by that name. Returns "
+            "`warnings` when the item now hangs below the band or past "
+            "the printable page width; grow_band=true grows the band "
+            "to fit instead (result gets band_height)."
         ),
         input_schema={
             "type": "object",
@@ -2308,6 +2311,13 @@ def register_all_tools(server: MCPServer) -> None:
                 "name": {"type": "string"},
                 "top": {"type": "string"},
                 "left": {"type": "string"},
+                "grow_band": {
+                    "type": "boolean",
+                    "description": (
+                        "Grow the band's Height to fit the item instead of "
+                        "returning a warning when it hangs below the band."
+                    ),
+                },
             },
             "required": ["path", "name", "top", "left"],
             "additionalProperties": False,
@@ -2320,7 +2330,10 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Move an existing named ReportItem inside <PageFooter> to "
             "(top, left). Errors if there is no <PageFooter> (call "
-            "set_page_footer first) or no item by that name."
+            "set_page_footer first) or no item by that name. Returns "
+            "`warnings` when the item now hangs below the band or past "
+            "the printable page width; grow_band=true grows the band "
+            "to fit instead (result gets band_height)."
         ),
         input_schema={
             "type": "object",
@@ -2329,6 +2342,13 @@ def register_all_tools(server: MCPServer) -> None:
                 "name": {"type": "string"},
                 "top": {"type": "string"},
                 "left": {"type": "string"},
+                "grow_band": {
+                    "type": "boolean",
+                    "description": (
+                        "Grow the band's Height to fit the item instead of "
+                        "returning a warning when it hangs below the band."
+                    ),
+                },
             },
             "required": ["path", "name", "top", "left"],
             "additionalProperties": False,
@@ -2364,8 +2384,10 @@ def register_all_tools(server: MCPServer) -> None:
             "Resize a named item inside <PageHeader>. Mirrors "
             "set_body_item_size — at least one of width / height; "
             "missing fields untouched; idempotent ({changed: false} "
-            "when nothing differs). Closes the v0.2 parity gap where "
-            "only the body variant existed."
+            "when nothing differs). Returns `warnings` when the item "
+            "outgrows the band or the printable page width; "
+            "grow_band=true grows the band to fit instead (result gets "
+            "band_height)."
         ),
         input_schema={
             "type": "object",
@@ -2374,6 +2396,13 @@ def register_all_tools(server: MCPServer) -> None:
                 "name": {"type": "string"},
                 "width": {"type": ["string", "null"]},
                 "height": {"type": ["string", "null"]},
+                "grow_band": {
+                    "type": "boolean",
+                    "description": (
+                        "Grow the band's Height to fit the item instead of "
+                        "returning a warning when it hangs below the band."
+                    ),
+                },
             },
             "required": ["path", "name"],
             "additionalProperties": False,
@@ -2393,6 +2422,13 @@ def register_all_tools(server: MCPServer) -> None:
                 "name": {"type": "string"},
                 "width": {"type": ["string", "null"]},
                 "height": {"type": ["string", "null"]},
+                "grow_band": {
+                    "type": "boolean",
+                    "description": (
+                        "Grow the band's Height to fit the item instead of "
+                        "returning a warning when it hangs below the band."
+                    ),
+                },
             },
             "required": ["path", "name"],
             "additionalProperties": False,
@@ -2900,7 +2936,9 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Create or update <PageHeader>: height plus PrintOnFirstPage / "
             "PrintOnLastPage flags. All fields optional — only what's "
-            "passed gets written."
+            "passed gets written, except that a section always gets a "
+            "Height (0.5in when none is given). Returns `warnings` when "
+            "the new height is shorter than the band's items."
         ),
         input_schema=_SECTION_FLAGS_SCHEMA,
         handler=header_footer.set_page_header,
@@ -2920,7 +2958,12 @@ def register_all_tools(server: MCPServer) -> None:
             "static strings or RDL expressions (=Parameters!DateFrom.Value). "
             "Pass raw text — encoding is handled; don't pre-encode XML "
             "entities (use `&` not `&amp;`, including for the VB.NET "
-            "string-concat operator in expressions)."
+            "string-concat operator in expressions). Creates the band "
+            "when missing and grows its Height to max(0.5in, top + "
+            "height); returns band_height, plus `warnings` when an "
+            "existing band grew or the item passes the printable page "
+            "width. Fields!X needs an aggregate with a dataset scope "
+            'here, e.g. =First(Fields!X.Value, "DataSet1").'
         ),
         input_schema=_TEXTBOX_SCHEMA,
         handler=header_footer.add_header_textbox,
@@ -2938,7 +2981,8 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Add an Image to <PageHeader>/<ReportItems>. image_source is "
             "External (URL in value), Embedded (EmbeddedImage Name in value), "
-            "or Database (=Fields!Photo.Value-style expression)."
+            "or Database (=Fields!Photo.Value-style expression). Sizes "
+            "the band like add_header_textbox (band_height, warnings)."
         ),
         input_schema=_IMAGE_SCHEMA,
         handler=header_footer.add_header_image,
