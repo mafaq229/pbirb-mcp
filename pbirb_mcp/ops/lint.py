@@ -49,10 +49,13 @@ Core rules (19):
   diverges from ``<CommandText>``.
 * ``tablix-span-misplaced`` (error) — ``<ColSpan>``/``<RowSpan>``
   outside ``<CellContents>``.
-* ``dataset-fields-out-of-sync`` (warn, v0.3.1) — data-bound ``<Field>``
-  whose ``<DataField>`` matches no column the dataset's DAX
-  ``<CommandText>`` returns (:func:`pbirb_mcp.ops.dax.result_columns`,
-  matched with :func:`pbirb_mcp.ops.dax.data_field_matches`).
+* ``dataset-fields-out-of-sync`` (warn, v0.3.1; both directions #51) —
+  compares each data-bound ``<Field>``'s ``<DataField>`` with the columns
+  the dataset's DAX ``<CommandText>`` returns
+  (:func:`pbirb_mcp.ops.dax.result_columns`, matched with
+  :func:`pbirb_mcp.ops.dax.data_field_matches`). Issue ``kind`` is
+  ``field-not-returned`` (a DataField the DAX doesn't return) or
+  ``column-not-bound`` (a returned column no Field binds).
 * ``duplicate-name`` (error, #20) — two report items / groups share a
   ``Name`` (one report-wide namespace across body, header, footer and
   every nested container), or two data sources / datasets / parameters /
@@ -78,7 +81,7 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q
 from pbirb_mcp.ops import vbexpr
 from pbirb_mcp.ops.dataset import _is_pbidataset_dataset
-from pbirb_mcp.ops.dax import data_field_matches, result_columns
+from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
 
 Issue = dict[str, Any]
 
@@ -749,22 +752,26 @@ def _rule_tablix_span_misplaced(doc: RDLDocument) -> list[Issue]:
 
 
 def _rule_dataset_fields_out_of_sync(doc: RDLDocument) -> list[Issue]:
-    """Detect ``<Field>`` declarations that no longer correspond to any
-    column the DAX ``<CommandText>`` is expected to return.
+    """Compare a dataset's data-bound ``<Field>`` declarations with the
+    columns its DAX ``<CommandText>`` returns, in both directions (#51).
 
-    Same regression class as the v0.3.0 SELECTCOLUMNS over-match
-    (commit ``9792281``), but caught at the static-lint layer instead
-    of the runtime ``refresh_dataset_fields`` reporter — useful when
-    nobody has called the refresh tool yet but the dataset query was
-    rewritten in a way that drops columns.
+    Each Field's ``<DataField>`` is matched (never its ``Name`` — Report
+    Builder names ``Sales[Amount (USD)]`` ``Amount__USD_``) against
+    :func:`pbirb_mcp.ops.dax.result_columns` with
+    :func:`pbirb_mcp.ops.dax.data_field_matches` (quotes stripped,
+    case-insensitive — the same rule ``refresh_dataset_fields`` uses).
+    Two issue kinds, both warnings, told apart by the issue's ``kind``:
 
-    Matches each Field's ``<DataField>`` (not its Name — Report Builder
-    names ``Sales[Amount (USD)]`` ``Amount__USD_``) against the DAX
-    result columns with :func:`pbirb_mcp.ops.dax.data_field_matches`
-    (the same rule ``refresh_dataset_fields`` uses). When
+    * ``field-not-returned`` — a declared DataField the DAX doesn't
+      return (e.g. a column that only appears in a FILTER, or one a query
+      rewrite dropped).
+    * ``column-not-bound`` — a column the DAX returns that no Field binds
+      (the case that breaks a report after a query rewrite).
+
+    Calculated fields (``<Value>``, no ``<DataField>``) are skipped. When
     the extractor returns warnings (the DAX shape isn't recognisable —
-    e.g. bare ``EVALUATE 'Table'``), the rule silently skips that
-    dataset rather than false-flagging every declared field as orphan.
+    e.g. bare ``EVALUATE 'Table'``), the dataset is skipped rather than
+    false-flagged.
     """
     issues: list[Issue] = []
     datasets_root = find_child(doc.root, "DataSets")
@@ -785,35 +792,60 @@ def _rule_dataset_fields_out_of_sync(doc: RDLDocument) -> list[Issue]:
         if not columns:
             continue
         fields_root = find_child(ds, "Fields")
-        if fields_root is None:
-            continue
-        for f in find_children(fields_root, "Field"):
+        bound: list[str] = []
+        fields = find_children(fields_root, "Field") if fields_root is not None else []
+        for f in fields:
             name = f.get("Name")
             if name is None:
                 continue
-            # Calculated fields (have <Value>, not <DataField>) are
-            # author-defined and never expected to come back from DAX —
-            # skip them.
-            if find_child(f, "Value") is not None and find_child(f, "DataField") is None:
-                continue
             data_field = find_child(f, "DataField")
-            if data_field is not None and any(
-                data_field_matches(data_field.text, c) for c in columns
-            ):
+            # Calculated fields (have <Value>, not <DataField>) are
+            # author-defined and never expected to come back from DAX.
+            if data_field is None and find_child(f, "Value") is not None:
+                continue
+            df_text = data_field.text if data_field is not None else None
+            if df_text and df_text.strip():
+                bound.append(df_text)
+            if df_text is not None and any(data_field_matches(df_text, c) for c in columns):
+                continue
+            shown = (df_text or "").strip() or "(none)"
+            issues.append(
+                {
+                    "severity": "warning",
+                    "rule": "dataset-fields-out-of-sync",
+                    "kind": "field-not-returned",
+                    "location": (f"DataSet[Name={ds_name!r}]/Fields/Field[Name={name!r}]"),
+                    "message": (
+                        f"field-not-returned: <Field Name={name!r}> binds DataField "
+                        f"{shown!r}, which the DAX <CommandText> does not return"
+                    ),
+                    "suggestion": (
+                        "rewrite the dataset query (update_dataset_query) "
+                        "or remove the orphan field (remove_dataset_field)"
+                    ),
+                }
+            )
+        seen: set[str] = set()
+        for c in columns:
+            key = normalize_data_field(c.data_field)
+            if key in seen:
+                continue
+            seen.add(key)
+            if any(data_field_matches(df, c) for df in bound):
                 continue
             issues.append(
                 {
                     "severity": "warning",
                     "rule": "dataset-fields-out-of-sync",
-                    "location": (f"DataSet[Name={ds_name!r}]/Fields/Field[Name={name!r}]"),
+                    "kind": "column-not-bound",
+                    "location": f"DataSet[Name={ds_name!r}]/Fields",
                     "message": (
-                        f"<Field Name={name!r}> is declared but the DAX "
-                        f"<CommandText> does not appear to return that "
-                        f"column"
+                        f"column-not-bound: the DAX <CommandText> returns {c.data_field} "
+                        "but no <Field> binds it"
                     ),
                     "suggestion": (
-                        "rewrite the dataset query (update_dataset_query) "
-                        "or remove the orphan field (remove_dataset_field)"
+                        "add the field (refresh_dataset_fields / add_dataset_field) "
+                        "or drop the column from the query"
                     ),
                 }
             )

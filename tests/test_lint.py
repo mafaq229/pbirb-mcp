@@ -548,6 +548,117 @@ class TestDatasetFieldsOutOfSync:
         assert result["issues"] == []
 
 
+# #51: Fields shaped the way Report Builder writes them — sanitised Name,
+# the real column only in <DataField>.
+def _rb_sanitised(rdl_path: Path) -> str:
+    s = rdl_path.read_text(encoding="utf-8")
+    s = s.replace('"ProductName"', '"Product_Name"').replace(
+        "Sales[ProductName]", "Sales[Product Name]"
+    )
+    s = s.replace('"Amount"', '"Amount__USD_"').replace("Sales[Amount]", "Sales[Amount (USD)]")
+    rdl_path.write_text(s, encoding="utf-8")
+    return str(rdl_path)
+
+
+def _out_of_sync(path: str) -> list[dict]:
+    return lint_report(path, rules=["dataset-fields-out-of-sync"])["issues"]
+
+
+class TestDatasetFieldsOutOfSyncDataField:
+    """#51: the rule compares <DataField> (never Field/@Name), both ways."""
+
+    def test_issue_repro_flags_only_the_unbound_column(self, rdl_path):
+        from pbirb_mcp.ops.dataset import update_dataset_query
+
+        p = _rb_sanitised(rdl_path)
+        update_dataset_query(
+            p,
+            "MainDataset",
+            "EVALUATE CALCULATETABLE(SUMMARIZECOLUMNS('Sales'[ProductID], "
+            "'Sales'[Product Name], 'Sales'[Amount (USD)], 'Sales'[Region]), "
+            "FILTER(VALUES('Sales'[Date]), 'Sales'[Date] >= @From))",
+        )
+        issues = _out_of_sync(p)
+        assert len(issues) == 1
+        (issue,) = issues
+        assert issue["kind"] == "column-not-bound"
+        assert issue["severity"] == "warning"
+        assert "Sales[Region]" in issue["message"]
+        assert issue["location"] == "DataSet[Name='MainDataset']/Fields"
+
+    def test_unchanged_sanitised_report_is_clean(self, rdl_path):
+        from pbirb_mcp.ops.dataset import update_dataset_query
+
+        p = _rb_sanitised(rdl_path)
+        update_dataset_query(
+            p,
+            "MainDataset",
+            "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[Product Name], "
+            "'Sales'[Amount (USD)])",
+        )
+        assert _out_of_sync(p) == []
+
+    def test_quoted_and_case_folded_data_fields_match(self, rdl_path):
+        from pbirb_mcp.ops.dataset import update_dataset_query
+
+        p = str(rdl_path)
+        s = rdl_path.read_text(encoding="utf-8").replace(
+            "Sales[ProductName]", "'Sales'[productname]"
+        )
+        rdl_path.write_text(s, encoding="utf-8")
+        update_dataset_query(
+            p,
+            "MainDataset",
+            "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[ProductName], 'Sales'[Amount])",
+        )
+        assert _out_of_sync(p) == []
+
+    def test_selectcolumns_alias_binds_by_data_field(self, rdl_path):
+        # Name ID_X_ binds DataField [X] — the SELECTCOLUMNS alias shape.
+        doc = RDLDocument.open(rdl_path)
+        ds = doc.root.find(q("DataSets")).find(q("DataSet"))
+        ds.find(q("Query")).find(
+            q("CommandText")
+        ).text = "EVALUATE SELECTCOLUMNS('Sales', \"X\", 'Sales'[ProductID])"
+        fields = ds.find(q("Fields"))
+        for f in list(fields):
+            fields.remove(f)
+        field = etree.SubElement(fields, q("Field"), Name="ID_X_")
+        etree.SubElement(field, q("DataField")).text = "[X]"
+        _save(doc)
+        assert _out_of_sync(str(rdl_path)) == []
+
+    def test_filter_only_column_field_is_not_returned(self, rdl_path):
+        # A Field bound to a column the DAX only filters on (#24 phantom).
+        doc = RDLDocument.open(rdl_path)
+        ds = doc.root.find(q("DataSets")).find(q("DataSet"))
+        ds.find(q("Query")).find(q("CommandText")).text = (
+            "EVALUATE CALCULATETABLE(SUMMARIZECOLUMNS('Sales'[ProductID], "
+            "'Sales'[ProductName], 'Sales'[Amount]), "
+            "FILTER(VALUES('Sales'[Date]), 'Sales'[Date] >= @From))"
+        )
+        field = etree.SubElement(ds.find(q("Fields")), q("Field"), Name="Date")
+        etree.SubElement(field, q("DataField")).text = "Sales[Date]"
+        _save(doc)
+        issues = _out_of_sync(str(rdl_path))
+        assert [(i["kind"], i["location"]) for i in issues] == [
+            ("field-not-returned", "DataSet[Name='MainDataset']/Fields/Field[Name='Date']")
+        ]
+
+    def test_calculated_field_is_ignored(self, rdl_path):
+        doc = RDLDocument.open(rdl_path)
+        ds = doc.root.find(q("DataSets")).find(q("DataSet"))
+        ds.find(q("Query")).find(
+            q("CommandText")
+        ).text = (
+            "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[ProductName], 'Sales'[Amount])"
+        )
+        field = etree.SubElement(ds.find(q("Fields")), q("Field"), Name="Doubled")
+        etree.SubElement(field, q("Value")).text = "=Fields!Amount.Value * 2"
+        _save(doc)
+        assert _out_of_sync(str(rdl_path)) == []
+
+
 # ---- registration ------------------------------------------------------
 
 
