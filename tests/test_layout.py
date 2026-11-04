@@ -673,7 +673,9 @@ class TestAddRectangle:
             top="2in",
             left="0.5in",
             width="2in",
-            height="1in",
+            # Inner spans 3in..3.3in, so the frame must reach 3.3in (#43
+            # refuses a rectangle its children overflow).
+            height="1.5in",
             contained_items=["Inner"],
         )
         rect = _rectangle(rdl_path, "Frame")

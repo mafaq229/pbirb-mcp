@@ -1268,9 +1268,14 @@ def register_all_tools(server: MCPServer) -> None:
             "With contained_items=[name1, name2, ...], each named "
             "body item is MOVED into the rectangle's <ReportItems> "
             "and its <Top>/<Left> recalculated so the on-screen "
-            "position is preserved. Refuses on duplicate name or "
-            "if any contained_item isn't in <Body>/<ReportItems>. "
-            "Returns {name, kind: 'Rectangle', moved}."
+            "position is preserved. Every moved item must lie inside "
+            "the rectangle's box: a misfit is refused (naming each "
+            "item and how far it overflows) unless fit=true, which "
+            "grows the rectangle to enclose them. Refuses on duplicate "
+            "name or if any contained_item isn't in <Body>/<ReportItems>; "
+            "nothing is written on refusal. Returns {name, kind: "
+            "'Rectangle', moved}, plus {fitted, top, left, width, "
+            "height} when fit is passed."
         ),
         input_schema={
             "type": "object",
@@ -1290,6 +1295,14 @@ def register_all_tools(server: MCPServer) -> None:
                         "Optional names of existing body items to move "
                         "into the rectangle. Omit or pass [] for an "
                         "empty rectangle (visual frame)."
+                    ),
+                },
+                "fit": {
+                    "type": "boolean",
+                    "description": (
+                        "Grow the rectangle to the union of its box and "
+                        "the contained items' boxes instead of refusing "
+                        "a misfit (default false)."
                     ),
                 },
             },
