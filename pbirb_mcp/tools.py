@@ -1836,10 +1836,15 @@ def register_all_tools(server: MCPServer) -> None:
         name="add_column_group",
         description=(
             "Add a column group that wraps the current top-level column "
-            "hierarchy. Inserts a matching column at body column 0 (default "
-            "1in width) and a header cell at column 0 of every existing row "
-            "with the group expression in the topmost cell. Mirrors "
-            "add_row_group on the column axis. parent_group nesting is "
+            "hierarchy. The group's caption is a TablixHeader on the new "
+            "group member (a 0.25in header row above the body, textbox "
+            "<group>_Header showing the group expression); body columns and "
+            "cells are not changed, so column-hierarchy leaves keep matching "
+            "body columns. If the tablix has row headers the TablixCorner "
+            "gains a row (or is created). Returns {tablix, group, "
+            "expression, header_textbox, header_textboxes, "
+            "corner_textboxes}. Refuses a tablix whose column leaves already "
+            "disagree with its body columns. parent_group nesting is "
             "reserved for a future commit and currently raises "
             "NotImplementedError."
         ),
@@ -1864,10 +1869,15 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_column_group",
         description=(
-            "Inverse of add_column_group: unwraps a column-axis group's "
-            "children back to the top of the column hierarchy and removes "
-            "the matching body column at position 0 (along with each row's "
-            "first cell). Errors if group_name only exists on the row axis."
+            "Exact inverse of add_column_group: unwraps a column-axis "
+            "group's children back into its parent (its TablixHeader goes "
+            "with it) and shrinks the TablixCorner by that header row; body "
+            "columns are untouched. Unwrapped columns that sit beside other "
+            "columns get blank headers so header depth stays uniform. Also "
+            "removes the <group>_HeaderCol_<i> body column that older "
+            "versions of add_column_group inserted. Returns {tablix, "
+            "removed, removed_textboxes}. Errors if group_name only exists "
+            "on the row axis."
         ),
         input_schema={
             "type": "object",

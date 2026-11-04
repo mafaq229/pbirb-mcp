@@ -248,9 +248,9 @@ class TestAddSubtotalColumn:
         tablix = _tablix(doc, "MainTable")
         # Body has one more column than before.
         cols = find_children(tablix.find(f"{q('TablixBody')}/{q('TablixColumns')}"), "TablixColumn")
-        # Minimal fixture 3 cols → add_column_group adds 1 → 4 cols →
-        # add_subtotal_column adds 1 → 5 cols.
-        assert len(cols) == 5
+        # Minimal fixture 3 cols; add_column_group adds no body column (its
+        # caption is a TablixHeader, #29); add_subtotal_column adds 1 → 4.
+        assert len(cols) == 4
         # Row 1's last cell holds the aggregate expression.
         rows = _body_rows(tablix)
         last_cell = _row_cell_textboxes(rows[1])[-1]
@@ -331,8 +331,8 @@ class TestAddSubtotalColumn:
         doc = RDLDocument.open(rdl_with_column_group)
         tablix = _tablix(doc, "MainTable")
         cols = find_children(tablix.find(f"{q('TablixBody')}/{q('TablixColumns')}"), "TablixColumn")
-        # 3 (fixture) + 1 (add_column_group) + 1 (add_subtotal_column) = 5.
-        assert len(cols) == 5
+        # 3 (fixture) + 0 (add_column_group, #29) + 1 (add_subtotal_column) = 4.
+        assert len(cols) == 4
 
 
 class TestToolRegistration:

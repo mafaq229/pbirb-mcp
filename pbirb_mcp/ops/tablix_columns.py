@@ -9,16 +9,15 @@ What ``add_column_group`` does:
 
 1. Wraps the existing top-level column hierarchy under a new outer
    ``<TablixMember>`` carrying ``<Group Name=...>``. Existing members
-   become children of the wrapper's ``<TablixMembers>``. (Symmetric to
-   ``add_row_group`` but column groups don't emit a ``KeepWithGroup``
-   leaf header — that attribute applies to row members only.)
-2. Inserts a fresh ``<TablixColumn>`` at body column 0 with a default
-   1in width.
-3. Inserts a fresh cell at column 0 of every existing ``<TablixRow>``.
-   The topmost row's new cell holds the group expression; the rest
-   are blank textboxes. Cell textbox names follow the pattern
-   ``<group>_HeaderCol_<row_index>`` so they're report-wide unique
-   given a unique group name.
+   become children of the wrapper's ``<TablixMembers>``.
+2. Gives that member a ``<TablixHeader>`` — the group caption, rendered
+   as a header row above the body — holding a ``<group>_Header``
+   textbox with the group expression. The body (columns and cells) is
+   not touched: column-hierarchy leaves must stay 1:1 with body
+   columns, and wrapping adds no leaf.
+3. Grows (or creates) the ``<TablixCorner>`` when the tablix has row
+   headers, so the corner stays column-header depth x row-header depth
+   (:func:`pbirb_mcp.core.tablix_headers.ensure_corner`).
 
 ``set_column_group_sort`` and ``set_column_group_visibility`` are thin
 wrappers over the row-group equivalents in ``pbirb_mcp.ops.tablix`` —
@@ -33,11 +32,11 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import names, units
+from pbirb_mcp.core import names, tablix_headers, tablix_spans, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
-from pbirb_mcp.core.tablix_shape import data_row_index
+from pbirb_mcp.core.tablix_shape import column_leaves, data_row_index
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 from pbirb_mcp.ops.tablix import (
     _UNSET,
@@ -75,45 +74,28 @@ def _find_column_member_for_group(
     return None
 
 
-def _row_count(tablix: etree._Element) -> int:
+def _legacy_header_column(tablix: etree._Element, group_name: str) -> bool:
+    """True iff ``tablix`` still carries the body column that
+    ``add_column_group`` used to insert at column 0 (the defect of issue
+    #29): one more body column than column leaves, and every row's cell 0
+    is a ``<group>_HeaderCol_<i>`` textbox."""
     body = find_child(tablix, "TablixBody")
-    if body is None:
-        return 0
-    rows_root = find_child(body, "TablixRows")
-    if rows_root is None:
-        return 0
-    return len(find_children(rows_root, "TablixRow"))
-
-
-def _build_column_header_cell(
-    textbox_name: str,
-    cell_text: str,
-) -> etree._Element:
-    """Build one ``<TablixCell>`` for the new column-group header column.
-
-    ``cell_text`` is the value placed inside the inner ``<TextRun>``;
-    callers pass the group expression for row 0 and an empty string for
-    rows below. The caller generates ``textbox_name`` (normally
-    ``<group>_HeaderCol_<row_index>``) via :mod:`pbirb_mcp.core.names`
-    so it is report-wide unique.
-    """
-    cell = etree.Element(q("TablixCell"))
-    contents = etree.SubElement(cell, q("CellContents"))
-    tb = etree.SubElement(contents, q("Textbox"), Name=textbox_name)
-    etree.SubElement(tb, q("CanGrow")).text = "true"
-    etree.SubElement(tb, q("KeepTogether")).text = "true"
-    paragraphs = etree.SubElement(tb, q("Paragraphs"))
-    paragraph = etree.SubElement(paragraphs, q("Paragraph"))
-    textruns = etree.SubElement(paragraph, q("TextRuns"))
-    textrun = etree.SubElement(textruns, q("TextRun"))
-    value = etree.SubElement(textrun, q("Value"))
-    value.text = encode_text(cell_text)
-    etree.SubElement(textrun, q("Style"))
-    etree.SubElement(paragraph, q("Style"))
-    default_name = etree.SubElement(tb, qrd("DefaultName"))
-    default_name.text = textbox_name
-    etree.SubElement(tb, q("Style"))
-    return cell
+    cols_root = find_child(body, "TablixColumns") if body is not None else None
+    rows_root = find_child(body, "TablixRows") if body is not None else None
+    if cols_root is None or rows_root is None:
+        return False
+    if len(find_children(cols_root, "TablixColumn")) != len(column_leaves(tablix)) + 1:
+        return False
+    rows = find_children(rows_root, "TablixRow")
+    if not rows:
+        return False
+    for row in rows:
+        cells_root = find_child(row, "TablixCells")
+        cells = find_children(cells_root, "TablixCell") if cells_root is not None else []
+        tb = cells[0].find(f"{q('CellContents')}/{q('Textbox')}") if cells else None
+        if tb is None or not (tb.get("Name") or "").startswith(f"{group_name}_HeaderCol_"):
+            return False
+    return True
 
 
 # ---- add_column_group ------------------------------------------------------
@@ -129,11 +111,13 @@ def add_column_group(
     """Wrap the current top-level column hierarchy in a new outer group.
 
     A new ``<TablixMember>`` is created at the top of the column hierarchy
-    holding ``<Group Name=...>``; previously top-level members move
-    underneath it. A matching column is inserted at body column 0 with a
-    default 1in width, and a header cell is inserted at column 0 of every
-    existing body row. The topmost cell holds the group expression; the
-    others are blank textboxes.
+    holding ``<Group Name=...>`` and a ``<TablixHeader>`` (0.25in, one
+    textbox ``<group>_Header`` showing the group expression) — the group's
+    caption is a new header row above the body, not a body column.
+    Previously top-level members move underneath it, so body columns and
+    cells are untouched and column leaves stay equal to body columns.
+    When the tablix has row headers, the ``<TablixCorner>`` gains a row
+    (or is created) so it stays column-header depth x row-header depth.
 
     ``parent_group`` is reserved for nesting a new group beneath an
     existing one — not yet implemented.
@@ -153,9 +137,21 @@ def add_column_group(
     registry = names.NameRegistry(doc)
     registry.ensure_unique(group_name)
     registry.claim(group_name)
-    header_names = [
-        registry.unique(f"{group_name}_HeaderCol_{i}") for i in range(_row_count(tablix))
-    ]
+
+    # Refuse to build on a tablix whose columns already disagree with its
+    # column leaves — wrapping would bake the mismatch in further.
+    n_leaves = len(column_leaves(tablix))
+    body = find_child(tablix, "TablixBody")
+    cols_root = find_child(body, "TablixColumns") if body is not None else None
+    n_cols = len(find_children(cols_root, "TablixColumn")) if cols_root is not None else 0
+    if n_leaves == 0 or n_leaves != n_cols:
+        raise ValueError(
+            f"tablix {tablix_name!r} has {n_leaves} column-hierarchy leaves but "
+            f"{n_cols} body columns; refusing to add a column group to an "
+            "inconsistent tablix (a group added by an older add_column_group "
+            "can be undone with remove_column_group)."
+        )
+    header_name = registry.unique(f"{group_name}_Header")
 
     # ---- mutate column hierarchy ------------------------------------------
     members_root = _column_hierarchy_members(tablix)
@@ -166,58 +162,33 @@ def add_column_group(
     expr_root = etree.SubElement(group, q("GroupExpressions"))
     expr_node = etree.SubElement(expr_root, q("GroupExpression"))
     expr_node.text = encode_text(group_expression)
+    new_outer.append(
+        tablix_headers.new_header(
+            tablix_headers.DEFAULT_HEADER_SIZE[tablix_headers.COLUMN],
+            header_name,
+            group_expression,
+        )
+    )
 
     inner_members = etree.SubElement(new_outer, q("TablixMembers"))
     for child in existing_children:
         members_root.remove(child)
         inner_members.append(child)
-    # Degenerate fallback: a tablix with no existing column members would
-    # leave <TablixMembers/> empty after wrapping, which the XSD rejects.
-    # Add a single bare leaf to keep the structure valid.
-    if not list(inner_members):
-        etree.SubElement(inner_members, q("TablixMember"))
-
     members_root.append(new_outer)
 
-    # ---- mutate body: new column at position 0 ---------------------------
-    body = find_child(tablix, "TablixBody")
-    if body is None:
-        body = etree.SubElement(tablix, q("TablixBody"))
-    cols_root = find_child(body, "TablixColumns")
-    if cols_root is None:
-        cols_root = etree.SubElement(body, q("TablixColumns"))
-
-    new_column = etree.Element(q("TablixColumn"))
-    width = etree.SubElement(new_column, q("Width"))
-    # 1in matches the default Report Builder uses when adding a column
-    # group via the GUI; users can resize after via set_textbox_style or
-    # a future set_tablix_column_width tool.
-    width.text = "1in"
-    cols_root.insert(0, new_column)
-
-    # ---- mutate body: new cell at column 0 of every row ------------------
-    rows_root = find_child(body, "TablixRows")
-    if rows_root is not None:
-        for i, row in enumerate(find_children(rows_root, "TablixRow")):
-            cells_root = find_child(row, "TablixCells")
-            if cells_root is None:
-                # Row with no cells is degenerate; create cells_root rather
-                # than skip so the new column is consistent everywhere.
-                cells_root = etree.SubElement(row, q("TablixCells"))
-            cells_root.insert(
-                0,
-                _build_column_header_cell(
-                    textbox_name=header_names[i],
-                    cell_text=group_expression if i == 0 else "",
-                ),
-            )
+    # ---- corner: one more column-header row ------------------------------
+    corner: dict[str, Any] = {"created": [], "removed": []}
+    if tablix_headers.header_depth(tablix, tablix_headers.ROW) > 0:
+        corner = tablix_headers.ensure_corner(tablix, registry, rows_at="top")
 
     doc.save()
     return {
         "tablix": tablix_name,
         "group": group_name,
         "expression": group_expression,
-        "header_textboxes": header_names,
+        "header_textbox": header_name,
+        "header_textboxes": [header_name],
+        "corner_textboxes": corner["created"],
     }
 
 
@@ -229,9 +200,16 @@ def remove_column_group(
     tablix_name: str,
     group_name: str,
 ) -> dict[str, Any]:
-    """Inverse of :func:`add_column_group`. Unwraps the group's wrapped
-    children back to the top of the column hierarchy and removes the
-    matching body column at position 0 (along with each row's first cell).
+    """Inverse of :func:`add_column_group`. Unwraps the group's children
+    back into its parent ``<TablixMembers>`` (its ``<TablixHeader>`` goes
+    with the group) and, when the tablix has row headers, shrinks the
+    ``<TablixCorner>`` by the header row the group owned. Body columns are
+    untouched; add then remove restores the file byte-for-byte.
+
+    If the group sat beside other members, its unwrapped columns get blank
+    headers so every column keeps the same header depth. A group added by
+    an older ``add_column_group`` (which inserted a ``<group>_HeaderCol_<i>``
+    body column at column 0) has that column removed as well.
 
     Errors with :class:`ElementNotFoundError` if ``group_name`` doesn't
     exist on the **column** axis — a group of that name in the row
@@ -253,36 +231,52 @@ def remove_column_group(
             "to remove a leaf group automatically."
         )
 
+    header = find_child(member, "TablixHeader")
+    legacy = header is None and _legacy_header_column(tablix, group_name)
+    removed_textboxes: list[str] = []
+    if header is not None:
+        removed_textboxes = [
+            el.get("Name") for el in header.iter() if el is not header and el.get("Name")
+        ]
+
+    # Replace the wrapper at its original position with its wrapped
+    # originals, re-indented for their old depth.
     inner_children = list(inner_members)
-    parent_members = member.getparent()
-    member_idx = list(parent_members).index(member)
+    for child in inner_children:
+        member.addprevious(child)
+    tablix_spans.detach(member)
+    for child in inner_children:
+        if isinstance(child.tag, str):
+            tablix_spans.reindent(child)
 
-    # Replace the wrapper at its original position with its wrapped originals.
-    parent_members.remove(member)
-    for offset, child in enumerate(inner_children):
-        inner_members.remove(child)
-        parent_members.insert(member_idx + offset, child)
+    registry = names.NameRegistry(doc)
+    padded = tablix_headers.pad_header_levels(tablix, tablix_headers.COLUMN, registry)
 
-    # ---- body: drop column 0 + drop cell 0 of every row ------------------
-    body = find_child(tablix, "TablixBody")
-    if body is not None:
+    if legacy:
+        body = find_child(tablix, "TablixBody")
         cols_root = find_child(body, "TablixColumns")
-        if cols_root is not None:
-            cols = find_children(cols_root, "TablixColumn")
-            if cols:
-                cols_root.remove(cols[0])
-        rows_root = find_child(body, "TablixRows")
-        if rows_root is not None:
-            for row in find_children(rows_root, "TablixRow"):
-                cells_root = find_child(row, "TablixCells")
-                if cells_root is None:
-                    continue
-                cells = find_children(cells_root, "TablixCell")
-                if cells:
-                    cells_root.remove(cells[0])
+        tablix_spans.detach(find_children(cols_root, "TablixColumn")[0])
+        for row in find_children(find_child(body, "TablixRows"), "TablixRow"):
+            cell = find_children(find_child(row, "TablixCells"), "TablixCell")[0]
+            removed_textboxes.extend(tablix_spans.report_item_names(cell))
+            tablix_spans.detach(cell)
+
+    corner: dict[str, Any] = {"created": [], "removed": []}
+    if tablix_headers.header_depth(tablix, tablix_headers.ROW) > 0:
+        corner = tablix_headers.ensure_corner(tablix, registry, rows_at="top")
+    removed_textboxes.extend(corner["removed"])
 
     doc.save()
-    return {"tablix": tablix_name, "removed": group_name}
+    result: dict[str, Any] = {
+        "tablix": tablix_name,
+        "removed": group_name,
+        "removed_textboxes": removed_textboxes,
+    }
+    if padded:
+        result["padded_header_textboxes"] = padded
+    if legacy:
+        result["legacy_header_column_removed"] = True
+    return result
 
 
 # ---- set_column_group_sort ------------------------------------------------

@@ -334,9 +334,9 @@ class TestGeneratedNames:
         assert _dupes(rdl_path) == {}
 
     def test_column_group_header_textboxes_suffixed(self, rdl_path):
-        body.add_body_textbox(str(rdl_path), "Year_HeaderCol_1", "x", *BOX)
+        body.add_body_textbox(str(rdl_path), "Year_Header", "x", *BOX)
         r = tablix_columns.add_column_group(str(rdl_path), "MainTable", "Year", "=1")
-        assert r["header_textboxes"] == ["Year_HeaderCol_0", "Year_HeaderCol_1_1"]
+        assert r["header_textboxes"] == ["Year_Header1"]
         assert _dupes(rdl_path) == {}
 
     def test_tablix_column_row_cells_suffixed(self, rdl_path):
