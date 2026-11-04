@@ -183,3 +183,46 @@ def test_server_null_toggle_removes(rdl):
     call(path=str(rdl), tablix_name="MainTable", expression="=True", toggle_textbox="Toggle")
     out = call(path=str(rdl), tablix_name="MainTable", expression="=True", toggle_textbox=None)
     assert out["toggle_textbox"] is None
+
+
+# ---- remove_tablix_column and toggle targets (#91) -------------------------------
+
+
+def _repro(rdl: Path) -> str:
+    """The issue's repro: the detail rows are toggled by a group header cell
+    that lives in the ProductID column."""
+    out = add_row_group(str(rdl), "MainTable", "G", "=Fields!ProductName.Value")
+    header = out["header_textboxes"][0]
+    set_detail_row_visibility(str(rdl), "MainTable", "=True", toggle_textbox=header)
+    return header
+
+
+def test_remove_column_holding_toggle_target_refused_file_unchanged(rdl):
+    from pbirb_mcp.ops.tablix_columns import remove_tablix_column
+
+    header = _repro(rdl)
+    before = rdl.read_bytes()
+    with pytest.raises(ValueError, match="ToggleItem"):
+        remove_tablix_column(str(rdl), "MainTable", "ProductID")
+    assert rdl.read_bytes() == before
+    assert f'Name="{header}"' in rdl.read_text()
+
+
+def test_remove_column_force_leaves_no_dangling_toggle(rdl):
+    from pbirb_mcp.ops.tablix_columns import remove_tablix_column
+
+    header = _repro(rdl)
+    out = remove_tablix_column(str(rdl), "MainTable", "ProductID", force=True)
+    assert out["removed_toggle_targets"] == [header]
+    text = rdl.read_text()
+    assert f"<ToggleItem>{header}</ToggleItem>" not in text
+    assert not [i for i in lint_report(str(rdl))["issues"] if i["rule"] == "dangling-toggle-item"]
+    assert verify_report(str(rdl))["valid"] is True
+
+
+def test_remove_column_without_toggle_targets_unaffected(rdl):
+    from pbirb_mcp.ops.tablix_columns import remove_tablix_column
+
+    _repro(rdl)
+    out = remove_tablix_column(str(rdl), "MainTable", "Amount")
+    assert "removed_toggle_targets" not in out

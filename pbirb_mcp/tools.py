@@ -2006,7 +2006,9 @@ def register_all_tools(server: MCPServer) -> None:
             "column that is the only column of a column group unless "
             "remove_group=true (then the group member and its header go "
             "too). Merged (ColSpan) cells shrink by one instead of losing their "
-            "contents. Errors if no row contains a textbox with the given name."
+            "contents. Refuses to delete a textbox a ToggleItem points at "
+            "unless force=true (which drops those toggles). Errors if no row "
+            "contains a textbox with the given name."
         ),
         input_schema={
             "type": "object",
@@ -2015,6 +2017,14 @@ def register_all_tools(server: MCPServer) -> None:
                 "tablix_name": {"type": "string"},
                 "column_name": {"type": "string"},
                 "remove_group": {"type": "boolean", "default": False},
+                "force": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Also remove ToggleItems that point at a textbox this "
+                        "removal deletes (otherwise such a removal is refused)."
+                    ),
+                },
             },
             "required": ["path", "tablix_name", "column_name"],
             "additionalProperties": False,

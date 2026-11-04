@@ -198,6 +198,40 @@ def toggle_item_problem(
     return None
 
 
+def textbox_names(root: etree._Element) -> set:
+    """Every Textbox ``Name`` in the report."""
+    return {el.get("Name") for el in root.iter(q("Textbox")) if el.get("Name")}
+
+
+def guard_removed_toggle_targets(
+    root: etree._Element, before: set, *, force: bool, what: str
+) -> list:
+    """Call after a removal has mutated the tree (before saving).
+
+    ``before`` is :func:`textbox_names` taken before the removal. When a
+    ``<ToggleItem>`` still points at a textbox that is now gone, raise
+    ``ValueError`` (the caller hasn't saved, so the file is untouched) —
+    unless ``force``, in which case those dangling ToggleItems are removed.
+    Returns the names of the removed toggle targets (empty when none).
+    """
+    gone = before - textbox_names(root)
+    if not gone:
+        return []
+    dangling = [t for t in root.iter(q("ToggleItem")) if (t.text or "").strip() in gone]
+    if not dangling:
+        return []
+    targets = sorted({(t.text or "").strip() for t in dangling})
+    if not force:
+        raise ValueError(
+            f"{what} would delete textbox(es) {targets} that a ToggleItem points at, "
+            "leaving a dangling toggle Report Builder rejects. Re-point the toggle "
+            "first, or pass force=true to remove those ToggleItems too."
+        )
+    for toggle in dangling:
+        _remove_keep_layout(toggle)
+    return targets
+
+
 # ---- tool ---------------------------------------------------------------
 
 

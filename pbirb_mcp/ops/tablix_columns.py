@@ -46,6 +46,7 @@ from pbirb_mcp.core.tablix_shape import (
     removal_member,
 )
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
+from pbirb_mcp.ops import visibility as _visibility
 from pbirb_mcp.ops.tablix import (
     _UNSET,
     _apply_sort_to_member,
@@ -575,6 +576,7 @@ def remove_tablix_column(
     tablix_name: str,
     column_name: str,
     remove_group: bool = False,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Remove the column holding a body textbox named ``column_name``.
 
@@ -594,13 +596,17 @@ def remove_tablix_column(
       ``remove_group=True`` to remove the group member (with its
       ``TablixHeader``) as well;
     * a tablix whose column hierarchy is already out of step with its
-      body (leaf count ≠ column count), where no leaf can be trusted.
+      body (leaf count ≠ column count), where no leaf can be trusted;
+    * a removal that would delete a textbox some ``<ToggleItem>`` points
+      at (#91) — unless ``force=True``, which also removes those
+      dangling ToggleItems (reported as ``removed_toggle_targets``).
 
     Errors with :class:`ElementNotFoundError` if no row contains a
     textbox with the given name. Returns ``{tablix, removed_column,
-    position, removed_groups}``.
+    position, removed_textboxes, removed_groups, removed_toggle_targets?}``.
     """
     doc = RDLDocument.open(path)
+    textboxes_before = _visibility.textbox_names(doc.root)
     tablix = resolve_tablix(doc, tablix_name)
 
     body = find_child(tablix, "TablixBody")
@@ -670,14 +676,23 @@ def remove_tablix_column(
             continue
         removed_textboxes.extend(tablix_spans.remove_cell(cells_root, target_index))
 
+    # A ToggleItem pointing at a textbox this removal deleted would dangle
+    # (#91): refuse before saving, or with force drop those toggles.
+    toggle_targets = _visibility.guard_removed_toggle_targets(
+        doc.root, textboxes_before, force=force, what=f"removing column {column_name!r}"
+    )
+
     doc.save()
-    return {
+    result: dict[str, Any] = {
         "tablix": tablix_name,
         "removed_column": column_name,
         "position": target_index,
         "removed_textboxes": removed_textboxes,
         "removed_groups": group_names,
     }
+    if toggle_targets:
+        result["removed_toggle_targets"] = toggle_targets
+    return result
 
 
 # ---- set_column_width ----------------------------------------------------
