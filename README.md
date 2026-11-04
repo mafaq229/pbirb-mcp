@@ -409,7 +409,7 @@ Batch many edits into one atomic save, and check correctness before/after.
 
 | Tool | What it does |
 |------|--------------|
-| `start_editing_transaction` / `commit_editing_transaction` / `cancel_editing_transaction` | Open an in-memory transaction, lint-and-save once, or discard. See [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md). |
+| `start_editing_transaction` / `commit_editing_transaction` / `cancel_editing_transaction` | Open an in-memory transaction, verify (XSD + lint, new errors only) and save once, or discard. See [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md). |
 | `apply_edits` | Apply a list of tool calls in one transaction |
 | `dry_run_edit` | Preview an edit's effect without writing to disk |
 | `validate_report` / `verify_report` | Structural validation (and opt-in XSD validation against the bundled `reportdefinition.xsd`) |
@@ -555,9 +555,11 @@ pbirb-mcp/
   not `column_index: 2`. Indices break across multi-step edits.
 - **Atomic save.** `RDLDocument.save_as` writes to `<path>.tmp` then renames.
   A failure mid-write never leaves a half-written report.
-- **Round-trip byte-identity is enforced** by
-  `tests/test_document.py`'s `test_round_trip_byte_identical_to_fixture`.
-  A no-op open → save → reopen produces a byte-identical file.
+- **Round-trip byte-identity is enforced** by `tests/test_byte_fidelity.py`
+  (BOM × CRLF × trailing-newline matrix, Report Builder's
+  `MustUnderstand` root and `<Style></Style>` form) and
+  `tests/test_document.py`. A no-op open → save → reopen produces a
+  byte-identical file, and a one-value edit changes one line.
 
 ### RDL gotchas learned the hard way
 

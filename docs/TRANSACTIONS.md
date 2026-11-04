@@ -41,12 +41,29 @@ server → LLM:  {transaction_id: "abc123...", path: "...", saved: true,
 
 Up to the commit, the disk file is untouched. The commit:
 
-1. Runs `lint_report` on the in-memory tree.
-2. If any `severity: 'error'` issue surfaces → aborts with
-   `saved: false` and leaves the transaction OPEN so the caller can
-   fix the offending state and re-commit. Warnings don't abort.
-3. On success, clears the in-transaction flag and calls `doc.save()`
-   — the atomic `.tmp` + `os.replace` flow. One disk write.
+1. Refuses (`saved: false`, `error: "file changed on disk …"`,
+   transaction left OPEN) if the file changed on disk since the
+   transaction started — e.g. Report Builder saved it meanwhile.
+   Pass `force: true` to overwrite those changes deliberately.
+2. Verifies the in-memory tree: structural checks + the bundled RDL
+   XSD + every lint rule.
+3. Compares against the **baseline** recorded at
+   `start_editing_transaction`. Each issue carries `new: true|false`;
+   `verify` adds `introduced_count`, `preexisting_count` and
+   `introduced_error_count`. Only a NEW `severity: 'error'` issue
+   aborts (`saved: false`, transaction left OPEN so the caller can
+   fix it and re-commit). Errors already in the file don't block an
+   unrelated edit; warnings never abort. `verify.valid` stays honest —
+   it's `false` while any error remains, old or new.
+4. On success, clears the in-transaction flag and calls `doc.save()`
+   — the atomic `.tmp` + `os.replace` flow. One disk write. If that
+   save fails (permissions, disk full) the error is returned, the
+   transaction stays open and in-memory, and the commit can be
+   retried — or cancelled with the disk untouched.
+
+Every op routed through a transaction is snapshotted first: an op
+that raises after a partial mutation is rolled back, so a half-applied
+op is never committed.
 
 `cancel_editing_transaction` discards the in-memory tree without
 saving. Useful when the LLM realises mid-session that an approach
@@ -56,8 +73,10 @@ won't work.
 
 Orphaned transactions (not committed or cancelled) auto-expire
 after `PBIRB_MCP_TRANSACTION_TIMEOUT_S` seconds (default 600).
-Expiry is lazy — swept on every transaction-aware dispatch call.
-No background thread.
+Expiry is lazy — swept on every registry lookup (every `open` of a
+file, every routed call, commit and cancel). No background thread.
+An expired transaction can't be committed; edits without its id go
+straight to disk again.
 
 ```bash
 PBIRB_MCP_TRANSACTION_TIMEOUT_S=1800 pbirb-mcp  # 30-min sessions
@@ -83,14 +102,23 @@ server → LLM:  {applied: [{tool: "add_body_textbox", ok: true, result: {...}},
 
 Internally, `apply_edits`:
 
-1. Opens an internal transaction via `start_editing_transaction`.
-2. Dispatches each op through the JSON-RPC `tools/call` path with
+1. Checks every op up front. Transaction control
+   (`start_/commit_/cancel_editing_transaction`), the batch tools
+   themselves (`apply_edits`, `dry_run_edit`) and tools that write
+   outside the batch's tree (`create_report`, `duplicate_report`,
+   `backup_report`, `restore_from_backup`) are refused with
+   `{"error_type": "OpNotAllowed", "tool", "op_index"}` before
+   anything is opened. The same allow-list applies to `dry_run_edit`.
+2. Opens an internal transaction via `start_editing_transaction`.
+3. Dispatches each op through the JSON-RPC `tools/call` path with
    `transaction_id` injected. Each op's `args["path"]` (if present)
    is silently stripped — the dispatcher injects the registered
    abspath from the transaction.
-3. On any op failure: cancels the transaction. Disk untouched.
-4. On all-ok: commits. Lint runs against the in-memory tree before
-   the atomic save.
+4. On any op failure (an `isError`, or a result reporting
+   `committed: false` / `saved: false`): cancels the transaction.
+   Disk untouched.
+5. On all-ok: commits — XSD + lint against the in-memory tree, new
+   errors only (see above), then the atomic save.
 
 The `applied` list always records every op attempted, including
 the one that failed (if any). Use it to debug rollback causes.
@@ -111,9 +139,11 @@ Common pattern: `dry_run_edit` first to preview the diff, inspect
 
 ### Two transactions on the same path
 
-`start_editing_transaction` refuses with `ValueError("an active
-transaction already owns ...")`. Cancel or commit the first
-before starting a second.
+`start_editing_transaction` refuses with
+`TransactionConflictError("an active transaction already owns ...")`.
+Cancel or commit the first before starting a second. A hardlink to a
+held file is the same file (the registry also keys on
+`(st_dev, st_ino)`), so it's refused too.
 
 ### Path normalisation
 
@@ -125,13 +155,18 @@ regardless of which form they originally used.
 
 ### Reading state during a transaction
 
-`describe_report`, `get_textbox`, `get_tablixes`, etc. all read
-through `RDLDocument.open(path)`. While a transaction owns the
-path, those reads return the **in-memory in-flight tree** (NOT
-disk). This is by design — consistent process-wide view of the
-in-flight state. To explicitly read disk-only state, the caller
-would need to bypass the registry (e.g., shell out to a separate
-`pbirb-mcp` subprocess — each has its own registry).
+Transactions are isolated. A call that carries the transaction's
+`transaction_id` reads and edits the **in-memory in-flight tree**;
+`validate_report` / `verify_report` / `dry_run_edit` called that way
+check or preview that tree too. A call WITHOUT the id reads the
+committed (on-disk) state, and any attempt to write the held path
+without the id — an edit tool, `restore_from_backup`, … — fails with
+`TransactionConflictError` and leaves the file unchanged.
+`duplicate_report` works either way and never touches the source's
+ids.
+
+Every tool that works on a report file declares the optional
+`transaction_id` parameter in its `inputSchema`.
 
 ### Transaction-id leakage in errors
 
