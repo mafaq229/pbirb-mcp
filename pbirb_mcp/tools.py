@@ -1698,9 +1698,15 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_row_group",
         description=(
-            "Inverse of add_row_group: unwraps a group's children back to "
-            "its parent hierarchy and removes the matching header row at "
-            "body row 0. Refuses to remove the conventional Details group."
+            "Remove a row group: its wrapped members move up to where the "
+            "group was and keep their body rows; the group's own header row "
+            "(found via the row hierarchy, any nesting depth) and its "
+            "add_subtotal_row subtotal rows are deleted. A group with no "
+            "header row (e.g. a Report Builder group wrapping just the data "
+            "row) is unwrapped without deleting any row. keep_subtotals=true "
+            "keeps subtotal rows (their aggregates then cover the parent "
+            "scope). Refuses the detail group, a group whose member is itself "
+            "a leaf, and a matrix group carrying a row-header cell."
         ),
         input_schema={
             "type": "object",
@@ -1708,6 +1714,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "tablix_name": {"type": "string"},
                 "group_name": {"type": "string"},
+                "keep_subtotals": {"type": "boolean", "default": False},
             },
             "required": ["path", "tablix_name", "group_name"],
             "additionalProperties": False,

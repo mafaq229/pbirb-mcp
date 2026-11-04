@@ -22,7 +22,7 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core import names, units
-from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.document import RDLDocument, indent_inserted
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_tablix
 from pbirb_mcp.core.tablix_shape import (
@@ -32,6 +32,7 @@ from pbirb_mcp.core.tablix_shape import (
     is_dynamic_group,
     leaf_column_index,
     leaf_row_index,
+    row_leaves,
     subtree_leaves,
 )
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
@@ -425,19 +426,98 @@ def add_row_group(
 # ---- remove_row_group ------------------------------------------------------
 
 
+def _is_static_leaf(member: etree._Element) -> bool:
+    return find_child(member, "Group") is None and find_child(member, "TablixMembers") is None
+
+
+def _row_textbox_names(row: Optional[etree._Element]) -> list[str]:
+    if row is None:
+        return []
+    return [tb.get("Name") for tb in row.iter(q("Textbox")) if tb.get("Name")]
+
+
+def _is_subtotal_leaf(
+    group_name: str,
+    row: Optional[etree._Element],
+    legacy_names: bool = True,
+) -> bool:
+    """True iff the body ``row`` of a static leaf under ``group_name`` is
+    one of the subtotal rows ``add_subtotal_row`` emits: every textbox is
+    named ``<group>_SubtotalHeader_…`` / ``<group>_SubtotalFooter_…``
+    (current) or ``<group>_Header_…`` / ``<group>_Footer_…`` (before #32;
+    ``legacy_names``).
+
+    Deliberately name-based: Report Builder marks both a group's total and
+    a table footer with ``KeepWithGroup=Before``, and add_row_group wraps
+    table footers into the group, so that marker can't tell "this group's
+    subtotal" from "a row the group merely wraps".
+    """
+    textboxes = _row_textbox_names(row)
+    stems = ("SubtotalHeader_", "SubtotalFooter_")
+    if legacy_names:
+        stems += ("Header_", "Footer_")
+    prefixes = tuple(f"{group_name}_{stem}" for stem in stems)
+    return bool(textboxes) and all(n.startswith(prefixes) for n in textboxes)
+
+
+def _detach(el: etree._Element) -> None:
+    """Remove ``el`` keeping the surrounding pretty-print layout: when it
+    is the last child, its tail (the parent's closing indent) moves to the
+    previous sibling."""
+    parent = el.getparent()
+    prev = el.getprevious()
+    if el.getnext() is None and prev is not None and el.tail is not None and not el.tail.strip():
+        prev.tail = el.tail
+    parent.remove(el)
+
+
+def _reindent(doc: RDLDocument, el: etree._Element) -> None:
+    """Re-indent a moved (already known) subtree to its new depth; the
+    save-time pass only indents newly created elements."""
+    root_text = doc.root.text or ""
+    if "\n" not in root_text:
+        return
+    unit = root_text.rsplit("\n", 1)[1]
+    indent_inserted(el, unit if unit and not unit.strip() else "  ")
+
+
 def remove_row_group(
     path: str,
     tablix_name: str,
     group_name: str,
+    keep_subtotals: bool = False,
 ) -> dict[str, Any]:
-    """Inverse of :func:`add_row_group` for groups that were added via this
-    tool. Unwraps the group's children back to its parent and removes the
-    matching group-header row at body row 0.
+    """Remove a row group: unwrap the members it wraps into its parent
+    and delete the group's own rows.
 
-    Refuses to remove the detail group (a ``<Group>`` without
-    ``<GroupExpressions>`` — ``Details``, ``Details1``, ...): a tablix
-    without its detail leaf is not useful, and Report Builder treats the
-    detail group specially.
+    The group's rows are located through the hierarchy (leaf *i* owns body
+    row *i*), never assumed to be body row 0:
+
+    * **group header** — the group's first child when it is a static leaf,
+      other members follow it, and it either precedes nested/detail members
+      or is marked as a header (``KeepWithGroup=After`` or a
+      ``<group>_Header_…`` row) — what :func:`add_row_group` creates, and
+      Report Builder's group header row. Its body row is deleted.
+    * **subtotals** — static leaf children emitted by ``add_subtotal_row``
+      (textboxes named ``<group>_Subtotal…``, or ``<group>_Header_…`` /
+      ``<group>_Footer_…`` from older versions). Deleted with their rows
+      unless ``keep_subtotals`` — kept, their group-scoped aggregates
+      silently become totals over the parent scope. Other static rows
+      marked ``KeepWithGroup=Before`` (Report Builder totals *or* table
+      footers) are kept, with a ``warnings`` entry.
+    * everything else is **wrapped** and moves, in order, to where the
+      group member was; its body rows are untouched. A Report
+      Builder-shaped group without a header (a ``<Group>`` wrapping just
+      the data leaf) is therefore unwrapped without deleting any row.
+
+    Refuses, leaving the file untouched: the detail group (a ``<Group>``
+    without ``<GroupExpressions>``); a group whose member is itself a leaf
+    (it owns a body row, e.g. after convert_to_matrix); a group carrying a
+    row-header ``TablixHeader`` (removing it changes the matrix's header
+    depth); and a group holding only its own header/subtotal rows.
+
+    Returns ``{tablix, removed, removed_rows, kept_subtotal_rows}`` — body
+    row indices as they were before the call.
     """
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
@@ -456,39 +536,104 @@ def remove_row_group(
         )
 
     inner_members = find_child(member, "TablixMembers")
-    if inner_members is None or len(list(inner_members)) == 0:
-        # Nothing to unwrap — this is a leaf group (e.g. a sibling-style add
-        # we don't yet support). Refuse, since blindly removing would orphan
-        # body rows and leave the tablix in an inconsistent state.
+    inner_children = (
+        find_children(inner_members, "TablixMember") if inner_members is not None else []
+    )
+    if not inner_children:
         raise ValueError(
-            f"group {group_name!r} has no nested children; refusing to "
-            "remove a leaf group automatically."
+            f"group {group_name!r} has no nested members: its own member is the "
+            "leaf that owns a body row, so removing it would delete or re-bind "
+            "that row; refusing."
+        )
+    if find_child(member, "TablixHeader") is not None:
+        raise ValueError(
+            f"group {group_name!r} carries a row-header cell (TablixHeader); "
+            "removing it would change the matrix's header depth, which this "
+            "tool does not do."
         )
 
-    inner_children = list(inner_members)
-    # First inner child is the group-header leaf added by add_row_group.
-    header_leaf, *wrapped = inner_children
-
-    parent_members = member.getparent()
-    member_idx = list(parent_members).index(member)
-
-    # Replace the wrapper at its original position with its wrapped originals.
-    parent_members.remove(member)
-    for offset, child in enumerate(wrapped):
-        inner_members.remove(child)
-        parent_members.insert(member_idx + offset, child)
-
-    # Remove the body row for the group header. Position is row 0 if the
-    # removed group was the top-level outer wrapper (which is all we
-    # currently support adding via add_row_group).
+    # Leaf -> body row map, taken before any mutation.
     body = find_child(tablix, "TablixBody")
-    rows_root = find_child(body, "TablixRows")
-    rows = find_children(rows_root, "TablixRow")
-    if rows:
-        rows_root.remove(rows[0])
+    rows_root = find_child(body, "TablixRows") if body is not None else None
+    rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
+    row_of = {id(leaf): i for i, leaf in enumerate(row_leaves(tablix))}
+
+    def body_row(leaf: etree._Element) -> Optional[etree._Element]:
+        idx = row_of.get(id(leaf))
+        return rows[idx] if idx is not None and idx < len(rows) else None
+
+    # Classify the group's children: its own header row, its subtotal
+    # rows, and the members it wraps (everything else).
+    def is_subtotal(child: etree._Element, legacy_names: bool) -> bool:
+        return _is_static_leaf(child) and _is_subtotal_leaf(
+            group_name, body_row(child), legacy_names=legacy_names
+        )
+
+    first = inner_children[0]
+    # The legacy "<group>_Header_*" stem is also add_row_group's header-row
+    # name, so on the first child only the current subtotal stems count.
+    subtotals = [first] if is_subtotal(first, legacy_names=False) else []
+    subtotals += [c for c in inner_children[1:] if is_subtotal(c, legacy_names=True)]
+    header: Optional[etree._Element] = None
+    if _is_static_leaf(first) and all(first is not s for s in subtotals):
+        followers = [c for c in inner_children[1:] if all(c is not s for s in subtotals)]
+        keep = find_child(first, "KeepWithGroup")
+        marked = (keep is not None and (keep.text or "").strip() == "After") or any(
+            n.startswith(f"{group_name}_Header_") for n in _row_textbox_names(body_row(first))
+        )
+        # A leading static row is the group header when wrapped members
+        # follow it and it either precedes nested/detail members or is
+        # marked as a header; otherwise (e.g. a lone static child, or
+        # static data + total) it is the group's data row.
+        if followers and (marked or any(not _is_static_leaf(c) for c in followers)):
+            header = first
+
+    doomed = ([header] if header is not None else []) + ([] if keep_subtotals else subtotals)
+    wrapped = [c for c in inner_children if all(c is not d for d in doomed)]
+    if not wrapped:
+        raise ValueError(
+            f"group {group_name!r} holds only its own header/subtotal rows; "
+            "removing it would leave nothing to unwrap."
+        )
+
+    def indices(leaves: list[etree._Element]) -> list[int]:
+        return sorted(
+            row_of[id(leaf)] for leaf in leaves if row_of.get(id(leaf), len(rows)) < len(rows)
+        )
+
+    removed_rows = indices(doomed)
+    kept_rows = indices(subtotals) if keep_subtotals else []
+    warnings = [
+        f"body row {row_of[id(c)]} (a static row marked KeepWithGroup=Before) was kept "
+        "and moved out of the group; if it was the group's total, its aggregates now "
+        "cover the parent scope."
+        for c in wrapped
+        if _is_static_leaf(c)
+        and id(c) in row_of
+        and (getattr(find_child(c, "KeepWithGroup"), "text", None) or "").strip() == "Before"
+    ]
+
+    # ---- hierarchy: the wrapped members take the group member's place ----
+    anchor = member
+    for child in wrapped:
+        anchor.addnext(child)
+        anchor = child
+    _detach(member)
+    for child in wrapped:
+        _reindent(doc, child)
+
+    # ---- body: delete exactly the group's own rows -----------------------
+    for idx in reversed(removed_rows):
+        _detach(rows[idx])
 
     doc.save()
-    return {"tablix": tablix_name, "removed": group_name}
+    return {
+        "tablix": tablix_name,
+        "removed": group_name,
+        "removed_rows": removed_rows,
+        "kept_subtotal_rows": kept_rows,
+        **({"warnings": warnings} if warnings else {}),
+    }
 
 
 # ---- set_group_sort -------------------------------------------------------
