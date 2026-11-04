@@ -369,8 +369,13 @@ class TestGeneratedNames:
             [{"column": "Amount", "expression": "=Sum(Fields!Amount.Value)"}],
             position="header",
         )
-        # add_row_group already emitted Region_Header_0..2.
-        assert r["textboxes"] == ["Region_Header_0_1", "Region_Header_1_1", "Region_Header_2_1"]
+        # add_row_group already emitted Region_Header_0..2; subtotal rows
+        # use their own stem (#32) so they can't be mistaken for it.
+        assert r["textboxes"] == [
+            "Region_SubtotalHeader_0",
+            "Region_SubtotalHeader_1",
+            "Region_SubtotalHeader_2",
+        ]
         assert _dupes(rdl_path) == {}
 
     def test_subtotal_footer_row_twice(self, rdl_path):
@@ -378,8 +383,16 @@ class TestGeneratedNames:
         aggs = [{"column": "Amount", "expression": "=Sum(Fields!Amount.Value)"}]
         r1 = tablix_subtotals.add_subtotal_row(str(rdl_path), "MainTable", "Region", aggs)
         r2 = tablix_subtotals.add_subtotal_row(str(rdl_path), "MainTable", "Region", aggs)
-        assert r1["textboxes"] == ["Region_Footer_0", "Region_Footer_1", "Region_Footer_2"]
-        assert r2["textboxes"] == ["Region_Footer_0_1", "Region_Footer_1_1", "Region_Footer_2_1"]
+        assert r1["textboxes"] == [
+            "Region_SubtotalFooter_0",
+            "Region_SubtotalFooter_1",
+            "Region_SubtotalFooter_2",
+        ]
+        assert r2["textboxes"] == [
+            "Region_SubtotalFooter_0_1",
+            "Region_SubtotalFooter_1_1",
+            "Region_SubtotalFooter_2_1",
+        ]
         assert _dupes(rdl_path) == {}
 
     def test_subtotal_column_twice(self, rdl_path):

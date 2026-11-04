@@ -268,7 +268,7 @@ class TestDetailTools:
         names_after = [n for row in after for n in _row_textbox_names(row)]
         # The detail row went; the subtotal row (formerly last) survived.
         assert "Amount" not in names_after
-        assert "Region_Footer_2" in names_after
+        assert "Region_SubtotalFooter_2" in names_after
         assert len(row_leaves(tablix)) == len(after)
         RDLDocument.open(rdl_path).validate()
 

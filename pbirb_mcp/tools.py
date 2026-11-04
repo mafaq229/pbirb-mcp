@@ -2025,14 +2025,19 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_subtotal_row",
         description=(
-            "Append a subtotal row to a row-axis group. aggregates is a list "
+            "Add a subtotal row for a row-axis group. aggregates is a list "
             "of {column, expression} entries; column matches against the "
-            "Details row's textbox names (the same names add_tablix_column "
+            "group's data-row textbox names (the same names add_tablix_column "
             "uses as column_name — NOT field names). expression is the "
             "aggregate (e.g. =Sum(Fields!X.Value)). Columns not listed get "
-            "blank cells. position='footer' (default) appends; 'header' "
-            "inserts at body row 1 (right after the group-header row). "
-            "Group must have been added via add_row_group."
+            "blank cells. position='footer' (default) puts the row just after "
+            "the group's last row; 'header' at the group's first row (after "
+            "its own group-header row, if any). scope='group' (default) "
+            "places it inside the group: one subtotal per group instance. "
+            "scope='total' places it next to the group: once per parent "
+            "instance — a grand total for an outermost group (Report "
+            "Builder's Add Total). Existing rows keep their group binding. "
+            "Returns row_index and the emitted textbox names."
         ),
         input_schema={
             "type": "object",
@@ -2057,6 +2062,11 @@ def register_all_tools(server: MCPServer) -> None:
                     "enum": ["header", "footer"],
                     "default": "footer",
                 },
+                "scope": {
+                    "type": "string",
+                    "enum": ["group", "total"],
+                    "default": "group",
+                },
             },
             "required": ["path", "tablix_name", "group_name", "aggregates"],
             "additionalProperties": False,
@@ -2067,16 +2077,17 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_subtotal_column",
         description=(
-            "Column-axis mirror of add_subtotal_row. Adds a static "
-            "TablixMember inside the column-group's <TablixMembers>, "
-            "a new <TablixColumn> in TablixBody, and a cell at the "
-            "new column index in every body row. aggregates is a list "
-            "of {row, expression} entries where row is the 0-based "
-            "body row index; rows not listed get blank cells. "
-            "position='after' (default — canonical Grand Total slot, "
-            "appends to the right of the column group) or 'before' "
-            "(prepends to the group's left edge). width defaults to "
-            "'1in'. Group must have been added via add_column_group."
+            "Column-axis mirror of add_subtotal_row: adds a static column "
+            "member, a TablixColumn and a cell in every body row at the "
+            "column the new member owns. aggregates is a list of {row, "
+            "expression} entries where row is the 0-based body row index; "
+            "rows not listed get blank cells. position='after' (default — "
+            "just right of the group's last column) or 'before' (at its "
+            "first column). scope='group' (default) puts the column inside "
+            "the group (one per group instance); scope='total' next to the "
+            "group (once per parent instance — a grand total column for an "
+            "outermost group). Static columns beside the group stay "
+            "outside it. width defaults to '1in'."
         ),
         input_schema={
             "type": "object",
@@ -2102,6 +2113,11 @@ def register_all_tools(server: MCPServer) -> None:
                     "default": "after",
                 },
                 "width": {"type": "string", "default": "1in"},
+                "scope": {
+                    "type": "string",
+                    "enum": ["group", "total"],
+                    "default": "group",
+                },
             },
             "required": ["path", "tablix_name", "group_name", "aggregates"],
             "additionalProperties": False,
