@@ -67,7 +67,7 @@ Rules (19):
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from lxml import etree
 
@@ -93,18 +93,31 @@ def _named_locator(elem: etree._Element) -> str:
     return f"{tag}[Name={name!r}]" if name else tag
 
 
-def _ancestor_chain(elem: etree._Element, max_depth: int = 4) -> str:
-    """Walk parents, collect named ancestors, return ``A>B>C``."""
-    parts: list[str] = []
-    cur = elem
-    depth = 0
-    while cur is not None and depth < max_depth:
-        local = etree.QName(cur.tag).localname
-        if cur.get("Name"):
-            parts.append(f"{local}[Name={cur.get('Name')!r}]")
+def _ancestor_chain(elem: etree._Element, max_named: int = 3) -> str:
+    """Locator for ``elem``: its nearest ``max_named`` named ancestors (the
+    element itself included), outermost first, then the element's own tag
+    when it isn't named — e.g. ``Tablix[Name='MainTable']>Textbox[Name='Amount']>Value``.
+
+    Walks all the way to the root (#48): a textbox value sits six levels
+    below its Textbox, so a fixed depth cut-off lost the name. Returns
+    ``"(unnamed)"`` only when nothing up the chain has a Name.
+    """
+    if not isinstance(elem.tag, str):
+        elem = elem.getparent()
+        if elem is None:
+            return "(unnamed)"
+    named: list[str] = []
+    cur: Optional[etree._Element] = elem
+    while cur is not None and len(named) < max_named:
+        if isinstance(cur.tag, str) and cur.get("Name"):
+            named.append(_named_locator(cur))
         cur = cur.getparent()
-        depth += 1
-    return ">".join(reversed(parts)) if parts else "(unnamed)"
+    if not named:
+        return "(unnamed)"
+    parts = list(reversed(named))
+    if not elem.get("Name"):
+        parts.append(etree.QName(elem.tag).localname)
+    return ">".join(parts)
 
 
 # ---- expression-bearing nodes -------------------------------------------
@@ -966,8 +979,10 @@ ALL_RULES = tuple(_RULES.keys())
 
 
 def _resolve_rules(rules: list[str] | None) -> list[str]:
-    """Validate and expand a ``rules`` selector. Unknown names raise."""
-    if rules is None:
+    """Validate and expand a ``rules`` selector. ``None`` or an empty list
+    means every rule (#48 — an empty selection used to run nothing and
+    report a clean file). Unknown names raise."""
+    if not rules:
         return list(_RULES.keys())
     unknown = [r for r in rules if r not in _RULES]
     if unknown:

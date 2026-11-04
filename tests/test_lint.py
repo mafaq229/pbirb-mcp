@@ -556,3 +556,36 @@ class TestToolRegistration:
         ]
         names = {t["name"] for t in listing}
         assert "lint_report" in names
+
+
+# ---- #48: empty selector runs everything; locations name the item -------------
+
+
+def test_empty_rules_list_runs_all_rules(rdl_path):
+    result = lint_report(str(rdl_path), rules=[])
+    assert set(result["rules_run"]) == set(ALL_RULES)
+
+
+def test_textbox_value_issue_is_located_at_the_textbox(tmp_path):
+    p = tmp_path / "r.rdl"
+    p.write_text(FIXTURE.read_text().replace("=Fields!Amount.Value", "=Fields!Typo.Value"))
+    issues = [i for i in lint_report(str(p))["issues"] if i["rule"] == "missing-field-reference"]
+    assert issues
+    location = issues[0]["location"]
+    assert "Textbox[Name='Amount']" in location
+    assert location.startswith("Tablix[Name='MainTable']>")
+    assert location.endswith(">Value")
+
+
+def test_ancestor_chain_keeps_three_nearest_named_ancestors():
+    from lxml import etree
+
+    from pbirb_mcp.ops.lint import _ancestor_chain
+
+    root = etree.fromstring(
+        "<A Name='a'><B Name='b'><C Name='c'><D Name='d'><E><F/></E></D></C></B></A>"
+    )
+    leaf = root.find(".//F")
+    assert _ancestor_chain(leaf) == "B[Name='b']>C[Name='c']>D[Name='d']>F"
+    assert _ancestor_chain(root.find(".//D")) == "B[Name='b']>C[Name='c']>D[Name='d']"
+    assert _ancestor_chain(etree.fromstring("<X><Y/></X>").find("Y")) == "(unnamed)"
