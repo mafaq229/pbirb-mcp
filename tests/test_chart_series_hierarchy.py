@@ -357,13 +357,7 @@ class TestChartShapeHelpers:
 def _fixture_params():
     params = []
     for path in sorted(FIXTURES.glob("*.rdl")):
-        marks = ()
-        if path.name == "pbi_chart_rich.rdl":
-            marks = pytest.mark.xfail(
-                strict=True,
-                reason="fixture predates #39 (3 series, 1 member); needs regenerating",
-            )
-        params.append(pytest.param(path, id=path.name, marks=marks))
+        params.append(pytest.param(path, id=path.name))
     return params
 
 
