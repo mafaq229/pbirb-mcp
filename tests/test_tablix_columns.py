@@ -573,7 +573,10 @@ class TestColumnGroupShapeInvariant:
         result = add_tablix_column(
             str(rdl_path), "MainTable", "Qty", "=Fields!Amount.Value", position=position
         )
-        assert result["column_header_textboxes"] == ["Qty_Header"]
+        # Exactly one header for the new column: #33's placement copies the
+        # siblings' TablixHeader depth; #29's padding fills any gap left.
+        headers = result.get("header_textboxes", []) + result.get("column_header_textboxes", [])
+        assert len(headers) == 1 and headers[0].startswith("Qty_")
         tablix = _tablix(RDLDocument.open(rdl_path), "MainTable")
         assert shape_problems(tablix) == []
         assert validate_report(str(rdl_path))["valid"]

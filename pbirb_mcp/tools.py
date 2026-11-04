@@ -1955,9 +1955,13 @@ def register_all_tools(server: MCPServer) -> None:
             "(typically =Fields!X.Value). For a tablix with >= 2 rows the "
             "first row gets header_text (default = column_name) as a literal, "
             "middle rows get blank cells, and the last row gets expression. "
-            "position is 0-indexed; default appends at end. width defaults to "
-            "1in. Inserts a matching top-level TablixMember in the column "
-            "hierarchy at the same index. A position inside a merged "
+            "position is the 0-indexed body column; default appends at end. "
+            "width defaults to 1in. The column's hierarchy member is placed "
+            "so it owns that body column and stays outside every column "
+            "group: a position strictly inside a group is moved to just "
+            "before that group (the result's position/warnings say so) "
+            "unless inside_group names it. Existing columns keep their "
+            "group membership. A position inside a merged "
             "(ColSpan) cell widens that span instead of adding a textbox "
             "under it (refused if the data row is merged there)."
         ),
@@ -1971,6 +1975,12 @@ def register_all_tools(server: MCPServer) -> None:
                 "position": {"type": ["integer", "null"], "minimum": 0},
                 "width": {"type": ["string", "null"]},
                 "header_text": {"type": ["string", "null"]},
+                "inside_group": {
+                    "type": ["string", "null"],
+                    "description": "Column group to insert inside on purpose (the column "
+                    "then repeats per group instance); position must lie within that group's "
+                    "columns or just past them. Default: the column stays outside every group.",
+                },
             },
             "required": ["path", "tablix_name", "column_name", "expression"],
             "additionalProperties": False,
@@ -2130,8 +2140,12 @@ def register_all_tools(server: MCPServer) -> None:
             "(left to right); shorter list = blank trailing cells, longer "
             "list errors. Cell textboxes are named row_name (col 0) and "
             "row_name_<col_index> (others) — unique report-wide so row_name "
-            "must not clash with any existing textbox. position is "
-            "0-indexed; default appends. height defaults to 0.25in."
+            "must not clash with any existing textbox. position is the "
+            "0-indexed body row; default appends. The row stays outside "
+            "every row group: a position strictly inside a group is moved "
+            "to just before that group (the result's position/warnings say "
+            "so) unless inside_group names it. Existing rows keep their "
+            "group membership. height defaults to 0.25in."
         ),
         input_schema={
             "type": "object",
@@ -2145,6 +2159,12 @@ def register_all_tools(server: MCPServer) -> None:
                 },
                 "position": {"type": ["integer", "null"], "minimum": 0},
                 "height": {"type": ["string", "null"]},
+                "inside_group": {
+                    "type": ["string", "null"],
+                    "description": "Row group to insert inside on purpose (the row then "
+                    "repeats per group instance); position must lie within that group's rows "
+                    "or just past them. Default: the row stays outside every group.",
+                },
             },
             "required": ["path", "tablix_name", "row_name"],
             "additionalProperties": False,
@@ -2159,8 +2179,13 @@ def register_all_tools(server: MCPServer) -> None:
             "literal text. cells is a list of strings, one per body row "
             "(top to bottom); shorter list = blank trailing cells, longer "
             "list errors. Cell textboxes are named column_name (row 0) and "
-            "column_name_<row_index> (others). position is 0-indexed; "
-            "default appends. width defaults to 1in."
+            "column_name_<row_index> (others). position is the 0-indexed "
+            "body column; default appends. The column stays outside every "
+            "column group: a position strictly inside a group is moved to "
+            "just before that group (the result's position/warnings say "
+            "so) unless inside_group names it. In a matrix the new member "
+            "gets column-header cells matching its siblings. width "
+            "defaults to 1in."
         ),
         input_schema={
             "type": "object",
@@ -2174,6 +2199,12 @@ def register_all_tools(server: MCPServer) -> None:
                 },
                 "position": {"type": ["integer", "null"], "minimum": 0},
                 "width": {"type": ["string", "null"]},
+                "inside_group": {
+                    "type": ["string", "null"],
+                    "description": "Column group to insert inside on purpose (the column "
+                    "then repeats per group instance); position must lie within that group's "
+                    "columns or just past them. Default: the column stays outside every group.",
+                },
             },
             "required": ["path", "tablix_name", "column_name"],
             "additionalProperties": False,

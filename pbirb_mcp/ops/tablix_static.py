@@ -5,9 +5,14 @@ in that the new row / column is **not** bound to a data field or a
 group expression — every cell holds literal text. Use them for header
 captions, footer labels, or banner rows.
 
-Both tools insert a corresponding ``<TablixMember/>`` (without a
-``<Group>``) into the matching hierarchy at the same index, keeping
-the hierarchy width consistent with the body.
+Both tools insert a corresponding static ``<TablixMember>`` (without a
+``<Group>``) into the matching hierarchy so that it owns the new body
+row / column: the member goes at *leaf* position ``position`` (see
+:func:`pbirb_mcp.core.tablix_shape.insertion_point`), not top-level
+position ``position`` — once a group wraps members the two differ and
+every later row/column would silently be re-bound to another leaf (#33).
+When the siblings carry ``TablixHeader`` cells (a matrix), the new member
+gets headers of the same depth and size.
 """
 
 from __future__ import annotations
@@ -20,6 +25,11 @@ from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import resolve_tablix
+from pbirb_mcp.core.tablix_shape import (
+    insert_nth_child,
+    place_static_leaf,
+    placement_warnings,
+)
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 
 
@@ -43,6 +53,31 @@ def _build_static_cell(textbox_name: str, cell_text: str) -> etree._Element:
     return cell
 
 
+def _place(
+    tablix: etree._Element,
+    axis: str,
+    position: Optional[int],
+    inside_group: Optional[str],
+    header_stem: str,
+    registry: names.NameRegistry,
+):
+    return place_static_leaf(
+        tablix, axis, position, inside_group, lambda: registry.unique(header_stem)
+    )
+
+
+def _payload_extras(point, axis: str, header_names: list[str]) -> dict[str, Any]:
+    extras: dict[str, Any] = {}
+    if header_names:
+        extras["header_textboxes"] = header_names
+    if point.relocated_from is not None:
+        extras["requested_position"] = point.requested
+    warnings = placement_warnings(point, axis)
+    if warnings:
+        extras["warnings"] = warnings
+    return extras
+
+
 def add_static_row(
     path: str,
     tablix_name: str,
@@ -50,6 +85,7 @@ def add_static_row(
     cells: Optional[list[str]] = None,
     position: Optional[int] = None,
     height: Optional[str] = None,
+    inside_group: Optional[str] = None,
 ) -> dict[str, Any]:
     """Add a static (no-group) row.
 
@@ -62,7 +98,14 @@ def add_static_row(
     lists the names emitted).
 
     ``position`` is 0-indexed into ``<TablixRows>``; default = append.
-    ``height`` defaults to ``"0.25in"``.
+    The row's hierarchy member is placed so it owns that body row and
+    stays outside every row group: at a group's edge it becomes the group
+    member's sibling; strictly inside a group it is placed just before the
+    group instead (the payload's ``position`` is then the actual row and
+    ``warnings`` says why). ``inside_group`` names a row group to insert
+    inside on purpose (the row then repeats per group instance);
+    ``position`` must then lie within that group's rows (or just past
+    them). ``height`` defaults to ``"0.25in"``.
     """
     names.validate_identifier(row_name, "textbox")
     height_value = units.dimension(height if height is not None else "0.25in", "height")
@@ -91,14 +134,17 @@ def add_static_row(
     rows_root = find_child(body, "TablixRows")
     if rows_root is None:
         rows_root = etree.SubElement(body, q("TablixRows"))
-    n_rows = len(find_children(rows_root, "TablixRow"))
-    insert_at = n_rows if position is None else position
-    if insert_at < 0 or insert_at > n_rows:
-        raise IndexError(f"position {position} out of range; tablix has {n_rows} row(s)")
 
     textbox_names = [row_name if n_cols else None] + [
         registry.unique(f"{row_name}_{col_idx}") for col_idx in range(1, n_cols)
     ]
+
+    # Hierarchy first: it validates position / inside_group before any
+    # mutation and tells us which body row the new leaf owns.
+    point, header_names = _place(
+        tablix, "row", position, inside_group, f"{row_name}_RowHeader", registry
+    )
+    insert_at = point.index
 
     new_row = etree.Element(q("TablixRow"))
     etree.SubElement(new_row, q("Height")).text = height_value
@@ -107,24 +153,7 @@ def add_static_row(
         cell_text = cells[col_idx] if col_idx < len(cells) else ""
         cells_root.append(_build_static_cell(textbox_names[col_idx], cell_text))
 
-    if insert_at == n_rows:
-        rows_root.append(new_row)
-    else:
-        rows_root.insert(insert_at, new_row)
-
-    # Mirror in row hierarchy: insert a leaf <TablixMember/> at same index.
-    row_h = find_child(tablix, "TablixRowHierarchy")
-    if row_h is None:
-        row_h = etree.SubElement(tablix, q("TablixRowHierarchy"))
-    members_root = find_child(row_h, "TablixMembers")
-    if members_root is None:
-        members_root = etree.SubElement(row_h, q("TablixMembers"))
-    new_member = etree.Element(q("TablixMember"))
-    top_members = list(members_root)
-    if insert_at >= len(top_members):
-        members_root.append(new_member)
-    else:
-        members_root.insert(insert_at, new_member)
+    insert_nth_child(rows_root, "TablixRow", insert_at, new_row)
 
     doc.save()
     return {
@@ -133,6 +162,7 @@ def add_static_row(
         "position": insert_at,
         "cells": list(cells),
         "textboxes": [n for n in textbox_names if n is not None],
+        **_payload_extras(point, "row", header_names),
     }
 
 
@@ -143,6 +173,7 @@ def add_static_column(
     cells: Optional[list[str]] = None,
     position: Optional[int] = None,
     width: Optional[str] = None,
+    inside_group: Optional[str] = None,
 ) -> dict[str, Any]:
     """Add a static (no-group) column.
 
@@ -155,7 +186,9 @@ def add_static_column(
     ``textboxes`` lists the names emitted).
 
     ``position`` is 0-indexed into ``<TablixColumns>``; default =
-    append. ``width`` defaults to ``"1in"``.
+    append. Hierarchy placement and ``inside_group`` work as in
+    :func:`add_static_row` (column groups instead of row groups).
+    ``width`` defaults to ``"1in"``.
     """
     names.validate_identifier(column_name, "textbox")
     width_value = units.dimension(width if width is not None else "1in", "width")
@@ -182,22 +215,20 @@ def add_static_column(
     cols_root = find_child(body, "TablixColumns")
     if cols_root is None:
         cols_root = etree.SubElement(body, q("TablixColumns"))
-    n_cols = len(find_children(cols_root, "TablixColumn"))
-    insert_at = n_cols if position is None else position
-    if insert_at < 0 or insert_at > n_cols:
-        raise IndexError(f"position {position} out of range; tablix has {n_cols} column(s)")
 
     textbox_names = [column_name] + [
         registry.unique(f"{column_name}_{row_idx}") for row_idx in range(1, n_rows)
     ]
 
+    point, header_names = _place(
+        tablix, "column", position, inside_group, f"{column_name}_ColumnHeader", registry
+    )
+    insert_at = point.index
+
     # Insert <TablixColumn> at insert_at.
     new_column = etree.Element(q("TablixColumn"))
     etree.SubElement(new_column, q("Width")).text = width_value
-    if insert_at == n_cols:
-        cols_root.append(new_column)
-    else:
-        cols_root.insert(insert_at, new_column)
+    insert_nth_child(cols_root, "TablixColumn", insert_at, new_column)
 
     # Insert one cell at insert_at in every row.
     for row_idx, row in enumerate(rows):
@@ -206,25 +237,7 @@ def add_static_column(
             cells_root = etree.SubElement(row, q("TablixCells"))
         cell_text = cells[row_idx] if row_idx < len(cells) else ""
         new_cell = _build_static_cell(textbox_names[row_idx], cell_text)
-        existing_cells = find_children(cells_root, "TablixCell")
-        if insert_at == len(existing_cells):
-            cells_root.append(new_cell)
-        else:
-            cells_root.insert(insert_at, new_cell)
-
-    # Mirror in column hierarchy.
-    col_h = find_child(tablix, "TablixColumnHierarchy")
-    if col_h is None:
-        col_h = etree.SubElement(tablix, q("TablixColumnHierarchy"))
-    members_root = find_child(col_h, "TablixMembers")
-    if members_root is None:
-        members_root = etree.SubElement(col_h, q("TablixMembers"))
-    new_member = etree.Element(q("TablixMember"))
-    top_members = list(members_root)
-    if insert_at >= len(top_members):
-        members_root.append(new_member)
-    else:
-        members_root.insert(insert_at, new_member)
+        insert_nth_child(cells_root, "TablixCell", insert_at, new_cell)
 
     doc.save()
     return {
@@ -234,6 +247,7 @@ def add_static_column(
         "cells": list(cells),
         "width": width_value,
         "textboxes": textbox_names[:n_rows],
+        **_payload_extras(point, "column", header_names),
     }
 
 

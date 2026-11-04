@@ -36,7 +36,13 @@ from pbirb_mcp.core import names, tablix_headers, tablix_spans, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
-from pbirb_mcp.core.tablix_shape import column_leaves, data_row_index
+from pbirb_mcp.core.tablix_shape import (
+    column_leaves,
+    data_row_index,
+    insert_nth_child,
+    place_static_leaf,
+    placement_warnings,
+)
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 from pbirb_mcp.ops.tablix import (
     _UNSET,
@@ -409,6 +415,7 @@ def add_tablix_column(
     position: Optional[int] = None,
     width: Optional[str] = None,
     header_text: Optional[str] = None,
+    inside_group: Optional[str] = None,
 ) -> dict[str, Any]:
     """Append (or insert) a new column into a tablix.
 
@@ -431,10 +438,17 @@ def add_tablix_column(
     taken report-wide; the payload's ``textboxes`` lists the names
     emitted, top to bottom).
 
-    ``position`` is a 0-indexed insertion position; default = append.
-    ``width`` defaults to ``"1in"``. Both the body's ``<TablixColumn>``
-    and the column hierarchy's leaf ``<TablixMember>`` are inserted at
-    the same position; existing column-group wrappers are not modified.
+    ``position`` is a 0-indexed body-column position; default = append.
+    ``width`` defaults to ``"1in"``. The new static column-hierarchy leaf
+    is placed so it owns body column ``position`` (leaf ``i`` ↔ column
+    ``i``) and stays outside every column group: at a group's edge it
+    becomes the group member's sibling; strictly inside a group it goes
+    just before the group instead (``position`` in the payload is then the
+    actual column and ``warnings`` says why). ``inside_group`` names a
+    column group to insert inside on purpose; ``position`` must then lie
+    within that group's columns (or just past them). When sibling members
+    carry ``TablixHeader`` cells, the new member gets headers of the same
+    depth and size.
     """
     names.validate_identifier(column_name, "textbox")
     width = units.dimension("1in" if width is None else width, "width")
@@ -454,15 +468,18 @@ def add_tablix_column(
     cols_root = find_child(body, "TablixColumns")
     if cols_root is None:
         cols_root = etree.SubElement(body, q("TablixColumns"))
-    existing_cols = find_children(cols_root, "TablixColumn")
-    n_cols = len(existing_cols)
 
-    if position is None:
-        insert_at = n_cols
-    else:
-        if position < 0 or position > n_cols:
-            raise IndexError(f"position {position} out of range; tablix has {n_cols} column(s)")
-        insert_at = position
+    # ---- column hierarchy: a static leaf owning body column `position`
+    # (leaf index, not top-level index — #33). Validates position and
+    # inside_group before the body is touched.
+    point, header_names = place_static_leaf(
+        tablix,
+        "column",
+        position,
+        inside_group,
+        lambda: registry.unique(f"{column_name}_ColumnHeader"),
+    )
+    insert_at = point.index
 
     # Inside a merged cell of the data row the new column would get no
     # column_name textbox (the span grows over it) — refuse up front (#34).
@@ -471,21 +488,7 @@ def add_tablix_column(
     # ---- body: insert <TablixColumn> at insert_at ------------------------
     new_column = etree.Element(q("TablixColumn"))
     etree.SubElement(new_column, q("Width")).text = width
-    if insert_at == n_cols:
-        cols_root.append(new_column)
-    else:
-        cols_root.insert(insert_at, new_column)
-
-    # ---- column hierarchy: insert a top-level <TablixMember /> at the
-    # mirroring position. We add at the top level so a column added next
-    # to (rather than under) an existing column group lands as a sibling.
-    members_root = _column_hierarchy_members(tablix)
-    new_member = etree.Element(q("TablixMember"))
-    top_members = list(members_root)
-    if insert_at >= len(top_members):
-        members_root.append(new_member)
-    else:
-        members_root.insert(insert_at, new_member)
+    insert_nth_child(cols_root, "TablixColumn", insert_at, new_column)
 
     # ---- body rows: insert a fresh cell at insert_at ---------------------
     rows_root = find_child(body, "TablixRows")
@@ -534,10 +537,7 @@ def add_tablix_column(
         emitted.append(tb_name)
 
         new_cell = _build_tablix_column_cell(tb_name, cell_text)
-        if insert_at == len(find_children(cells_root, "TablixCell")):
-            cells_root.append(new_cell)
-        else:
-            cells_root.insert(insert_at, new_cell)
+        insert_nth_child(cells_root, "TablixCell", insert_at, new_cell)
 
     # A column beside a column group (whose caption is a TablixHeader)
     # needs a header of its own so every column keeps the same header
@@ -554,10 +554,17 @@ def add_tablix_column(
         "width": width,
         "textboxes": emitted,
     }
+    if header_names:
+        result["header_textboxes"] = header_names
     if column_headers:
         result["column_header_textboxes"] = column_headers
     if widened:
         result["widened_span_rows"] = widened
+    if point.relocated_from is not None:
+        result["requested_position"] = point.requested
+    warnings = placement_warnings(point, "column")
+    if warnings:
+        result["warnings"] = warnings
     return result
 
 
