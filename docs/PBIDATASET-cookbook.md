@@ -99,16 +99,18 @@ typo like `Fields!Order ID.Value` does not.
 
 ```python
 # 1. Add the report parameters (idempotent if they exist).
-add_parameter(path, name="Year",     data_type="Integer", prompt="Year")
+add_parameter(path, name="Year", data_type="Integer", prompt="Year")
 add_parameter(path, name="MonthNum", data_type="Integer", prompt="Month (1-12)")
 
 # 2. Wire them into the dataset's DAX. Note: name=@Year is auto-
 #    stripped to Year for the <QueryParameter Name=...> attribute;
 #    the DAX text inside CommandText still reads @Year / @MonthNum.
-add_query_parameter(path, dataset_name="DataSet1",
-                    name="@Year",     value_expression="=Parameters!Year.Value")
-add_query_parameter(path, dataset_name="DataSet1",
-                    name="@MonthNum", value_expression="=Parameters!MonthNum.Value")
+add_query_parameter(
+    path, dataset_name="DataSet1", name="@Year", value_expression="=Parameters!Year.Value"
+)
+add_query_parameter(
+    path, dataset_name="DataSet1", name="@MonthNum", value_expression="=Parameters!MonthNum.Value"
+)
 ```
 
 The DAX itself references the parameters as `@Year` / `@MonthNum`;
@@ -158,7 +160,7 @@ add_data_source(
     name="PowerBIDataset",
     workspace_url="ADNOC",
     dataset_name="RAG Report",
-    provider="pbidataset",   # NEW in v0.4 — default is "sql" for back-compat
+    provider="pbidataset",  # NEW in v0.4 — default is "sql" for back-compat
 )
 ```
 
