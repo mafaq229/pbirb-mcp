@@ -38,6 +38,7 @@ from pbirb_mcp.ops import dry_run as _dry_run
 from pbirb_mcp.ops import escape as _escape
 from pbirb_mcp.ops import expressions as _expressions
 from pbirb_mcp.ops import layout as _layout
+from pbirb_mcp.ops import layout_helpers as _layout_helpers
 from pbirb_mcp.ops import lint as _lint
 from pbirb_mcp.ops import scratch as _scratch
 from pbirb_mcp.ops import transactions as _transactions
@@ -92,7 +93,9 @@ def register_all_tools(server: MCPServer) -> None:
             "`gauges`, `body` {height, width}, `nested_items` (items inside "
             "Rectangles, with parent/region); `page` fills absent sizes with "
             "the RDL defaults (11in x 8.5in, 0in margins) and lists them in "
-            "`page.defaulted`."
+            "`page.defaulted`, plus page.columns, page.column_spacing, "
+            "page.body {width, height} and page.printable_width (width minus "
+            "left/right margins) for overflow checks."
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=reader.describe_report,
@@ -2884,6 +2887,59 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=page.set_body_size,
+        mutating=True,
+    )
+    # ---- geometry fix-ups (#49) ---------------------------------------------
+    server.register_tool(
+        name="fit_page_to_body",
+        description=(
+            "Fix a body wider than the page (lint body-wider-than-page: blank "
+            "pages after every page). mode='page' (default) widens PageWidth to "
+            "columns x body width + column spacing + left/right margins (a page "
+            "already wide enough is left alone). mode='body' shrinks the body "
+            "width (ReportSection Width) to the right edge of its rightmost item; "
+            "errors when even that exceeds the printable width. Returns {mode, "
+            "changed, page_width, body_width, printable_width}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "mode": {"type": "string", "enum": ["page", "body"], "default": "page"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=_layout_helpers.fit_page_to_body,
+        mutating=True,
+    )
+    server.register_tool(
+        name="center_item",
+        description=(
+            "Centre a named report item in its container by setting Left "
+            "(axis='horizontal', default), Top ('vertical') or both: "
+            "Left = (container width - item width) / 2. Container = the body "
+            "(body width) for body items, the printable width (page width minus "
+            "margins) for page header/footer items, the Rectangle for items "
+            "inside one. A Tablix is centred on the width its columns render at. "
+            "Errors when the item is larger than its container. Idempotent. "
+            "Returns {name, container, axis, top, left, changed, warnings}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "axis": {
+                    "type": "string",
+                    "enum": ["horizontal", "vertical", "both"],
+                    "default": "horizontal",
+                },
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=_layout_helpers.center_item,
         mutating=True,
     )
 

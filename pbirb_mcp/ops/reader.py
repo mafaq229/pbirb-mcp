@@ -18,8 +18,9 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.geometry import PAGE_DEFAULTS, REPORT_ITEM_TAGS
+from pbirb_mcp.core.geometry import PAGE_DEFAULTS, REPORT_ITEM_TAGS, size_unit
 from pbirb_mcp.core.tablix_shape import is_dynamic_group
+from pbirb_mcp.core.units import format_size, to_inches
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q, qrd
 
 
@@ -222,11 +223,17 @@ _PAGE_FIELDS = (
 )
 
 
-def _page_summary(page_node: Optional[etree._Element]) -> dict[str, Any]:
+def _page_summary(page_node: Optional[etree._Element], body: dict[str, Any]) -> dict[str, Any]:
     """``describe_report.page``: page size and margins as written, with the
     RDL default (what Report Builder renders: 11in x 8.5in, 0in margins)
-    filled in for every absent element. ``defaulted`` lists the keys that
-    came from a default rather than the file."""
+    filled in for every absent element. ``defaulted`` lists the keys of
+    those six that came from a default rather than the file.
+
+    #49 adds what an overflow check needs: ``columns`` / ``column_spacing``
+    (defaults 1 / 0.5in), ``body`` ({width, height}, as in
+    ``describe_report.body``) and ``printable_width`` — page width minus
+    the left and right margins, in the page width's unit (``None`` when a
+    size doesn't parse)."""
     page: dict[str, Any] = {}
     defaulted: list[str] = []
     for key, local in _PAGE_FIELDS:
@@ -236,6 +243,24 @@ def _page_summary(page_node: Optional[etree._Element]) -> dict[str, Any]:
             defaulted.append(key)
         page[key] = value
     page["defaulted"] = defaulted
+    columns_text = _text(find_child(page_node, "Columns")) if page_node is not None else None
+    try:
+        page["columns"] = max(1, int(columns_text)) if columns_text else 1
+    except ValueError:
+        page["columns"] = columns_text
+    page["column_spacing"] = (
+        _text(find_child(page_node, "ColumnSpacing")) if page_node is not None else None
+    ) or PAGE_DEFAULTS["ColumnSpacing"]
+    page["body"] = dict(body)
+    try:
+        printable = (
+            to_inches(page["width"])
+            - to_inches(page["margin_left"])
+            - to_inches(page["margin_right"])
+        )
+        page["printable_width"] = format_size(round(printable, 5), size_unit(page["width"]))
+    except ValueError:
+        page["printable_width"] = None
     return page
 
 
@@ -270,9 +295,10 @@ def describe_report(path: str) -> dict[str, Any]:
     root = doc.root
 
     page_node = root.find(f".//{{{RDL_NS}}}ReportSection/{{{RDL_NS}}}Page")
-    page = _page_summary(page_node)
-
     body_node = root.find(f".//{{{RDL_NS}}}ReportSection/{{{RDL_NS}}}Body")
+    body = _body_summary(body_node)
+    page = _page_summary(page_node, body)
+
     header_node = page_node.find(f"{{{RDL_NS}}}PageHeader") if page_node is not None else None
     footer_node = page_node.find(f"{{{RDL_NS}}}PageFooter") if page_node is not None else None
 
@@ -305,7 +331,7 @@ def describe_report(path: str) -> dict[str, Any]:
         "nested_items": _nested_items(
             [("body", body_node), ("header", header_node), ("footer", footer_node)]
         ),
-        "body": _body_summary(body_node),
+        "body": body,
         "subreports": [_subreport_summary(s) for s in root.iter(q("Subreport"))],
         "maps": [m.get("Name") for m in root.iter(q("Map"))],
         "gauges": [g.get("Name") for g in root.iter(q("GaugePanel"))],
