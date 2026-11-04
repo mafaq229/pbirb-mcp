@@ -224,3 +224,25 @@ def test_set_page_setup_partial_write_not_committed(server, rdl):
     assert is_error
     _call(server, "commit_editing_transaction", transaction_id=tx)
     assert b"<PageHeight>5in</PageHeight>" not in rdl.read_bytes()
+
+
+def test_recycled_inode_is_not_a_conflict(server, tmp_path):
+    # A transaction on a file that was later deleted must not lock an
+    # unrelated new file that happens to reuse its inode number.
+    a = tmp_path / "a.rdl"
+    shutil.copy(FIXTURE, a)
+    tx = _start(server, a)
+    inode = transactions._BY_ID[tx].inode
+    a.unlink()
+    b = tmp_path / "b.rdl"
+    shutil.copy(FIXTURE, b)
+    # Simulate inode reuse deterministically.
+    transactions._BY_INODE.pop(inode, None)
+    st = os.stat(b)
+    transactions._BY_ID[tx].inode = (st.st_dev, st.st_ino)
+    transactions._BY_INODE[(st.st_dev, st.st_ino)] = tx
+    payload, is_error = _call(
+        server, "set_textbox_value", path=str(b), textbox_name="HeaderAmount", value="OK"
+    )
+    assert not is_error, payload
+    assert b"OK" in b.read_bytes()

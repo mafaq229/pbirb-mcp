@@ -169,7 +169,12 @@ def register(doc: RDLDocument, *, now: Optional[float] = None) -> str:
 
     abspath = str(doc.path.resolve())
     inode = _inode_of(abspath)
-    existing_id = _BY_PATH.get(abspath) or (_BY_INODE.get(inode) if inode else None)
+    existing_id = _BY_PATH.get(abspath)
+    if existing_id is None and inode is not None:
+        other = _BY_INODE.get(inode)
+        # Ignore a recycled inode whose held path is no longer that file.
+        if other is not None and _inode_of(_BY_ID[other].abspath) == inode:
+            existing_id = other
     if existing_id is not None:
         raise TransactionConflictError(
             f"an active transaction ({existing_id!r}) already owns "
@@ -210,6 +215,10 @@ def lookup_by_path(abspath: str) -> Optional[_Transaction]:
         # A hardlink (or other alias) of a held file is the same file.
         inode = _inode_of(abspath)
         tx_id = _BY_INODE.get(inode) if inode is not None else None
+        # Inodes are recycled: only trust the match while the held path
+        # still IS that inode (it may have been deleted or replaced).
+        if tx_id is not None and _inode_of(_BY_ID[tx_id].abspath) != inode:
+            tx_id = None
     if tx_id is None:
         return None
     return _BY_ID.get(tx_id)
