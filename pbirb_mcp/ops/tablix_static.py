@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import names, units
+from pbirb_mcp.core import names, tablix_spans, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import resolve_tablix
@@ -189,6 +189,13 @@ def add_static_column(
     append. Hierarchy placement and ``inside_group`` work as in
     :func:`add_static_row` (column groups instead of row groups).
     ``width`` defaults to ``"1in"``.
+
+    Merged cells (#34): in a row where ``position`` falls inside a
+    ``ColSpan``, the span grows by one instead of a cell being slipped
+    under it (rows reported as ``widened_span_rows``; no textbox there,
+    and the bare ``column_name`` goes to the first row that does get a
+    cell). Refused before writing when that would drop a non-empty
+    ``cells`` entry, or when every row is merged there.
     """
     names.validate_identifier(column_name, "textbox")
     width_value = units.dimension(width if width is not None else "1in", "width")
@@ -216,28 +223,64 @@ def add_static_column(
     if cols_root is None:
         cols_root = etree.SubElement(body, q("TablixColumns"))
 
-    textbox_names = [column_name] + [
-        registry.unique(f"{column_name}_{row_idx}") for row_idx in range(1, n_rows)
-    ]
-
     point, header_names = _place(
         tablix, "column", position, inside_group, f"{column_name}_ColumnHeader", registry
     )
     insert_at = point.index
+
+    # Rows whose insertion point lands inside a merged cell can't take a
+    # cell of their own (#34) — check before touching anything.
+    # (After _place, which may relocate a position inside a group; nothing
+    # is saved yet, so refusing here leaves the file untouched.)
+    target = insert_at
+    merged_rows = [
+        row_idx
+        for row_idx, row in enumerate(rows)
+        if find_child(row, "TablixCells") is not None
+        and tablix_spans.inside_span(tablix_spans.cells_of(find_child(row, "TablixCells")), target)
+    ]
+    lost = [r for r in merged_rows if r < len(cells) and cells[r]]
+    if lost or len(merged_rows) == n_rows:
+        raise ValueError(
+            f"position {target} is inside a merged (ColSpan) cell in row(s) "
+            f"{lost or merged_rows}; the new column's cell there would be swallowed "
+            "by the span. Pick a position at a span boundary, or un-merge first "
+            "with set_cell_span."
+        )
+    # The first row that gets a cell carries the bare column_name.
+    textbox_names: list[Optional[str]] = []
+    for row_idx in range(n_rows):
+        if row_idx in merged_rows:
+            textbox_names.append(None)
+        elif all(n is None for n in textbox_names):
+            textbox_names.append(column_name)
+        else:
+            textbox_names.append(registry.unique(f"{column_name}_{row_idx}"))
 
     # Insert <TablixColumn> at insert_at.
     new_column = etree.Element(q("TablixColumn"))
     etree.SubElement(new_column, q("Width")).text = width_value
     insert_nth_child(cols_root, "TablixColumn", insert_at, new_column)
 
-    # Insert one cell at insert_at in every row.
+    # Insert one cell at insert_at in every row — span-aware: inside a
+    # merged cell the span widens instead (no textbox for that row).
+    widened: list[int] = []
+    emitted: list[str] = []
     for row_idx, row in enumerate(rows):
         cells_root = find_child(row, "TablixCells")
         if cells_root is None:
             cells_root = etree.SubElement(row, q("TablixCells"))
         cell_text = cells[row_idx] if row_idx < len(cells) else ""
-        new_cell = _build_static_cell(textbox_names[row_idx], cell_text)
-        insert_nth_child(cells_root, "TablixCell", insert_at, new_cell)
+        name = textbox_names[row_idx]
+        placed = tablix_spans.insert_cell(
+            cells_root,
+            insert_at,
+            lambda name=name, cell_text=cell_text: _build_static_cell(name, cell_text),
+        )
+        if placed is None:
+            widened.append(row_idx)
+        else:
+            emitted.append(name)
 
     doc.save()
     return {
@@ -246,7 +289,8 @@ def add_static_column(
         "position": insert_at,
         "cells": list(cells),
         "width": width_value,
-        "textboxes": textbox_names[:n_rows],
+        "textboxes": emitted,
+        **({"widened_span_rows": widened} if widened else {}),
         **_payload_extras(point, "column", header_names),
     }
 
