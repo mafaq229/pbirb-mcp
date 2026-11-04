@@ -28,12 +28,14 @@ Public helpers:
 * :func:`new_header` / :func:`header_around` — a ``<TablixHeader>`` with a
   new textbox, or around an existing report item.
 * :func:`shape_problems` — every leaf/column/row/span/header/corner
-  inconsistency of one tablix, as human-readable strings.
+  inconsistency of one tablix, as human-readable strings;
+  :func:`shape_findings` — the same, each with its location in the
+  tablix and a severity (the ``tablix-structure`` lint rule's source).
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from lxml import etree
 
@@ -392,42 +394,84 @@ def ensure_corner(
 # ---- shape checker ---------------------------------------------------------
 
 
+class ShapeProblem(NamedTuple):
+    """One finding of :func:`shape_findings`.
+
+    * ``message`` — human-readable, as :func:`shape_problems` returns it.
+    * ``path`` — where inside the tablix, as ``>``-joined steps with
+      0-based indices (``TablixBody>TablixRow[2]>TablixCell[1]``,
+      ``TablixCorner>TablixCornerRow[0]``, ``TablixColumnHierarchy``);
+      ``""`` for the tablix itself.
+    * ``severity`` — ``"error"`` (Report Builder rejects the file) or
+      ``"warning"`` (loads, but not the shape Report Builder writes).
+    """
+
+    message: str
+    path: str = ""
+    severity: str = "error"
+
+
 def _grid_problems(
     where: str,
+    path: str,
     cells: list[etree._Element],
     width: int,
     body: bool,
     row_covered: frozenset = frozenset(),
-) -> list[str]:
+) -> list[ShapeProblem]:
     """Problems of one cell row. ``row_covered`` holds the column indices
     a corner RowSpan from an earlier row covers."""
-    problems: list[str] = []
+    problems: list[ShapeProblem] = []
+    cell_tag = "TablixCell" if body else "TablixCornerCell"
     if len(cells) != width:
-        problems.append(f"{where} has {len(cells)} cells; expected {width}")
+        problems.append(ShapeProblem(f"{where} has {len(cells)} cells; expected {width}", path))
     owners = spans.owner_map(cells)
     for j, cell in enumerate(cells):
+        at = f"{path}>{cell_tag}[{j}]"
         if spans.is_placeholder(cell):
             if owners[j] == j and j not in row_covered:
-                problems.append(f"{where} cell {j} has no CellContents and no span covers it")
+                problems.append(
+                    ShapeProblem(f"{where} cell {j} has no CellContents and no span covers it", at)
+                )
             continue
         if owners[j] != j:
             problems.append(
-                f"{where} cell {j} is covered by the ColSpan of cell {owners[j]} but has contents"
+                ShapeProblem(
+                    f"{where} cell {j} is covered by the ColSpan of cell {owners[j]} "
+                    "but has contents",
+                    at,
+                )
             )
             continue
         cs = spans.span(cell)
         if j + cs > width:
-            problems.append(f"{where} cell {j} ColSpan={cs} overflows {width} column(s)")
+            problems.append(
+                ShapeProblem(f"{where} cell {j} ColSpan={cs} overflows {width} column(s)", at)
+            )
         if body and spans.span(cell, spans.ROW_SPAN) > 1:
-            problems.append(f"{where} cell {j} has RowSpan>1 (only valid in TablixCorner)")
+            problems.append(
+                ShapeProblem(f"{where} cell {j} has RowSpan>1 (only valid in TablixCorner)", at)
+            )
     return problems
 
 
-def shape_problems(tablix: etree._Element) -> list[str]:
+def shape_findings(tablix: etree._Element) -> list[ShapeProblem]:
     """Structural inconsistencies Report Builder rejects but the XSD
-    cannot see: leaves vs body columns / rows, cells per row, ColSpan
-    placeholders, header depths and the corner shape. Empty when clean."""
-    problems: list[str] = []
+    cannot see, each with its location inside the tablix and a severity:
+
+    * column-hierarchy leaves vs ``TablixColumn`` count, row-hierarchy
+      leaves vs ``TablixRow`` count;
+    * per body row: cell count vs columns, ColSpan overflow, covered cells
+      with contents, empty cells no span covers, ``RowSpan>1``;
+    * per axis: unequal header levels along the leaf paths;
+    * corner: present without both header depths, row count vs
+      column-header depth, cells per row vs row-header depth (span-aware,
+      RowSpan included). A missing corner where both depths are non-zero
+      is a ``warning``; everything else is an ``error``.
+
+    Empty when clean. :func:`shape_problems` is the message-only view.
+    """
+    problems: list[ShapeProblem] = []
     body = find_child(tablix, "TablixBody")
     cols_root = find_child(body, "TablixColumns") if body is not None else None
     rows_root = find_child(body, "TablixRows") if body is not None else None
@@ -437,23 +481,36 @@ def shape_problems(tablix: etree._Element) -> list[str]:
     n_col_leaves = len(column_leaves(tablix))
     if n_col_leaves != n_cols:
         problems.append(
-            f"column hierarchy has {n_col_leaves} leaves but the body has {n_cols} columns"
+            ShapeProblem(
+                f"column hierarchy has {n_col_leaves} leaves but the body has {n_cols} columns",
+                "TablixColumnHierarchy",
+            )
         )
     n_row_leaves = len(row_leaves(tablix))
     if n_row_leaves != len(rows):
         problems.append(
-            f"row hierarchy has {n_row_leaves} leaves but the body has {len(rows)} rows"
+            ShapeProblem(
+                f"row hierarchy has {n_row_leaves} leaves but the body has {len(rows)} rows",
+                "TablixRowHierarchy",
+            )
         )
 
     for i, row in enumerate(rows):
         cells_root = find_child(row, "TablixCells")
         cells = find_children(cells_root, "TablixCell") if cells_root is not None else []
-        problems.extend(_grid_problems(f"body row {i}", cells, n_cols, body=True))
+        problems.extend(
+            _grid_problems(f"body row {i}", f"TablixBody>TablixRow[{i}]", cells, n_cols, body=True)
+        )
 
     for axis in _AXES:
         levels = header_levels(tablix, axis)
         if len(set(levels)) > 1:
-            problems.append(f"{axis} hierarchy paths have unequal header levels {levels}")
+            problems.append(
+                ShapeProblem(
+                    f"{axis} hierarchy paths have unequal header levels {levels}",
+                    "TablixColumnHierarchy" if axis == COLUMN else "TablixRowHierarchy",
+                )
+            )
 
     n_hdr_rows = header_depth(tablix, COLUMN)
     n_hdr_cols = header_depth(tablix, ROW)
@@ -461,7 +518,11 @@ def shape_problems(tablix: etree._Element) -> list[str]:
     if n_hdr_rows and n_hdr_cols:
         if corner is None:
             problems.append(
-                f"missing TablixCorner ({n_hdr_rows} header row(s) x {n_hdr_cols} header column(s))"
+                ShapeProblem(
+                    f"missing TablixCorner ({n_hdr_rows} header row(s) x "
+                    f"{n_hdr_cols} header column(s))",
+                    severity="warning",
+                )
             )
         else:
             rows_root = find_child(corner, "TablixCornerRows")
@@ -469,13 +530,20 @@ def shape_problems(tablix: etree._Element) -> list[str]:
                 find_children(rows_root, "TablixCornerRow") if rows_root is not None else []
             )
             if len(corner_rows) != n_hdr_rows:
-                problems.append(f"TablixCorner has {len(corner_rows)} rows; expected {n_hdr_rows}")
+                problems.append(
+                    ShapeProblem(
+                        f"TablixCorner has {len(corner_rows)} rows; expected {n_hdr_rows}",
+                        "TablixCorner",
+                    )
+                )
             covered: dict[int, set] = {}
             for i, row in enumerate(corner_rows):
                 cells = find_children(row, "TablixCornerCell")
+                row_path = f"TablixCorner>TablixCornerRow[{i}]"
                 problems.extend(
                     _grid_problems(
                         f"corner row {i}",
+                        row_path,
                         cells,
                         n_hdr_cols,
                         body=False,
@@ -488,23 +556,39 @@ def shape_problems(tablix: etree._Element) -> list[str]:
                     rs = spans.span(cell, spans.ROW_SPAN)
                     if i + rs > len(corner_rows):
                         problems.append(
-                            f"corner row {i} cell {j} RowSpan={rs} overflows "
-                            f"{len(corner_rows)} row(s)"
+                            ShapeProblem(
+                                f"corner row {i} cell {j} RowSpan={rs} overflows "
+                                f"{len(corner_rows)} row(s)",
+                                f"{row_path}>TablixCornerCell[{j}]",
+                            )
                         )
                     for k in range(i + 1, i + rs):
                         covered.setdefault(k, set()).update(range(j, j + spans.span(cell)))
     elif corner is not None:
         problems.append(
-            "TablixCorner present but the tablix has "
-            f"{n_hdr_rows} column-header row(s) x {n_hdr_cols} row-header column(s)"
+            ShapeProblem(
+                "TablixCorner present but the tablix has "
+                f"{n_hdr_rows} column-header row(s) x {n_hdr_cols} row-header column(s)",
+                "TablixCorner",
+            )
         )
     return problems
+
+
+def shape_problems(tablix: etree._Element) -> list[str]:
+    """Structural inconsistencies Report Builder rejects but the XSD
+    cannot see: leaves vs body columns / rows, cells per row, ColSpan
+    placeholders, header depths and the corner shape. Empty when clean.
+
+    The messages of :func:`shape_findings` (warnings included), in order."""
+    return [p.message for p in shape_findings(tablix)]
 
 
 __all__ = [
     "COLUMN",
     "DEFAULT_HEADER_SIZE",
     "ROW",
+    "ShapeProblem",
     "corner_shape",
     "ensure_corner",
     "header_around",
@@ -515,5 +599,6 @@ __all__ = [
     "new_header",
     "new_textbox",
     "pad_header_levels",
+    "shape_findings",
     "shape_problems",
 ]
