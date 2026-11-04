@@ -1806,7 +1806,9 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Set <Visibility> on a group's TablixMember. Accepts a Hidden "
             "expression and an optional ToggleItem (a textbox name that "
-            "toggles the group expand/collapse)."
+            "toggles the group expand/collapse). "
+            "Hidden must be true/false or an =expression. toggle_textbox must be an existing textbox in the same region/tablix scope and NOT in the rows/columns being hidden (e.g. use the parent group's header cell); omit it to keep the current toggle, pass null or "
+            " to remove it. Returns changed; no write when nothing changed."
         ),
         input_schema={
             "type": "object",
@@ -1910,7 +1912,9 @@ def register_all_tools(server: MCPServer) -> None:
             "Set <Visibility> on a column-axis group's TablixMember. Accepts "
             "a Hidden expression and an optional ToggleItem (textbox name "
             "that toggles expand/collapse). Mirrors set_group_visibility "
-            "but refuses up front if group_name is on the row axis."
+            "but refuses up front if group_name is on the row axis. "
+            "Hidden must be true/false or an =expression. toggle_textbox must be an existing textbox in the same region/tablix scope and NOT in the rows/columns being hidden (e.g. use the parent group's header cell); omit it to keep the current toggle, pass null or "
+            " to remove it. Returns changed; no write when nothing changed."
         ),
         input_schema={
             "type": "object",
@@ -2574,7 +2578,9 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Set <Visibility> on the tablix's Details group, optionally with "
             "a ToggleItem textbox name. Use to hide detail rows by expression "
-            "without restructuring the row hierarchy."
+            "without restructuring the row hierarchy. "
+            "Hidden must be true/false or an =expression. toggle_textbox must be an existing textbox in the same region/tablix scope and NOT in the rows/columns being hidden (e.g. use the parent group's header cell); omit it to keep the current toggle, pass null or "
+            " to remove it. Returns changed; no write when nothing changed."
         ),
         input_schema={
             "type": "object",

@@ -451,6 +451,10 @@ class TestSetColumnGroupVisibility:
             group_name="Region",
             group_expression="=Fields!Region.Value",
         )
+        # The toggle must be a real textbox outside the columns it hides.
+        from pbirb_mcp.ops.body import add_body_textbox
+
+        add_body_textbox(str(rdl_path), "ToggleRegion", "+", "0in", "6in", "0.3in", "0.25in")
         set_column_group_visibility(
             path=str(rdl_path),
             tablix_name="MainTable",

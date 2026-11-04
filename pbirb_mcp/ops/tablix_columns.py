@@ -40,6 +40,7 @@ from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
 from pbirb_mcp.core.tablix_shape import data_row_index
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 from pbirb_mcp.ops.tablix import (
+    _UNSET,
     _apply_sort_to_member,
     _apply_visibility_to_member,
 )
@@ -323,12 +324,14 @@ def set_column_group_visibility(
     tablix_name: str,
     group_name: str,
     visibility_expression: str,
-    toggle_textbox: Optional[str] = None,
+    toggle_textbox: Any = _UNSET,
 ) -> dict[str, Any]:
     """Set ``<Visibility>`` on a column-axis group's TablixMember.
 
     Refuses up front if ``group_name`` is not in the column hierarchy —
-    use :func:`set_group_visibility` for the row-axis case.
+    use :func:`set_group_visibility` for the row-axis case. Same
+    validation and ``toggle_textbox`` contract as set_group_visibility
+    (the toggle may not be in the columns the group hides).
     """
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
@@ -338,13 +341,17 @@ def set_column_group_visibility(
             f"column-axis group {group_name!r} not found in tablix "
             f"{tablix_name!r}; for a row-axis group use set_group_visibility."
         )
-    _apply_visibility_to_member(member, visibility_expression, toggle_textbox)
-    doc.save()
+    out = _apply_visibility_to_member(
+        doc, tablix, member, visibility_expression, toggle_textbox, axis="column"
+    )
+    if out["changed"]:
+        doc.save()
     return {
         "tablix": tablix_name,
         "group": group_name,
-        "visibility_expression": visibility_expression,
-        "toggle_textbox": toggle_textbox,
+        "visibility_expression": out["hidden"],
+        "toggle_textbox": out["toggle"],
+        "changed": out["changed"],
     }
 
 

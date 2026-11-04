@@ -314,12 +314,17 @@ class TestSetGroupVisibility:
             group_name="Region",
             group_expression="=Fields!Region.Value",
         )
+        # add_row_group currently wraps the header row too, so a header cell
+        # would sit in the rows the group hides — toggle from the body.
+        from pbirb_mcp.ops.body import add_body_textbox
+
+        add_body_textbox(str(rdl_path), "HeaderProductID2", "+", "0in", "6in", "0.3in", "0.25in")
         set_group_visibility(
             path=str(rdl_path),
             tablix_name="MainTable",
             group_name="Region",
             visibility_expression="true",
-            toggle_textbox="HeaderProductID",
+            toggle_textbox="HeaderProductID2",
         )
         doc = RDLDocument.open(rdl_path)
         tablix = _tablix(doc, "MainTable")
@@ -329,7 +334,7 @@ class TestSetGroupVisibility:
             if m.find(q("Group")) is not None and m.find(q("Group")).get("Name") == "Region"
         )
         vis = find_child(member, "Visibility")
-        assert find_child(vis, "ToggleItem").text == "HeaderProductID"
+        assert find_child(vis, "ToggleItem").text == "HeaderProductID2"
 
     def test_unknown_group_raises(self, rdl_path):
         with pytest.raises(ElementNotFoundError):

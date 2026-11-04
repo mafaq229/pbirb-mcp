@@ -30,9 +30,12 @@ from pbirb_mcp.core.tablix_shape import (
     detail_member,
     is_detail_group,
     is_dynamic_group,
+    leaf_column_index,
     leaf_row_index,
+    subtree_leaves,
 )
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
+from pbirb_mcp.ops import visibility as _visibility
 from pbirb_mcp.ops.filter_types import type_mismatch_warnings, wrap_with_format
 
 # RDL 2016 FilterOperator enumeration.
@@ -529,20 +532,136 @@ def set_group_sort(
 
 # ---- set_group_visibility -------------------------------------------------
 
+# Default for `toggle_textbox`: "not passed" (keep the existing ToggleItem),
+# distinct from None / "" (remove it). Same contract as set_element_visibility.
+_UNSET: Any = _visibility._UNSET
+
+
+def _cell_position(tablix: etree._Element, element: etree._Element) -> Optional[tuple]:
+    """``(row_index, column_index)`` of the body cell holding ``element`` in
+    ``tablix``, or ``None`` when it isn't in one of this tablix's body cells
+    (a TablixHeader / corner textbox, or another tablix's cell)."""
+    cell = next((a for a in element.iterancestors(q("TablixCell"))), None)
+    if cell is None:
+        return None
+    row = cell.getparent().getparent()  # TablixCells → TablixRow
+    rows_root = row.getparent()
+    body = rows_root.getparent() if rows_root is not None else None
+    if body is None or body.getparent() is not tablix:
+        return None
+    rows = find_children(rows_root, "TablixRow")
+    cells = find_children(cell.getparent(), "TablixCell")
+    return rows.index(row), cells.index(cell)
+
+
+def _member_toggle_problem(
+    root: etree._Element,
+    tablix: etree._Element,
+    member: etree._Element,
+    toggle_name: str,
+    axis: str,
+) -> Optional[str]:
+    """Why ``toggle_name`` can't toggle the group/detail ``member`` — or
+    ``None``. Report-wide checks (exists, is a Textbox, same region, tablix
+    scope) come from :func:`visibility.toggle_item_problem`; on top of that
+    the toggle must not sit inside the rows/columns ``member`` hides, or in
+    the member's own header — once collapsed it could never be clicked."""
+    problem = _visibility.toggle_item_problem(root, member, toggle_name)
+    if problem is not None:
+        return problem
+    toggle = next(el for el in root.iter(q("Textbox")) if el.get("Name") == toggle_name)
+    group = find_child(member, "Group")
+    label = f"group {group.get('Name')!r}" if group is not None else "this member"
+    if any(a is member for a in toggle.iterancestors()):
+        return (
+            f"ToggleItem {toggle_name!r} is in the header of {label}, which it would "
+            "hide along with itself"
+        )
+    pos = _cell_position(tablix, toggle)
+    if pos is not None:
+        hidden_leaves = subtree_leaves(member)
+        if axis == "row":
+            hidden = {leaf_row_index(tablix, leaf) for leaf in hidden_leaves}
+            index, what = pos[0], "row"
+        else:
+            hidden = {leaf_column_index(tablix, leaf) for leaf in hidden_leaves}
+            index, what = pos[1], "column"
+        if index in hidden:
+            return (
+                f"ToggleItem {toggle_name!r} is in body {what} {index}, which {label} "
+                "hides; once collapsed it could never be clicked. Use a textbox "
+                "outside the hidden rows/columns (e.g. the parent group's header)"
+            )
+    return None
+
 
 def _apply_visibility_to_member(
+    doc: RDLDocument,
+    tablix: etree._Element,
     member: etree._Element,
     visibility_expression: str,
-    toggle_textbox: Optional[str],
-) -> None:
-    """Hierarchy-agnostic core of set_group_visibility / set_column_group_visibility."""
-    new_vis = etree.Element(q("Visibility"))
-    hidden = etree.SubElement(new_vis, q("Hidden"))
-    hidden.text = encode_text(visibility_expression)
-    if toggle_textbox is not None:
-        toggle = etree.SubElement(new_vis, q("ToggleItem"))
-        toggle.text = encode_text(toggle_textbox)
-    _insert_member_child(member, new_vis)
+    toggle_textbox: Any,
+    *,
+    axis: str,
+) -> dict[str, Any]:
+    """Hierarchy-agnostic core of set_group_visibility /
+    set_column_group_visibility / set_detail_row_visibility.
+
+    Validates everything before touching the tree: ``Hidden`` must be
+    ``true`` / ``false`` or a well-formed ``=`` expression, and a toggle
+    must be a textbox that can actually toggle ``member`` (see
+    :func:`_member_toggle_problem`). ``toggle_textbox`` omitted keeps the
+    existing ``<ToggleItem>``; ``None`` / ``""`` removes it. Edits the
+    existing ``<Visibility>`` in place. Returns ``{hidden, toggle, changed}``.
+    """
+    hidden_text = _visibility.normalise_hidden(visibility_expression)
+    if toggle_textbox is _UNSET:
+        toggle_wanted: Any = _UNSET
+    elif toggle_textbox is None or toggle_textbox == "":
+        toggle_wanted = None
+    elif not isinstance(toggle_textbox, str):
+        raise ValueError(
+            f"toggle_textbox must be a string or null; got {type(toggle_textbox).__name__}"
+        )
+    else:
+        toggle_wanted = toggle_textbox.strip()
+        problem = _member_toggle_problem(doc.root, tablix, member, toggle_wanted, axis)
+        if problem is not None:
+            raise ValueError(problem)
+
+    changed = False
+    vis = find_child(member, "Visibility")
+    if vis is None:
+        vis = etree.Element(q("Visibility"))
+        _insert_member_child(member, vis)
+        changed = True
+    hidden = find_child(vis, "Hidden")
+    if hidden is None:
+        hidden = etree.Element(q("Hidden"))
+        vis.insert(0, hidden)
+        changed = True
+    if (hidden.text or "").strip() != hidden_text:
+        hidden.text = hidden_text
+        changed = True
+    toggle = find_child(vis, "ToggleItem")
+    if toggle_wanted is None:
+        if toggle is not None:
+            vis.remove(toggle)
+            changed = True
+    elif toggle_wanted is not _UNSET:
+        if toggle is None:
+            toggle = etree.Element(q("ToggleItem"))
+            hidden.addnext(toggle)
+            changed = True
+        if toggle.text != toggle_wanted:
+            toggle.text = toggle_wanted
+            changed = True
+    final = find_child(vis, "ToggleItem")
+    return {
+        "hidden": hidden.text,
+        "toggle": final.text if final is not None else None,
+        "changed": changed,
+    }
 
 
 def set_group_visibility(
@@ -550,8 +669,16 @@ def set_group_visibility(
     tablix_name: str,
     group_name: str,
     visibility_expression: str,
-    toggle_textbox: Optional[str] = None,
+    toggle_textbox: Any = _UNSET,
 ) -> dict[str, Any]:
+    """Set ``<Visibility>`` on a row-axis group's TablixMember.
+
+    ``visibility_expression``: ``true`` / ``false`` or an ``=`` expression.
+    ``toggle_textbox``: omitted keeps the existing toggle; a textbox name
+    sets it (it must exist, be in the same region/tablix scope, and not sit
+    in the rows the group hides); ``None`` / ``""`` removes it. Saves only
+    when something changed; every error is raised before writing.
+    """
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
     member = _find_member_for_group(tablix, group_name)
@@ -561,14 +688,17 @@ def set_group_visibility(
             "for a column-axis group use set_column_group_visibility."
         )
 
-    _apply_visibility_to_member(member, visibility_expression, toggle_textbox)
-
-    doc.save()
+    out = _apply_visibility_to_member(
+        doc, tablix, member, visibility_expression, toggle_textbox, axis="row"
+    )
+    if out["changed"]:
+        doc.save()
     return {
         "tablix": tablix_name,
         "group": group_name,
-        "visibility_expression": visibility_expression,
-        "toggle_textbox": toggle_textbox,
+        "visibility_expression": out["hidden"],
+        "toggle_textbox": out["toggle"],
+        "changed": out["changed"],
     }
 
 
@@ -579,9 +709,13 @@ def set_detail_row_visibility(
     path: str,
     tablix_name: str,
     expression: str,
-    toggle_textbox: Optional[str] = None,
+    toggle_textbox: Any = _UNSET,
 ) -> dict[str, Any]:
     """Set ``<Visibility>`` on the detail group's TablixMember.
+
+    Same validation and ``toggle_textbox`` contract as
+    :func:`set_group_visibility` (the toggle may not be in the detail rows
+    themselves — e.g. use the parent group's header cell).
 
     The detail group is the row-hierarchy leaf whose ``<Group>`` has no
     ``<GroupExpressions>``. Report Builder names it ``Details`` for the
@@ -596,20 +730,14 @@ def set_detail_row_visibility(
     if member is None:
         raise ElementNotFoundError(f"tablix {tablix_name!r} has {NO_DETAIL_GROUP}")
 
-    new_vis = etree.Element(q("Visibility"))
-    hidden = etree.SubElement(new_vis, q("Hidden"))
-    hidden.text = encode_text(expression)
-    if toggle_textbox is not None:
-        toggle = etree.SubElement(new_vis, q("ToggleItem"))
-        toggle.text = encode_text(toggle_textbox)
-
-    _insert_member_child(member, new_vis)
-
-    doc.save()
+    out = _apply_visibility_to_member(doc, tablix, member, expression, toggle_textbox, axis="row")
+    if out["changed"]:
+        doc.save()
     return {
         "tablix": tablix_name,
-        "expression": expression,
-        "toggle_textbox": toggle_textbox,
+        "expression": out["hidden"],
+        "toggle_textbox": out["toggle"],
+        "changed": out["changed"],
     }
 
 
