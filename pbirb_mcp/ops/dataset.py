@@ -27,7 +27,6 @@ from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset
 from pbirb_mcp.core.names import MAX_IDENTIFIER_LENGTH, is_identifier, validate_identifier
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q
-from pbirb_mcp.ops.dax import COLUMN as DAX_COLUMN
 from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
 from pbirb_mcp.ops.filter_types import type_mismatch_warnings, wrap_with_format
 
@@ -193,23 +192,38 @@ def update_dataset_query(
     dataset_name: str,
     dax_body: str,
     alias_strategy: Optional[str] = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Rewrite a dataset's ``<CommandText>`` (and ``<rd:DesignerState>``).
 
-    ``alias_strategy`` (Phase 8 commit 35):
+    ``alias_strategy``:
 
     * ``None`` (default) — only ``<CommandText>`` and DesignerState are
       touched; existing ``<Field>/<DataField>`` cells are left as-is.
-    * ``"preserve_field_names"`` — after the rewrite, parse the new DAX
-      and zip its column list **positionally** against existing
-      data-bound fields (those with ``<DataField>``; calculated fields
-      are skipped). Each Field's ``<DataField>`` is rewritten to the
-      corresponding new column. Field NAMES are preserved so existing
-      ``Fields!X.Value`` references in expressions keep resolving.
+    * ``"preserve_field_names"`` — keep every ``<Field Name>`` (so
+      ``Fields!X.Value`` references keep resolving) and re-aim
+      ``<DataField>`` cells at the new query's result columns
+      (:func:`pbirb_mcp.ops.dax.result_columns`; targets are
+      ``Table[Col]`` or ``[Alias]``) in three passes — see
+      :func:`_plan_preserve_field_names`:
 
-      Count mismatches are reported as warnings — extra fields and
-      extra columns are both surfaced rather than silently dropped or
-      auto-appended (the user picks how to fix).
+      1. **Identity** — a Field whose DataField is still returned by the
+         new query is left alone (re-submitting a report's own DAX, in
+         any column order, changes nothing).
+      2. **Position** — a Field bound to an old-query column that
+         disappeared is re-aimed only when exactly one new column took
+         that column's slot in the *old DAX's* column order.
+      3. **Leftovers** — every Field / new column still unmatched is
+         reported in ``warnings`` and left untouched.
+
+      When the old query's columns can't be determined (e.g. the bare
+      ``EVALUATE 'Table'``) pass 2 only handles the forced case of one
+      unmatched Field and one unbound new column (with a warning).
+
+      Calculated fields (``<Value>``) are never touched.
+
+    ``dry_run=True`` computes the result (including ``mapped``) without
+    writing the file.
     """
     if not dax_body or not dax_body.strip():
         raise ValueError("dax_body must be a non-empty DAX expression")
@@ -224,6 +238,7 @@ def update_dataset_query(
     query = _query(dataset)
 
     cmd = find_child(query, "CommandText")
+    old_command_text = cmd.text if cmd is not None else None
     if cmd is None:
         # Insert before <QueryParameters> if present; otherwise after <DataSourceName>.
         cmd = etree.Element(q("CommandText"))
@@ -243,110 +258,191 @@ def update_dataset_query(
     }
 
     if alias_strategy == "preserve_field_names":
-        # v0.4 commit 16 BUG FIX — extract qualified Table[Col] DataField
-        # targets, not just bare column names. The pre-fix behaviour
-        # stripped the table prefix from <DataField> cells whenever the
-        # new DAX used bracket-token references, breaking field binding
-        # at preview time. For bare-token DAX (where no qualified form
-        # is recoverable), targets are None → the remap leaves the
-        # existing <DataField> untouched and surfaces a warning.
-        qualified_targets, dax_warnings = _extract_dax_qualified_data_fields(dax_body)
-        mapped, warnings = _remap_data_fields_positional(dataset, qualified_targets)
+        plan, warnings = _plan_preserve_field_names(dataset, old_command_text, dax_body)
+        mapped: list[dict[str, str]] = []
+        for field, df_node, new in plan:
+            old = df_node.text or ""
+            df_node.text = encode_text(new)
+            mapped.append({"name": field.get("Name") or "", "old": old, "new": new})
         result["alias_strategy"] = "preserve_field_names"
         result["mapped"] = mapped
-        # Surface DAX-shape warnings alongside mapping warnings; they're
-        # the same class of "couldn't auto-resolve" concern.
-        result["warnings"] = list(dax_warnings) + warnings
+        result["warnings"] = warnings
 
-    doc.save()
+    if dry_run:
+        result["dry_run"] = True
+    else:
+        doc.save()
     return result
 
 
-def _remap_data_fields_positional(
-    dataset: etree._Element, qualified_targets: list[Optional[str]]
-) -> tuple[list[dict[str, str]], list[str]]:
-    """Zip a dataset's data-bound ``<Field>`` entries against the new
-    DAX qualified-target list and rewrite each ``<DataField>`` to the
-    matching new target.
+_START = object()  # slot anchor: "before the first surviving column"
 
-    ``qualified_targets[i]`` is either:
 
-    * A ``Table[Col]`` string (when the new DAX gave us a qualified
-      form to rewrite to). The corresponding ``<DataField>`` is
-      rewritten and the change recorded in ``mapped``.
-    * ``None`` (when the new DAX is bare-token / SELECTCOLUMNS-only
-      / otherwise unrecoverable to qualified form). The
-      corresponding ``<DataField>`` is left untouched — silently
-      stripping the table prefix used to break field binding
-      (v0.4 commit 16 bug fix).
+def _plan_preserve_field_names(
+    dataset: etree._Element, old_dax: Optional[str], new_dax: str
+) -> tuple[list[tuple[etree._Element, etree._Element, str]], list[str]]:
+    """Work out the ``<DataField>`` rewrites for
+    ``alias_strategy='preserve_field_names'``.
 
-    Calculated fields (``<Value>`` instead of ``<DataField>``) are
-    skipped — they're derived, not directly bound.
+    Returns ``(plan, warnings)`` where ``plan`` lists ``(field,
+    data_field_element, new_data_field)`` for every Field to re-aim.
 
-    Returns ``(mapped, warnings)``:
+    1. **Identity.** A data-bound Field whose DataField matches a new
+       result column (:func:`pbirb_mcp.ops.dax.data_field_matches`)
+       stays as it is and claims that column.
+    2. **Position.** Remaining Fields are located in the *old* query's
+       result columns (``result_columns(old_dax)``), never in the
+       ``<Fields>`` order (Report Builder doesn't keep Fields in DAX
+       order). Each old column that disappeared, and each new column
+       that wasn't in the old query, belongs to the slot after the
+       nearest preceding column present in both queries (or the start).
+       Within one slot, the vanished old columns and the new columns are
+       paired in order only when their counts are equal — i.e. each
+       vanished column was replaced by exactly one new column. Slots
+       whose counts differ are left alone.
+    3. **Leftovers.** Fields and new columns still unmatched are
+       reported as warnings; nothing else is rewritten.
 
-    * ``mapped`` — list of ``{name, old, new}`` for each Field whose
-      DataField was rewritten (only entries where old != new).
-    * ``warnings`` — count-mismatch, unmapped, and qualified-target-
-      unavailable messages.
+    The position pass is skipped (with a warning) when the new query's
+    columns can't be fully determined, and when the old query's can't
+    — except for the forced case of exactly one unmatched Field and
+    exactly one unclaimed new column, which is re-aimed with a warning
+    asking the caller to check it. Anything else would be a guess, i.e.
+    exactly the silent rebinding this function exists to avoid.
     """
-    fields_block = find_child(dataset, "Fields")
-    data_fields: list[etree._Element] = []
-    if fields_block is not None:
-        for f in find_children(fields_block, "Field"):
-            df = find_child(f, "DataField")
-            if df is not None:
-                data_fields.append(f)
-
-    mapped: list[dict[str, str]] = []
     warnings: list[str] = []
-    n_fields = len(data_fields)
-    n_targets = len(qualified_targets)
-    n_pairs = min(n_fields, n_targets)
+    new_cols, new_warnings = result_columns(new_dax)
+    warnings.extend(new_warnings)
 
-    skipped_for_lack_of_qualified = 0
-    for i in range(n_pairs):
-        field = data_fields[i]
-        df = find_child(field, "DataField")
-        old = df.text or ""
-        new = qualified_targets[i]
-        if new is None:
-            # The new DAX has no qualified form for this position
-            # (bare-token SUMMARIZECOLUMNS or SELECTCOLUMNS alias).
-            # Preserve the existing DataField — overwriting with a
-            # bare column name would break field binding at preview.
-            skipped_for_lack_of_qualified += 1
+    bound = [(f, find_child(f, "DataField"), df_text) for f, df_text in _data_bound_fields(dataset)]
+
+    # Pass 1 — identity.
+    claimed: set[str] = set()
+    remaining: list[tuple[etree._Element, etree._Element, str]] = []
+    for entry in bound:
+        hit = next((c for c in new_cols if data_field_matches(entry[2], c)), None)
+        if hit is None:
+            remaining.append(entry)
+        else:
+            claimed.add(normalize_data_field(hit.data_field))
+
+    unclaimed: list = []
+    seen: set[str] = set()
+    for c in new_cols:
+        key = normalize_data_field(c.data_field)
+        if key not in claimed and key not in seen:
+            seen.add(key)
+            unclaimed.append(c)
+
+    plan: list[tuple[etree._Element, etree._Element, str]] = []
+    if remaining and unclaimed:
+        if new_warnings:
+            warnings.append(
+                "positional remap skipped: the new DAX's result columns could not be "
+                "fully determined (see the warnings above)."
+            )
+        else:
+            old_cols, old_warnings = result_columns(old_dax or "")
+            if (old_warnings or not old_cols) and len(remaining) == len(unclaimed) == 1:
+                # No old column order to go by, but the rebinding is
+                # forced: one Field lost its column, one column has no
+                # Field.
+                f, df_node, df_text = remaining[0]
+                plan = [(f, df_node, unclaimed[0].data_field)]
+                warnings.append(
+                    f"Field {f.get('Name')!r} re-aimed from {df_text!r} to "
+                    f"{unclaimed[0].data_field!r} as the only unmatched Field / column "
+                    "pair (the previous DAX's column order could not be determined); "
+                    "check it is the intended column."
+                )
+            elif old_warnings or not old_cols:
+                warnings.append(
+                    "positional remap skipped: the dataset's previous DAX result columns "
+                    "could not be determined, so there is no reliable column order to "
+                    "remap by. Set the remaining DataFields explicitly (add_dataset_field "
+                    "/ remove_dataset_field) or run refresh_dataset_fields."
+                )
+            else:
+                plan = _positional_plan(remaining, unclaimed, old_cols, new_cols, warnings)
+
+    planned = {id(entry[0]) for entry in plan}
+    planned_targets = {normalize_data_field(new) for _f, _d, new in plan}
+    for f, _df, df_text in remaining:
+        if id(f) in planned:
             continue
-        if old != new:
-            df.text = encode_text(new)
-            mapped.append({"name": field.get("Name") or "", "old": old, "new": new})
-
-    if skipped_for_lack_of_qualified:
         warnings.append(
-            f"{skipped_for_lack_of_qualified} Field(s) left at their existing DataField "
-            "because the new DAX uses bare-token / SELECTCOLUMNS-alias shape "
-            "(no qualified Table[Col] form recoverable). Re-run "
-            "update_dataset_query with a bracketed-token DAX, or set "
-            "DataFields explicitly via add_dataset_field."
+            f"existing Field {f.get('Name')!r} (DataField {df_text!r}) unmapped — the new "
+            "DAX doesn't return that column and no single replacement could be "
+            "identified; its DataField is left as-is. Fix it with add_dataset_field / "
+            "remove_dataset_field, or pass alias_strategy=None."
         )
+    for c in unclaimed:
+        if normalize_data_field(c.data_field) in planned_targets:
+            continue
+        warnings.append(
+            f"new DAX column {c.data_field!r} has no Field — call add_dataset_field "
+            "or refresh_dataset_fields to add a binding."
+        )
+    return plan, warnings
 
-    if n_fields > n_targets:
-        for f in data_fields[n_targets:]:
+
+def _positional_plan(
+    remaining: list[tuple[etree._Element, etree._Element, str]],
+    unclaimed: list,
+    old_cols: list,
+    new_cols: list,
+    warnings: list[str],
+) -> list[tuple[etree._Element, etree._Element, str]]:
+    """Pass 2 of :func:`_plan_preserve_field_names`."""
+    old_keys = [normalize_data_field(c.data_field) for c in old_cols]
+    new_keys = {normalize_data_field(c.data_field) for c in new_cols}
+    old_key_set = set(old_keys)
+    shown = {k: c.data_field for k, c in zip(old_keys, old_cols)}
+
+    # Vanished old columns, grouped by the surviving column before them.
+    vanished: dict[object, list[int]] = {}
+    anchor: object = _START
+    for i, key in enumerate(old_keys):
+        if key in new_keys:
+            anchor = key
+        elif i == old_keys.index(key):
+            vanished.setdefault(anchor, []).append(i)
+
+    # New columns (not in the old query), grouped the same way.
+    unclaimed_keys = {normalize_data_field(c.data_field) for c in unclaimed}
+    arrived: dict[object, list] = {}
+    anchor = _START
+    seen: set[str] = set()
+    for c in new_cols:
+        key = normalize_data_field(c.data_field)
+        if key in old_key_set:
+            anchor = key
+        elif key in unclaimed_keys and key not in seen:
+            seen.add(key)
+            arrived.setdefault(anchor, []).append(c)
+
+    replacement: dict[int, object] = {}
+    for slot, old_idx in vanished.items():
+        new_in_slot = arrived.get(slot, [])
+        if len(old_idx) == len(new_in_slot):
+            replacement.update(zip(old_idx, new_in_slot))
+        elif new_in_slot:
+            where = "at the start" if slot is _START else f"after {shown[slot]!r}"
             warnings.append(
-                f"existing Field {f.get('Name')!r} unmapped — new DAX has only "
-                f"{n_targets} column(s); pass alias_strategy=None to keep its DataField as-is, "
-                "or remove the Field."
-            )
-    if n_targets > n_fields:
-        for target in qualified_targets[n_fields:]:
-            if target is None:
-                continue
-            warnings.append(
-                f"new DAX column {target!r} has no Field — call add_dataset_field "
-                "or refresh_dataset_fields to add bindings."
+                f"positional remap ambiguous {where}: {len(old_idx)} old column(s) "
+                f"({', '.join(old_cols[i].data_field for i in old_idx)}) vanished but "
+                f"{len(new_in_slot)} new column(s) "
+                f"({', '.join(c.data_field for c in new_in_slot)}) took their place; "
+                "those Fields are left as-is."
             )
 
-    return mapped, warnings
+    plan: list[tuple[etree._Element, etree._Element, str]] = []
+    for f, df_node, df_text in remaining:
+        idx = next((i for i, c in enumerate(old_cols) if data_field_matches(df_text, c)), None)
+        if idx is None or idx not in replacement:
+            continue
+        plan.append((f, df_node, replacement[idx].data_field))
+    return plan
 
 
 # ---- query parameter management -------------------------------------------
@@ -1041,27 +1137,23 @@ def _extract_dax_field_names(command_text: str) -> tuple[list[str], list[str]]:
 
 def _extract_dax_qualified_data_fields(
     command_text: str,
-) -> tuple[list[Optional[str]], list[str]]:
-    """Extract positional ``<DataField>`` targets from a DAX ``<CommandText>``.
+) -> tuple[list[str], list[str]]:
+    """Extract ``<DataField>`` targets from a DAX ``<CommandText>``.
 
-    Companion to :func:`_extract_dax_field_names` for the
-    ``preserve_field_names`` remap. One entry per result-set column,
-    in query order:
-
-    * ``Table[Col]`` (unquoted, ``''`` un-escaped) for a column
-      reference — the shape Report Builder writes to ``<DataField>``.
-    * ``None`` for an alias column (``"name", expr`` pair): the caller
-      must NOT rewrite the existing ``<DataField>`` for that position.
+    One entry per result-set column, in query order, exactly as Report
+    Builder writes ``<DataField>``: ``Table[Col]`` (unquoted, ``''``
+    un-escaped) for a column reference, ``[alias]`` for a ``"name",
+    expr`` pair (#38 — this used to be ``None``).
 
     Returns ``(targets, warnings)``; parser warnings are passed through,
-    plus one extra warning when no position has a qualified target.
+    plus one extra warning when no target could be recovered.
     """
     columns, warnings = result_columns(command_text)
-    targets: list[Optional[str]] = [c.data_field if c.kind == DAX_COLUMN else None for c in columns]
+    targets = [c.data_field for c in columns]
     if not targets:
         warnings = list(warnings) + [
-            "DAX shape has no recoverable qualified Table[Col] DataField targets. "
-            "DataFields left untouched; use add_dataset_field explicitly per column."
+            "DAX shape has no recoverable qualified Table[Col] / [Alias] DataField "
+            "targets. DataFields left untouched; use add_dataset_field explicitly per column."
         ]
     return targets, warnings
 

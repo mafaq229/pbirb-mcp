@@ -132,14 +132,48 @@ def _inject_designer_state(rdl_path: Path, dataset_name: str, statement_text: st
     doc.save()
 
 
+_SALES_DAX = "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[ProductName], 'Sales'[Amount])"
+_ITEMS_DAX = "EVALUATE SUMMARIZECOLUMNS('Items'[ItemID], 'Items'[ItemName], 'Items'[Total])"
+
+
+def _set_old_dax(rdl_path: Path, dax: str = _SALES_DAX) -> None:
+    """Give the fixture a parseable "current" query (its own is the bare
+    EVALUATE 'Sales', whose column order is unknowable)."""
+    update_dataset_query(path=str(rdl_path), dataset_name="MainDataset", dax_body=dax)
+
+
+def _preserve(rdl_path: Path, dax: str, **kw):
+    return update_dataset_query(
+        path=str(rdl_path),
+        dataset_name="MainDataset",
+        dax_body=dax,
+        alias_strategy="preserve_field_names",
+        **kw,
+    )
+
+
+def _data_fields(rdl_path: Path) -> list:
+    return [f["data_field"] for f in get_datasets(str(rdl_path))[0]["fields"]]
+
+
+def _alias_shaped(rdl_path: Path) -> None:
+    s = rdl_path.read_text(encoding="utf-8")
+    s = (
+        s.replace("Sales[ProductID]", "[Pid]")
+        .replace("Sales[ProductName]", "[Name]")
+        .replace("Sales[Amount]", "[Amt]")
+    )
+    rdl_path.write_text(s, encoding="utf-8")
+
+
 class TestUpdateDatasetQueryAliasStrategy:
-    """Phase 8 commit 35 — preserve_field_names positional remap.
+    """preserve_field_names: identity-first remap (#38).
 
     The fixture ships with three data-bound fields (ProductID,
     ProductName, Amount) backed by Sales[ProductID] / [ProductName] /
-    [Amount]. A DAX rewrite that changes the source table or column
-    names should re-aim each <DataField> while keeping each
-    <Field Name="..."> stable.
+    [Amount]. Each <Field Name="..."> stays stable; <DataField> cells
+    are only re-aimed when the old and new queries say unambiguously
+    which new column replaced which old one.
     """
 
     def test_default_strategy_leaves_fields_unchanged(self, rdl_path):
@@ -147,62 +181,200 @@ class TestUpdateDatasetQueryAliasStrategy:
         update_dataset_query(
             path=str(rdl_path),
             dataset_name="MainDataset",
-            dax_body="EVALUATE SUMMARIZECOLUMNS('Items'[ItemID], 'Items'[ItemName], 'Items'[Total])",
+            dax_body=_ITEMS_DAX,
         )
         after = get_datasets(str(rdl_path))[0]["fields"]
         assert before == after  # no remap when alias_strategy is None
 
     def test_preserve_field_names_remaps_data_fields(self, rdl_path):
-        result = update_dataset_query(
-            path=str(rdl_path),
-            dataset_name="MainDataset",
-            dax_body=(
-                "EVALUATE SUMMARIZECOLUMNS('Items'[ItemID], 'Items'[ItemName], 'Items'[Total])"
-            ),
-            alias_strategy="preserve_field_names",
-        )
+        # #38: the remap is driven by the OLD query's column order, so
+        # the old query must be parseable (the fixture's EVALUATE 'Sales'
+        # isn't).
+        _set_old_dax(rdl_path)
+        result = _preserve(rdl_path, _ITEMS_DAX)
         assert result["alias_strategy"] == "preserve_field_names"
-        assert len(result["mapped"]) == 3
+        assert result["mapped"] == [
+            {"name": "ProductID", "old": "Sales[ProductID]", "new": "Items[ItemID]"},
+            {"name": "ProductName", "old": "Sales[ProductName]", "new": "Items[ItemName]"},
+            {"name": "Amount", "old": "Sales[Amount]", "new": "Items[Total]"},
+        ]
+        assert result["warnings"] == []
         # Field NAMES are unchanged; DataFields point at the new columns
-        # IN THEIR QUALIFIED FORM ("Items[ItemID]"), preserving the
-        # Table[Col] shape that RB Desktop emits. v0.4 commit 16 fixed
-        # the prior behaviour where the table prefix was stripped to
-        # the bare column name (which broke field binding at preview
-        # time).
+        # IN THEIR QUALIFIED FORM ("Items[ItemID]").
         fields = get_datasets(str(rdl_path))[0]["fields"]
-        names = [f["name"] for f in fields]
-        data_fields = [f["data_field"] for f in fields]
-        assert names == ["ProductID", "ProductName", "Amount"]
-        assert data_fields == ["Items[ItemID]", "Items[ItemName]", "Items[Total]"]
+        assert [f["name"] for f in fields] == ["ProductID", "ProductName", "Amount"]
+        assert _data_fields(rdl_path) == ["Items[ItemID]", "Items[ItemName]", "Items[Total]"]
+
+    def test_reordered_columns_change_nothing(self, rdl_path):
+        # Issue repro (a): same columns, different order.
+        before = rdl_path.read_bytes()
+        dax = "EVALUATE SUMMARIZECOLUMNS('Sales'[Amount], 'Sales'[ProductID], 'Sales'[ProductName])"
+        result = _preserve(rdl_path, dax)
+        assert result["mapped"] == []
+        assert result["warnings"] == []
+        # Only the CommandText changed.
+        after = rdl_path.read_bytes()
+        assert after.replace(dax.encode(), b"EVALUATE 'Sales'") == before
+
+    def test_rerunning_own_dax_is_a_noop(self, rdl_path):
+        _set_old_dax(rdl_path)
+        before = rdl_path.read_bytes()
+        result = _preserve(rdl_path, _SALES_DAX)
+        assert result["mapped"] == []
+        assert result["warnings"] == []
+        assert rdl_path.read_bytes() == before
+
+    def test_selectcolumns_alias_rename(self, rdl_path):
+        # Issue repro (b): alias Amt -> Total. DataField [Amt] -> [Total].
+        _alias_shaped(rdl_path)
+        result = _preserve(
+            rdl_path,
+            "EVALUATE SELECTCOLUMNS('Sales', \"Pid\", 'Sales'[ProductID], "
+            "\"Name\", 'Sales'[ProductName], \"Total\", 'Sales'[Amount])",
+        )
+        assert result["mapped"] == [{"name": "Amount", "old": "[Amt]", "new": "[Total]"}]
+        assert _data_fields(rdl_path) == ["[Pid]", "[Name]", "[Total]"]
+
+    def test_selectcolumns_alias_rename_in_place_with_known_old_order(self, rdl_path):
+        _alias_shaped(rdl_path)
+        _set_old_dax(
+            rdl_path,
+            "EVALUATE SELECTCOLUMNS('Sales', \"Pid\", 'Sales'[ProductID], "
+            "\"Name\", 'Sales'[ProductName], \"Amt\", 'Sales'[Amount], \"Qty\", 'Sales'[Qty])",
+        )
+        result = _preserve(
+            rdl_path,
+            "EVALUATE SELECTCOLUMNS('Sales', \"Pid\", 'Sales'[ProductID], "
+            "\"Name\", 'Sales'[ProductName], \"Total\", 'Sales'[Amount], \"Qty\", 'Sales'[Qty])",
+        )
+        assert result["mapped"] == [{"name": "Amount", "old": "[Amt]", "new": "[Total]"}]
+        # [Qty] has no Field (before and after): reported, not bound.
+        assert [w for w in result["warnings"] if "no Field" in w] == [
+            "new DAX column '[Qty]' has no Field — call add_dataset_field or "
+            "refresh_dataset_fields to add a binding."
+        ]
+
+    def test_alias_moved_to_another_slot_is_not_guessed(self, rdl_path):
+        _alias_shaped(rdl_path)
+        _set_old_dax(
+            rdl_path,
+            "EVALUATE SELECTCOLUMNS('Sales', \"Pid\", 'Sales'[ProductID], "
+            "\"Name\", 'Sales'[ProductName], \"Amt\", 'Sales'[Amount])",
+        )
+        result = _preserve(
+            rdl_path,
+            "EVALUATE SELECTCOLUMNS('Sales', \"Pid\", 'Sales'[ProductID], "
+            "\"Total\", 'Sales'[Amount], \"Name\", 'Sales'[ProductName])",
+        )
+        # Amt vanished after Name; Total arrived after Pid — different
+        # slots, so no guess.
+        assert result["mapped"] == []
+        assert any("'Amount'" in w and "unmapped" in w for w in result["warnings"])
+        assert any("[Total]" in w and "no Field" in w for w in result["warnings"])
+        assert _data_fields(rdl_path) == ["[Pid]", "[Name]", "[Amt]"]
+
+    def test_one_column_replaced_in_place(self, rdl_path):
+        _set_old_dax(rdl_path)
+        result = _preserve(
+            rdl_path,
+            "EVALUATE SUMMARIZECOLUMNS('Sales'[Amount], 'Sales'[ProductID], "
+            "'Sales'[Product Label])",
+        )
+        # ProductName vanished after ProductID; Product Label arrived
+        # after ProductID: exactly one new column in that slot.
+        assert result["mapped"] == [
+            {"name": "ProductName", "old": "Sales[ProductName]", "new": "Sales[Product Label]"}
+        ]
+        assert result["warnings"] == []
+        assert _data_fields(rdl_path) == [
+            "Sales[ProductID]",
+            "Sales[Product Label]",
+            "Sales[Amount]",
+        ]
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_add_and_drop_mismatch_warns_only(self, rdl_path):
+        _set_old_dax(rdl_path)
+        before = _data_fields(rdl_path)
+        result = _preserve(
+            rdl_path,
+            "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[X], 'Sales'[Y], "
+            "'Sales'[Amount])",
+        )
+        assert result["mapped"] == []
+        assert any("ambiguous" in w for w in result["warnings"])
+        assert len([w for w in result["warnings"] if "unmapped" in w]) == 1
+        assert len([w for w in result["warnings"] if "no Field" in w]) == 2
+        assert _data_fields(rdl_path) == before
 
     def test_count_mismatch_more_fields_than_columns_warns(self, rdl_path):
-        result = update_dataset_query(
-            path=str(rdl_path),
-            dataset_name="MainDataset",
-            # New DAX has only one column.
-            dax_body="EVALUATE SUMMARIZECOLUMNS('Items'[Only])",
-            alias_strategy="preserve_field_names",
-        )
-        # Only the first field gets remapped.
-        assert len(result["mapped"]) == 1
-        # Two warnings — one per unmapped existing field.
+        _set_old_dax(rdl_path)
+        result = _preserve(rdl_path, "EVALUATE SUMMARIZECOLUMNS('Items'[Only])")
+        # Three columns vanished, one arrived: not a 1:1 replacement.
+        assert result["mapped"] == []
         unmapped_warnings = [w for w in result["warnings"] if "unmapped" in w]
-        assert len(unmapped_warnings) == 2
+        assert len(unmapped_warnings) == 3
 
     def test_count_mismatch_more_columns_than_fields_warns(self, rdl_path):
-        result = update_dataset_query(
-            path=str(rdl_path),
-            dataset_name="MainDataset",
-            dax_body=(
-                "EVALUATE SUMMARIZECOLUMNS("
-                "'Items'[A], 'Items'[B], 'Items'[C], 'Items'[D], 'Items'[E])"
-            ),
-            alias_strategy="preserve_field_names",
+        _set_old_dax(rdl_path)
+        result = _preserve(
+            rdl_path,
+            "EVALUATE SUMMARIZECOLUMNS('Items'[A], 'Items'[B], 'Items'[C], 'Items'[D], 'Items'[E])",
         )
-        # All three existing fields remap; D and E warn.
-        assert len(result["mapped"]) == 3
+        assert result["mapped"] == []
         no_field_warnings = [w for w in result["warnings"] if "no Field" in w]
-        assert len(no_field_warnings) == 2
+        assert len(no_field_warnings) == 5
+
+    def test_dropped_column_warns_only(self, rdl_path):
+        _set_old_dax(rdl_path)
+        result = _preserve(
+            rdl_path, "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[Amount])"
+        )
+        assert result["mapped"] == []
+        assert len(result["warnings"]) == 1
+        assert "'ProductName'" in result["warnings"][0]
+
+    def test_unknown_old_order_does_not_guess(self, rdl_path):
+        # Fixture's own EVALUATE 'Sales' has no visible column order.
+        before = _data_fields(rdl_path)
+        result = _preserve(rdl_path, _ITEMS_DAX)
+        assert result["mapped"] == []
+        assert any("previous DAX" in w for w in result["warnings"])
+        assert _data_fields(rdl_path) == before
+
+    def test_dry_run_reports_without_saving(self, rdl_path):
+        _set_old_dax(rdl_path)
+        before = rdl_path.read_bytes()
+        result = _preserve(rdl_path, _ITEMS_DAX, dry_run=True)
+        assert result["dry_run"] is True
+        assert len(result["mapped"]) == 3
+        assert rdl_path.read_bytes() == before
+
+    def test_dry_run_through_server(self, rdl_path):
+        _set_old_dax(rdl_path)
+        before = rdl_path.read_bytes()
+        srv = MCPServer()
+        register_all_tools(srv)
+        resp = srv.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "update_dataset_query",
+                    "arguments": {
+                        "path": str(rdl_path),
+                        "dataset_name": "MainDataset",
+                        "dax_body": _ITEMS_DAX,
+                        "alias_strategy": "preserve_field_names",
+                        "dry_run": True,
+                    },
+                },
+            }
+        )
+        assert "error" not in resp
+        assert not resp["result"].get("isError")
+        assert rdl_path.read_bytes() == before
 
     def test_calculated_fields_skipped(self, rdl_path):
         # Add a calculated field, then run preserve_field_names.
@@ -212,14 +384,8 @@ class TestUpdateDatasetQueryAliasStrategy:
             field_name="Doubled",
             expression="=Fields!Amount.Value * 2",
         )
-        result = update_dataset_query(
-            path=str(rdl_path),
-            dataset_name="MainDataset",
-            dax_body=(
-                "EVALUATE SUMMARIZECOLUMNS('Items'[ItemID], 'Items'[ItemName], 'Items'[Total])"
-            ),
-            alias_strategy="preserve_field_names",
-        )
+        _set_old_dax(rdl_path)
+        result = _preserve(rdl_path, _ITEMS_DAX)
         # Calculated field is not in the data-bound list — only 3 mapped.
         assert len(result["mapped"]) == 3
         fields = get_datasets(str(rdl_path))[0]["fields"]
@@ -236,48 +402,23 @@ class TestUpdateDatasetQueryAliasStrategy:
             )
 
     def test_no_op_dax_with_strategy_is_true_noop(self, rdl_path):
-        """v0.4 commit 16 BUG FIX — when the new DAX has the same
-        Table[Col] shape as the existing DataFields, the remap is a
-        true no-op (mapped is empty). Pre-fix behaviour stripped the
-        table prefix even for matching DAX, breaking field binding."""
+        """When the new DAX has the same Table[Col] columns as the
+        existing DataFields, the remap is a true no-op (mapped is
+        empty)."""
         before = get_datasets(str(rdl_path))[0]["fields"]
-        result = update_dataset_query(
-            path=str(rdl_path),
-            dataset_name="MainDataset",
-            dax_body=(
-                "EVALUATE SUMMARIZECOLUMNS("
-                "'Sales'[ProductID], 'Sales'[ProductName], 'Sales'[Amount])"
-            ),
-            alias_strategy="preserve_field_names",
-        )
-        # Same shape → nothing to rewrite.
+        result = _preserve(rdl_path, _SALES_DAX)
         assert result["mapped"] == []
-        # DataFields untouched at canonical Table[Col] form.
         after = get_datasets(str(rdl_path))[0]["fields"]
         assert before == after
 
     def test_bare_token_dax_preserves_existing_data_fields(self, rdl_path):
-        """v0.4 commit 16 BUG FIX — bare-token SUMMARIZECOLUMNS
-        (SUMMARIZECOLUMNS(ProductID, ProductName, Amount), no quoted
-        table prefix) used to strip the Table[Col] prefix from
-        <DataField> cells, breaking field binding. After the fix:
-        bare-token DAX leaves existing DataFields untouched."""
+        """Bare-token SUMMARIZECOLUMNS (no quoted table prefix, no
+        brackets) yields no recognisable result columns: existing
+        DataFields stay untouched and warnings say why."""
         before = get_datasets(str(rdl_path))[0]["fields"]
-        result = update_dataset_query(
-            path=str(rdl_path),
-            dataset_name="MainDataset",
-            # Bare-token shape — no 'Table' prefix, no brackets.
-            dax_body="EVALUATE SUMMARIZECOLUMNS(ProductID, ProductName, Amount)",
-            alias_strategy="preserve_field_names",
-        )
-        # No qualified targets available → no rewrite, no claim of
-        # "mapped". A warning surfaces so the caller knows alias_strategy
-        # didn't do its full job.
+        result = _preserve(rdl_path, "EVALUATE SUMMARIZECOLUMNS(ProductID, ProductName, Amount)")
         assert result["mapped"] == []
-        assert any(
-            "bare-token" in w.lower() or "qualified" in w.lower() for w in result["warnings"]
-        )
-        # DataFields preserved at "Sales[ProductID]" form.
+        assert result["warnings"]
         after = get_datasets(str(rdl_path))[0]["fields"]
         assert before == after
 

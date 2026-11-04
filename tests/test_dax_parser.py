@@ -372,13 +372,12 @@ class TestLegacyWrappers:
         assert targets == ["T[A]", "O'Neil[B]"]
         assert warnings == []
 
-    def test_qualified_targets_none_for_alias_positions(self):
-        # Alias positions keep the legacy ``None`` (= "leave the existing
-        # DataField alone") contract; #38 moves them to ``[alias]``.
+    def test_qualified_targets_bracket_alias_positions(self):
+        # #38: an alias position's target is Report Builder's ``[alias]``.
         targets, _ = _extract_dax_qualified_data_fields(
             "EVALUATE SUMMARIZECOLUMNS('T'[A], \"Total X\", SUM('T'[X]))"
         )
-        assert targets == ["T[A]", None]
+        assert targets == ["T[A]", "[Total X]"]
 
     def test_qualified_targets_keep_duplicate_column_names(self):
         targets, _ = _extract_dax_qualified_data_fields(

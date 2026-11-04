@@ -103,10 +103,15 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Replace the DAX command text of a named dataset. The full DAX "
             "expression is accepted verbatim; empty bodies are rejected. "
-            "Optional alias_strategy='preserve_field_names' positionally "
-            "rewrites <DataField> cells to the new DAX columns while "
-            "keeping existing <Field Name> identifiers — so "
-            "Fields!X.Value references in expressions keep resolving."
+            "Optional alias_strategy='preserve_field_names' keeps every "
+            "<Field Name> (so Fields!X.Value references keep resolving) "
+            "and re-aims <DataField> cells at the new DAX columns "
+            "(Table[Col] or [Alias]): Fields whose column is still "
+            "returned stay as they are (any order); a Field whose column "
+            "vanished is re-aimed only when exactly one new column took "
+            "its slot in the old DAX's column order; everything else is "
+            "left untouched and reported in warnings. dry_run=true "
+            "returns the result (including mapped) without saving."
         ),
         input_schema={
             "type": "object",
@@ -121,9 +126,14 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": ["string", "null"],
                     "enum": [None, "preserve_field_names"],
                     "description": (
-                        "When 'preserve_field_names', positionally remap "
-                        "<DataField> cells to the new DAX column list."
+                        "When 'preserve_field_names', re-aim <DataField> "
+                        "cells at the new DAX columns (identity first, "
+                        "then old-DAX slot position)."
                     ),
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Compute the result (and mapped list) without saving.",
                 },
             },
             "required": ["path", "dataset_name", "dax_body"],
