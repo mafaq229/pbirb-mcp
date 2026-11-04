@@ -44,6 +44,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
@@ -282,6 +283,7 @@ def add_subtotal_column(
         raise ValueError(
             f"position {position!r} not valid; expected one of {sorted(_VALID_COLUMN_POSITIONS)}"
         )
+    width = units.validate_size(width, field="width", allow_zero=False)
 
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)

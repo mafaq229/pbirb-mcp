@@ -33,6 +33,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
@@ -417,8 +418,7 @@ def add_tablix_column(
     and the column hierarchy's leaf ``<TablixMember>`` are inserted at
     the same position; existing column-group wrappers are not modified.
     """
-    if width is None:
-        width = "1in"
+    width = units.dimension("1in" if width is None else width, "width")
 
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
@@ -656,14 +656,13 @@ def set_column_width(
     ``set_cell_span`` / ``add_subtotal_row`` address columns).
 
     ``width`` is an RDL size string (``'1.5in'``, ``'4cm'``, ``'80pt'``).
-    Empty / whitespace-only values are rejected.
+    Malformed (e.g. unitless, empty) or non-positive values are rejected.
 
     Idempotent: same width → ``{changed: false}``, no save.
     Returns ``{tablix, column_index, width, kind: 'TablixColumn',
     changed: bool}``.
     """
-    if not width or not width.strip():
-        raise ValueError("width must be a non-empty RDL size (e.g. '1in', '2cm')")
+    width = units.validate_size(width, field="width", allow_zero=False)
 
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)

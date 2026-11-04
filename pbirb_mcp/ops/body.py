@@ -16,6 +16,7 @@ from typing import Any
 
 from lxml import etree
 
+from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
@@ -68,6 +69,7 @@ def add_body_textbox(
     width: str,
     height: str,
 ) -> dict[str, Any]:
+    top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
     body = _resolve_body(doc)
     items = _ensure_body_report_items(body)
@@ -95,6 +97,7 @@ def add_body_image(
         raise ValueError(
             f"image_source must be one of {_VALID_IMAGE_SOURCES!r}; got {image_source!r}"
         )
+    top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
     body = _resolve_body(doc)
     items = _ensure_body_report_items(body)

@@ -55,6 +55,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError, resolve_dataset
@@ -172,6 +173,7 @@ def insert_chart_from_template(
     one Y series (``=Sum(Fields!<value_field>.Value)``). Type defaults to
     Column; callers can change it post-insert via :func:`set_chart_series_type`.
     """
+    top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
     resolve_dataset(doc, dataset_name)
     _ensure_no_collision(doc, name)

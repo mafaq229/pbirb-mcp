@@ -24,6 +24,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix, resolve_textbox
@@ -195,6 +196,25 @@ def _resolve_paragraph_run(
 # ---- public tool ----------------------------------------------------------
 
 
+# Style kwargs that carry an RDL size. All are StringOrExpression in the
+# XSD, so ``=`` expressions pass untouched; literals must be valid sizes,
+# >= 0 (FontSize > 0).
+_STYLE_SIZE_KWARGS = (
+    "font_size",
+    "border_width",
+    "padding_top",
+    "padding_bottom",
+    "padding_left",
+    "padding_right",
+)
+
+
+def _validate_style_sizes(kwargs: dict[str, Any]) -> None:
+    """Validate (and canonicalise in place) the size-typed style kwargs."""
+    for key in _STYLE_SIZE_KWARGS:
+        kwargs[key] = units.style_size(kwargs.get(key), key, positive=key == "font_size")
+
+
 def set_textbox_style(
     path: str,
     textbox_name: str,
@@ -233,6 +253,12 @@ def set_textbox_style(
     (``"box.PaddingTop"``, ``"textbox.CanGrow"``, etc.). All-None call
     is a no-op short-circuit.
     """
+    font_size = units.style_size(font_size, "font_size", positive=True)
+    border_width = units.style_size(border_width, "border_width")
+    padding_top = units.style_size(padding_top, "padding_top")
+    padding_bottom = units.style_size(padding_bottom, "padding_bottom")
+    padding_left = units.style_size(padding_left, "padding_left")
+    padding_right = units.style_size(padding_right, "padding_right")
     box_props = {
         "BackgroundColor": background_color,
         "VerticalAlign": vertical_align,
@@ -642,6 +668,7 @@ def set_textbox_runs(
     """
     if not isinstance(runs, list) or not runs:
         raise ValueError("runs must be a non-empty list; supply at least one run entry")
+    runs = list(runs)  # font_size canonicalisation below must not mutate the caller's list
     for i, run in enumerate(runs):
         if not isinstance(run, dict):
             raise ValueError(f"runs[{i}] must be a dict; got {type(run).__name__}")
@@ -653,6 +680,9 @@ def set_textbox_runs(
                 f"runs[{i}] has unrecognised keys {sorted(unknown)!r}; "
                 f"valid keys are {sorted(_RECOGNISED_RUN_KEYS)!r}"
             )
+        if run.get("font_size") is not None:
+            size = units.style_size(run["font_size"], f"runs[{i}].font_size", positive=True)
+            runs[i] = {**run, "font_size": size}
 
     doc = RDLDocument.open(path)
     textbox = resolve_textbox(doc, textbox_name)
@@ -857,13 +887,6 @@ def set_textbox_style_bulk(
     cells the same way" loop that v0.2 forced into 63 individual tool
     calls. RAG-Report session feedback #6.
     """
-    if not textbox_names:
-        return {
-            "textboxes": [],
-            "skipped": [],
-            "changed": [],
-        }
-
     style_kwargs: dict[str, Any] = {
         "font_family": font_family,
         "font_size": font_size,
@@ -884,6 +907,14 @@ def set_textbox_style_bulk(
         "can_grow": can_grow,
         "can_shrink": can_shrink,
     }
+    # Validate up front so a bad value fails before ANY textbox is written.
+    _validate_style_sizes(style_kwargs)
+    if not textbox_names:
+        return {
+            "textboxes": [],
+            "skipped": [],
+            "changed": [],
+        }
     if all(v is None for v in style_kwargs.values()):
         return {
             "textboxes": list(textbox_names),

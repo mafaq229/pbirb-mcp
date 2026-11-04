@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError
@@ -197,6 +198,7 @@ def _set_section(
     print_on_first_page: Optional[bool],
     print_on_last_page: Optional[bool],
 ) -> dict[str, Any]:
+    height = units.dimension(height, "height")
     doc = RDLDocument.open(path)
     page = _resolve_page(doc)
     section = _ensure_page_section(page, region)
@@ -226,6 +228,7 @@ def _add_textbox(
     width: str,
     height: str,
 ) -> dict[str, Any]:
+    top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
     page = _resolve_page(doc)
     section = _ensure_page_section(page, region)
@@ -256,6 +259,7 @@ def _add_image(
         raise ValueError(
             f"image_source must be one of {_VALID_IMAGE_SOURCES!r}; got {image_source!r}"
         )
+    top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
     page = _resolve_page(doc)
     section = _ensure_page_section(page, region)

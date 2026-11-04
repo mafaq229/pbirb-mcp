@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import resolve_tablix
@@ -65,7 +66,7 @@ def add_static_row(
     ``position`` is 0-indexed into ``<TablixRows>``; default = append.
     ``height`` defaults to ``"0.25in"``.
     """
-    height_value = height if height is not None else "0.25in"
+    height_value = units.dimension(height if height is not None else "0.25in", "height")
     cells = cells or []
 
     doc = RDLDocument.open(path)
@@ -152,7 +153,7 @@ def add_static_column(
     ``position`` is 0-indexed into ``<TablixColumns>``; default =
     append. ``width`` defaults to ``"1in"``.
     """
-    width_value = width if width is not None else "1in"
+    width_value = units.dimension(width if width is not None else "1in", "width")
     cells = cells or []
 
     doc = RDLDocument.open(path)

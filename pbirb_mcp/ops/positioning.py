@@ -12,9 +12,12 @@ Containers covered:
 * ``set_header_item_position`` — items inside ``<Page>/<PageHeader>/<ReportItems>``.
 * ``set_footer_item_position`` — items inside ``<Page>/<PageFooter>/<ReportItems>``.
 
-Position / size values are **passed through verbatim** to ``<Top>`` /
-``<Left>`` / ``<Width>`` / ``<Height>``. Report Builder accepts any RDL
-size string (``"2cm"``, ``"0.75in"``, ``"108pt"``); we don't convert.
+Position / size values are validated by :mod:`pbirb_mcp.core.units`
+(``<number><unit>``; positions >= 0; sizes > 0 except a Line's
+width / height, which may be zero or negative) and then written
+**verbatim** to ``<Top>`` / ``<Left>`` / ``<Width>`` / ``<Height>`` — any
+RDL unit (``"2cm"``, ``"0.75in"``, ``"108pt"``) is kept as given; we
+don't convert.
 
 The position elements are inserted in the layout-element order
 RDL XSD requires (Top, Left, Height, Width, ZIndex, Visibility, ...) —
@@ -23,10 +26,11 @@ RDL XSD requires (Top, Left, Height, Width, ZIndex, Visibility, ...) —
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
@@ -146,14 +150,18 @@ def _resolve_footer(doc: RDLDocument) -> etree._Element:
 
 
 def _move_named_item(
-    doc: RDLDocument,
-    container: etree._Element,
+    path: str,
+    resolve_container: Callable[[RDLDocument], etree._Element],
     container_label: str,
     name: str,
     top: str,
     left: str,
 ) -> dict[str, Any]:
-    item = _find_named_item(container, name)
+    # Validate before opening the document: a bad value never writes.
+    top = units.validate_size(top, field="top")
+    left = units.validate_size(left, field="left")
+    doc = RDLDocument.open(path)
+    item = _find_named_item(resolve_container(doc), name)
     if item is None:
         raise ElementNotFoundError(f"{container_label} has no named item {name!r}")
     changed_fields: list[str] = []
@@ -184,8 +192,7 @@ def set_body_item_position(
     ``changed: false`` when the item is already at the requested
     position (idempotent — file is not rewritten).
     """
-    doc = RDLDocument.open(path)
-    return _move_named_item(doc, _resolve_body(doc), "body", name, top, left)
+    return _move_named_item(path, _resolve_body, "body", name, top, left)
 
 
 # ---- public tools (commit 7) ---------------------------------------------
@@ -199,8 +206,7 @@ def set_header_item_position(
 ) -> dict[str, Any]:
     """Move a named item inside ``<PageHeader>``. Idempotent — see
     ``set_body_item_position`` for the ``changed`` semantics."""
-    doc = RDLDocument.open(path)
-    return _move_named_item(doc, _resolve_header(doc), "header", name, top, left)
+    return _move_named_item(path, _resolve_header, "header", name, top, left)
 
 
 def set_footer_item_position(
@@ -211,16 +217,15 @@ def set_footer_item_position(
 ) -> dict[str, Any]:
     """Move a named item inside ``<PageFooter>``. Idempotent — see
     ``set_body_item_position`` for the ``changed`` semantics."""
-    doc = RDLDocument.open(path)
-    return _move_named_item(doc, _resolve_footer(doc), "footer", name, top, left)
+    return _move_named_item(path, _resolve_footer, "footer", name, top, left)
 
 
 # ---- public tools (commit 8) ---------------------------------------------
 
 
 def _resize_named_item(
-    doc: RDLDocument,
-    container: etree._Element,
+    path: str,
+    resolve_container: Callable[[RDLDocument], etree._Element],
     container_label: str,
     name: str,
     width: Optional[str],
@@ -232,9 +237,20 @@ def _resize_named_item(
     """
     if width is None and height is None:
         raise ValueError("at least one of width or height must be supplied; both None is a no-op.")
-    item = _find_named_item(container, name)
+    # Grammar first, before the lookup; the sign rule depends on the item
+    # kind — a Line's Width/Height is the vector to its end point, so it
+    # may be zero or negative. Everything else must be strictly positive.
+    units.validate_optional_size(width, field="width", allow_negative=True)
+    units.validate_optional_size(height, field="height", allow_negative=True)
+    doc = RDLDocument.open(path)
+    item = _find_named_item(resolve_container(doc), name)
     if item is None:
         raise ElementNotFoundError(f"{container_label} has no named item {name!r}")
+    line = etree.QName(item).localname == "Line"
+    width = units.validate_optional_size(width, field="width", allow_negative=line, allow_zero=line)
+    height = units.validate_optional_size(
+        height, field="height", allow_negative=line, allow_zero=line
+    )
     changed_fields: list[str] = []
     if width is not None and _set_layout_value(item, "Width", width):
         changed_fields.append("Width")
@@ -261,8 +277,7 @@ def set_body_item_size(
     (or both) must be supplied; missing fields are left untouched.
     Returns ``changed: false`` when neither dimension differs from the
     current value (idempotent — file is not rewritten)."""
-    doc = RDLDocument.open(path)
-    return _resize_named_item(doc, _resolve_body(doc), "body", name, width, height)
+    return _resize_named_item(path, _resolve_body, "body", name, width, height)
 
 
 # ---- public tools (Phase 6 commit 26) — header/footer size parity ------
@@ -281,8 +296,7 @@ def set_header_item_size(
     Closes the v0.2 parity gap where only ``set_body_item_size`` existed
     and resizing a header logo / banner forced a manual ``str_replace``.
     """
-    doc = RDLDocument.open(path)
-    return _resize_named_item(doc, _resolve_header(doc), "header", name, width, height)
+    return _resize_named_item(path, _resolve_header, "header", name, width, height)
 
 
 def set_footer_item_size(
@@ -293,8 +307,7 @@ def set_footer_item_size(
 ) -> dict[str, Any]:
     """Resize a named item inside ``<PageFooter>``. Same shape as
     :func:`set_header_item_size`."""
-    doc = RDLDocument.open(path)
-    return _resize_named_item(doc, _resolve_footer(doc), "footer", name, width, height)
+    return _resize_named_item(path, _resolve_footer, "footer", name, width, height)
 
 
 __all__ = [

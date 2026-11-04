@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_tablix
@@ -624,8 +625,7 @@ def set_row_height(
     row_index: int,
     height: str,
 ) -> dict[str, Any]:
-    if not height or not height.strip():
-        raise ValueError("height must be a non-empty RDL size (e.g. '0.25in', '1cm')")
+    height = units.validate_size(height, field="height", allow_zero=False)
 
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
@@ -668,15 +668,13 @@ def set_tablix_size(
     feedback bug #10).
 
     Both values are RDL size strings (``'4in'``, ``'10cm'``, etc.).
-    Empty / whitespace-only values are rejected.
+    Malformed (e.g. unitless, empty) or non-positive values are rejected.
 
     Returns ``{tablix, kind, changed: list[str]}`` — empty list when
     inputs match existing (no save).
     """
-    if height is not None and (not height or not height.strip()):
-        raise ValueError("height must be a non-empty RDL size (e.g. '4in', '10cm')")
-    if width is not None and (not width or not width.strip()):
-        raise ValueError("width must be a non-empty RDL size (e.g. '4in', '10cm')")
+    height = units.dimension(height, "height")
+    width = units.dimension(width, "width")
     if height is None and width is None:
         return {"tablix": name, "kind": "Tablix", "changed": []}
 

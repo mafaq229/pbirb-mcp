@@ -19,6 +19,7 @@ from typing import Any
 
 from lxml import etree
 
+from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import resolve_dataset
@@ -78,6 +79,7 @@ def insert_tablix_from_template(
 ) -> dict[str, Any]:
     if not columns:
         raise ValueError("columns must list at least one field name")
+    top, left, width, height = units.box(top, left, width, height)
 
     doc = RDLDocument.open(path)
     # Validate dataset exists; the resolver raises ElementNotFoundError if not.

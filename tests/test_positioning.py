@@ -126,8 +126,8 @@ class TestSetHeaderItemPosition:
             set_header_item_position(
                 path=str(rdl_path),
                 name="X",
-                top="0",
-                left="0",
+                top="0in",
+                left="0in",
             )
 
 
@@ -140,8 +140,8 @@ class TestSetFooterItemPosition:
             set_footer_item_position(
                 path=str(rdl_path),
                 name="X",
-                top="0",
-                left="0",
+                top="0in",
+                left="0in",
             )
 
 
