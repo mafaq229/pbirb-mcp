@@ -1128,18 +1128,15 @@ class TestRefreshDatasetFieldsSummarizeColumns:
         # Fixture's existing fields: ProductID, ProductName, Amount.
         # The new DAX produces Region, Customer, TotalAmount.
         result = refresh_dataset_fields(path=str(rdl_path), dataset_name="MainDataset")
-        added_names = result["added"]
-        # Region + Customer are bracket tokens; TotalAmount is a quoted
-        # alias from SELECTCOLUMNS-style alias-detection (we also pick
-        # up quoted strings inside SUMMARIZECOLUMNS).
-        assert "Region" in added_names
-        assert "Customer" in added_names
-        # Existing fields not in the new DAX become orphans.
-        assert "ProductID" in result["orphans"]
-        assert "ProductName" in result["orphans"]
-        # Amount is referenced inside SUM('Sales'[Amount]) — the bracket
-        # detector picks it up, so it stays in unchanged.
-        assert "Amount" in result["unchanged"]
+        # Region + Customer are group-by columns; TotalAmount is the
+        # SUMMARIZECOLUMNS "name", expr alias.
+        assert result["added"] == ["Region", "Customer", "TotalAmount"]
+        # Existing fields not in the new DAX become orphans. Amount is
+        # only an *argument* of SUM('Sales'[Amount]), not a result
+        # column, so it is an orphan too (#24: the regex extractor used
+        # to count it as returned).
+        assert result["orphans"] == ["Amount", "ProductID", "ProductName"]
+        assert result["unchanged"] == []
 
     def test_added_fields_have_data_field_text(self, rdl_path):
         update_dataset_query(
@@ -1154,21 +1151,50 @@ class TestRefreshDatasetFieldsSummarizeColumns:
         assert region["data_field"] == "Region"
 
     def test_no_changes_when_already_in_sync(self, rdl_path):
-        # Set DAX referencing only the fixture's existing fields.
+        # DAX returning exactly the fixture's existing fields. The
+        # FILTER-only column ('Sales'[Date]) is not a result column and
+        # must not be added (#24).
         update_dataset_query(
             path=str(rdl_path),
             dataset_name="MainDataset",
             dax_body=(
-                "EVALUATE FILTER("
-                "'Sales', 'Sales'[ProductID] > 100 && "
-                "'Sales'[ProductName] <> \"\" && "
-                "'Sales'[Amount] > 0"
-                ")"
+                "EVALUATE CALCULATETABLE(SUMMARIZECOLUMNS("
+                "'Sales'[ProductID], 'Sales'[ProductName], 'Sales'[Amount]), "
+                "FILTER(VALUES('Sales'[Date]), 'Sales'[Date] >= @From))"
             ),
         )
         result = refresh_dataset_fields(path=str(rdl_path), dataset_name="MainDataset")
         assert result["added"] == []
+        assert result["orphans"] == []
+        assert result["warnings"] == []
         assert sorted(result["unchanged"]) == ["Amount", "ProductID", "ProductName"]
+
+    def test_duplicate_column_names_add_one_field(self, rdl_path):
+        # Two tables each return a Name column. The parser keeps both;
+        # refresh must not write two <Field Name="Name"> elements.
+        update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body="EVALUATE SUMMARIZECOLUMNS('C'[Name], 'P'[Name])",
+        )
+        result = refresh_dataset_fields(path=str(rdl_path), dataset_name="MainDataset")
+        assert result["added"] == ["Name"]
+        names = [f["name"] for f in get_dataset(path=str(rdl_path), name="MainDataset")["fields"]]
+        assert names.count("Name") == 1
+
+    def test_comment_and_filter_columns_not_added(self, rdl_path):
+        update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body=(
+                "// SELECTCOLUMNS('Sales', \"Bogus\", 1)\n"
+                "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], "
+                "FILTER(VALUES('Sales'[Date]), 'Sales'[Date] >= @From)) -- 'Sales'[Old]"
+            ),
+        )
+        result = refresh_dataset_fields(path=str(rdl_path), dataset_name="MainDataset")
+        assert result["added"] == []
+        assert result["unchanged"] == ["ProductID"]
 
 
 class TestRefreshDatasetFieldsSelectColumns:

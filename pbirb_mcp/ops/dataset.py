@@ -25,6 +25,8 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q
+from pbirb_mcp.ops.dax import COLUMN as DAX_COLUMN
+from pbirb_mcp.ops.dax import result_columns
 from pbirb_mcp.ops.filter_types import type_mismatch_warnings, wrap_with_format
 
 
@@ -1016,208 +1018,47 @@ def add_dataset_field(
 # ---- DAX-aware field refresh (Phase 6 commit 27, second tool) -----------
 
 
-# Regex to capture <Table>[Column] tokens. Supports both quoted and
-# unquoted table names ('Sales'[Region] or Sales[Region]). The bracketed
-# column name is captured.
-_DAX_TABLE_COLUMN_RE = re.compile(
-    r"""
-    (?:
-        '(?P<quoted>[^']+)'   # 'Sales' or 'My Table'
-        |
-        (?P<unquoted>[A-Za-z_][\w]*)  # Sales / Customer123
-    )
-    \[
-        (?P<col>[^\[\]]+)
-    \]
-    """,
-    re.VERBOSE,
-)
-
-# Regex to capture SELECTCOLUMNS aliases. SELECTCOLUMNS pairs are
-# "Alias", expression. We capture the quoted alias names. This is a
-# best-effort extraction — it doesn't fully understand DAX, just looks
-# for the typical comma-separated "..." alias pattern.
-_DAX_SELECTCOLUMNS_RE = re.compile(
-    r"SELECTCOLUMNS\s*\(",
-    re.IGNORECASE,
-)
-_DAX_QUOTED_ALIAS_RE = re.compile(r'"([^"]+)"')
-
-
 def _extract_dax_field_names(command_text: str) -> tuple[list[str], list[str]]:
-    """Extract candidate field names from a DAX ``<CommandText>``.
+    """Extract result-set field names from a DAX ``<CommandText>``.
 
-    Returns ``(field_names, warnings)``. ``field_names`` is the
-    deduplicated, document-order list of fields the DAX appears to
-    return. ``warnings`` is a list of human-readable strings about
-    unresolvable shapes (e.g. plain ``EVALUATE 'Table'`` whose columns
-    aren't visible without a metadata fetch).
-
-    Best-effort regex-based detection. Recognises:
-
-    1. **SELECTCOLUMNS**: extracts every quoted alias inside the call
-       (only the first SELECTCOLUMNS — nested ones are conservatively
-       ignored to avoid false positives from inner expressions).
-    2. **SUMMARIZECOLUMNS / Generic 'Table'[Col] tokens**: extracts each
-       bracketed column name. The Table-prefix is stripped — RDL field
-       names match the column part.
-    3. **EVALUATE 'Table'**: emits a warning recommending an explicit
-       SELECTCOLUMNS / SUMMARIZECOLUMNS rewrite or manual
-       ``add_dataset_field`` calls.
+    Thin wrapper over :func:`pbirb_mcp.ops.dax.result_columns`. Returns
+    ``(field_names, warnings)``: ``field_names`` is the result-set
+    column names in query order (aliases for ``"name", expr`` pairs,
+    the bare column part for ``'Table'[Col]`` references). Names are
+    NOT deduplicated — two tables can each contribute a ``Name``
+    column — so callers that create Fields from this list must skip
+    repeats themselves. ``warnings`` is non-empty when part of the
+    query couldn't be seen into (bare ``EVALUATE 'Table'``, unknown
+    table functions, …); the name list may then be incomplete.
     """
-    warnings: list[str] = []
-    fields: list[str] = []
-    seen: set[str] = set()
-
-    def _add(name: str) -> None:
-        n = name.strip()
-        if n and n not in seen:
-            seen.add(n)
-            fields.append(n)
-
-    # Try SELECTCOLUMNS first — its alias shape is the highest-fidelity.
-    selectcolumns_matched = False
-    m = _DAX_SELECTCOLUMNS_RE.search(command_text)
-    if m is not None:
-        # Walk forward from the call site to the matching close paren.
-        depth = 0
-        start = m.end() - 1  # position of "("
-        end = None
-        for i in range(start, len(command_text)):
-            ch = command_text[i]
-            if ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth -= 1
-                if depth == 0:
-                    end = i
-                    break
-        body = command_text[start + 1 : end] if end is not None else command_text[start + 1 :]
-        # Strip the table argument (first comma-separated token) so
-        # quoted strings inside the table reference don't pollute
-        # alias extraction.
-        # Heuristic: split on commas at depth 0 and take alias
-        # candidates from odd-indexed positions (assuming the typical
-        # SELECTCOLUMNS(<table>, "alias", expr, ...) shape).
-        for alias in _DAX_QUOTED_ALIAS_RE.findall(body):
-            _add(alias)
-            selectcolumns_matched = True
-
-    # Then bracket tokens — SUMMARIZECOLUMNS and ad-hoc references.
-    # **Skip when SELECTCOLUMNS provided aliases**: the bracketed tokens
-    # inside SELECTCOLUMNS pairs are SOURCE columns, not result-set
-    # field names. Mixing them in over-counts on shapes like:
-    #   SELECTCOLUMNS('Foo', "Bar", 'Foo'[Bar (raw)], "Baz", 'Foo'[Baz])
-    # where the quoted aliases ("Bar", "Baz") are the right answer and
-    # the bracketed source columns ("Bar (raw)", "Baz") would otherwise
-    # also be added as phantom fields.
-    if not selectcolumns_matched:
-        for token in _DAX_TABLE_COLUMN_RE.finditer(command_text):
-            col = token.group("col")
-            _add(col)
-
-    # If still nothing recognised, emit a warning.
-    if not fields:
-        if "EVALUATE" in command_text.upper() and "(" not in command_text:
-            warnings.append(
-                "DAX is a bare EVALUATE 'Table' shape — column list isn't "
-                "extractable without a metadata fetch. Use add_dataset_field "
-                "explicitly per column, or rewrite as SELECTCOLUMNS / "
-                "SUMMARIZECOLUMNS."
-            )
-        else:
-            warnings.append(
-                "no recognisable DAX shape (SUMMARIZECOLUMNS / SELECTCOLUMNS / "
-                "Table[Col] tokens). refresh_dataset_fields couldn't extract "
-                "field names; use add_dataset_field explicitly per column."
-            )
-
-    return fields, warnings
+    columns, warnings = result_columns(command_text)
+    return [c.name for c in columns], warnings
 
 
 def _extract_dax_qualified_data_fields(
     command_text: str,
 ) -> tuple[list[Optional[str]], list[str]]:
-    """Extract DataField *targets* from a DAX ``<CommandText>``.
+    """Extract positional ``<DataField>`` targets from a DAX ``<CommandText>``.
 
-    Companion to :func:`_extract_dax_field_names` for the alias-remap
-    path: where the former returns bare column names (the Field's
-    ``Name`` attribute), this returns the qualified ``Table[Col]``
-    shape (the ``<DataField>`` text) — preserving the table prefix
-    RB Desktop writes.
+    Companion to :func:`_extract_dax_field_names` for the
+    ``preserve_field_names`` remap. One entry per result-set column,
+    in query order:
 
-    Returns ``(targets, warnings)`` where ``targets[i]`` is either:
+    * ``Table[Col]`` (unquoted, ``''`` un-escaped) for a column
+      reference — the shape Report Builder writes to ``<DataField>``.
+    * ``None`` for an alias column (``"name", expr`` pair): the caller
+      must NOT rewrite the existing ``<DataField>`` for that position.
 
-    * A ``Table[Col]`` string (when the DAX uses
-      ``'Table'[Col]`` or ``Table[Col]`` bracket-token references).
-    * ``None`` (when the position came from a SELECTCOLUMNS quoted
-      alias or a bare-token reference — no qualified form
-      recoverable; the caller must NOT rewrite the existing
-      ``<DataField>`` for that position).
-
-    Warning shape matches :func:`_extract_dax_field_names` so the
-    caller can union the two streams without reshaping.
+    Returns ``(targets, warnings)``; parser warnings are passed through,
+    plus one extra warning when no position has a qualified target.
     """
-    warnings: list[str] = []
-    targets: list[Optional[str]] = []
-    seen: set[str] = set()
-
-    def _add(value: Optional[str], dedup_key: str) -> None:
-        if dedup_key in seen:
-            return
-        seen.add(dedup_key)
-        targets.append(value)
-
-    # SELECTCOLUMNS path: aliases drive Field NAMES but give NO
-    # qualified DataField shape. Each alias-position contributes None
-    # to the targets list.
-    selectcolumns_matched = False
-    m = _DAX_SELECTCOLUMNS_RE.search(command_text)
-    if m is not None:
-        depth = 0
-        start = m.end() - 1
-        end = None
-        for i in range(start, len(command_text)):
-            ch = command_text[i]
-            if ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth -= 1
-                if depth == 0:
-                    end = i
-                    break
-        body = command_text[start + 1 : end] if end is not None else command_text[start + 1 :]
-        for alias in _DAX_QUOTED_ALIAS_RE.findall(body):
-            _add(None, alias)
-            selectcolumns_matched = True
-
-    # Bracket-token path: each 'Table'[Col] becomes a qualified
-    # Table[Col] target (the unquoted form RDL DataField uses).
-    if not selectcolumns_matched:
-        for token in _DAX_TABLE_COLUMN_RE.finditer(command_text):
-            col = (token.group("col") or "").strip()
-            quoted = token.group("quoted")
-            unquoted = token.group("unquoted")
-            table = (quoted if quoted is not None else unquoted) or ""
-            qualified = f"{table}[{col}]"
-            _add(qualified, col)
-
+    columns, warnings = result_columns(command_text)
+    targets: list[Optional[str]] = [c.data_field if c.kind == DAX_COLUMN else None for c in columns]
     if not targets:
-        # Mirror the message style of _extract_dax_field_names so the
-        # warnings union sensibly.
-        if "EVALUATE" in command_text.upper() and "(" not in command_text:
-            warnings.append(
-                "DAX is a bare EVALUATE 'Table' shape — alias_strategy "
-                "cannot recover qualified DataField targets. DataFields "
-                "left untouched; use add_dataset_field explicitly per column."
-            )
-        else:
-            warnings.append(
-                "DAX shape has no recoverable qualified Table[Col] form "
-                "(bare-token / SELECTCOLUMNS-alias only). DataFields left "
-                "untouched to avoid breaking field binding."
-            )
-
+        warnings = list(warnings) + [
+            "DAX shape has no recoverable qualified Table[Col] DataField targets. "
+            "DataFields left untouched; use add_dataset_field explicitly per column."
+        ]
     return targets, warnings
 
 
@@ -1229,11 +1070,12 @@ def refresh_dataset_fields(
     DAX ``<CommandText>``. Eliminates the manual "open Report Builder
     → right-click → Refresh Fields" step after a query rewrite.
 
-    Walks the dataset's DAX, regex-extracts candidate field names from:
-
-    1. ``SELECTCOLUMNS(<table>, "Alias", expr, ...)`` — quoted aliases.
-    2. ``'Table'[Column]`` / ``Table[Column]`` tokens — bracketed column
-       names (covers SUMMARIZECOLUMNS and ad-hoc references).
+    Parses the dataset's DAX with :func:`pbirb_mcp.ops.dax.result_columns`
+    to find the query's result-set columns: SUMMARIZECOLUMNS group-by
+    columns and ``"name", expr`` pairs, SELECTCOLUMNS / ADDCOLUMNS /
+    GROUPBY / SUMMARIZE aliases, through CALCULATETABLE / FILTER / TOPN
+    wrappers and ``VAR ... RETURN``. Columns referenced only in filters,
+    ORDER BY, measure definitions or comments are not result columns.
 
     Compares the extracted set against the existing ``<Fields>`` block:
     - **Adds** missing data-bound fields (each as ``<Field
@@ -1246,8 +1088,9 @@ def refresh_dataset_fields(
     Returns ``{added: list[str], orphans: list[str], unchanged:
     list[str], warnings: list[str]}``.
 
-    Cheap regex-based shape detection — not a full DAX parser.
-    Unparseable shapes return a warning rather than failing the call.
+    Structural shape detection, not a DAX evaluator: unrecognised shapes
+    (e.g. bare ``EVALUATE 'Table'``) return a warning rather than
+    failing the call.
     """
     doc = RDLDocument.open(path)
     dataset = resolve_dataset(doc, dataset_name)
@@ -1276,7 +1119,10 @@ def refresh_dataset_fields(
     unchanged = sorted(extracted_set & existing_set)
 
     for name in extracted:
-        if name in existing_set:
+        # The extractor keeps duplicate names (two tables can each
+        # return a ``Name`` column); never write two Fields with the
+        # same Name.
+        if name in existing_set or name in added:
             continue
         new_field = etree.SubElement(fields_root, q("Field"), Name=name)
         df_node = etree.SubElement(new_field, q("DataField"))
