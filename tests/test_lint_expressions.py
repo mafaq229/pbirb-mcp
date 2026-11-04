@@ -137,8 +137,25 @@ def test_repro_paren_in_string_is_clean(tmp_path):
 
 
 def test_repro_fixtures_stay_clean_of_errors():
-    for f in sorted(FIXTURES.glob("**/*.rdl")):
+    # known_bad/ fixtures are deliberately broken in other ways (e.g. the two
+    # chart files have 3 series but 1 hierarchy member, which chart-structure
+    # rightly flags) — they must still not trip the expression rules.
+    expression_rules = {
+        "missing-field-reference",
+        "field-out-of-scope",
+        "page-number-out-of-chrome",
+        "expression-syntax",
+        "multi-value-eq",
+    }
+    for f in sorted(FIXTURES.glob("*.rdl")):
         errors = [i for i in lint_report(str(f))["issues"] if i["severity"] == "error"]
+        assert errors == [], (f.name, errors)
+    for f in sorted(FIXTURES.glob("known_bad/*.rdl")):
+        errors = [
+            i
+            for i in lint_report(str(f))["issues"]
+            if i["severity"] == "error" and i["rule"] in expression_rules
+        ]
         assert errors == [], (f.name, errors)
 
 

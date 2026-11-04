@@ -133,9 +133,10 @@ class TestItemOutOfBounds:
     def test_header_height_and_printable_width(self, rdl_path):
         from pbirb_mcp.ops.header_footer import add_header_textbox, set_page_header
 
-        set_page_header(str(rdl_path), height="0.5in")
         add_header_textbox(str(rdl_path), "Tall", "x", "0.25in", "0in", "1in", "0.5in")
         add_header_textbox(str(rdl_path), "Far", "x", "0in", "6in", "1in", "0.2in")
+        # add_header_textbox grows the band to fit (#50); force it back down.
+        set_page_header(str(rdl_path), height="0.5in")
         issues = _geometry(rdl_path)
         assert [i["rule"] for i in issues] == ["item-out-of-bounds", "item-out-of-bounds"]
         assert "Tall" in issues[0]["location"] and "bottom edge" in issues[0]["message"]
