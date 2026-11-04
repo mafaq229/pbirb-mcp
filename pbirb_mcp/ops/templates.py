@@ -10,11 +10,13 @@ shape (header row with static labels, detail row binding each column to
 a Field).
 
 Dataset binding: ``dataset_name`` must already exist in the report's
-``<DataSets>`` collection — we don't create datasets implicitly.
+``<DataSets>`` collection — we don't create datasets implicitly — and
+every column must be one of its ``<Field>`` names.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from lxml import etree
@@ -52,6 +54,60 @@ def _build_cell_textbox(name: str, value_text: str) -> etree._Element:
     return cell
 
 
+def _normalize_columns(columns: Any) -> list[tuple[str, str]]:
+    """``columns`` entries → ``[(field, header caption)]``.
+
+    An entry is a field name (its header shows the name) or
+    ``{"field": <name>, "header": <caption>}`` for a display caption that
+    need not be an identifier (``"Unit Price (USD)"``)."""
+    if not isinstance(columns, list) or not columns:
+        raise ValueError("columns must list at least one field name")
+    out: list[tuple[str, str]] = []
+    for i, entry in enumerate(columns):
+        if isinstance(entry, str):
+            field, header = entry, entry
+        elif isinstance(entry, dict):
+            unknown = set(entry) - {"field", "header"}
+            if unknown or "field" not in entry:
+                raise ValueError(
+                    f"columns[{i}] must be a field name or {{'field': ..., 'header': ...}}; "
+                    f"got {entry!r}"
+                )
+            field = entry["field"]
+            header = entry.get("header", field)
+            if not isinstance(header, str):
+                raise ValueError(f"columns[{i}].header must be a string; got {header!r}")
+        else:
+            raise ValueError(
+                f"columns[{i}] must be a field name or {{'field': ..., 'header': ...}}; "
+                f"got {entry!r}"
+            )
+        try:
+            names.validate_identifier(field, "column field")
+        except ValueError as exc:
+            raise ValueError(
+                f"{exc}. To show a caption like {field!r}, pass "
+                f'{{"field": "<dataset field>", "header": {json.dumps(field)}}}.'
+            ) from None
+        out.append((field, header))
+    fields = [f for f, _ in out]
+    if len(set(fields)) != len(fields):
+        raise ValueError(f"columns lists a field more than once: {fields!r}")
+    return out
+
+
+def _check_fields(dataset: etree._Element, dataset_name: str, fields: list[str]) -> None:
+    """Every requested field must be a ``<Field Name>`` of the dataset."""
+    available = [f.get("Name") for f in dataset.findall(f"{q('Fields')}/{q('Field')}")]
+    missing = [f for f in fields if f not in available]
+    if missing:
+        listing = ", ".join(available) if available else "none declared"
+        raise ValueError(
+            f"dataset {dataset_name!r} has no field(s) {', '.join(map(repr, missing))}; "
+            f"available fields: {listing}."
+        )
+
+
 # ---- insert_tablix_from_template -----------------------------------------
 
 
@@ -59,31 +115,39 @@ def insert_tablix_from_template(
     path: str,
     name: str,
     dataset_name: str,
-    columns: list[str],
+    columns: list[Any],
     top: str,
     left: str,
     width: str,
     height: str,
 ) -> dict[str, Any]:
-    if not columns:
-        raise ValueError("columns must list at least one field name")
+    """Append a header-row + detail-row Tablix bound to ``dataset_name``.
+
+    ``columns`` entries are field names of the dataset (header shows the
+    name) or ``{"field": ..., "header": ...}`` for a display caption.
+    Unknown fields raise, listing the dataset's fields. The tablix name
+    must be unused report-wide; every generated name (header / detail
+    textboxes ``<name>_Header_<field>`` / ``<name>_<field>``, the detail
+    group ``Details`` → ``Details1`` ...) is suffixed until unique.
+    """
     names.validate_identifier(name, "tablix")
-    for col_name in columns:
-        names.validate_identifier(col_name, "column field")
-    if len(set(columns)) != len(columns):
-        raise ValueError(f"columns lists a field more than once: {list(columns)!r}")
+    spec = _normalize_columns(columns)
     top, left, width, height = units.box(top, left, width, height)
 
     doc = RDLDocument.open(path)
     # Validate dataset exists; the resolver raises ElementNotFoundError if not.
-    resolve_dataset(doc, dataset_name)
+    dataset = resolve_dataset(doc, dataset_name)
     registry = names.NameRegistry(doc)
     registry.ensure_unique(name)
     registry.claim(name)
+    fields = [f for f, _ in spec]
+    _check_fields(dataset, dataset_name, fields)
     # Generated names — suffixed when taken anywhere in the report, so a
     # second template emits Details1 rather than a second Details.
-    header_names = [registry.unique(f"{name}_Header_{c}") for c in columns]
-    detail_names = [registry.unique(f"{name}_{c}") for c in columns]
+    header_names = [
+        registry.unique(names.sanitize_identifier(f"{name}_Header_{f}")) for f in fields
+    ]
+    detail_names = [registry.unique(names.sanitize_identifier(f"{name}_{f}")) for f in fields]
     details_group = registry.unique("Details")
 
     tablix = etree.Element(q("Tablix"), Name=name)
@@ -91,7 +155,7 @@ def insert_tablix_from_template(
     # ---- TablixBody ----
     body_root = etree.SubElement(tablix, q("TablixBody"))
     cols_root = etree.SubElement(body_root, q("TablixColumns"))
-    for _ in columns:
+    for _ in fields:
         col = etree.SubElement(cols_root, q("TablixColumn"))
         etree.SubElement(col, q("Width")).text = "1in"
 
@@ -100,21 +164,21 @@ def insert_tablix_from_template(
     header_row = etree.SubElement(rows_root, q("TablixRow"))
     etree.SubElement(header_row, q("Height")).text = "0.25in"
     header_cells = etree.SubElement(header_row, q("TablixCells"))
-    for col_name, tb_name in zip(columns, header_names):
+    for (_field, header), tb_name in zip(spec, header_names):
         # Header textbox name follows the fixture's "Header<Name>" convention,
         # prefixed with the tablix name to avoid report-wide collisions.
-        header_cells.append(_build_cell_textbox(tb_name, col_name))
+        header_cells.append(_build_cell_textbox(tb_name, header))
     # Detail row.
     detail_row = etree.SubElement(rows_root, q("TablixRow"))
     etree.SubElement(detail_row, q("Height")).text = "0.25in"
     detail_cells = etree.SubElement(detail_row, q("TablixCells"))
-    for col_name, tb_name in zip(columns, detail_names):
-        detail_cells.append(_build_cell_textbox(tb_name, f"=Fields!{col_name}.Value"))
+    for field, tb_name in zip(fields, detail_names):
+        detail_cells.append(_build_cell_textbox(tb_name, f"=Fields!{field}.Value"))
 
     # ---- TablixColumnHierarchy ----
     col_h = etree.SubElement(tablix, q("TablixColumnHierarchy"))
     col_members = etree.SubElement(col_h, q("TablixMembers"))
-    for _ in columns:
+    for _ in fields:
         etree.SubElement(col_members, q("TablixMember"))
 
     # ---- TablixRowHierarchy ----
@@ -146,7 +210,8 @@ def insert_tablix_from_template(
     return {
         "name": name,
         "kind": "Tablix",
-        "columns": list(columns),
+        "columns": fields,
+        "headers": [header for _, header in spec],
         "header_textboxes": header_names,
         "detail_textboxes": detail_names,
         "details_group": details_group,

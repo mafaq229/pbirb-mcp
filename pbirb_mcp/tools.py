@@ -3345,9 +3345,15 @@ def register_all_tools(server: MCPServer) -> None:
         name="insert_tablix_from_template",
         description=(
             "Build and append a basic Tablix to <Body>/<ReportItems>. One "
-            "column per name in `columns`; header row gets the column "
-            "name as a static label, detail row binds to "
-            "=Fields!<column>.Value. dataset_name must already exist. "
+            "column per entry in `columns`: a field name of the dataset, or "
+            '{"field": <field name>, "header": <caption>} for a display '
+            "caption that is not an identifier (e.g. 'Unit Price (USD)'). "
+            "The header row shows the caption (default: the field name), the "
+            "detail row binds to =Fields!<field>.Value. dataset_name must "
+            "already exist and every field must be declared in it (unknown "
+            "fields are refused, listing the available ones). The tablix "
+            "name must be unused report-wide; generated textbox and detail "
+            "group names are suffixed until unique. "
             "`width` is the tablix outer width — each column defaults to "
             "1in regardless, so for a 3-column tablix the columns sum to "
             "3in even if you pass width=10cm. Resize columns afterwards "
@@ -3361,7 +3367,20 @@ def register_all_tools(server: MCPServer) -> None:
                 "dataset_name": {"type": "string"},
                 "columns": {
                     "type": "array",
-                    "items": {"type": "string"},
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "field": {"type": "string"},
+                                    "header": {"type": "string"},
+                                },
+                                "required": ["field"],
+                                "additionalProperties": False,
+                            },
+                        ]
+                    },
                     "minItems": 1,
                 },
                 "top": {"type": "string"},
