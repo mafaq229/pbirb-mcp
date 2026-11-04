@@ -32,6 +32,15 @@ def server() -> MCPServer:
     return s
 
 
+@pytest.fixture(autouse=True)
+def _private_tempdir(tmp_path, monkeypatch):
+    """Residue checks glob the temp dir; give each test its own so another
+    process's dry-run temp files (e.g. a parallel test run) can't leak in."""
+    private = tmp_path / "tmp"
+    private.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(private))
+
+
 @pytest.fixture
 def rdl(tmp_path: Path) -> Path:
     dest = tmp_path / "report.rdl"
