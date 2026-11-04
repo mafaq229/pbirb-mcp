@@ -7,6 +7,103 @@
   then `/plugin install pbirb-mcp@pbirb` (wires up the `uvx pbirb-mcp` server
   automatically). No change to the published Python package.
 
+### M2 — Stop silent corruption (v0.4.1 review, #113)
+
+The remaining critical bugs: tools that returned success while leaving a
+file Report Builder rejects, or that lost content.
+
+#### Added
+- `core/tablix_headers.py` (`ensure_corner`, `header_depth`,
+  `shape_problems`, …) and `core/tablix_spans.py` (ColSpan bookkeeping);
+  column-hierarchy leaf and insertion helpers in `core/tablix_shape.py`
+  (#29, #33, #34).
+- `core/chart_shape.py` (series ↔ hierarchy-member mapping) and
+  `core/chart_types.py` (the real RDL ChartSeries Type/Subtype tables)
+  (#39, #40).
+- New optional inputs: `inside_group` on `add_static_row` /
+  `add_static_column` / `add_tablix_column` (#33); `keep_subtotals` on
+  `remove_row_group` (#30); `remove_group` and `force` on
+  `remove_tablix_column` (#35, #91); `scope="group"|"total"` on
+  `add_subtotal_row` / `add_subtotal_column` (#32); `force` on
+  `set_cell_span` (#34); `{field, header}` column objects in
+  `insert_tablix_from_template` (#36); `dry_run` on `update_dataset_query`
+  (#38); `cascade` on `remove_chart_series` (#39);
+  `aggregate` on `convert_to_matrix` and `row` / `col` on
+  `set_tablix_corner` (#31); `drop_extra_paragraphs` and run keys `paragraph_index`, `markup_type`,
+  `value`, `style` on `set_textbox_runs` (#41); `clear` on
+  `set_element_visibility` (#42); `fit` on `add_rectangle` (#43).
+- Lint rule `dangling-toggle-item` (error) (#42).
+
+#### Changed
+- **Tablix rows and columns are indexed by hierarchy leaf** (#33): static
+  rows/columns and `add_tablix_column` insert at the body index the
+  hierarchy leaf owns, no longer re-binding existing rows/columns, and
+  match the siblings' `TablixHeader` depth. A position strictly inside a
+  group is moved to just before the group (`requested_position` +
+  warning) unless `inside_group` names it.
+- **Column groups** (#29): the caption is a `TablixHeader` on the group
+  member (`<group>_Header`), not an extra body column, so column leaves
+  always equal body columns; the corner is grown when the tablix has row
+  headers. `remove_column_group` is the exact inverse and repairs files
+  written by older versions.
+- **`remove_row_group`** (#30) deletes only the group's own header (and,
+  unless `keep_subtotals`, its subtotal) rows; wrapped rows are kept.
+- **`remove_tablix_column`** (#35) removes the column's own hierarchy
+  leaf (through any groups), refuses the last column and a group's only
+  column (unless `remove_group`), and (#91) refuses to delete a textbox a
+  `ToggleItem` points at unless `force`.
+- **Subtotals** (#32) are placed by hierarchy leaf; new textbox name stems
+  `<group>_SubtotalHeader_` / `_SubtotalFooter_` / `_Total_`.
+- **`convert_to_matrix` builds a real matrix** (#31): row-group captions
+  move into row `TablixHeader`s, caption rows/columns are dropped, the
+  detail row is kept and its cells aggregated (`=Sum(Fields!X.Value)` by
+  default), and the corner is sized to the header depths. It refuses the
+  detail group, a row group that doesn't enclose the detail rows, and any
+  result that would be malformed. `set_tablix_corner` edits the corner in
+  place (keeping the textbox name and style), refuses a tablix without
+  row or column headers, and doesn't rewrite on an identical call; its
+  `changed` values are `corner_created` / `corner_resized` /
+  `corner_written`.
+- **Merged cells** (#34): adding/removing columns (`add_tablix_column`,
+  `add_static_column`, `remove_tablix_column`) widens/shrinks ColSpans
+  instead of misaligning them; `set_cell_span` rejects non-integers,
+  overflowing spans, `RowSpan` > 1 and covered targets, and refuses to
+  cover non-blank cells unless `force`.
+- **`insert_tablix_from_template`** (#36) refuses fields the dataset
+  doesn't have (listing the ones it does) and accepts column captions.
+- **`refresh_dataset_fields`** (#37) matches Fields by `<DataField>`,
+  writes Report Builder names and `Table[Col]` / `[Alias]` DataFields,
+  keeps same-named columns from two tables (`Name`, `Name1`), and changes
+  nothing when the DAX parser warns. `added` / `orphans` are now lists of
+  `{name, data_field}`.
+- **`update_dataset_query(alias_strategy="preserve_field_names")`** (#38)
+  keeps a Field on its column when the new query still returns it, then
+  remaps by position only where unambiguous; leftovers become warnings
+  instead of guesses. Targets are `[Alias]` / `Table[Col]`.
+- **Chart series** (#39): `add_chart_series` / `remove_chart_series` keep
+  `ChartSeriesHierarchy` in step (member + legend label per series,
+  empty parents pruned), refuse to orphan derived series unless
+  `cascade`, and repair charts older versions left out of sync.
+- **Chart series types** (#40): only real RDL Type/Subtype pairs are
+  written (`Shape/Pie`, `Line/Stepped`, `Scatter/Bubble`, …); shorthands
+  such as `Pie` or `SmoothLine` are normalised; changing only the type
+  resets an incompatible subtype. `add_chart_series`' subtype defaults
+  to the type's default.
+- **`set_textbox_runs`** (#41) edits runs in place: paragraph properties,
+  MarkupType, ToolTip and unmentioned run styles survive; paragraphs the
+  call doesn't address are refused rather than deleted. `get_textbox`
+  runs gain `paragraph_index` / `markup_type`, and feeding them back is a
+  no-op.
+- **Visibility** (#42, #91): `set_element_visibility`,
+  `set_group_visibility`, `set_column_group_visibility` and
+  `set_detail_row_visibility` validate `Hidden` (`true` / `false` or a
+  well-formed expression) and `ToggleItem` (an existing textbox in scope,
+  not inside what it hides); an omitted toggle is kept, `null` / `""`
+  removes it; results carry `changed` and no-ops don't rewrite the file.
+  `set_element_visibility` can target Line / Map / GaugePanel.
+- **`add_rectangle`** (#43) refuses children that don't fit inside it
+  (or grows to fit with `fit=true`) and de-duplicates `contained_items`.
+
 ### M1 — Foundations (v0.4.1 review, #113)
 
 Shared helpers that later fixes build on, plus the bugs they close.
