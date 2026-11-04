@@ -1,6 +1,6 @@
-"""Static-analysis lint rules (Phase 7 commit 31; v0.3.1 added rule 16; #20 rules 17-18).
+"""Static-analysis lint rules (Phase 7 commit 31; v0.3.1 added rule 16; #20 rules 17-18; #42 rule 19).
 
-Eighteen rules driven by the v0.2/v0.3 sweep feedback. Each rule is a
+Nineteen rules driven by the v0.2/v0.3 sweep feedback. Each rule is a
 small pure function that takes the open :class:`RDLDocument` and
 returns a list of issue dicts:
 
@@ -13,7 +13,7 @@ returns a list of issue dicts:
 The shape mirrors :mod:`pbirb_mcp.ops.validate` so :func:`verify_report`
 (commit 33) can union the two streams without reshaping.
 
-Rules (18):
+Rules (19):
 
 * ``multi-value-eq`` (warn) — multi-value param compared with ``=``.
 * ``unused-data-source`` (warn) — DataSource never referenced.
@@ -58,6 +58,10 @@ Rules (18):
 * ``invalid-identifier`` (error, #20) — a report item, group, data
   source, dataset, parameter, embedded image or field ``Name`` is not a
   CLS-compliant identifier (:func:`pbirb_mcp.core.names.validate_identifier`).
+* ``dangling-toggle-item`` (error, #42) — a ``<Visibility>/<ToggleItem>``
+  that doesn't name a Textbox, names the item itself or something inside
+  it, sits in another page region, or is a tablix cell toggling an item
+  outside that tablix (:func:`pbirb_mcp.ops.visibility.toggle_item_problem`).
 """
 
 from __future__ import annotations
@@ -907,6 +911,32 @@ def _rule_invalid_identifier(doc: RDLDocument) -> list[Issue]:
     return issues
 
 
+def _rule_dangling_toggle_item(doc: RDLDocument) -> list[Issue]:
+    """A ``<ToggleItem>`` Report Builder rejects at preview/publish (#42).
+    Same checks ``set_element_visibility`` applies before writing one."""
+    from pbirb_mcp.ops.visibility import toggle_item_problem
+
+    issues: list[Issue] = []
+    for toggle in doc.root.iter(q("ToggleItem")):
+        vis = toggle.getparent()
+        owner = vis.getparent() if vis is not None else None
+        if owner is None or etree.QName(vis).localname != "Visibility":
+            continue
+        problem = toggle_item_problem(doc.root, owner, (toggle.text or "").strip())
+        if problem is None:
+            continue
+        issues.append(
+            {
+                "severity": "error",
+                "rule": "dangling-toggle-item",
+                "location": _ancestor_chain(toggle),
+                "message": problem,
+                "suggestion": "point ToggleItem at a valid textbox, or remove it",
+            }
+        )
+    return issues
+
+
 # ---- registry -----------------------------------------------------------
 
 
@@ -929,6 +959,7 @@ _RULES: dict[str, Callable[[RDLDocument], list[Issue]]] = {
     "dataset-fields-out-of-sync": _rule_dataset_fields_out_of_sync,
     "duplicate-name": _rule_duplicate_name,
     "invalid-identifier": _rule_invalid_identifier,
+    "dangling-toggle-item": _rule_dangling_toggle_item,
 }
 
 ALL_RULES = tuple(_RULES.keys())

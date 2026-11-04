@@ -864,7 +864,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="lint_report",
         description=(
-            "Run static-analysis lint rules against an .rdl. Eighteen "
+            "Run static-analysis lint rules against an .rdl. Nineteen "
             "rules cover the v0.2/v0.3 sweep bug classes (multi-value-eq, "
             "missing-field-reference, dangling-embedded-image, "
             "pbidataset-at-prefix, parameter-layout-out-of-sync, "
@@ -882,7 +882,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "rules": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional subset of rule names; default runs all 18.",
+                    "description": "Optional subset of rule names; default runs all 19.",
                 },
             },
             "required": ["path"],
@@ -3991,20 +3991,38 @@ def register_all_tools(server: MCPServer) -> None:
         name="set_element_visibility",
         description=(
             "Set <Visibility> on any named ReportItem (Tablix, Textbox, "
-            "Image, Rectangle, Subreport, Chart). For group-level "
-            "visibility use set_group_visibility; for detail-row use "
-            "set_detail_row_visibility. toggle_textbox optionally points "
-            "at a textbox name that toggles expand/collapse."
+            "Image, Rectangle, Subreport, Chart, Line, Map, GaugePanel). "
+            "For group-level visibility use set_group_visibility; for "
+            "detail-row use set_detail_row_visibility. hidden_expression "
+            "is 'true' / 'false' or an =expression (required unless "
+            "clear). toggle_textbox names the textbox that toggles "
+            "expand/collapse: it must exist, not be the item or inside "
+            "it, be in the same region (body/header/footer), and if it "
+            "is a tablix cell the item must be inside that tablix. Omit "
+            "toggle_textbox to keep the existing toggle; pass '' or null "
+            "to remove it. clear=true removes <Visibility>. Invalid "
+            "input is refused with the file untouched. Returns {element, "
+            "kind, hidden_expression, toggle_textbox, changed}."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "element_name": {"type": "string"},
-                "hidden_expression": {"type": "string"},
-                "toggle_textbox": {"type": ["string", "null"]},
+                "hidden_expression": {
+                    "type": "string",
+                    "description": "'true' / 'false' or an =expression.",
+                },
+                "toggle_textbox": {
+                    "type": ["string", "null"],
+                    "description": "Omit to keep the existing toggle; '' or null removes it.",
+                },
+                "clear": {
+                    "type": "boolean",
+                    "description": "Remove <Visibility> entirely (default false).",
+                },
             },
-            "required": ["path", "element_name", "hidden_expression"],
+            "required": ["path", "element_name"],
             "additionalProperties": False,
         },
         handler=visibility.set_element_visibility,
