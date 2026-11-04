@@ -1,0 +1,45 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p06-dhitq_kr/report.rdl\n\nAdd a hidden Integer parameter TopN with a default of 10."
+ },
+ {
+  "role": "tool_call",
+  "name": "add_parameter",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p06-dhitq_kr/report.rdl\",\n  \"name\": \"TopN\",\n  \"type\": \"Integer\",\n  \"hidden\": true\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"parameter\": \"TopN\", \"type\": \"Integer\", \"prompt\": null, \"layout_synced\": false}"
+ },
+ {
+  "role": "tool_call",
+  "name": "set_parameter_default_values",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p06-dhitq_kr/report.rdl\",\n  \"name\": \"TopN\",\n  \"source\": \"static\",\n  \"static_values\": [\n    \"10\"\n  ]\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"parameter\": \"TopN\", \"source\": \"static\", \"cleared\": false}"
+ },
+ {
+  "role": "tool_call",
+  "name": "verify_report",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p06-dhitq_kr/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"valid\": true, \"issues\": [{\"severity\": \"warning\", \"rule\": \"unused-data-source\", \"location\": \"DataSource[Name='LegacySQL']\", \"message\": \"DataSource 'LegacySQL' has no DataSet that references it\", \"suggestion\": \"remove the unused DataSource or wire a DataSet to it\"}, {\"severity\": \"warning\", \"rule\": \"unused-data-source\", \"location\": \"DataSource[Name='ScratchPowerQuery']\", \"message\": \"DataSource 'ScratchPowerQuery' has no DataSet that references it\", \"suggestion\": \"remove the unused DataSource or wire a DataSet to it\"}, {\"severity\": \"warning\", \"rule\": \"date-param-as-string\", \"location\": \"ReportParameter[Name='DateFrom']\", \"message\": \"parameter 'DateFrom' looks date-like but is typed as String; string equality with a Date column will mismatch at runtime\", \"suggestion\": \"set DataType to DateTime\"}, {\"severity\": \"warning\", \"rule\": \"date-param-as-string\", \"location\": \"ReportParameter[Name='DateTo']\", \"message\": \"parameter 'DateTo' looks date-like but is typed as String; string equality with a Date column will mismatch at runtime\", \"suggestion\": \"set DataType to DateTime\"}, {\"severity\": \"warning\", \"rule\": \"dataset-fields-out-of-sync\", \"location\": \"DataSet[Name='DataSet1']/Fields/Field[Name='Utilization']\", \"message\": \"<Field Name='Utilization'> is declared but the DAX <CommandText> does not appear to return that column\", \"suggestion\": \"rewrite the dataset query (update_dataset_query) or remove the orphan field (remove_dataset_field)\"}], \"xsd_used\": true}"
+ },
+ {
+  "role": "assistant",
+  "content": "I added the hidden Integer parameter `TopN` with a default value of 10. The report validates with no errors.\n\nThe validation warnings are about things I didn't change: two unused data sources (`LegacySQL`, `ScratchPowerQuery`), `DateFrom` and `DateTo` being typed as String, and an orphan `Utilization` field in `DataSet1`.\n\n`TopN` isn't referenced by any dataset or expression yet. If you want it to limit results, I can wire it into a dataset query as a `@TopN` parameter."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]

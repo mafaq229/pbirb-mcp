@@ -1,0 +1,27 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-l01-m7ufi_on/report.rdl\n\nSwitch the report to landscape."
+ },
+ {
+  "role": "tool_call",
+  "name": "set_page_orientation",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-l01-m7ufi_on/report.rdl\",\n  \"orientation\": \"Landscape\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-l01-m7ufi_on/report.rdl\", \"orientation\": \"Landscape\", \"changed\": true, \"page_height\": \"8.5in\", \"page_width\": \"11in\"}"
+ },
+ {
+  "role": "assistant",
+  "content": "The report is now in landscape orientation. The page is 11in wide by 8.5in tall, with the width and height swapped from the previous portrait setup. I didn't change margins, body size, or any items on the page."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]

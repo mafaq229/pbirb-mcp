@@ -1,0 +1,27 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d02-ju2frfgv/report.rdl\n\nRename the FleetModel data source to FleetSemanticModel."
+ },
+ {
+  "role": "tool_call",
+  "name": "rename_data_source",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d02-ju2frfgv/report.rdl\",\n  \"old_name\": \"FleetModel\",\n  \"new_name\": \"FleetSemanticModel\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"old_name\": \"FleetModel\", \"new_name\": \"FleetSemanticModel\", \"references_rewritten\": 1}"
+ },
+ {
+  "role": "assistant",
+  "content": "The data source `FleetModel` is now named `FleetSemanticModel`. One reference was updated to point to the new name, so the dataset that uses it still resolves."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]

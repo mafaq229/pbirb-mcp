@@ -1,0 +1,63 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p06-lv0re33d/report.rdl\n\nAdd a hidden Integer parameter TopN with a default of 10."
+ },
+ {
+  "role": "tool_call",
+  "name": "tool_search_tool_bm25",
+  "content": "{\n  \"query\": \"add report parameter hidden integer default value\",\n  \"limit\": 5\n}"
+ },
+ {
+  "role": "tool_call",
+  "name": "describe_report",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p06-lv0re33d/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p06-lv0re33d/report.rdl\", \"data_sources\": [\"FleetModel\", \"LegacySQL\", \"ScratchPowerQuery\"], \"datasets\": [\"DataSet1\"], \"parameters\": [\"DateFrom\", \"DateTo\", \"Site\"], \"tablixes\": [{\"name\": \"FleetTable\", \"rows\": 2, \"columns\": 6, \"has_groups\": false, \"has_subtotals\": false, \"has_spans\": false}], \"charts\": [\"HoursBySite\"], \"body_items\": [{\"name\": \"ReportTitle\", \"type\": \"Textbox\", \"top\": \"0in\", \"left\": \"0in\", \"width\": \"5in\", \"height\": \"0.4in\"}, {\"name\": \"FleetTable\", \"type\": \"Tablix\", \"top\": \"0.6in\", \"left\": \"0in\", \"width\": \"6in\", \"height\": \"0.5in\"}, {\"name\": \"TotalHoursLabel\", \"type\": \"Textbox\", \"top\": \"1.3in\", \"left\": \"3in\", \"width\": \"1in\", \"height\": \"0.25in\"}, {\"name\": \"TotalHoursValue\", \"type\": \"Textbox\", \"top\": \"1.3in\", \"left\": \"4in\", \"width\": \"1in\", \"height\": \"0.25in\"}, {\"name\": \"HoursBySite\", \"type\": \"Chart\", \"top\": \"2in\", \"left\": \"0in\", \"width\": \"6in\", \"height\": \"3in\"}], \"header_items\": [], \"footer_items\": [], \"page\": {\"height\": \"11in\", \"width\": \"8.5in\", \"margin_top\": \"1in\", \"margin_bottom\": \"1in\", \"margin_left\": \"1in\", \"margin_right\": \"1in\"}, \"parameter_layout\": null, \"embedded_images\": [], \"dataset_query_parameters\": [], \"designer_state_present\": false}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"found\": [\"update_parameter_advanced\", \"add_query_parameter\", \"add_parameter\", \"set_parameter_type\", \"set_parameter_default_values\"]}"
+ },
+ {
+  "role": "tool_call",
+  "name": "add_parameter",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p06-lv0re33d/report.rdl\",\n  \"name\": \"TopN\",\n  \"type\": \"Integer\",\n  \"hidden\": true\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"parameter\": \"TopN\", \"type\": \"Integer\", \"prompt\": null, \"layout_synced\": false}"
+ },
+ {
+  "role": "tool_call",
+  "name": "set_parameter_default_values",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p06-lv0re33d/report.rdl\",\n  \"name\": \"TopN\",\n  \"source\": \"static\",\n  \"static_values\": [\n    \"10\"\n  ]\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"parameter\": \"TopN\", \"source\": \"static\", \"cleared\": false}"
+ },
+ {
+  "role": "tool_call",
+  "name": "update_parameter_advanced",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p06-lv0re33d/report.rdl\",\n  \"name\": \"TopN\",\n  \"hidden\": true\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"parameter\": \"TopN\", \"changed\": [\"Hidden\"]}"
+ },
+ {
+  "role": "assistant",
+  "content": "I added a hidden Integer parameter named `TopN` with a default value of 10 to the report.\n\nThe report's existing parameters (DateFrom, DateTo, Site) and everything else in the layout are unchanged. Nothing in the datasets or tablix references `TopN` yet, so the report won't use it until a query or expression is wired to it."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]

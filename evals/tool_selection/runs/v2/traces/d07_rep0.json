@@ -1,0 +1,201 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\n\nPass the DateFrom and DateTo report parameters through to the dataset query as query parameters."
+ },
+ {
+  "role": "tool_call",
+  "name": "get_parameters",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "[{\"name\": \"DateFrom\", \"data_type\": \"String\", \"prompt\": \"Date From\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}, {\"name\": \"DateTo\", \"data_type\": \"String\", \"prompt\": \"Date To\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}, {\"name\": \"Site\", \"data_type\": \"String\", \"prompt\": \"Site\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}]"
+ },
+ {
+  "role": "tool_call",
+  "name": "get_datasets",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "[{\"name\": \"DataSet1\", \"data_source\": \"FleetModel\", \"command_text\": \"EVALUATE\\nSUMMARIZECOLUMNS(\\n    'Assets'[AssetID],\\n    'Assets'[AssetName],\\n    'Assets'[Site],\\n    'Assets'[EquipmentType],\\n    'Usage'[ReportDate],\\n    \\\"OperatingHours\\\", SUM('Usage'[OperatingHours]),\\n    \\\"IdleHours\\\", SUM('Usage'[IdleHours]),\\n    \\\"FuelLitres\\\", SUM('Usage'[FuelLitres]),\\n    \\\"Utilization\\\", DIVIDE(SUM('Usage'[OperatingHours]), SUM('Usage'[ScheduledHours]))\\n)\", \"fields\": [{\"name\": \"AssetID\", \"data_field\": \"Assets[AssetID]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"AssetName\", \"data_field\": \"Assets[AssetName]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"Site\", \"data_field\": \"Assets[Site]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"EquipmentType\", \"data_field\": \"Assets[EquipmentType]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"ReportDate\", \"data_field\": \"Usage[ReportDate]\", \"value\": null, \"type_name\": \"System.DateTime\"}, {\"name\": \"OperatingHours\", \"data_field\": \"[OperatingHours]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"IdleHours\", \"data_field\": \"[IdleHours]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"FuelLitres\", \"data_field\": \"[FuelLitres]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"Utilization\", \"data_field\": \"[Utilization]\", \"value\": null, \"type_name\": \"System.Decimal\"}], \"query_parameters\": [], \"filters\": []}]"
+ },
+ {
+  "role": "tool_call",
+  "name": "update_dataset_query",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"dataset_name\": \"DataSet1\",\n  \"dax_body\": \"EVALUATE\\nCALCULATETABLE(\\n    SUMMARIZECOLUMNS(\\n        'Assets'[AssetID],\\n        'Assets'[AssetName],\\n        'Assets'[Site],\\n        'Assets'[EquipmentType],\\n        'Usage'[ReportDate],\\n        \\\"OperatingHours\\\", SUM('Usage'[OperatingHours]),\\n        \\\"IdleHours\\\", SUM('Usage'[IdleHours]),\\n        \\\"FuelLitres\\\", SUM('Usage'[FuelLitres]),\\n        \\\"Utilization\\\", DIVIDE(SUM('Usage'[OperatingHours]), SUM('Usage'[ScheduledHours]))\\n    ),\\n    'Usage'[ReportDate] >= DATEVALUE(@DateFrom),\\n    'Usage'[ReportDate] <= DATEVALUE(@DateTo)\\n)\",\n  \"alias_strategy\": \"preserve_field_names\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"dataset\": \"DataSet1\", \"command_text\": \"EVALUATE\\nCALCULATETABLE(\\n    SUMMARIZECOLUMNS(\\n        'Assets'[AssetID],\\n        'Assets'[AssetName],\\n        'Assets'[Site],\\n        'Assets'[EquipmentType],\\n        'Usage'[ReportDate],\\n        \\\"OperatingHours\\\", SUM('Usage'[OperatingHours]),\\n        \\\"IdleHours\\\", SUM('Usage'[IdleHours]),\\n        \\\"FuelLitres\\\", SUM('Usage'[FuelLitres]),\\n        \\\"Utilization\\\", DIVIDE(SUM('Usage'[OperatingHours]), SUM('Usage'[ScheduledHours]))\\n    ),\\n    'Usage'[ReportDate] >= DATEVALUE(@DateFrom),\\n    'Usage'[ReportDate] <= DATEVALUE(@DateTo)\\n)\", \"designer_state_synced\": false, \"alias_strategy\": \"preserve_field_names\", \"mapped\": [{\"name\": \"OperatingHours\", \"old\": \"[OperatingHours]\", \"new\": \"Usage[OperatingHours]\"}, {\"name\": \"IdleHours\", \"old\": \"[IdleHours]\", \"new\": \"Usage[IdleHours]\"}, {\"name\": \"FuelLitres\", \"old\": \"[FuelLitres]\", \"new\": \"Usage[FuelLitres]\"}, {\"name\": \"Utilization\", \"old\": \"[Utilization]\", \"new\": \"Usage[ScheduledHours]\"}], \"warnings\": []}"
+ },
+ {
+  "role": "tool_call",
+  "name": "add_query_parameter",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"dataset_name\": \"DataSet1\",\n  \"name\": \"DateFrom\",\n  \"value_expression\": \"=Parameters!DateFrom.Value\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"dataset\": \"DataSet1\", \"name\": \"DateFrom\", \"value\": \"=Parameters!DateFrom.Value\", \"normalised\": false}"
+ },
+ {
+  "role": "tool_call",
+  "name": "add_query_parameter",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"dataset_name\": \"DataSet1\",\n  \"name\": \"DateTo\",\n  \"value_expression\": \"=Parameters!DateTo.Value\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"dataset\": \"DataSet1\", \"name\": \"DateTo\", \"value\": \"=Parameters!DateTo.Value\", \"normalised\": false}"
+ },
+ {
+  "role": "assistant",
+  "content": "The positional remap put `Usage[ScheduledHours]` on the `Utilization` field, which is wrong. Let me check the field bindings."
+ },
+ {
+  "role": "tool_call",
+  "name": "get_dataset",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"name\": \"DataSet1\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"name\": \"DataSet1\", \"data_source\": \"FleetModel\", \"command_text\": \"EVALUATE\\nCALCULATETABLE(\\n    SUMMARIZECOLUMNS(\\n        'Assets'[AssetID],\\n        'Assets'[AssetName],\\n        'Assets'[Site],\\n        'Assets'[EquipmentType],\\n        'Usage'[ReportDate],\\n        \\\"OperatingHours\\\", SUM('Usage'[OperatingHours]),\\n        \\\"IdleHours\\\", SUM('Usage'[IdleHours]),\\n        \\\"FuelLitres\\\", SUM('Usage'[FuelLitres]),\\n        \\\"Utilization\\\", DIVIDE(SUM('Usage'[OperatingHours]), SUM('Usage'[ScheduledHours]))\\n    ),\\n    'Usage'[ReportDate] >= DATEVALUE(@DateFrom),\\n    'Usage'[ReportDate] <= DATEVALUE(@DateTo)\\n)\", \"fields\": [{\"name\": \"AssetID\", \"data_field\": \"Assets[AssetID]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"AssetName\", \"data_field\": \"Assets[AssetName]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"Site\", \"data_field\": \"Assets[Site]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"EquipmentType\", \"data_field\": \"Assets[EquipmentType]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"ReportDate\", \"data_field\": \"Usage[ReportDate]\", \"value\": null, \"type_name\": \"System.DateTime\"}, {\"name\": \"OperatingHours\", \"data_field\": \"Usage[OperatingHours]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"IdleHours\", \"data_field\": \"Usage[IdleHours]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"FuelLitres\", \"data_field\": \"Usage[FuelLitres]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"Utilization\", \"data_field\": \"Usage[ScheduledHours]\", \"value\": null, \"type_name\": \"System.Decimal\"}], \"query_parameters\": [{\"name\": \"DateFrom\", \"value\": \"=Parameters!DateFrom.Value\"}, {\"name\": \"DateTo\", \"value\": \"=Parameters!DateTo.Value\"}], \"filters\": [], \"designer_state_present\": false}"
+ },
+ {
+  "role": "assistant",
+  "content": "The tool mapped the four measure fields to `Usage[...]` column names, which won't match the result column names from SUMMARIZECOLUMNS aliases. I'll restore the original `[Name]` bindings for those four fields."
+ },
+ {
+  "role": "tool_call",
+  "name": "remove_dataset_field",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"dataset_name\": \"DataSet1\",\n  \"field_name\": \"OperatingHours\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"error_type\": \"ValueError\", \"message\": \"field 'OperatingHours' is still referenced from 2 location(s): ['(unnamed)', \\\"ChartSeries[Name='OperatingHours']\\\"]. Pass force=True to remove anyway.\"}"
+ },
+ {
+  "role": "tool_call",
+  "name": "remove_dataset_field",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"dataset_name\": \"DataSet1\",\n  \"field_name\": \"IdleHours\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"error_type\": \"ValueError\", \"message\": \"field 'IdleHours' is still referenced from 1 location(s): ['(unnamed)']. Pass force=True to remove anyway.\"}"
+ },
+ {
+  "role": "tool_call",
+  "name": "remove_dataset_field",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"dataset_name\": \"DataSet1\",\n  \"field_name\": \"FuelLitres\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"dataset\": \"DataSet1\", \"removed\": \"FuelLitres\", \"kind\": \"DataBoundField\"}"
+ },
+ {
+  "role": "tool_call",
+  "name": "remove_dataset_field",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"dataset_name\": \"DataSet1\",\n  \"field_name\": \"Utilization\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"error_type\": \"ValueError\", \"message\": \"field 'Utilization' is still referenced from 1 location(s): ['(unnamed)']. Pass force=True to remove anyway.\"}"
+ },
+ {
+  "role": "assistant",
+  "content": "Removing a field only drops its binding, and I'm re-adding each one under the same name right away, so the existing expressions and chart series will still resolve. I'll force-remove the other three and re-add all four with the original bindings."
+ },
+ {
+  "role": "tool_call",
+  "name": "add_dataset_field",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"dataset_name\": \"DataSet1\",\n  \"field_name\": \"FuelLitres\",\n  \"data_field\": \"[FuelLitres]\",\n  \"type_name\": \"System.Decimal\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"dataset\": \"DataSet1\", \"name\": \"FuelLitres\", \"kind\": \"DataBoundField\", \"data_field\": \"[FuelLitres]\", \"type_name\": \"System.Decimal\"}"
+ },
+ {
+  "role": "tool_call",
+  "name": "remove_dataset_field",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"dataset_name\": \"DataSet1\",\n  \"field_name\": \"OperatingHours\",\n  \"force\": true\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"dataset\": \"DataSet1\", \"removed\": \"OperatingHours\", \"kind\": \"DataBoundField\"}"
+ },
+ {
+  "role": "tool_call",
+  "name": "remove_dataset_field",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"dataset_name\": \"DataSet1\",\n  \"field_name\": \"IdleHours\",\n  \"force\": true\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"dataset\": \"DataSet1\", \"removed\": \"IdleHours\", \"kind\": \"DataBoundField\"}"
+ },
+ {
+  "role": "tool_call",
+  "name": "remove_dataset_field",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"dataset_name\": \"DataSet1\",\n  \"field_name\": \"Utilization\",\n  \"force\": true\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"dataset\": \"DataSet1\", \"removed\": \"Utilization\", \"kind\": \"DataBoundField\"}"
+ },
+ {
+  "role": "tool_call",
+  "name": "add_dataset_field",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"dataset_name\": \"DataSet1\",\n  \"field_name\": \"OperatingHours\",\n  \"data_field\": \"[OperatingHours]\",\n  \"type_name\": \"System.Decimal\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"dataset\": \"DataSet1\", \"name\": \"OperatingHours\", \"kind\": \"DataBoundField\", \"data_field\": \"[OperatingHours]\", \"type_name\": \"System.Decimal\"}"
+ },
+ {
+  "role": "tool_call",
+  "name": "add_dataset_field",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"dataset_name\": \"DataSet1\",\n  \"field_name\": \"IdleHours\",\n  \"data_field\": \"[IdleHours]\",\n  \"type_name\": \"System.Decimal\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"dataset\": \"DataSet1\", \"name\": \"IdleHours\", \"kind\": \"DataBoundField\", \"data_field\": \"[IdleHours]\", \"type_name\": \"System.Decimal\"}"
+ },
+ {
+  "role": "tool_call",
+  "name": "add_dataset_field",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"dataset_name\": \"DataSet1\",\n  \"field_name\": \"Utilization\",\n  \"data_field\": \"[Utilization]\",\n  \"type_name\": \"System.Decimal\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"dataset\": \"DataSet1\", \"name\": \"Utilization\", \"kind\": \"DataBoundField\", \"data_field\": \"[Utilization]\", \"type_name\": \"System.Decimal\"}"
+ },
+ {
+  "role": "tool_call",
+  "name": "verify_report",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"valid\": true, \"issues\": [{\"severity\": \"warning\", \"rule\": \"unused-data-source\", \"location\": \"DataSource[Name='LegacySQL']\", \"message\": \"DataSource 'LegacySQL' has no DataSet that references it\", \"suggestion\": \"remove the unused DataSource or wire a DataSet to it\"}, {\"severity\": \"warning\", \"rule\": \"unused-data-source\", \"location\": \"DataSource[Name='ScratchPowerQuery']\", \"message\": \"DataSource 'ScratchPowerQuery' has no DataSet that references it\", \"suggestion\": \"remove the unused DataSource or wire a DataSet to it\"}, {\"severity\": \"warning\", \"rule\": \"date-param-as-string\", \"location\": \"ReportParameter[Name='DateFrom']\", \"message\": \"parameter 'DateFrom' looks date-like but is typed as String; string equality with a Date column will mismatch at runtime\", \"suggestion\": \"set DataType to DateTime\"}, {\"severity\": \"warning\", \"rule\": \"date-param-as-string\", \"location\": \"ReportParameter[Name='DateTo']\", \"message\": \"parameter 'DateTo' looks date-like but is typed as String; string equality with a Date column will mismatch at runtime\", \"suggestion\": \"set DataType to DateTime\"}, {\"severity\": \"warning\", \"rule\": \"dataset-fields-out-of-sync\", \"location\": \"DataSet[Name='DataSet1']/Fields/Field[Name='Utilization']\", \"message\": \"<Field Name='Utilization'> is declared but the DAX <CommandText> does not appear to return that column\", \"suggestion\": \"rewrite the dataset query (update_dataset_query) or remove the orphan field (remove_dataset_field)\"}], \"xsd_used\": true}"
+ },
+ {
+  "role": "tool_call",
+  "name": "get_dataset",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-d07-z66oopnz/report.rdl\",\n  \"name\": \"DataSet1\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"name\": \"DataSet1\", \"data_source\": \"FleetModel\", \"command_text\": \"EVALUATE\\nCALCULATETABLE(\\n    SUMMARIZECOLUMNS(\\n        'Assets'[AssetID],\\n        'Assets'[AssetName],\\n        'Assets'[Site],\\n        'Assets'[EquipmentType],\\n        'Usage'[ReportDate],\\n        \\\"OperatingHours\\\", SUM('Usage'[OperatingHours]),\\n        \\\"IdleHours\\\", SUM('Usage'[IdleHours]),\\n        \\\"FuelLitres\\\", SUM('Usage'[FuelLitres]),\\n        \\\"Utilization\\\", DIVIDE(SUM('Usage'[OperatingHours]), SUM('Usage'[ScheduledHours]))\\n    ),\\n    'Usage'[ReportDate] >= DATEVALUE(@DateFrom),\\n    'Usage'[ReportDate] <= DATEVALUE(@DateTo)\\n)\", \"fields\": [{\"name\": \"AssetID\", \"data_field\": \"Assets[AssetID]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"AssetName\", \"data_field\": \"Assets[AssetName]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"Site\", \"data_field\": \"Assets[Site]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"EquipmentType\", \"data_field\": \"Assets[EquipmentType]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"ReportDate\", \"data_field\": \"Usage[ReportDate]\", \"value\": null, \"type_name\": \"System.DateTime\"}, {\"name\": \"FuelLitres\", \"data_field\": \"[FuelLitres]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"OperatingHours\", \"data_field\": \"[OperatingHours]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"IdleHours\", \"data_field\": \"[IdleHours]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"Utilization\", \"data_field\": \"[Utilization]\", \"value\": null, \"type_name\": \"System.Decimal\"}], \"query_parameters\": [{\"name\": \"DateFrom\", \"value\": \"=Parameters!DateFrom.Value\"}, {\"name\": \"DateTo\", \"value\": \"=Parameters!DateTo.Value\"}], \"filters\": [], \"designer_state_present\": false}"
+ },
+ {
+  "role": "assistant",
+  "content": "I've wired `DateFrom` and `DateTo` into DataSet1 as query parameters, and the report validates.\n\n**What changed in DataSet1:**\n- **Query parameters:** `DateFrom` = `=Parameters!DateFrom.Value` and `DateTo` = `=Parameters!DateTo.Value`.\n- **DAX:** The original query had no date filter, so passing the parameters alone would have done nothing. I wrapped the `SUMMARIZECOLUMNS` in a `CALCULATETABLE` that filters `'Usage'[ReportDate]` between `DATEVALUE(@DateFrom)` and `DATEVALUE(@DateTo)`.\n\n**Things to check:**\n- **Date format:** `DATEVALUE` expects a date string the service can parse, such as `2024-01-31`. If the `Date From` and `Date To` prompts use another format, the query will fail. The validator also flags both parameters as String-typed. Changing them to DateTime would be cleaner, but that changes how the parameters are presented, so I left them alone.\n- **Field order:** I re-added the four measure fields so their bindings match the query's result columns. They now sit after `ReportDate` in a different order (`FuelLitres` first). Field names are unchanged, so expressions and the chart series still resolve.\n- **Utilization warning:** The validator reports that the `Utilization` field isn't in the DAX output. It is: it's the `\"Utilization\"` alias in the `SUMMARIZECOLUMNS`. This looks like a false positive from the checker's heuristic.\n- **Unused data sources:** `LegacySQL` and `ScratchPowerQuery` aren't referenced by any dataset. I didn't touch them.\n\nThe `Site` parameter isn't wired to anything yet, since you didn't ask for that."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 3.0} \u2014 ok"
+ }
+]

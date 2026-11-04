@@ -1,0 +1,90 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-l08-vschfq6c/report.rdl\n\nAdd our logo to the top-right of a page header. The logo file is /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-l08-vschfq6c/logo.png."
+ },
+ {
+  "role": "tool_call",
+  "name": "describe_report",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-l08-vschfq6c/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-l08-vschfq6c/report.rdl\", \"data_sources\": [\"FleetModel\", \"LegacySQL\", \"ScratchPowerQuery\"], \"datasets\": [\"DataSet1\"], \"parameters\": [\"DateFrom\", \"DateTo\", \"Site\"], \"tablixes\": [{\"name\": \"FleetTable\", \"rows\": 2, \"columns\": 6, \"has_groups\": false, \"has_subtotals\": false, \"has_spans\": false}], \"charts\": [\"HoursBySite\"], \"body_items\": [{\"name\": \"ReportTitle\", \"type\": \"Textbox\", \"top\": \"0in\", \"left\": \"0in\", \"width\": \"5in\", \"height\": \"0.4in\"}, {\"name\": \"FleetTable\", \"type\": \"Tablix\", \"top\": \"0.6in\", \"left\": \"0in\", \"width\": \"6in\", \"height\": \"0.5in\"}, {\"name\": \"TotalHoursLabel\", \"type\": \"Textbox\", \"top\": \"1.3in\", \"left\": \"3in\", \"width\": \"1in\", \"height\": \"0.25in\"}, {\"name\": \"TotalHoursValue\", \"type\": \"Textbox\", \"top\": \"1.3in\", \"left\": \"4in\", \"width\": \"1in\", \"height\": \"0.25in\"}, {\"name\": \"HoursBySite\", \"type\": \"Chart\", \"top\": \"2in\", \"left\": \"0in\", \"width\": \"6in\", \"height\": \"3in\"}], \"header_items\": [], \"footer_items\": [], \"page\": {\"height\": \"11in\", \"width\": \"8.5in\", \"margin_top\": \"1in\", \"margin_bottom\": \"1in\", \"margin_left\": \"1in\", \"margin_right\": \"1in\"}, \"parameter_layout\": null, \"embedded_images\": [], \"dataset_query_parameters\": [], \"designer_state_present\": false}"
+ },
+ {
+  "role": "tool_call",
+  "name": "tool_search_tool_bm25",
+  "content": "{\n  \"query\": \"add image to page header logo\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"found\": [\"set_keep_together\", \"set_repeat_on_new_page\", \"set_image_source\", \"add_body_image\", \"add_column_group\"]}"
+ },
+ {
+  "role": "tool_call",
+  "name": "tool_search_tool_bm25",
+  "content": "{\n  \"query\": \"add embedded image report header\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"found\": [\"list_embedded_images\", \"add_header_image\", \"set_image_source\", \"add_body_image\", \"get_embedded_image_data\"]}"
+ },
+ {
+  "role": "tool_call",
+  "name": "tool_search_tool_bm25",
+  "content": "{\n  \"query\": \"add embedded image from file to report\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"found\": [\"list_embedded_images\", \"add_header_image\", \"set_image_source\", \"add_body_image\", \"get_embedded_image_data\"]}"
+ },
+ {
+  "role": "tool_call",
+  "name": "tool_search_tool_bm25",
+  "content": "{\n  \"query\": \"import image file as EmbeddedImage base64 ImageData\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"found\": [\"get_embedded_image_data\", \"add_embedded_image\", \"remove_embedded_image\", \"list_embedded_images\", \"set_image_source\"]}"
+ },
+ {
+  "role": "tool_call",
+  "name": "add_embedded_image",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-l08-vschfq6c/report.rdl\",\n  \"name\": \"CompanyLogo\",\n  \"mime_type\": \"image/png\",\n  \"image_path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-l08-vschfq6c/logo.png\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"name\": \"CompanyLogo\", \"mime_type\": \"image/png\", \"bytes\": 125}"
+ },
+ {
+  "role": "tool_call",
+  "name": "add_header_image",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-l08-vschfq6c/report.rdl\",\n  \"name\": \"HeaderLogo\",\n  \"image_source\": \"Embedded\",\n  \"value\": \"CompanyLogo\",\n  \"top\": \"0.05in\",\n  \"left\": \"5in\",\n  \"width\": \"1.5in\",\n  \"height\": \"0.5in\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"region\": \"header\", \"name\": \"HeaderLogo\"}"
+ },
+ {
+  "role": "tool_call",
+  "name": "describe_report",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-l08-vschfq6c/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-l08-vschfq6c/report.rdl\", \"data_sources\": [\"FleetModel\", \"LegacySQL\", \"ScratchPowerQuery\"], \"datasets\": [\"DataSet1\"], \"parameters\": [\"DateFrom\", \"DateTo\", \"Site\"], \"tablixes\": [{\"name\": \"FleetTable\", \"rows\": 2, \"columns\": 6, \"has_groups\": false, \"has_subtotals\": false, \"has_spans\": false}], \"charts\": [\"HoursBySite\"], \"body_items\": [{\"name\": \"ReportTitle\", \"type\": \"Textbox\", \"top\": \"0in\", \"left\": \"0in\", \"width\": \"5in\", \"height\": \"0.4in\"}, {\"name\": \"FleetTable\", \"type\": \"Tablix\", \"top\": \"0.6in\", \"left\": \"0in\", \"width\": \"6in\", \"height\": \"0.5in\"}, {\"name\": \"TotalHoursLabel\", \"type\": \"Textbox\", \"top\": \"1.3in\", \"left\": \"3in\", \"width\": \"1in\", \"height\": \"0.25in\"}, {\"name\": \"TotalHoursValue\", \"type\": \"Textbox\", \"top\": \"1.3in\", \"left\": \"4in\", \"width\": \"1in\", \"height\": \"0.25in\"}, {\"name\": \"HoursBySite\", \"type\": \"Chart\", \"top\": \"2in\", \"left\": \"0in\", \"width\": \"6in\", \"height\": \"3in\"}], \"header_items\": [{\"name\": \"HeaderLogo\", \"type\": \"Image\", \"top\": \"0.05in\", \"left\": \"5in\", \"width\": \"1.5in\", \"height\": \"0.5in\"}], \"footer_items\": [], \"page\": {\"height\": \"11in\", \"width\": \"8.5in\", \"margin_top\": \"1in\", \"margin_bottom\": \"1in\", \"margin_left\": \"1in\", \"margin_right\": \"1in\"}, \"parameter_layout\": null, \"embedded_images\": [{\"name\": \"CompanyLogo\", \"mime_type\": \"image/png\", \"byte_size\": 125}], \"dataset_query_parameters\": [], \"designer_state_present\": false}"
+ },
+ {
+  "role": "assistant",
+  "content": "I added your logo to the top-right of the page header.\n\n- **Image:** embedded in the report as `CompanyLogo` (PNG, from your `logo.png`), so the report doesn't depend on the file's location.\n- **Header item:** `HeaderLogo`, placed at 5.0in from the left, 0.05in from the top, sized 1.5in \u00d7 0.5in. That puts its right edge at 6.5in, which is the right margin edge on the 8.5in page with 1in margins.\n\nThe report title and the body content are unchanged. I haven't rendered the report, so it's worth a quick preview to check the logo's size and position. If the logo looks too large or small, I can adjust the dimensions."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]

@@ -1,0 +1,45 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p06-wrxsynj5/report.rdl\n\nAdd a hidden Integer parameter TopN with a default of 10."
+ },
+ {
+  "role": "tool_call",
+  "name": "add_parameter",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p06-wrxsynj5/report.rdl\",\n  \"name\": \"TopN\",\n  \"type\": \"Integer\",\n  \"hidden\": true\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"parameter\": \"TopN\", \"type\": \"Integer\", \"prompt\": null, \"layout_synced\": false}"
+ },
+ {
+  "role": "tool_call",
+  "name": "set_parameter_default_values",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p06-wrxsynj5/report.rdl\",\n  \"name\": \"TopN\",\n  \"source\": \"static\",\n  \"static_values\": [\n    \"10\"\n  ]\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"parameter\": \"TopN\", \"source\": \"static\", \"cleared\": false}"
+ },
+ {
+  "role": "tool_call",
+  "name": "get_parameters",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p06-wrxsynj5/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "[{\"name\": \"DateFrom\", \"data_type\": \"String\", \"prompt\": \"Date From\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}, {\"name\": \"DateTo\", \"data_type\": \"String\", \"prompt\": \"Date To\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}, {\"name\": \"Site\", \"data_type\": \"String\", \"prompt\": \"Site\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}, {\"name\": \"TopN\", \"data_type\": \"Integer\", \"prompt\": null, \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": true}]"
+ },
+ {
+  "role": "assistant",
+  "content": "I added the hidden Integer parameter `TopN` to the report, with a default value of 10. It doesn't appear in the parameter pane because it's hidden, and nothing in the report references it yet. Setting the default didn't return an error, but I didn't re-read the default value after writing it, so that part is unconfirmed."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]

@@ -1,0 +1,81 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p05-10otfnze/report.rdl\n\nDefault the date range to the last 30 days: DateFrom 30 days ago, DateTo today."
+ },
+ {
+  "role": "tool_call",
+  "name": "get_parameters",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p05-10otfnze/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "[{\"name\": \"DateFrom\", \"data_type\": \"String\", \"prompt\": \"Date From\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}, {\"name\": \"DateTo\", \"data_type\": \"String\", \"prompt\": \"Date To\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}, {\"name\": \"Site\", \"data_type\": \"String\", \"prompt\": \"Site\", \"nullable\": false, \"allow_blank\": false, \"multi_value\": false, \"hidden\": false}]"
+ },
+ {
+  "role": "tool_call",
+  "name": "describe_report",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p05-10otfnze/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p05-10otfnze/report.rdl\", \"data_sources\": [\"FleetModel\", \"LegacySQL\", \"ScratchPowerQuery\"], \"datasets\": [\"DataSet1\"], \"parameters\": [\"DateFrom\", \"DateTo\", \"Site\"], \"tablixes\": [{\"name\": \"FleetTable\", \"rows\": 2, \"columns\": 6, \"has_groups\": false, \"has_subtotals\": false, \"has_spans\": false}], \"charts\": [\"HoursBySite\"], \"body_items\": [{\"name\": \"ReportTitle\", \"type\": \"Textbox\", \"top\": \"0in\", \"left\": \"0in\", \"width\": \"5in\", \"height\": \"0.4in\"}, {\"name\": \"FleetTable\", \"type\": \"Tablix\", \"top\": \"0.6in\", \"left\": \"0in\", \"width\": \"6in\", \"height\": \"0.5in\"}, {\"name\": \"TotalHoursLabel\", \"type\": \"Textbox\", \"top\": \"1.3in\", \"left\": \"3in\", \"width\": \"1in\", \"height\": \"0.25in\"}, {\"name\": \"TotalHoursValue\", \"type\": \"Textbox\", \"top\": \"1.3in\", \"left\": \"4in\", \"width\": \"1in\", \"height\": \"0.25in\"}, {\"name\": \"HoursBySite\", \"type\": \"Chart\", \"top\": \"2in\", \"left\": \"0in\", \"width\": \"6in\", \"height\": \"3in\"}], \"header_items\": [], \"footer_items\": [], \"page\": {\"height\": \"11in\", \"width\": \"8.5in\", \"margin_top\": \"1in\", \"margin_bottom\": \"1in\", \"margin_left\": \"1in\", \"margin_right\": \"1in\"}, \"parameter_layout\": null, \"embedded_images\": [], \"dataset_query_parameters\": [], \"designer_state_present\": false}"
+ },
+ {
+  "role": "tool_call",
+  "name": "get_datasets",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p05-10otfnze/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "[{\"name\": \"DataSet1\", \"data_source\": \"FleetModel\", \"command_text\": \"EVALUATE\\nSUMMARIZECOLUMNS(\\n    'Assets'[AssetID],\\n    'Assets'[AssetName],\\n    'Assets'[Site],\\n    'Assets'[EquipmentType],\\n    'Usage'[ReportDate],\\n    \\\"OperatingHours\\\", SUM('Usage'[OperatingHours]),\\n    \\\"IdleHours\\\", SUM('Usage'[IdleHours]),\\n    \\\"FuelLitres\\\", SUM('Usage'[FuelLitres]),\\n    \\\"Utilization\\\", DIVIDE(SUM('Usage'[OperatingHours]), SUM('Usage'[ScheduledHours]))\\n)\", \"fields\": [{\"name\": \"AssetID\", \"data_field\": \"Assets[AssetID]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"AssetName\", \"data_field\": \"Assets[AssetName]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"Site\", \"data_field\": \"Assets[Site]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"EquipmentType\", \"data_field\": \"Assets[EquipmentType]\", \"value\": null, \"type_name\": \"System.String\"}, {\"name\": \"ReportDate\", \"data_field\": \"Usage[ReportDate]\", \"value\": null, \"type_name\": \"System.DateTime\"}, {\"name\": \"OperatingHours\", \"data_field\": \"[OperatingHours]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"IdleHours\", \"data_field\": \"[IdleHours]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"FuelLitres\", \"data_field\": \"[FuelLitres]\", \"value\": null, \"type_name\": \"System.Decimal\"}, {\"name\": \"Utilization\", \"data_field\": \"[Utilization]\", \"value\": null, \"type_name\": \"System.Decimal\"}], \"query_parameters\": [], \"filters\": []}]"
+ },
+ {
+  "role": "tool_call",
+  "name": "get_expression_reference",
+  "content": "{}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"globals\": [{\"name\": \"PageNumber\", \"syntax\": \"Globals!PageNumber\", \"example\": \"=Globals!PageNumber & \\\" of \\\" & Globals!TotalPages\", \"description\": \"Current page number. Only resolves inside <PageHeader> / <PageFooter> \\u2014 placing it in the body raises the page-number-out-of-chrome lint rule.\"}, {\"name\": \"TotalPages\", \"syntax\": \"Globals!TotalPages\", \"example\": \"=Globals!TotalPages\", \"description\": \"Total page count. Header/footer scope only.\"}, {\"name\": \"ReportName\", \"syntax\": \"Globals!ReportName\", \"example\": \"=Globals!ReportName\", \"description\": \"Report's display name as set in <Report>.\"}, {\"name\": \"ExecutionTime\", \"syntax\": \"Globals!ExecutionTime\", \"example\": \"=Format(Globals!ExecutionTime, \\\"yyyy-MM-dd HH:mm\\\")\", \"description\": \"When the report was rendered (DateTime).\"}, {\"name\": \"UserID\", \"syntax\": \"User!UserID\", \"example\": \"=User!UserID\", \"description\": \"Current user's identity (DOMAIN\\\\user on AD).\"}], \"parameters\": [{\"name\": \"Value\", \"syntax\": \"Parameters!<Name>.Value\", \"example\": \"=Parameters!DateFrom.Value\", \"description\": \"Single value, or first value if multi-value. For multi-value comparisons use the IN operator or Join(Parameters!X.Value, \\\", \\\"); using = directly fires the multi-value-eq lint rule.\"}, {\"name\": \"Label\", \"syntax\": \"Parameters!<Name>.Label\", \"example\": \"=Parameters!Region.Label\", \"description\": \"Human-readable label (when LabelExpression is set on the parameter). Falls back to Value otherwise.\"}, {\"name\": \"Count\", \"syntax\": \"Parameters!<Name>.Count\", \"example\": \"=Parameters!Region.Count\", \"description\": \"Number of values selected (multi-value).\"}, {\"name\": \"Multi-value Join\", \"syntax\": \"Join(Parameters!<Name>.Value, \\\", \\\")\", \"example\": \"=Join(Parameters!Region.Value, \\\", \\\")\", \"description\": \"Comma-separated string of selected values.\"}], \"fields\": [{\"name\": \"Value\", \"syntax\": \"Fields!<Name>.Value\", \"example\": \"=Fields!Amount.Value\", \"description\": \"Field value in the current scope. Inside aggregates (Sum, Count, \\u2026) the scope is the containing tablix or group; in textboxes the scope is the row.\"}, {\"name\": \"IsMissing\", \"syntax\": \"Fields!<Name>.IsMissing\", \"example\": \"=IIf(Fields!Email.IsMissing, \\\"n/a\\\", Fields!Email.Value)\", \"description\": \"True when the dataset returned no value for the field.\"}], \"aggregates\": [{\"name\": \"Sum\", \"syntax\": \"Sum(Fields!<Name>.Value)\", \"example\": \"=Sum(Fields!Amount.Value)\", \"description\": \"Total over the current scope.\"}, {\"name\": \"Count\", \"syntax\": \"Count(Fields!<Name>.Value)\", \"example\": \"=Count(Fields!OrderID.Value)\", \"description\": \"Count of non-null values in scope.\"}, {\"name\": \"CountDistinct\", \"syntax\": \"CountDistinct(Fields!<Name>.Value)\", \"example\": \"=CountDistinct(Fields!CustomerID.Value)\", \"description\": \"Number of unique values in scope.\"}, {\"name\": \"Avg / Min / Max\", \"syntax\": \"Avg(Fields!<Name>.Value)\", \"example\": \"=Avg(Fields!Amount.Value)\", \"description\": \"Standard aggregations; same scope rules as Sum/Count.\"}, {\"name\": \"First / Last\", \"syntax\": \"First(Fields!<Name>.Value)\", \"example\": \"=First(Fields!StatusCode.Value)\", \"description\": \"First/last value in document order within scope.\"}, {\"name\": \"Conditional Count\", \"syntax\": \"Sum(IIf(<condition>, 1, 0))\", \"example\": \"=Sum(IIf(Fields!Status.Value = \\\"Active\\\", 1, 0))\", \"description\": \"SSRS idiom for 'count rows matching condition'. The count_where emitter (Phase 9 commit 38) builds this for you.\"}, {\"name\": \"Conditional Sum\", \"syntax\": \"Sum(IIf(<condition>, Fields!<X>.Value, 0))\", \"example\": \"=Sum(IIf(Fields!Status.Value = \\\"Active\\\", Fields!Amount.Value, 0))\", \"description\": \"SSRS idiom for 'sum X where condition'. The sum_where emitter (Phase 9 commit 38) builds this for you.\"}], \"conditionals\": [{\"name\": \"IIf\", \"syntax\": \"IIf(<condition>, <true_value>, <false_value>)\", \"example\": \"=IIf(Fields!Amount.Value > 0, \\\"Credit\\\", \\\"Debit\\\")\", \"description\": \"Inline if. Both branches ALWAYS evaluate (VB semantics) \\u2014 don't use to guard against div-by-zero etc.; use IIf(denom = 0, 0, num / de"
+ },
+ {
+  "role": "tool_call",
+  "name": "set_parameter_default_values",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p05-10otfnze/report.rdl\",\n  \"name\": \"DateFrom\",\n  \"source\": \"static\",\n  \"static_values\": [\n    \"=Format(DateAdd(\\\"d\\\", -30, Today()), \\\"yyyy-MM-dd\\\")\"\n  ]\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"parameter\": \"DateFrom\", \"source\": \"static\", \"cleared\": false}"
+ },
+ {
+  "role": "tool_call",
+  "name": "set_parameter_default_values",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p05-10otfnze/report.rdl\",\n  \"name\": \"DateTo\",\n  \"source\": \"static\",\n  \"static_values\": [\n    \"=Format(Today(), \\\"yyyy-MM-dd\\\")\"\n  ]\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"parameter\": \"DateTo\", \"source\": \"static\", \"cleared\": false}"
+ },
+ {
+  "role": "tool_call",
+  "name": "verify_report",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p05-10otfnze/report.rdl\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"valid\": true, \"issues\": [{\"severity\": \"warning\", \"rule\": \"unused-data-source\", \"location\": \"DataSource[Name='LegacySQL']\", \"message\": \"DataSource 'LegacySQL' has no DataSet that references it\", \"suggestion\": \"remove the unused DataSource or wire a DataSet to it\"}, {\"severity\": \"warning\", \"rule\": \"unused-data-source\", \"location\": \"DataSource[Name='ScratchPowerQuery']\", \"message\": \"DataSource 'ScratchPowerQuery' has no DataSet that references it\", \"suggestion\": \"remove the unused DataSource or wire a DataSet to it\"}, {\"severity\": \"warning\", \"rule\": \"date-param-as-string\", \"location\": \"ReportParameter[Name='DateFrom']\", \"message\": \"parameter 'DateFrom' looks date-like but is typed as String; string equality with a Date column will mismatch at runtime\", \"suggestion\": \"set DataType to DateTime\"}, {\"severity\": \"warning\", \"rule\": \"date-param-as-string\", \"location\": \"ReportParameter[Name='DateTo']\", \"message\": \"parameter 'DateTo' looks date-like but is typed as String; string equality with a Date column will mismatch at runtime\", \"suggestion\": \"set DataType to DateTime\"}, {\"severity\": \"warning\", \"rule\": \"dataset-fields-out-of-sync\", \"location\": \"DataSet[Name='DataSet1']/Fields/Field[Name='Utilization']\", \"message\": \"<Field Name='Utilization'> is declared but the DAX <CommandText> does not appear to return that column\", \"suggestion\": \"rewrite the dataset query (update_dataset_query) or remove the orphan field (remove_dataset_field)\"}], \"xsd_used\": true}"
+ },
+ {
+  "role": "assistant",
+  "content": "I set the defaults on the two date parameters. The report now opens with DateFrom = 30 days before today and DateTo = today, both written as `yyyy-MM-dd` text.\n\n- **DateFrom:** `=Format(DateAdd(\"d\", -30, Today()), \"yyyy-MM-dd\")`\n- **DateTo:** `=Format(Today(), \"yyyy-MM-dd\")`\n\nThe defaults are evaluated when the report runs, so they stay current each day. Nothing else in the report was changed.\n\nTwo things to be aware of:\n\n- **The defaults don't filter the data yet.** DataSet1 has no query parameters bound to DateFrom or DateTo, so the fleet table and chart still return all dates. Wiring them in would mean adding a DAX filter on `Usage[ReportDate]` that uses the parameters. I haven't done that because you asked only for the defaults. I can add it if you want.\n- **The DateFrom and DateTo parameters are typed as String.** The validator flags this because string comparison against a date column will mismatch. Switching them to DateTime would be the fix, and I'd suggest doing it together with the filter above. I left the type alone.\n\nThe validator also reports an orphaned `Utilization` field in DataSet1 that the DAX doesn't return, and two unused data sources (LegacySQL and ScratchPowerQuery). These predate this change and I didn't touch them."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]

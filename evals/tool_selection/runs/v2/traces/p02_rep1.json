@@ -1,0 +1,27 @@
+[
+ {
+  "role": "system",
+  "content": "You help people edit Power BI paginated reports (.rdl files) using the pbirb tools. Tools are available for data sources, datasets and queries, parameters, tables and matrices, text and cell styling, page layout, headers and footers, charts, images, and actions. The user's message names the report file. Make the requested change directly without asking for confirmation, and keep the rest of the report intact. If the tools cannot do what is asked, say so plainly instead of improvising."
+ },
+ {
+  "role": "user",
+  "content": "Report file: /var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p02-drdhnl_b/report.rdl\n\nChange the Site parameter's prompt to 'Select site'."
+ },
+ {
+  "role": "tool_call",
+  "name": "set_parameter_prompt",
+  "content": "{\n  \"path\": \"/var/folders/zl/zqyf2h6n3md3dcg8g9cdfm380000gp/T/pbirb-eval-p02-drdhnl_b/report.rdl\",\n  \"name\": \"Site\",\n  \"prompt\": \"Select site\"\n}"
+ },
+ {
+  "role": "tool_result",
+  "content": "{\"parameter\": \"Site\", \"prompt\": \"Select site\"}"
+ },
+ {
+  "role": "assistant",
+  "content": "The Site parameter's prompt is now \"Select site\". No other changes were made to the report."
+ },
+ {
+  "role": "assistant",
+  "content": "[grade] {'success': 1.0, 'right_tool': 1.0, 'raw_xml': 0.0, 'tool_errors': 0.0} \u2014 ok"
+ }
+]
