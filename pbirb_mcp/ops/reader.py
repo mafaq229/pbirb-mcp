@@ -617,12 +617,18 @@ def _border_dict(style: Optional[etree._Element]) -> Optional[dict[str, str]]:
 
 
 def _runs_of(textbox: etree._Element) -> list[dict[str, Any]]:
-    """Enumerate text runs as ``{value, style}`` so callers see the same
-    per-run style fields ``set_textbox_style`` writes (font / color / format)."""
+    """Enumerate text runs as ``{value, style?, paragraph_index,
+    markup_type?}`` so callers see the same per-run style fields
+    ``set_textbox_style`` writes (font / color / format).
+
+    This is exactly the shape ``set_textbox_runs`` accepts, so feeding
+    the list straight back is a no-op. ``paragraph_index`` is the run's
+    ``<Paragraph>`` position; ``markup_type`` appears when the run carries
+    a ``<MarkupType>`` (``HTML`` runs render their tags)."""
     runs: list[dict[str, Any]] = []
     paragraphs_root = find_child(textbox, "Paragraphs")
     paragraphs = find_children(paragraphs_root, "Paragraph") if paragraphs_root is not None else []
-    for paragraph in paragraphs:
+    for paragraph_index, paragraph in enumerate(paragraphs):
         runs_root = find_child(paragraph, "TextRuns")
         if runs_root is None:
             continue
@@ -631,6 +637,10 @@ def _runs_of(textbox: etree._Element) -> list[dict[str, Any]]:
             run_style = _run_style_dict(run)
             if run_style is not None:
                 entry["style"] = run_style
+            entry["paragraph_index"] = paragraph_index
+            markup = find_child(run, "MarkupType")
+            if markup is not None and markup.text:
+                entry["markup_type"] = markup.text
             runs.append(entry)
     return runs
 

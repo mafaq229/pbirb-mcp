@@ -2928,16 +2928,24 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_textbox_runs",
         description=(
-            "Replace a textbox's content with multiple <TextRun> children "
-            "for mixed styling within one display — e.g. '**Asset(s):** "
-            "value' with a bold prefix + regular value in a single "
-            "textbox. Each run is a dict with required 'text' and optional "
+            "Set a textbox's text runs for mixed styling within one "
+            "display — e.g. '**Asset(s):** value' with a bold prefix + "
+            "regular value in a single textbox — or for multi-paragraph "
+            "content. Each run is a dict with required 'text' (or "
+            "'value') and optional paragraph_index (default 0) / "
             "font_family / font_size / font_weight / font_style / color / "
-            "format / text_decoration. Replaces the entire <Paragraphs> "
-            "subtree (single-paragraph in v0.3; multi-paragraph deferred). "
-            "Round-trip contract: get_textbox.runs[] returns the same "
-            "shape this tool writes. Idempotent — identical input is a "
-            "no-op short-circuit. Returns {textbox, kind, runs, changed}. "
+            "format / text_decoration / markup_type, or a 'style' dict "
+            "keyed by RDL names (FontWeight, ...). Edits in place: run i "
+            "of paragraph j overwrites the existing run there and keeps "
+            "every field you don't pass (MarkupType, ToolTip, ActionInfo, "
+            "other style keys; pass a style key as null to remove it); "
+            "paragraph properties (TextAlign, ListStyle, indents) are "
+            "kept, new paragraphs inherit the previous one's. Refuses "
+            "(file untouched) when existing paragraphs would be left "
+            "unaddressed, unless drop_extra_paragraphs=true. "
+            "get_textbox.runs[] is accepted verbatim, so feeding it back "
+            "is a no-op. Returns {textbox, kind, runs, paragraphs, "
+            "changed}. "
             "Pass raw text in each run's `text` — encoding is handled; "
             "don't pre-encode XML entities (use `&` not `&amp;`, "
             "including for the VB.NET string-concat operator)."
@@ -2954,17 +2962,57 @@ def register_all_tools(server: MCPServer) -> None:
                         "type": "object",
                         "properties": {
                             "text": {"type": "string"},
-                            "font_family": {"type": "string"},
-                            "font_size": {"type": "string"},
-                            "font_weight": {"type": "string"},
-                            "font_style": {"type": "string"},
-                            "color": {"type": "string"},
-                            "format": {"type": "string"},
-                            "text_decoration": {"type": "string"},
+                            "value": {
+                                "type": ["string", "null"],
+                                "description": "Alias of text (the key get_textbox returns).",
+                            },
+                            "paragraph_index": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "Paragraph this run belongs to (default 0).",
+                            },
+                            "font_family": {"type": ["string", "null"]},
+                            "font_size": {"type": ["string", "null"]},
+                            "font_weight": {"type": ["string", "null"]},
+                            "font_style": {"type": ["string", "null"]},
+                            "color": {"type": ["string", "null"]},
+                            "format": {"type": ["string", "null"]},
+                            "text_decoration": {"type": ["string", "null"]},
+                            "markup_type": {
+                                "type": ["string", "null"],
+                                "enum": ["None", "HTML", None],
+                                "description": "HTML renders the run's tags; null removes it.",
+                            },
+                            "style": {
+                                "type": "object",
+                                "description": (
+                                    "Run style keyed by RDL name (get_textbox shape); "
+                                    "null removes a key."
+                                ),
+                                "properties": {
+                                    local: {"type": ["string", "null"]}
+                                    for local in (
+                                        "FontFamily",
+                                        "FontSize",
+                                        "FontWeight",
+                                        "FontStyle",
+                                        "Color",
+                                        "Format",
+                                        "TextDecoration",
+                                    )
+                                },
+                                "additionalProperties": False,
+                            },
                         },
-                        "required": ["text"],
                         "additionalProperties": False,
                     },
+                },
+                "drop_extra_paragraphs": {
+                    "type": "boolean",
+                    "description": (
+                        "Delete existing trailing paragraphs that runs don't "
+                        "address (default false: refuse instead)."
+                    ),
                 },
             },
             "required": ["path", "textbox_name", "runs"],
@@ -2981,8 +3029,8 @@ def register_all_tools(server: MCPServer) -> None:
             "'change the textbox content' case (swap a literal label, "
             "update a stale parameter reference, replace a broken "
             "aggregate). Refuses with a redirect to set_textbox_runs when "
-            "the textbox has multiple text runs (multi-run content needs "
-            "the rich-text editor). Idempotent: identical value → "
+            "the textbox has multiple text runs or paragraphs (multi-run "
+            "content needs the rich-text editor). Idempotent: identical value → "
             "{changed: false} no-op. Returns {textbox, kind, changed}. "
             "Pass raw text — encoding is handled; don't pre-encode XML "
             "entities (use `&` not `&amp;`, including for the VB.NET "
