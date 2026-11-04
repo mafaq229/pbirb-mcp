@@ -729,7 +729,6 @@ def test_lint_rules_package_modules_are_registered(tmp_path, monkeypatch):
 
 _CHROME_RULES = [
     "page-number-out-of-chrome",
-    "page-global-out-of-chrome",
     "field-in-page-chrome",
     "page-section-missing-height",
 ]
@@ -768,13 +767,15 @@ class TestPageChromeRules:
         assert sorted(found) == sorted(
             [
                 ("field-in-page-chrome", "Textbox[Name='HdrField']>Value"),
-                ("page-global-out-of-chrome", "Textbox[Name='Pg1']>Value"),
-                ("page-global-out-of-chrome", "Textbox[Name='Pg2']>Value"),
+                ("page-number-out-of-chrome", "Textbox[Name='Pg1']>Value"),
+                ("page-number-out-of-chrome", "Textbox[Name='Pg2']>Value"),
                 ("page-number-out-of-chrome", "Textbox[Name='Pg3']>Value"),
             ]
         )
         issue = next(
-            i for i in lint_report(p)["issues"] if i["rule"] == "page-global-out-of-chrome"
+            i
+            for i in lint_report(p)["issues"]
+            if i["rule"] == "page-number-out-of-chrome" and "Pg1" in i["location"]
         )
         assert issue["severity"] == "error"
         assert "OverallPageNumber" in issue["message"]

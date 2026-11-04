@@ -1,11 +1,10 @@
 """Page-chrome lint rules (#50): what may and must appear in
 ``<PageHeader>`` / ``<PageFooter>``.
 
-* ``page-global-out-of-chrome`` (error) — ``Globals!OverallPageNumber``,
-  ``Globals!OverallTotalPages`` or ``Globals!PageName`` outside the page
-  header/footer. Like ``PageNumber`` / ``TotalPages`` (the core
-  ``page-number-out-of-chrome`` rule), they are only known at pagination
-  time, and Report Builder refuses them in the body.
+Page globals (``PageNumber``, ``TotalPages``, ``OverallPageNumber``,
+``OverallTotalPages``, ``PageName``) outside the page header/footer are
+reported by the core ``page-number-out-of-chrome`` rule (#46).
+
 * ``field-in-page-chrome`` (error) — a ``Fields!X`` reference in a page
   header/footer that isn't inside an aggregate call with an explicit
   dataset-scope string argument (``=First(Fields!X.Value, "DataSet1")``
@@ -37,7 +36,6 @@ _CHROME = ("PageHeader", "PageFooter")
 
 # Page-level globals the core page-number-out-of-chrome rule doesn't
 # cover (it handles PageNumber / TotalPages).
-_EXTRA_PAGE_GLOBALS = ("OverallPageNumber", "OverallTotalPages", "PageName")
 
 # Aggregate functions that take a scope argument. In a page header/footer
 # the scope must be a dataset name given as a string literal.
@@ -93,33 +91,6 @@ def _expressions(root: etree._Element) -> Iterator[tuple[etree._Element, list[vb
         if tokens is None:
             continue
         yield elem, vbexpr.significant(tokens)
-
-
-# ---- rule: page-global-out-of-chrome --------------------------------------
-
-
-def _rule_page_global_out_of_chrome(doc: RDLDocument) -> list[Issue]:
-    issues: list[Issue] = []
-    wanted = {g.lower(): g for g in _EXTRA_PAGE_GLOBALS}
-    for elem, sig in _expressions(doc.root):
-        hits = []
-        for ref in vbexpr.bang_references(sig, "Globals"):
-            canonical = wanted.get(ref.name.lower())
-            if canonical is not None and canonical not in hits:
-                hits.append(canonical)
-        if not hits or _region(elem) is not None:
-            continue
-        listed = ", ".join(f"Globals!{h}" for h in hits)
-        issues.append(
-            {
-                "severity": "error",
-                "rule": "page-global-out-of-chrome",
-                "location": _ancestor_chain(elem),
-                "message": f"{listed} only resolves inside <PageHeader>/<PageFooter>",
-                "suggestion": "move the textbox to the page header/footer",
-            }
-        )
-    return issues
 
 
 # ---- rule: field-in-page-chrome -------------------------------------------
@@ -252,7 +223,6 @@ def _rule_page_section_missing_height(doc: RDLDocument) -> list[Issue]:
 
 
 RULES = {
-    "page-global-out-of-chrome": _rule_page_global_out_of_chrome,
     "field-in-page-chrome": _rule_field_in_page_chrome,
     "page-section-missing-height": _rule_page_section_missing_height,
 }

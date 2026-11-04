@@ -423,24 +423,21 @@ def _rule_page_number_out_of_chrome(doc: RDLDocument) -> list[Issue]:
         if "globals" not in text.lower():
             continue
         sig = expr_walk.expression_tokens(text)
-        hit = next(
-            (
-                r
-                for r in expr_walk.references(sig or [], "Globals")
-                if r.name.lower() in _PAGE_GLOBALS
-            ),
-            None,
-        )
-        if hit is None:
+        hits: list[str] = []
+        for r in expr_walk.references(sig or [], "Globals"):
+            if r.name.lower() in _PAGE_GLOBALS and r.name not in hits:
+                hits.append(r.name)
+        if not hits:
             continue
         if _under_chrome(elem):
             continue
+        listed = ", ".join(f"Globals!{h}" for h in hits)
         issues.append(
             {
                 "severity": "error",
                 "rule": "page-number-out-of-chrome",
                 "location": _ancestor_chain(elem),
-                "message": f"Globals!{hit.name} only resolves inside <PageHeader>/<PageFooter>",
+                "message": f"{listed} only resolves inside <PageHeader>/<PageFooter>",
                 "suggestion": "move the textbox to the page header/footer",
             }
         )
