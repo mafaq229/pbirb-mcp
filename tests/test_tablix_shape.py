@@ -387,3 +387,40 @@ class TestMatrix:
         add_tablix_column(str(rdl_path), "MainTable", "Qty", "=Fields!Qty.Value")
         rows = _rows(_tablix(rdl_path))
         assert "Qty" in _row_textbox_names(rows[0])
+
+
+# ---- column-hierarchy leaves (#33) ------------------------------------------
+
+
+def test_column_leaves_match_body_columns_on_fixture():
+    from pbirb_mcp.core.tablix_shape import column_leaf, column_leaves, leaf_column_index
+
+    doc = RDLDocument.open(FIXTURE)
+    tablix = next(doc.root.iter(f"{{{RDL_NS}}}Tablix"))
+    leaves = column_leaves(tablix)
+    cols = list(tablix.iter(f"{{{RDL_NS}}}TablixColumn"))
+    assert len(leaves) == len(cols)
+    for i, leaf in enumerate(leaves):
+        assert leaf_column_index(tablix, leaf) == i
+        assert column_leaf(tablix, i) is leaf
+    assert column_leaf(tablix, len(leaves)) is None
+    assert column_leaf(tablix, -1) is None
+
+
+def test_column_leaves_descend_into_groups(tmp_path):
+    from pbirb_mcp.core.tablix_shape import column_leaves, subtree_leaves
+
+    member = (
+        f'<TablixColumnHierarchy xmlns="{RDL_NS}"><TablixMembers>'
+        "<TablixMember><Group Name='G'><GroupExpressions><GroupExpression>=1"
+        "</GroupExpression></GroupExpressions></Group><TablixMembers>"
+        "<TablixMember/><TablixMember/></TablixMembers></TablixMember>"
+        "<TablixMember/></TablixMembers></TablixColumnHierarchy>"
+    )
+    from lxml import etree
+
+    tablix = etree.fromstring(f'<Tablix xmlns="{RDL_NS}">{member}</Tablix>')
+    leaves = column_leaves(tablix)
+    assert len(leaves) == 3
+    group_member = tablix.find(f".//{{{RDL_NS}}}TablixMember")
+    assert subtree_leaves(group_member) == leaves[:2]

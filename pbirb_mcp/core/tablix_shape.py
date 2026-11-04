@@ -128,6 +128,41 @@ def row_leaf(tablix: etree._Element, row_index: int) -> Optional[etree._Element]
     return leaves[row_index] if row_index < len(leaves) else None
 
 
+def column_leaves(tablix: etree._Element) -> list[etree._Element]:
+    """Leaf ``TablixMember`` elements of the column hierarchy, depth-first
+    in document order. ``column_leaves(t)[i]`` owns body column ``i``
+    (``TablixColumns/TablixColumn[i]`` and cell ``i`` of every row)."""
+    hierarchy = find_child(tablix, "TablixColumnHierarchy")
+    if hierarchy is None:
+        return []
+    return _leaves_of(find_child(hierarchy, "TablixMembers"))
+
+
+def leaf_column_index(tablix: etree._Element, leaf: etree._Element) -> Optional[int]:
+    """Body-column index owned by the column-hierarchy leaf ``leaf``, or
+    ``None`` if it isn't one."""
+    for idx, candidate in enumerate(column_leaves(tablix)):
+        if candidate is leaf:
+            return idx
+    return None
+
+
+def column_leaf(tablix: etree._Element, column_index: int) -> Optional[etree._Element]:
+    """Column-hierarchy leaf owning body column ``column_index``, or
+    ``None`` when out of range."""
+    if column_index < 0:
+        return None
+    leaves = column_leaves(tablix)
+    return leaves[column_index] if column_index < len(leaves) else None
+
+
+def subtree_leaves(member: etree._Element) -> list[etree._Element]:
+    """Leaves of the hierarchy subtree rooted at ``member`` (``[member]``
+    for a leaf), in document order — i.e. the contiguous run of body
+    rows/columns the member spans."""
+    return _subtree_leaves(member)
+
+
 def find_row_group_member(tablix: etree._Element, group_name: str) -> Optional[etree._Element]:
     """The row-hierarchy ``TablixMember`` whose ``<Group Name=...>`` matches
     ``group_name`` (row axis only), or ``None``."""
@@ -240,6 +275,8 @@ def detail_row_index(tablix: etree._Element) -> Optional[int]:
 
 __all__ = [
     "NO_DETAIL_GROUP",
+    "column_leaf",
+    "column_leaves",
     "data_leaf",
     "data_row_index",
     "detail_member",
@@ -248,7 +285,9 @@ __all__ = [
     "is_detail_group",
     "is_dynamic_group",
     "is_leaf_member",
+    "leaf_column_index",
     "leaf_row_index",
     "row_leaf",
     "row_leaves",
+    "subtree_leaves",
 ]
