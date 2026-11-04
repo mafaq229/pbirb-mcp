@@ -15,17 +15,25 @@ returns a list of issue dicts:
 The shape mirrors :mod:`pbirb_mcp.ops.validate` so :func:`verify_report`
 (commit 33) can union the two streams without reshaping.
 
+Expression rules walk every expression in the report (any element whose
+text starts with ``=``) via :func:`pbirb_mcp.ops.expr_walk.iter_expressions`
+and tokenize it with :mod:`pbirb_mcp.ops.vbexpr` (#46).
+
 Core rules (19):
 
-* ``multi-value-eq`` (warn) — multi-value param compared with ``=``.
+* ``multi-value-eq`` (warn) — multi-value param compared with ``=``, or
+  the FilterValue of an ``Equal``/``NotEqual`` ``<Filter>`` (#46).
 * ``unused-data-source`` (warn) — DataSource never referenced.
 * ``unused-data-set`` (warn) — DataSet never referenced.
 * ``date-param-as-string`` (warn) — ``*date*``-named param typed as
   String.
-* ``missing-field-reference`` (error) — ``Fields!X.Value`` for X not in
-  any dataset's ``<Fields>``.
-* ``page-number-out-of-chrome`` (error) — ``Globals!PageNumber`` /
-  ``Globals!TotalPages`` outside header/footer.
+* ``missing-field-reference`` (error) — ``Fields!X.<member>`` /
+  ``Fields("X")`` for X not in any dataset's ``<Fields>`` (a field of
+  another dataset than the one in scope is ``field-out-of-scope``, in
+  :mod:`pbirb_mcp.ops.lint_rules.expressions`).
+* ``page-number-out-of-chrome`` (error) — ``Globals!(Overall)PageNumber``
+  / ``Globals!(Overall)TotalPages`` / ``Globals!PageName`` outside
+  header/footer.
 * ``expression-syntax`` (error) — expression with an unterminated
   string literal or mismatched parens/brackets/braces (tokenized via
   :mod:`pbirb_mcp.ops.vbexpr`, so literals and comments don't count).
@@ -79,7 +87,7 @@ from lxml import etree
 from pbirb_mcp.core import names
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q
-from pbirb_mcp.ops import vbexpr
+from pbirb_mcp.ops import expr_walk, vbexpr
 from pbirb_mcp.ops.dataset import _is_pbidataset_dataset
 from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
 
@@ -126,46 +134,11 @@ def _ancestor_chain(elem: etree._Element, max_named: int = 3) -> str:
 
 
 # ---- expression-bearing nodes -------------------------------------------
-
-# Elements whose text is treated as an expression in RDL. ``<Value>``
-# inside ``<Textbox>/<Paragraphs>/<Paragraph>/<TextRuns>/<TextRun>`` is
-# the canonical example; aggregates also live in tablix cells, query
-# parameters, filter expressions, etc.
-_EXPRESSION_TAGS = (
-    "Value",
-    "FilterExpression",
-    "Filter",
-    "GroupExpression",
-    "SortExpression",
-    "ToolTip",
-    "Label",
-    "Hidden",
-    "ReportName",
-    "BackgroundColor",
-    "Color",
-    "FontWeight",
-    "FontStyle",
-    "Action",
-)
-
-
-def _iter_expression_nodes(root: etree._Element):
-    """Yield all elements whose text is treated as an expression. We
-    over-approximate (every ``<Value>`` regardless of parent) — false
-    positives are tolerable because the rule body filters by content
-    (``=``-prefix, ``Fields!``, ``Parameters!``, etc.).
-    """
-    for tag in (
-        "Value",
-        "FilterExpression",
-        "GroupExpression",
-        "SortExpression",
-        "ToolTip",
-        "Label",
-        "Hidden",
-        "InitialToggleState",
-    ):
-        yield from root.iter(q(tag))
+#
+# Every rule that inspects expressions walks them with
+# :func:`pbirb_mcp.ops.expr_walk.iter_expressions` (#46): any element whose
+# text starts with ``=``, except ``<CommandText>``, ``<Code>`` and
+# non-RDL-namespace (``rd:``/``am:`` …) elements.
 
 
 # ---- rule 1: multi-value-eq --------------------------------------------
@@ -198,10 +171,10 @@ def _rule_multi_value_eq(doc: RDLDocument) -> list[Issue]:
         return []
     issues: list[Issue] = []
     seen: set[tuple[str, str]] = set()
-    for elem in _iter_expression_nodes(doc.root):
-        if not elem.text or "parameters!" not in elem.text.lower():
+    for elem, text in expr_walk.iter_expressions(doc.root):
+        if "parameters!" not in text.lower():
             continue
-        tokens = vbexpr.tokenize_expression(elem.text)
+        tokens = vbexpr.tokenize_expression(text)
         if tokens is None:
             continue
         sig = vbexpr.significant(tokens)
@@ -231,6 +204,64 @@ def _rule_multi_value_eq(doc: RDLDocument) -> list[Issue]:
                     "suggestion": (
                         f"use IN: ``Fields!X.Value IN (Parameters!{ref.name}.Value)`` "
                         f'or JOIN(Parameters!{ref.name}.Value, ",")'
+                    ),
+                }
+            )
+    issues.extend(_multi_value_filter_issues(doc, multi))
+    return issues
+
+
+def _bare_reference(sig: list[vbexpr.Token]) -> Optional[expr_walk.Ref]:
+    """The single ``Parameters!X.Value`` an expression consists of
+    (optionally wrapped in parentheses), else ``None``."""
+    while (
+        len(sig) >= 2
+        and sig[0].text == "("
+        and sig[-1].text == ")"
+        and vbexpr.first_unbalanced_delimiter(sig[1:-1]) is None
+    ):
+        sig = sig[1:-1]
+    refs = expr_walk.references(sig, "Parameters")
+    if len(refs) == 1 and refs[0].first == 0 and refs[0].last == len(sig) - 1:
+        return refs[0]
+    return None
+
+
+def _multi_value_filter_issues(doc: RDLDocument, multi: set[str]) -> list[Issue]:
+    """``<Filter>`` with ``Operator`` ``Equal``/``NotEqual`` whose
+    ``FilterValue`` is a multi-value parameter — the commonest form of
+    the bug (#46): the filter compares each row against an array and
+    Report Builder rejects it at run time. ``In`` is the operator for a
+    multi-value list."""
+    issues: list[Issue] = []
+    for flt in doc.root.iter(q("Filter")):
+        op = find_child(flt, "Operator")
+        op_text = (op.text or "").strip() if op is not None else ""
+        if op_text not in ("Equal", "NotEqual"):
+            continue
+        values = find_child(flt, "FilterValues")
+        if values is None:
+            continue
+        for fv in find_children(values, "FilterValue"):
+            sig = expr_walk.expression_tokens(fv.text)
+            if not sig:
+                continue
+            ref = _bare_reference(sig)
+            if ref is None or ref.name not in multi or (ref.member or "").lower() != "value":
+                continue
+            issues.append(
+                {
+                    "severity": "warning",
+                    "rule": "multi-value-eq",
+                    "location": _ancestor_chain(fv),
+                    "message": (
+                        f"filter Operator {op_text} compares against multi-value parameter "
+                        f"{ref.name!r}; its Value is an array"
+                    ),
+                    "suggestion": (
+                        "use Operator In (add_tablix_filter / add_dataset_filter with "
+                        "operator='In'), or index a single value: "
+                        f"Parameters!{ref.name}.Value(0)"
                     ),
                 }
             )
@@ -320,30 +351,24 @@ def _rule_date_param_as_string(doc: RDLDocument) -> list[Issue]:
 # ---- rule 5: missing-field-reference -----------------------------------
 
 
-def _all_field_names(doc: RDLDocument) -> set[str]:
-    """Union of every ``<Field Name>`` in every dataset."""
-    out: set[str] = set()
-    for f in doc.root.iter(q("Field")):
-        if f.get("Name"):
-            out.add(f.get("Name"))
-    return out
-
-
 def _rule_missing_field_reference(doc: RDLDocument) -> list[Issue]:
-    valid = _all_field_names(doc)
+    """A field reference — ``Fields!X.Value`` / ``.Label`` / ``.IsMissing``
+    / any other member, or ``Fields("X")`` — to a field that no dataset
+    declares, in any expression of the report (#46). A field that exists
+    but in another dataset than the one in scope is ``field-out-of-scope``
+    (:mod:`pbirb_mcp.ops.lint_rules.expressions`)."""
+    valid = expr_walk.ScopeIndex(doc.root).all_fields
     issues: list[Issue] = []
     seen: set[tuple[str, str]] = set()  # de-dupe by (location, field)
-    for elem in _iter_expression_nodes(doc.root):
-        if not elem.text or "fields!" not in elem.text.lower():
+    for elem, text in expr_walk.iter_expressions(doc.root):
+        if "fields" not in text.lower():
             continue
-        # Only real code counts: a non-``=`` value is a literal, and
-        # ``Fields!X.Value`` inside a string literal or comment is text.
-        tokens = vbexpr.tokenize_expression(elem.text)
-        if tokens is None:
+        # Only real code counts: ``Fields!X.Value`` inside a string
+        # literal or comment is text.
+        sig = expr_walk.expression_tokens(text)
+        if not sig:
             continue
-        for ref in vbexpr.bang_references(tokens, "Fields"):
-            if (ref.member or "").lower() != "value":
-                continue
+        for ref in expr_walk.references(sig, "Fields"):
             field = ref.name
             if field in valid:
                 continue
@@ -356,7 +381,10 @@ def _rule_missing_field_reference(doc: RDLDocument) -> list[Issue]:
                     "severity": "error",
                     "rule": "missing-field-reference",
                     "location": loc,
-                    "message": f"Fields!{field}.Value referenced but not declared in any dataset",
+                    "message": (
+                        f"{text[ref.start : ref.end]} referenced but field {field!r} "
+                        "is not declared in any dataset"
+                    ),
                     "suggestion": (
                         "add the field to the relevant dataset's <Fields> "
                         "(see add_dataset_field / refresh_dataset_fields)"
@@ -369,7 +397,12 @@ def _rule_missing_field_reference(doc: RDLDocument) -> list[Issue]:
 # ---- rule 6: page-number-out-of-chrome ---------------------------------
 
 
-_PAGE_GLOBAL_RE = re.compile(r"Globals!(PageNumber|TotalPages)")
+# Globals that only resolve in the page header/footer (#46): the issue's
+# ``Globals!(Overall)?(PageNumber|TotalPages)|Globals!PageName``, matched
+# on VB tokens so a mention inside a string literal doesn't count.
+_PAGE_GLOBALS = frozenset(
+    {"pagenumber", "totalpages", "overallpagenumber", "overalltotalpages", "pagename"}
+)
 
 
 def _under_chrome(elem: etree._Element) -> bool:
@@ -385,11 +418,19 @@ def _under_chrome(elem: etree._Element) -> bool:
 
 def _rule_page_number_out_of_chrome(doc: RDLDocument) -> list[Issue]:
     issues: list[Issue] = []
-    for elem in _iter_expression_nodes(doc.root):
-        if not elem.text or "Globals!" not in elem.text:
+    for elem, text in expr_walk.iter_expressions(doc.root):
+        if "globals" not in text.lower():
             continue
-        m = _PAGE_GLOBAL_RE.search(elem.text)
-        if not m:
+        sig = expr_walk.expression_tokens(text)
+        hit = next(
+            (
+                r
+                for r in expr_walk.references(sig or [], "Globals")
+                if r.name.lower() in _PAGE_GLOBALS
+            ),
+            None,
+        )
+        if hit is None:
             continue
         if _under_chrome(elem):
             continue
@@ -398,7 +439,7 @@ def _rule_page_number_out_of_chrome(doc: RDLDocument) -> list[Issue]:
                 "severity": "error",
                 "rule": "page-number-out-of-chrome",
                 "location": _ancestor_chain(elem),
-                "message": (f"Globals!{m.group(1)} only resolves inside <PageHeader>/<PageFooter>"),
+                "message": f"Globals!{hit.name} only resolves inside <PageHeader>/<PageFooter>",
                 "suggestion": "move the textbox to the page header/footer",
             }
         )
@@ -415,8 +456,7 @@ def _rule_expression_syntax(doc: RDLDocument) -> list[Issue]:
     are ignored, so ``=Fields!A.Value & ") "`` is fine.
     """
     issues: list[Issue] = []
-    for elem in _iter_expression_nodes(doc.root):
-        text = elem.text
+    for elem, text in expr_walk.iter_expressions(doc.root):
         tokens = vbexpr.tokenize_expression(text)
         if tokens is None:
             continue

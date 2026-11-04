@@ -237,7 +237,8 @@ def test_apply_edits_commits_after_false_positives_removed(rdl_path):
     body.add_body_textbox(
         p,
         "Num",
-        '=Fields!ProductID.Value & ") " & Fields!ProductName.Value',
+        # Aggregated: a bare field in a body textbox is field-out-of-scope (#46).
+        '=First(Fields!ProductID.Value) & ") " & First(Fields!ProductName.Value)',
         "3in",
         "0in",
         "2in",
