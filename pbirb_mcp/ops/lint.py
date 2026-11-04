@@ -37,8 +37,9 @@ Core rules (19):
 * ``expression-syntax`` (error) — expression with an unterminated
   string literal or mismatched parens/brackets/braces (tokenized via
   :mod:`pbirb_mcp.ops.vbexpr`, so literals and comments don't count).
-* ``dangling-embedded-image`` (error) — ``Image Source=Embedded`` whose
-  ``Value`` doesn't name an ``<EmbeddedImage>``.
+* ``dangling-embedded-image`` (error) — ``Image`` or (#47)
+  ``Style/BackgroundImage`` with ``Source=Embedded`` whose ``Value``
+  doesn't name an ``<EmbeddedImage>``.
 * ``dangling-data-source-reference`` (error) —
   ``<DataSet>/<Query>/<DataSourceName>`` doesn't match a real
   ``<DataSource>``.
@@ -499,7 +500,9 @@ def _rule_dangling_embedded_image(doc: RDLDocument) -> list[Issue]:
             if entry.get("Name"):
                 declared.add(entry.get("Name"))
     issues: list[Issue] = []
-    for img in doc.root.iter(q("Image")):
+    # <Image> report items and Style/<BackgroundImage> (#47) share the
+    # Source/Value shape.
+    for img in doc.root.iter(q("Image"), q("BackgroundImage")):
         source = find_child(img, "Source")
         if source is None or (source.text or "").strip() != "Embedded":
             continue
@@ -512,12 +515,20 @@ def _rule_dangling_embedded_image(doc: RDLDocument) -> list[Issue]:
             continue
         if ref in declared:
             continue
+        if etree.QName(img).localname == "BackgroundImage":
+            location = _ancestor_chain(img)
+            what = "BackgroundImage"
+        else:
+            location = f"Image[Name={img.get('Name')!r}]" if img.get("Name") else "Image"
+            what = "Image"
         issues.append(
             {
                 "severity": "error",
                 "rule": "dangling-embedded-image",
-                "location": f"Image[Name={img.get('Name')!r}]" if img.get("Name") else "Image",
-                "message": f"Image Source=Embedded references {ref!r}, which isn't in <EmbeddedImages>",
+                "location": location,
+                "message": (
+                    f"{what} Source=Embedded references {ref!r}, which isn't in <EmbeddedImages>"
+                ),
                 "suggestion": "add the image via add_embedded_image or fix the Value reference",
             }
         )

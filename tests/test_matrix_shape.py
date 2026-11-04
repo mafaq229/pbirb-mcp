@@ -334,7 +334,7 @@ class TestAggregation:
             ("=Fields!Amount.Value / Sum(Fields!Amount.Value)", None),
             ("=Max(Fields!Amount.Value) + 1", None),
             # No field reference / a literal: unchanged.
-            ("=Parameters!P.Value", None),
+            ("=Parameters!DateFrom.Value", None),  # a declared parameter (#47)
             ("n/a", None),
         ],
     )
