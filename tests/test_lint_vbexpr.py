@@ -269,9 +269,10 @@ _EXPECTED_FIXTURE_ISSUES = {
         ("warning", "unused-data-source"),
         ("warning", "unused-data-set"),
     ],
-    "known_bad/actioninfo_under_chartseries.rdl": [],
+    # The chart known_bad files predate #39: 3 ChartSeries, 1 series member (#45).
+    "known_bad/actioninfo_under_chartseries.rdl": [("error", "chart-structure")],
     "known_bad/bare_action_under_textbox.rdl": [],
-    "known_bad/chart_axis_title_wrong_element.rdl": [],
+    "known_bad/chart_axis_title_wrong_element.rdl": [("error", "chart-structure")],
 }
 
 
