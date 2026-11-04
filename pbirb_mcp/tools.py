@@ -900,7 +900,7 @@ def register_all_tools(server: MCPServer) -> None:
             "duplicate-name, invalid-identifier, tablix-structure, "
             "chart-structure, etc.). "
             "Returns {issues, rules_run} with each issue {severity "
-            "(error|warning|info), "
+            "(error|warning), "
             "rule, location, message, suggestion?}; location names the "
             "nearest named items, e.g. Tablix[Name='T']>Textbox[Name='X']>Value. "
             "Optional `rules` selects a subset by name (empty = all)."

@@ -588,26 +588,28 @@ class TestKeepWithGroup:
 
 
 class TestWidth:
-    def test_width_mismatch_is_info(self, rdl_path):
+    """Width vs columns is reported once, by the geometry rule
+    ``tablix-width-mismatch`` (a warning) — not by tablix-structure."""
+
+    @staticmethod
+    def _width(path: Path) -> list[dict]:
+        return lint_report(str(path), ["tablix-width-mismatch"])["issues"]
+
+    def test_width_mismatch_is_a_geometry_warning_only(self, rdl_path):
         _patch(rdl_path, lambda d: find_child(_tablix(d), "Width").__setattr__("text", "6in"))
-        issues = _issues(rdl_path)
-        assert [(i["severity"], i["location"]) for i in issues] == [
-            ("info", "Tablix[Name='MainTable']>Width")
-        ]
-        assert "add up to 4in" in issues[0]["message"]
+        assert _issues(rdl_path) == []
+        issues = self._width(rdl_path)
+        assert [i["severity"] for i in issues] == ["warning"]
+        assert "MainTable" in issues[0]["location"]
         assert verify_report(str(rdl_path))["valid"] is True
 
     def test_row_headers_count_towards_width(self, matrix_path):
-        _patch(matrix_path, lambda d: find_child(_matrix(d), "Width").__setattr__("text", "2in"))
-        assert "add up to 3in" in _issues(matrix_path)[0]["message"]
+        _patch(matrix_path, lambda d: find_child(_matrix(d), "Width").__setattr__("text", "3in"))
+        assert self._width(matrix_path) == []
 
     def test_mixed_units_within_tolerance_are_clean(self, rdl_path):
         _patch(rdl_path, lambda d: find_child(_tablix(d), "Width").__setattr__("text", "10.16cm"))
-        assert _issues(rdl_path) == []
-
-    def test_expression_width_is_skipped(self, rdl_path):
-        _patch(rdl_path, lambda d: find_child(_tablix(d), "Width").__setattr__("text", "=1"))
-        assert _issues(rdl_path) == []
+        assert self._width(rdl_path) == []
 
 
 # ---- verify_report / auto-verify / commit verify ---------------------------

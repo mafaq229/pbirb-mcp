@@ -18,8 +18,8 @@ nested ones (inside a cell or a rectangle) included — and reports:
   ``<TablixCorner>``; ``<KeepWithGroup>`` on a hierarchy member that has a
   ``<Group>`` (it only means something on a static member next to a
   group).
-* **info** — the tablix ``<Width>`` differs from the row-header widths
-  plus the body column widths (Report Builder recomputes it on open).
+(A ``<Width>`` that differs from the row headers + body columns is the
+geometry family's ``tablix-width-mismatch`` warning, not this rule.)
 
 Each location is the tablix's ancestor chain plus the step inside it,
 with 0-based indices, e.g.
@@ -133,39 +133,6 @@ def _row_header_width(tablix: etree._Element) -> Optional[float]:
     return widest
 
 
-def _width_issue(tablix: etree._Element) -> Optional[Issue]:
-    width_node = find_child(tablix, "Width")
-    width = _size_in(width_node)
-    body = find_child(tablix, "TablixBody")
-    cols_root = find_child(body, "TablixColumns") if body is not None else None
-    if width is None or cols_root is None:
-        return None
-    total = 0.0
-    for column in find_children(cols_root, "TablixColumn"):
-        size = _size_in(find_child(column, "Width"))
-        if size is None:
-            return None
-        total += size
-    headers = _row_header_width(tablix)
-    if headers is None:
-        return None
-    expected = total + headers
-    if abs(expected - width) <= _WIDTH_TOLERANCE_IN:
-        return None
-    expected_text = units.format_size(expected)
-    return {
-        "severity": "info",
-        "rule": RULE,
-        "location": _location(tablix, "Width"),
-        "message": (
-            f"tablix {tablix.get('Name')!r}: Width is {(width_node.text or '').strip()} but its "
-            f"row headers and columns add up to {expected_text}; Report Builder "
-            "recomputes the width on open"
-        ),
-        "suggestion": f"set the tablix Width to {expected_text}",
-    }
-
-
 def _rule_tablix_structure(doc: RDLDocument) -> list[Issue]:
     issues: list[Issue] = []
     for tablix in doc.root.iter(q("Tablix")):
@@ -182,9 +149,6 @@ def _rule_tablix_structure(doc: RDLDocument) -> list[Issue]:
                 }
             )
         issues.extend(_keep_with_group_issues(tablix))
-        width = _width_issue(tablix)
-        if width is not None:
-            issues.append(width)
     return issues
 
 
