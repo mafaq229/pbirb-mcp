@@ -378,6 +378,29 @@ def _build_tablix_column_cell(
     return cell
 
 
+def _refuse_data_row_span(
+    tablix: etree._Element, body: etree._Element, insert_at: int, column_name: str
+) -> None:
+    """Raise if a column inserted at ``insert_at`` would land inside a
+    merged (ColSpan) cell of the tablix's data row."""
+    rows_root = find_child(body, "TablixRows")
+    rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
+    if not rows:
+        return
+    data_idx = data_row_index(tablix)
+    row = rows[data_idx if data_idx is not None and data_idx < len(rows) else -1]
+    cells_root = find_child(row, "TablixCells")
+    cells = find_children(cells_root, "TablixCell") if cells_root is not None else []
+    if tablix_spans.inside_span(cells, insert_at):
+        owner = cells[tablix_spans.owner_map(cells)[insert_at]]
+        raise ValueError(
+            f"position {insert_at} is inside the merged data-row cell "
+            f"{', '.join(tablix_spans.report_item_names(owner)) or '(unnamed)'}; "
+            f"{column_name!r} would have no cell. Insert outside the span or "
+            "shrink it with set_cell_span first."
+        )
+
+
 def add_tablix_column(
     path: str,
     tablix_name: str,
@@ -441,6 +464,10 @@ def add_tablix_column(
             raise IndexError(f"position {position} out of range; tablix has {n_cols} column(s)")
         insert_at = position
 
+    # Inside a merged cell of the data row the new column would get no
+    # column_name textbox (the span grows over it) — refuse up front (#34).
+    _refuse_data_row_span(tablix, body, insert_at, column_name)
+
     # ---- body: insert <TablixColumn> at insert_at ------------------------
     new_column = etree.Element(q("TablixColumn"))
     etree.SubElement(new_column, q("Width")).text = width
@@ -476,10 +503,17 @@ def add_tablix_column(
     data_row_idx = data_idx if data_idx is not None and data_idx < n_rows else n_rows - 1
 
     emitted: list[str] = []
+    widened: list[int] = []
     for i, row in enumerate(rows):
         cells_root = find_child(row, "TablixCells")
         if cells_root is None:
             cells_root = etree.SubElement(row, q("TablixCells"))
+
+        # Inside a merged cell (e.g. a band header) the span grows over
+        # the new column and a placeholder goes in, not a textbox (#34).
+        if tablix_spans.widen_span(cells_root, insert_at):
+            widened.append(i)
+            continue
 
         if n_rows == 1:
             # Single-row tablix: that row is the data row.
@@ -522,6 +556,8 @@ def add_tablix_column(
     }
     if column_headers:
         result["column_header_textboxes"] = column_headers
+    if widened:
+        result["widened_span_rows"] = widened
     return result
 
 
@@ -591,16 +627,23 @@ def remove_tablix_column(
             members_root.remove(candidate)
 
     # ---- rows: remove the cell at target_index from every row ------------
+    # Span-aware (#34): a column covered by a merged cell shrinks that
+    # span; removing a merged cell's own column keeps its contents (the
+    # span shrinks and a placeholder goes instead).
+    removed_textboxes: list[str] = []
     for row in rows:
         cells_root = find_child(row, "TablixCells")
         if cells_root is None:
             continue
-        cells = find_children(cells_root, "TablixCell")
-        if target_index < len(cells):
-            cells_root.remove(cells[target_index])
+        removed_textboxes.extend(tablix_spans.remove_cell(cells_root, target_index))
 
     doc.save()
-    return {"tablix": tablix_name, "removed_column": column_name, "position": target_index}
+    return {
+        "tablix": tablix_name,
+        "removed_column": column_name,
+        "position": target_index,
+        "removed_textboxes": removed_textboxes,
+    }
 
 
 # ---- set_column_width ----------------------------------------------------

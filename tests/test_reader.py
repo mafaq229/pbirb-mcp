@@ -98,6 +98,7 @@ class TestDescribeReport:
             row_index=0,
             column_name="HeaderProductID",
             col_span=2,
+            force=True,
         )
         out = describe_report(path=str(rdl_path))
         assert out["tablixes"][0]["has_spans"] is True

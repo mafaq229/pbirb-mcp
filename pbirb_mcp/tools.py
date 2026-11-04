@@ -1957,7 +1957,9 @@ def register_all_tools(server: MCPServer) -> None:
             "middle rows get blank cells, and the last row gets expression. "
             "position is 0-indexed; default appends at end. width defaults to "
             "1in. Inserts a matching top-level TablixMember in the column "
-            "hierarchy at the same index."
+            "hierarchy at the same index. A position inside a merged "
+            "(ColSpan) cell widens that span instead of adding a textbox "
+            "under it (refused if the data row is merged there)."
         ),
         input_schema={
             "type": "object",
@@ -1983,8 +1985,9 @@ def register_all_tools(server: MCPServer) -> None:
             "named column_name. Drops the matching TablixColumn, removes the "
             "top-level TablixMember at that column index (only if it's a "
             "leaf, never a column group wrapper), and removes the cell at "
-            "that index from every TablixRow. Errors if no row contains a "
-            "textbox with the given name."
+            "that index from every TablixRow. Merged (ColSpan) cells "
+            "shrink by one instead of losing their contents. Errors if no "
+            "row contains a textbox with the given name."
         ),
         input_schema={
             "type": "object",
@@ -2089,11 +2092,18 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_cell_span",
         description=(
-            "Set <RowSpan> and/or <ColSpan> on a tablix cell. The cell is "
-            "addressed by (row_index, column_name) where column_name is the "
-            "textbox name inside the cell. At least one of row_span / "
-            "col_span must be supplied; both must be >= 1. Pass 1 to "
-            "explicitly reset a span. Replaces existing values if present."
+            "Set <ColSpan> on a tablix body cell (merge it with the cells "
+            "to its right). The cell is addressed by (row_index, "
+            "column_name) where column_name is the textbox name inside the "
+            "cell. At least one of row_span / col_span must be supplied; "
+            "both must be integers >= 1. col_span may not run past the last "
+            "column. Covered cells become empty placeholders: blank ones are "
+            "cleared, a covered cell with content is refused unless "
+            "force=true deletes it. Shrinking a span gives the uncovered "
+            "cells blank textboxes. row_span > 1 is refused (body cells "
+            "cannot span rows; RowSpan only applies in a TablixCorner); "
+            "pass 1 to reset. Returns {..., cleared, created} - the textbox "
+            "names deleted / created."
         ),
         input_schema={
             "type": "object",
@@ -2104,6 +2114,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "column_name": {"type": "string"},
                 "row_span": {"type": ["integer", "null"], "minimum": 1},
                 "col_span": {"type": ["integer", "null"], "minimum": 1},
+                "force": {"type": "boolean", "default": False},
             },
             "required": ["path", "tablix_name", "row_index", "column_name"],
             "additionalProperties": False,

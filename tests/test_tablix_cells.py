@@ -17,10 +17,13 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
+from pbirb_mcp.core.tablix_headers import new_textbox, shape_problems
 from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
 from pbirb_mcp.ops.tablix_cells import set_cell_span
+from pbirb_mcp.ops.validate import validate_report
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
+from tests._band_fixture import band_row, build_band_report
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pbi_paginated_minimal.rdl"
 
@@ -50,19 +53,21 @@ class TestSetCellSpanPlacement:
     """Spans MUST land inside <CellContents>, not directly on <TablixCell>."""
 
     def test_row_span_lands_inside_cell_contents(self, rdl_path):
+        # Body cells can't span rows (#34); a RowSpan reset to 1 is still
+        # written inside CellContents.
         set_cell_span(
             path=str(rdl_path),
             tablix_name="MainTable",
             row_index=1,
             column_name="ProductID",
-            row_span=2,
+            row_span=1,
         )
         tablix = _tablix(RDLDocument.open(rdl_path), "MainTable")
         cell = _cell(tablix, 1, 0)
         contents = find_child(cell, "CellContents")
         # Correct placement: child of CellContents.
         rs_inside = find_child(contents, "RowSpan")
-        assert rs_inside is not None and rs_inside.text == "2"
+        assert rs_inside is not None and rs_inside.text == "1"
         # Bug-regression check: NOT a child of TablixCell directly.
         assert find_child(cell, "RowSpan") is None
         assert find_child(cell, "ColSpan") is None
@@ -74,6 +79,7 @@ class TestSetCellSpanPlacement:
             row_index=0,
             column_name="HeaderProductID",
             col_span=3,
+            force=True,
         )
         tablix = _tablix(RDLDocument.open(rdl_path), "MainTable")
         cell = _cell(tablix, 0, 0)
@@ -88,12 +94,13 @@ class TestSetCellSpanPlacement:
             tablix_name="MainTable",
             row_index=1,
             column_name="ProductName",
-            row_span=2,
+            row_span=1,
             col_span=2,
+            force=True,
         )
         tablix = _tablix(RDLDocument.open(rdl_path), "MainTable")
         contents = _cell_contents(tablix, 1, 1)
-        assert find_child(contents, "RowSpan").text == "2"
+        assert find_child(contents, "RowSpan").text == "1"
         assert find_child(contents, "ColSpan").text == "2"
         # Neither lives on the TablixCell directly.
         cell = _cell(tablix, 1, 1)
@@ -107,8 +114,9 @@ class TestSetCellSpanPlacement:
             tablix_name="MainTable",
             row_index=1,
             column_name="ProductName",
-            row_span=2,
+            row_span=1,
             col_span=2,
+            force=True,
         )
         tablix = _tablix(RDLDocument.open(rdl_path), "MainTable")
         contents = _cell_contents(tablix, 1, 1)
@@ -125,18 +133,20 @@ class TestSetCellSpanPlacement:
             tablix_name="MainTable",
             row_index=1,
             column_name="ProductID",
-            row_span=2,
+            col_span=2,
+            force=True,
         )
         set_cell_span(
             path=str(rdl_path),
             tablix_name="MainTable",
             row_index=1,
             column_name="ProductID",
-            row_span=3,
+            col_span=3,
+            force=True,
         )
         tablix = _tablix(RDLDocument.open(rdl_path), "MainTable")
         contents = _cell_contents(tablix, 1, 0)
-        spans = [r.text for r in find_children(contents, "RowSpan")]
+        spans = [r.text for r in find_children(contents, "ColSpan")]
         assert spans == ["3"]
 
 
@@ -161,7 +171,7 @@ class TestLegacyV02Migration:
             tablix_name="MainTable",
             row_index=0,
             column_name="HeaderProductID",
-            row_span=2,
+            row_span=1,
         )
         tablix = _tablix(RDLDocument.open(rdl_path), "MainTable")
         cell = _cell(tablix, 0, 0)
@@ -169,7 +179,7 @@ class TestLegacyV02Migration:
         # Old (legacy) ColSpan moved inside.
         assert find_child(contents, "ColSpan").text == "2"
         # New RowSpan also inside.
-        assert find_child(contents, "RowSpan").text == "2"
+        assert find_child(contents, "RowSpan").text == "1"
         # Nothing left on TablixCell.
         assert find_child(cell, "ColSpan") is None
         assert find_child(cell, "RowSpan") is None
@@ -196,14 +206,14 @@ class TestLegacyV02Migration:
             tablix_name="MainTable",
             row_index=0,
             column_name="HeaderProductID",
-            row_span=3,
+            row_span=1,
         )
         tablix = _tablix(RDLDocument.open(rdl_path), "MainTable")
         cell = _cell(tablix, 0, 0)
         contents = find_child(cell, "CellContents")
         # Legacy "2" wins (was active); the stale "99" was discarded.
         assert find_child(contents, "ColSpan").text == "2"
-        assert find_child(contents, "RowSpan").text == "3"
+        assert find_child(contents, "RowSpan").text == "1"
         assert find_child(cell, "ColSpan") is None
 
 
@@ -236,7 +246,7 @@ class TestRejectionsPreserved:
                 tablix_name="MainTable",
                 row_index=0,
                 column_name="NoSuch",
-                row_span=2,
+                col_span=2,
             )
 
     def test_row_index_out_of_range_raises(self, rdl_path):
@@ -246,7 +256,7 @@ class TestRejectionsPreserved:
                 tablix_name="MainTable",
                 row_index=99,
                 column_name="HeaderProductID",
-                row_span=2,
+                col_span=2,
             )
 
     def test_round_trip_safe(self, rdl_path):
@@ -254,8 +264,9 @@ class TestRejectionsPreserved:
             path=str(rdl_path),
             tablix_name="MainTable",
             row_index=0,
-            column_name="HeaderAmount",
+            column_name="HeaderProductName",
             col_span=2,
+            force=True,
         )
         RDLDocument.open(rdl_path).validate()
 
@@ -265,3 +276,108 @@ class TestToolRegistration:
         server = MCPServer()
         register_all_tools(server)
         assert "set_cell_span" in server._tools
+
+
+# ---- #34: span-aware validation ------------------------------------------
+
+
+def _row_names(path: Path, row_index: int) -> list:
+    tablix = _tablix(RDLDocument.open(path), "MainTable")
+    rows = find_children(tablix.find(f"{q('TablixBody')}/{q('TablixRows')}"), "TablixRow")
+    out = []
+    for cell in find_children(rows[row_index].find(q("TablixCells")), "TablixCell"):
+        tb = cell.find(f"{q('CellContents')}/{q('Textbox')}")
+        out.append(tb.get("Name") if tb is not None else None)
+    return out
+
+
+def _problems(path: Path) -> list:
+    return shape_problems(_tablix(RDLDocument.open(path), "MainTable"))
+
+
+class TestSpanAwareValidation:
+    def test_overflow_rejected(self, rdl_path):
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="overflows"):
+            set_cell_span(str(rdl_path), "MainTable", 0, "HeaderProductID", col_span=99)
+        with pytest.raises(ValueError, match="overflows"):
+            set_cell_span(str(rdl_path), "MainTable", 0, "HeaderAmount", col_span=2, force=True)
+        assert rdl_path.read_bytes() == before
+
+    @pytest.mark.parametrize("bad", [True, False, 2.0, "2"])
+    def test_non_integer_span_rejected(self, rdl_path, bad):
+        with pytest.raises(ValueError, match="integer"):
+            set_cell_span(str(rdl_path), "MainTable", 0, "HeaderProductID", col_span=bad)
+        with pytest.raises(ValueError, match="integer"):
+            set_cell_span(str(rdl_path), "MainTable", 0, "HeaderProductID", row_span=bad)
+
+    def test_body_row_span_rejected(self, rdl_path):
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="TablixCorner"):
+            set_cell_span(str(rdl_path), "MainTable", 0, "HeaderProductID", row_span=3)
+        assert rdl_path.read_bytes() == before
+
+    def test_refuses_to_cover_non_empty_cells_without_force(self, rdl_path):
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="HeaderProductName") as exc:
+            set_cell_span(str(rdl_path), "MainTable", 0, "HeaderProductID", col_span=3)
+        assert "force" in str(exc.value)
+        assert rdl_path.read_bytes() == before
+
+    def test_force_clears_covered_cells_and_returns_names(self, rdl_path):
+        result = set_cell_span(
+            str(rdl_path), "MainTable", 0, "HeaderProductID", col_span=3, force=True
+        )
+        assert result["cleared"] == ["HeaderProductName", "HeaderAmount"]
+        assert _row_names(rdl_path, 0) == ["HeaderProductID", None, None]
+        assert _problems(rdl_path) == []
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_blank_covered_cells_cleared_without_force(self, rdl_path):
+        from pbirb_mcp.ops.styling import set_textbox_value
+
+        set_textbox_value(str(rdl_path), "HeaderProductName", "")
+        result = set_cell_span(str(rdl_path), "MainTable", 0, "HeaderProductID", col_span=2)
+        assert result["cleared"] == ["HeaderProductName"]
+        assert _problems(rdl_path) == []
+
+    def test_shrinking_recreates_blank_textboxes(self, rdl_path):
+        set_cell_span(str(rdl_path), "MainTable", 0, "HeaderProductID", col_span=3, force=True)
+        result = set_cell_span(str(rdl_path), "MainTable", 0, "HeaderProductID", col_span=1)
+        assert result["created"] == ["MainTable_Cell_0_1", "MainTable_Cell_0_2"]
+        assert _row_names(rdl_path, 0) == [
+            "HeaderProductID",
+            "MainTable_Cell_0_1",
+            "MainTable_Cell_0_2",
+        ]
+        assert _problems(rdl_path) == []
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_covered_cell_cannot_be_the_target(self, tmp_path):
+        path = build_band_report(tmp_path / "bands.rdl")
+        # Give the covered placeholder a textbox the way the old tool left
+        # them, then address it.
+        doc = RDLDocument.open(path)
+        tablix = _tablix(doc, "MainTable")
+        cell = _cell(tablix, 0, 1)
+        etree.SubElement(cell, q("CellContents")).append(new_textbox("Stray"))
+        doc.save()
+        with pytest.raises(ValueError, match="covered by the ColSpan"):
+            set_cell_span(str(path), "MainTable", 0, "Stray", col_span=1)
+
+    def test_growing_over_a_span_owner_fills_its_orphaned_tail(self, tmp_path):
+        path = build_band_report(tmp_path / "bands.rdl")
+        # IVMSBand (cols 0-2) grows to 4 → swallows AFDDBand's owner (col 3);
+        # AFDDBand's placeholder (col 4) is left uncovered → blank textbox.
+        result = set_cell_span(str(path), "MainTable", 0, "IVMSBand", col_span=4, force=True)
+        assert result["cleared"] == ["AFDDBand"]
+        assert result["created"] == ["MainTable_Cell_0_4"]
+        assert band_row(path, 0) == [
+            ("IVMSBand", 4),
+            ("-", 1),
+            ("-", 1),
+            ("-", 1),
+            ("MainTable_Cell_0_4", 1),
+            ("SoloBand", 1),
+        ]
+        assert _problems(path) == []

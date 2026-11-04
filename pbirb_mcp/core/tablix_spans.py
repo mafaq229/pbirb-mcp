@@ -173,6 +173,23 @@ def inside_span(cells: list[etree._Element], index: int) -> bool:
     return owner_map(cells)[index] < index
 
 
+def widen_span(
+    container: etree._Element,
+    index: int,
+    cell_tag: str = "TablixCell",
+) -> bool:
+    """If a column inserted at ``index`` lands inside a span, grow that
+    span's owner by one, insert an empty placeholder at ``index`` and
+    return True; otherwise change nothing and return False."""
+    cells = cells_of(container, cell_tag)
+    if not inside_span(cells, index):
+        return False
+    owner = cells[owner_map(cells)[index]]
+    set_span(owner, COL_SPAN, span(owner) + 1)
+    cells[index].addprevious(etree.Element(q(cell_tag)))
+    return True
+
+
 def insert_cell(
     container: etree._Element,
     index: int,
@@ -182,15 +199,12 @@ def insert_cell(
     """Insert a column at ``index`` into one row.
 
     Inside a span the owner's ``ColSpan`` grows by one and an empty
-    placeholder is inserted (``None`` is returned); otherwise
-    ``make_cell()`` is inserted and returned.
+    placeholder is inserted (``None`` is returned, ``make_cell`` is not
+    called); otherwise ``make_cell()`` is inserted and returned.
     """
-    cells = cells_of(container, cell_tag)
-    if inside_span(cells, index):
-        owner = cells[owner_map(cells)[index]]
-        set_span(owner, COL_SPAN, span(owner) + 1)
-        cells[index].addprevious(etree.Element(q(cell_tag)))
+    if widen_span(container, index, cell_tag):
         return None
+    cells = cells_of(container, cell_tag)
     new_cell = make_cell()
     if index >= len(cells):
         if cells:
@@ -250,4 +264,5 @@ __all__ = [
     "report_item_names",
     "set_span",
     "span",
+    "widen_span",
 ]

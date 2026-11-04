@@ -32,15 +32,19 @@ from pbirb_mcp.core.tablix_headers import (
 from pbirb_mcp.core.tablix_shape import column_leaves, row_leaves
 from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
 from pbirb_mcp.ops.reader import get_tablixes
+from pbirb_mcp.ops.tablix_cells import set_cell_span
 from pbirb_mcp.ops.tablix_columns import (
     add_column_group,
+    add_tablix_column,
     remove_column_group,
+    remove_tablix_column,
     set_column_group_sort,
     set_column_group_visibility,
 )
 from pbirb_mcp.ops.validate import validate_report
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
+from tests._band_fixture import BANDS, band_row, build_band_report
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pbi_paginated_minimal.rdl"
 
@@ -565,8 +569,6 @@ class TestColumnGroupShapeInvariant:
 
     @pytest.mark.parametrize("position", [None, 0])
     def test_column_added_beside_the_group_gets_a_header(self, rdl_path, position):
-        from pbirb_mcp.ops.tablix_columns import add_tablix_column, remove_tablix_column
-
         add_column_group(str(rdl_path), "MainTable", "Region", "=1")
         result = add_tablix_column(
             str(rdl_path), "MainTable", "Qty", "=Fields!Amount.Value", position=position
@@ -754,3 +756,84 @@ def test_tool_description_documents_header_not_body_column():
     desc = server._tools["add_column_group"].description
     assert "TablixHeader" in desc
     assert "body column 0" not in desc
+
+
+# ---- #34: spans survive column add / remove --------------------------------
+
+
+def _span_sums(path: Path) -> list:
+    tablix = _tablix(RDLDocument.open(path), "MainTable")
+    n_cols = _body_column_count(tablix)
+    sums = []
+    for i in range(_body_row_count(tablix)):
+        sums.append(sum(span for name, span in band_row(path, i) if name != "-"))
+    return n_cols, sums
+
+
+class TestColumnSpanBookkeeping:
+    @pytest.mark.parametrize("column", range(6))
+    def test_removing_any_column_keeps_bands(self, tmp_path, column):
+        path = build_band_report(tmp_path / "bands.rdl")
+        result = remove_tablix_column(str(path), "MainTable", f"Data{column}")
+        bands = [name for name, _ in band_row(path, 0) if name != "-"]
+        for name, width in BANDS:
+            if width > 1:
+                assert name in bands
+        n_cols, sums = _span_sums(path)
+        assert n_cols == 5
+        assert sums == [5, 5, 5]
+        assert shape_problems(_tablix(RDLDocument.open(path), "MainTable")) == []
+        assert validate_report(str(path))["valid"]
+        assert result["removed_textboxes"][-2:] == [f"Head{column}", f"Data{column}"]
+
+    def test_removing_band_owner_column_keeps_its_text(self, tmp_path):
+        path = build_band_report(tmp_path / "bands.rdl")
+        remove_tablix_column(str(path), "MainTable", "Data0")
+        assert band_row(path, 0)[:3] == [("IVMSBand", 2), ("-", 1), ("AFDDBand", 2)]
+
+    def test_removing_covered_column_shrinks_the_span(self, tmp_path):
+        path = build_band_report(tmp_path / "bands.rdl")
+        remove_tablix_column(str(path), "MainTable", "Data4")
+        assert band_row(path, 0)[3:] == [("AFDDBand", 1), ("SoloBand", 1)]
+
+    @pytest.mark.parametrize(
+        "position, expected",
+        [
+            (1, [("IVMSBand", 4), ("-", 1), ("-", 1), ("-", 1), ("AFDDBand", 2)]),
+            (2, [("IVMSBand", 4), ("-", 1), ("-", 1), ("-", 1), ("AFDDBand", 2)]),
+            (4, [("IVMSBand", 3), ("-", 1), ("-", 1), ("AFDDBand", 3), ("-", 1)]),
+        ],
+    )
+    def test_inserting_inside_a_band_grows_it(self, tmp_path, position, expected):
+        path = build_band_report(tmp_path / "bands.rdl")
+        result = add_tablix_column(str(path), "MainTable", "NewCol", "=1", position=position)
+        assert band_row(path, 0)[:5] == expected
+        assert result["widened_span_rows"] == [0]
+        assert result["textboxes"] == ["NewCol_1", "NewCol"]
+        n_cols, sums = _span_sums(path)
+        assert sums == [n_cols] * 3 == [7, 7, 7]
+        assert shape_problems(_tablix(RDLDocument.open(path), "MainTable")) == []
+        assert validate_report(str(path))["valid"]
+
+    def test_inserting_at_a_band_boundary_adds_a_cell(self, tmp_path):
+        path = build_band_report(tmp_path / "bands.rdl")
+        result = add_tablix_column(str(path), "MainTable", "NewCol", "=1", position=3)
+        assert band_row(path, 0)[3] == ("NewCol_0", 1)
+        assert "widened_span_rows" not in result
+        assert shape_problems(_tablix(RDLDocument.open(path), "MainTable")) == []
+
+    def test_insert_then_remove_inside_a_band_restores_it(self, tmp_path):
+        path = build_band_report(tmp_path / "bands.rdl")
+        before = band_row(path, 0)
+        add_tablix_column(str(path), "MainTable", "NewCol", "=1", position=1)
+        remove_tablix_column(str(path), "MainTable", "NewCol")
+        assert band_row(path, 0) == before
+        assert shape_problems(_tablix(RDLDocument.open(path), "MainTable")) == []
+
+    def test_inserting_inside_a_merged_data_row_cell_is_refused(self, tmp_path):
+        path = build_band_report(tmp_path / "bands.rdl")
+        set_cell_span(str(path), "MainTable", 2, "Data0", col_span=2, force=True)
+        before = path.read_bytes()
+        with pytest.raises(ValueError, match="inside the merged data-row cell Data0"):
+            add_tablix_column(str(path), "MainTable", "NewCol", "=1", position=1)
+        assert path.read_bytes() == before
