@@ -1725,19 +1725,26 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="convert_to_matrix",
         description=(
-            "Convert a row-grouped + column-grouped tablix into a matrix "
-            "by dropping the residual Details row group and its body "
-            "row. Pre-conditions (all checked): the named row_group and "
-            "column_group must already exist (call add_row_group + "
-            "add_column_group first); a detail group (leaf Group without "
-            "GroupExpressions, any name) must still be present in the row "
-            "hierarchy. Refuses on second "
-            "call (already a matrix). Use this after the standard "
-            "insert_tablix_from_template + add_row_group + "
-            "add_column_group flow to make the leaf the row group "
-            "instead of Details — without this, cells render at detail "
-            "granularity. Pair with set_tablix_corner (v0.4 commit 18) "
-            "to author the top-left label."
+            "Turn a grouped table into a Report Builder-shaped matrix "
+            "(run after insert_tablix_from_template + add_row_group + "
+            "add_column_group). The detail rows aggregate into the row "
+            "group: the detail row is kept and its =Fields!X.Value cells "
+            "become =<aggregate>(Fields!X.Value) (default Sum; cells that "
+            "already aggregate are left alone, complex ones are left with a "
+            "warning). Group captions become TablixHeader cells: the row "
+            "group's caption row moves into a row header; body columns that "
+            "only repeat a row/column group expression and the column-title "
+            "row are removed (with 2+ value columns left, the titles become "
+            "column headers instead). Rows such as totals/footers are kept. "
+            "Creates the TablixCorner (column-header depth x row-header "
+            "depth). Refuses: row_group that is the detail group or does "
+            "not enclose the detail rows, unknown column_group, a tablix "
+            "already without a detail group (second call), or a result "
+            "that would not be a consistent matrix — file untouched. "
+            "Returns {tablix, kind, changed, row_headers, column_headers, "
+            "aggregated, removed_rows, removed_columns, removed_textboxes, "
+            "corner_textboxes, warnings}. Then set_tablix_corner for the "
+            "top-left label."
         ),
         input_schema={
             "type": "object",
@@ -1746,6 +1753,11 @@ def register_all_tools(server: MCPServer) -> None:
                 "tablix_name": {"type": "string"},
                 "row_group": {"type": "string"},
                 "column_group": {"type": "string"},
+                "aggregate": {
+                    "type": "string",
+                    "enum": list(tablix.MATRIX_AGGREGATES),
+                    "default": "Sum",
+                },
             },
             "required": ["path", "tablix_name", "row_group", "column_group"],
             "additionalProperties": False,

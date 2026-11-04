@@ -636,9 +636,10 @@ class TestConvertToMatrix:
                 return member
         return None
 
-    def test_removes_details_member_and_body_row(self, matrix_path):
+    def test_removes_details_member_keeps_aggregated_data_row(self, matrix_path):
         doc_before = RDLDocument.open(matrix_path)
-        rows_before = _body_row_count(_tablix(doc_before, "MainTable"))
+        # Region caption row, column-title row, detail row.
+        assert _body_row_count(_tablix(doc_before, "MainTable")) == 3
         assert self._details_member(doc_before, "MainTable") is not None
 
         result = convert_to_matrix(
@@ -652,12 +653,15 @@ class TestConvertToMatrix:
         assert result["tablix"] == "MainTable"
         assert result["kind"] == "Tablix"
         assert "details_member_removed" in result["changed"]
-        assert "details_body_row_removed" in result["changed"]
+        assert result["removed_rows"] == [0, 1]
 
         doc_after = RDLDocument.open(matrix_path)
         assert self._details_member(doc_after, "MainTable") is None
-        # Exactly one body row dropped.
-        assert _body_row_count(_tablix(doc_after, "MainTable")) == rows_before - 1
+        # The caption rows went; the detail row stayed, aggregated (#31).
+        tablix = _tablix(doc_after, "MainTable")
+        assert _body_row_count(tablix) == 1
+        values = [v.text for v in tablix.find(f"{{{RDL_NS}}}TablixBody").iter(f"{{{RDL_NS}}}Value")]
+        assert values == ["=Sum(Fields!Amount.Value)"]
 
     def test_round_trip_valid(self, matrix_path):
         convert_to_matrix(

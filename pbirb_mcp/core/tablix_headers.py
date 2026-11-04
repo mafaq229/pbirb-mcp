@@ -25,6 +25,8 @@ Public helpers:
 * :func:`pad_header_levels` — give short hierarchy paths blank headers so
   every path has the same depth.
 * :func:`new_textbox` — the blank/static textbox Report Builder emits.
+* :func:`new_header` / :func:`header_around` — a ``<TablixHeader>`` with a
+  new textbox, or around an existing report item.
 * :func:`shape_problems` — every leaf/column/row/span/header/corner
   inconsistency of one tablix, as human-readable strings.
 """
@@ -109,10 +111,20 @@ def new_textbox(name: str, value: str = "") -> etree._Element:
 
 def new_header(size: str, textbox_name: str, value: str = "") -> etree._Element:
     """A ``<TablixHeader>`` with ``<Size>`` and a textbox ``CellContents``."""
+    return header_around(size, new_textbox(textbox_name, value))
+
+
+def header_around(size: str, item: etree._Element) -> etree._Element:
+    """A ``<TablixHeader>`` with ``<Size>`` whose ``CellContents`` holds
+    ``item`` — an existing report item (typically a textbox moved out of
+    a body cell, keeping its name and style)."""
     header = etree.Element(q("TablixHeader"))
     etree.SubElement(header, q("Size")).text = size
     contents = etree.SubElement(header, q("CellContents"))
-    contents.append(new_textbox(textbox_name, value))
+    if item.getparent() is not None:
+        item.getparent().remove(item)
+    item.tail = None
+    contents.append(item)
     return header
 
 
@@ -495,6 +507,7 @@ __all__ = [
     "ROW",
     "corner_shape",
     "ensure_corner",
+    "header_around",
     "header_depth",
     "header_levels",
     "insert_member_header",

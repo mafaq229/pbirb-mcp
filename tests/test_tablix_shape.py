@@ -42,6 +42,7 @@ from pbirb_mcp.ops.tablix import (
     set_detail_row_visibility,
 )
 from pbirb_mcp.ops.tablix_columns import add_column_group, add_tablix_column
+from pbirb_mcp.ops.tablix_static import add_static_row
 from pbirb_mcp.ops.tablix_subtotals import add_subtotal_row
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pbi_paginated_minimal.rdl"
@@ -84,11 +85,19 @@ def _row_textbox_names(row):
 
 def _matrix(path: Path) -> Path:
     """add_row_group + add_column_group + convert_to_matrix: a tablix
-    with no detail group whose innermost dynamic row group is Region."""
+    with no detail group whose innermost dynamic row group is Region —
+    itself the leaf owning the (aggregated) data row."""
     add_row_group(str(path), "MainTable", "Region", "=Fields!ProductName.Value")
     add_column_group(str(path), "MainTable", "Date", "=Fields!ProductID.Value")
     convert_to_matrix(str(path), "MainTable", "Region", "Date")
     return path
+
+
+def _footer_matrix(path: Path) -> Path:
+    """:func:`_matrix` with a static footer row added first, so Region
+    wraps static members: its data row and the footer."""
+    add_static_row(str(path), "MainTable", "TotalRow", ["Total"])
+    return _matrix(path)
 
 
 # ---- core helpers ---------------------------------------------------------
@@ -246,7 +255,7 @@ class TestDetailTools:
         values = [v.text for v in last.iter(q("Value"))]
         assert values[2] == "=Sum(Fields!Amount.Value)"
 
-    def test_convert_to_matrix_removes_detail_row_not_last_row(self, rdl_path):
+    def test_convert_to_matrix_keeps_detail_row_and_trailing_subtotal(self, rdl_path):
         add_row_group(str(rdl_path), "MainTable", "Region", "=Fields!ProductName.Value")
         add_column_group(str(rdl_path), "MainTable", "Date", "=Fields!ProductID.Value")
         add_subtotal_row(
@@ -264,11 +273,10 @@ class TestDetailTools:
         tablix = _tablix(rdl_path)
         after = _rows(tablix)
         assert detail_member(tablix) is None
-        assert len(after) == len(before) - 1
-        names_after = [n for row in after for n in _row_textbox_names(row)]
-        # The detail row went; the subtotal row (formerly last) survived.
-        assert "Amount" not in names_after
-        assert "Region_SubtotalFooter_2" in names_after
+        # The two caption rows went (#31); the detail row is now Region's
+        # aggregated data row and the subtotal row (formerly last) survived.
+        assert [_row_textbox_names(r) for r in after] == [["Amount"], ["Region_SubtotalFooter_2"]]
+        assert [v.text for v in after[0].iter(q("Value"))] == ["=Sum(Fields!Amount.Value)"]
         assert len(row_leaves(tablix)) == len(after)
         RDLDocument.open(rdl_path).validate()
 
@@ -301,16 +309,19 @@ class TestConvertToMatrixSoleChild:
             "</TablixMember></TablixMembers>",
         )
         add_column_group(str(path), "MainTable", "Date", "=Fields!ProductID.Value")
-        rows_before = len(_rows(_tablix(path)))
+        assert len(_rows(_tablix(path))) == 2  # column titles + detail
 
         result = convert_to_matrix(str(path), "MainTable", "Product", "Date")
 
-        assert result["changed"] == ["details_member_removed"]
+        assert "details_member_removed" in result["changed"]
         tablix = _tablix(path)
         assert detail_member(tablix) is None
-        assert len(_rows(tablix)) == rows_before
-        assert len(row_leaves(tablix)) == rows_before
+        # The column-title row goes (#31); the detail row stays as the
+        # group's own row.
+        assert len(_rows(tablix)) == 1
+        assert len(row_leaves(tablix)) == 1
         assert find_child(data_leaf(tablix), "Group").get("Name") == "Product"
+        assert find_child(data_leaf(tablix), "TablixMembers") is None
         RDLDocument.open(path).validate()
 
 
@@ -346,16 +357,16 @@ class TestMatrix:
         _matrix(rdl_path)
         result = style_tablix_row(str(rdl_path), "MainTable", "details", font_weight="Bold")
         assert result["row_index"] == 0
-        assert "Region_Header_1" in result["cells"]
+        assert result["cells"] == ["Amount"]
 
     def test_add_subtotal_row_uses_groups_own_leaf_row(self, rdl_path):
-        _matrix(rdl_path)
+        _footer_matrix(rdl_path)
         # First subtotal: aggregate against the Region row's textbox.
         add_subtotal_row(
             str(rdl_path),
             "MainTable",
             "Region",
-            [{"column": "Region_Header_2", "expression": "=Sum(Fields!Amount.Value)"}],
+            [{"column": "Amount", "expression": "=Sum(Fields!Amount.Value)"}],
         )
         # Second subtotal: the last row is now the first subtotal; the
         # data-row names must still come from Region's own leaf row.
@@ -363,18 +374,18 @@ class TestMatrix:
             str(rdl_path),
             "MainTable",
             "Region",
-            [{"column": "Region_Header_2", "expression": "=Count(Fields!Amount.Value)"}],
+            [{"column": "Amount", "expression": "=Count(Fields!Amount.Value)"}],
             position="header",
         )
         tablix = _tablix(rdl_path)
         assert len(row_leaves(tablix)) == len(_rows(tablix))
 
     def test_add_subtotal_row_rejects_last_row_names(self, rdl_path):
-        _matrix(rdl_path)
+        _footer_matrix(rdl_path)
         add_subtotal_row(str(rdl_path), "MainTable", "Region", [], position="footer")
         # Region_Footer_* are the trailing subtotal's names, not data-row
         # names — the old last-row fallback would have accepted them.
-        with pytest.raises(ElementNotFoundError, match="Region_Header_0"):
+        with pytest.raises(ElementNotFoundError, match=r"\[.ProductID., .Amount.\]"):
             add_subtotal_row(
                 str(rdl_path),
                 "MainTable",

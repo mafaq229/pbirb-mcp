@@ -21,24 +21,31 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import names, units
+from pbirb_mcp.core import names, tablix_headers, tablix_spans, units
 from pbirb_mcp.core.document import RDLDocument, indent_inserted
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_tablix
 from pbirb_mcp.core.tablix_shape import (
     NO_DETAIL_GROUP,
+    column_leaves,
     detach,
     detail_member,
     is_detail_group,
     is_dynamic_group,
     leaf_column_index,
     leaf_row_index,
+    removal_member,
     row_leaves,
     subtree_leaves,
 )
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
+from pbirb_mcp.ops import vbexpr
 from pbirb_mcp.ops import visibility as _visibility
-from pbirb_mcp.ops.filter_types import type_mismatch_warnings, wrap_with_format
+from pbirb_mcp.ops.filter_types import (
+    _canonical_typename_group,
+    type_mismatch_warnings,
+    wrap_with_format,
+)
 
 # RDL 2016 FilterOperator enumeration.
 _VALID_OPERATORS = frozenset(
@@ -978,7 +985,32 @@ def set_tablix_size(
     return {"tablix": name, "kind": "Tablix", "changed": changed}
 
 
-# ---- convert_to_matrix (v0.4 commit 17) -----------------------------------
+# ---- convert_to_matrix (#31) ----------------------------------------------
+
+# Aggregates convert_to_matrix can wrap a data cell in: the RDL aggregate
+# functions taking a single expression argument.
+MATRIX_AGGREGATES = (
+    "Sum",
+    "Avg",
+    "Min",
+    "Max",
+    "Count",
+    "CountDistinct",
+    "First",
+    "Last",
+    "StDev",
+    "StDevP",
+    "Var",
+    "VarP",
+)
+# Aggregates that only make sense over numbers.
+_NUMERIC_AGGREGATES = frozenset({"Sum", "Avg", "StDev", "StDevP", "Var", "VarP"})
+# A call to any of these means the expression already aggregates.
+_AGGREGATE_CALLS = frozenset(
+    a.lower()
+    for a in MATRIX_AGGREGATES + ("Aggregate", "CountRows", "RunningValue", "RowNumber", "Previous")
+)
+_ARITHMETIC_OPERATORS = frozenset({"+", "-", "*", "/", "\\", "^"})
 
 
 def _has_column_group(tablix: etree._Element) -> bool:
@@ -993,102 +1025,573 @@ def _has_column_group(tablix: etree._Element) -> bool:
     return any(is_dynamic_group(group) for group in column_hierarchy.iter(q("Group")))
 
 
+def _cell_textbox(cell: etree._Element) -> Optional[etree._Element]:
+    """The textbox a cell holds when it holds exactly one report item and
+    that item is a textbox."""
+    contents = find_child(cell, "CellContents")
+    if contents is None:
+        return None
+    items = [
+        c
+        for c in contents
+        if isinstance(c.tag, str) and etree.QName(c).localname not in ("ColSpan", "RowSpan")
+    ]
+    if len(items) == 1 and items[0].tag == q("Textbox"):
+        return items[0]
+    return None
+
+
+def _textbox_value(textbox: Optional[etree._Element]) -> Optional[str]:
+    """The text of a textbox's only ``<Value>`` (``None`` for several)."""
+    if textbox is None:
+        return None
+    values = list(textbox.iter(q("Value")))
+    return (values[0].text or "") if len(values) == 1 else None
+
+
+def _expression_key(text: Optional[str]) -> Optional[str]:
+    """``text`` as significant tokens (whitespace and comments dropped) so a
+    cell can be compared with a group expression; ``None`` for a literal."""
+    tokens = vbexpr.tokenize_expression(text)
+    if tokens is None:
+        return None
+    return "".join(t.text for t in vbexpr.significant(tokens)) or None
+
+
+def _group_key(member: etree._Element) -> Optional[str]:
+    """:func:`_expression_key` of a group member's single GroupExpression."""
+    group = find_child(member, "Group")
+    root = find_child(group, "GroupExpressions") if group is not None else None
+    exprs = find_children(root, "GroupExpression") if root is not None else []
+    return _expression_key(exprs[0].text) if len(exprs) == 1 else None
+
+
+def _row_cells(row: etree._Element) -> list[etree._Element]:
+    cells_root = find_child(row, "TablixCells")
+    return find_children(cells_root, "TablixCell") if cells_root is not None else []
+
+
+def _keep_with_group(member: etree._Element) -> str:
+    keep = find_child(member, "KeepWithGroup")
+    return (keep.text or "").strip() if keep is not None else ""
+
+
+def _group_header_row(
+    tablix: etree._Element,
+    member: etree._Element,
+    rows: list[etree._Element],
+) -> Optional[tuple[etree._Element, etree._Element, etree._Element]]:
+    """The caption row :func:`add_row_group` gives a group: the group's
+    first child, a static leaf followed by other members, whose row shows
+    the group expression in one single-column cell and nothing else.
+    Returns ``(leaf, row, caption textbox)`` or ``None``."""
+    key = _group_key(member)
+    members_root = find_child(member, "TablixMembers")
+    children = find_children(members_root, "TablixMember") if members_root is not None else []
+    if key is None or len(children) < 2:
+        return None
+    first = children[0]
+    if not _is_static_leaf(first) or find_child(first, "TablixHeader") is not None:
+        return None
+    index = leaf_row_index(tablix, first)
+    if index is None or index >= len(rows):
+        return None
+    caption: Optional[etree._Element] = None
+    for cell in _row_cells(rows[index]):
+        if tablix_spans.is_blank(cell):
+            continue
+        textbox = _cell_textbox(cell)
+        if (
+            caption is not None
+            or textbox is None
+            or tablix_spans.span(cell) != 1
+            or _expression_key(_textbox_value(textbox)) != key
+        ):
+            return None
+        caption = textbox
+    if caption is None:
+        return None
+    return first, rows[index], caption
+
+
+def _is_title_row(row: etree._Element) -> bool:
+    """A column-title row: every cell blank or a textbox of literal text
+    (no expression), at least one of them non-blank."""
+    seen_text = False
+    for cell in _row_cells(row):
+        if tablix_spans.is_blank(cell):
+            continue
+        textbox = _cell_textbox(cell)
+        if textbox is None:
+            return False
+        if any(vbexpr.expression_body(v.text) is not None for v in textbox.iter(q("Value"))):
+            return False
+        seen_text = True
+    return seen_text
+
+
+def _title_rows(
+    tablix: etree._Element,
+    path: list[etree._Element],
+    rows: list[etree._Element],
+    skip: list[etree._Element],
+) -> list[tuple[etree._Element, etree._Element]]:
+    """Static ``KeepWithGroup=After`` leaves that precede the data leaf or
+    one of its enclosing groups (``path``) and hold only literal captions
+    — the table's column-title row(s). Returns ``(leaf, row)`` pairs."""
+    out: list[tuple[etree._Element, etree._Element]] = []
+    for member in path:
+        sibling = member.getprevious()
+        while sibling is not None:
+            if (
+                sibling.tag == q("TablixMember")
+                and all(sibling is not s for s in skip)
+                and _is_static_leaf(sibling)
+                and find_child(sibling, "TablixHeader") is None
+                and _keep_with_group(sibling) == "After"
+            ):
+                index = leaf_row_index(tablix, sibling)
+                if index is not None and index < len(rows) and _is_title_row(rows[index]):
+                    out.append((sibling, rows[index]))
+            sibling = sibling.getprevious()
+    return out
+
+
+def _disposable_cell(cells: list[etree._Element], index: int) -> bool:
+    """True iff removing column ``index`` from this row loses nothing the
+    author wrote: a blank cell, a span placeholder, or a spanning owner
+    (which keeps its contents and shrinks)."""
+    if index >= len(cells):
+        return True
+    cell = cells[index]
+    if tablix_spans.is_placeholder(cell) or tablix_spans.span(cell) > 1:
+        return True
+    return tablix_spans.is_blank(cell)
+
+
+def _field_types(doc: RDLDocument, tablix: etree._Element) -> dict[str, str]:
+    """Field name → shape group (``string``, ``number``, ...) of the
+    tablix's dataset, for fields whose rd:TypeName is known."""
+    ds_name = find_child(tablix, "DataSetName")
+    if ds_name is None or not (ds_name.text or "").strip():
+        return {}
+    try:
+        dataset = resolve_dataset(doc, ds_name.text.strip())
+    except ElementNotFoundError:
+        return {}
+    fields_root = find_child(dataset, "Fields")
+    out: dict[str, str] = {}
+    for field in find_children(fields_root, "Field") if fields_root is not None else []:
+        type_name = field.find(qrd("TypeName"))
+        group = _canonical_typename_group(type_name.text if type_name is not None else "")
+        if group is not None and field.get("Name"):
+            out[field.get("Name")] = group
+    return out
+
+
+def _aggregate_value(text: Optional[str], aggregate: str) -> tuple[Optional[str], Optional[str]]:
+    """Rewrite a data-cell value for group scope.
+
+    Returns ``(new_text, problem)``: ``new_text`` is ``=<aggregate>(...)``
+    when ``text`` is a field reference or arithmetic over field
+    references, numbers and parentheses; ``None`` when it is left alone
+    — a literal, no ``Fields!`` reference, already aggregated (any
+    aggregate call), or (with ``problem`` set) anything more complex.
+    """
+    tokens = vbexpr.tokenize_expression(text)
+    if tokens is None:
+        return None, None
+    refs = vbexpr.bang_references(tokens, "Fields")
+    if not refs:
+        return None, None
+    sig = vbexpr.significant(tokens)
+    for i, tok in enumerate(sig[:-1]):
+        if (
+            tok.kind == vbexpr.IDENTIFIER
+            and tok.text.lower() in _AGGREGATE_CALLS
+            and sig[i + 1].text == "("
+        ):
+            return None, None
+    covered: set[int] = set()
+    for ref in refs:
+        if (ref.member or "").lower() != "value":
+            return None, "it references a field member other than .Value"
+        covered.update(range(ref.first, ref.last + 1))
+    if any(t.kind in (vbexpr.COMMENT, vbexpr.ERROR) for t in tokens):
+        return None, "it holds a comment or an unterminated string"
+    for i, tok in enumerate(sig):
+        if i in covered or tok.kind == vbexpr.NUMBER:
+            continue
+        if tok.kind == vbexpr.OPERATOR and tok.text in _ARITHMETIC_OPERATORS:
+            continue
+        if tok.kind == vbexpr.DELIMITER and tok.text in "()":
+            continue
+        return None, "it is more than arithmetic over field references"
+    body = vbexpr.expression_body(text) or ""
+    return f"={aggregate}({body.strip()})", None
+
+
 def convert_to_matrix(
     path: str,
     tablix_name: str,
     row_group: str,
     column_group: str,
+    aggregate: str = "Sum",
 ) -> dict[str, Any]:
-    """Drop the detail leaf from a tablix that already has a named
-    row group and named column group, converting it into a matrix shape.
+    """Turn a grouped table into a Report Builder-shaped matrix: group
+    captions in ``<TablixHeader>`` cells, aggregated data cells, and a
+    ``<TablixCorner>`` sized column-header depth x row-header depth.
 
-    Pre-conditions (all checked, refuses with :class:`ValueError`):
+    Pre-conditions (refuses with :class:`ValueError`, file untouched):
 
-    * ``row_group`` must be the ``Name`` of an existing
-      ``<TablixMember>/<Group>`` in the row hierarchy.
-    * ``column_group`` must be the ``Name`` of an existing
-      ``<TablixMember>/<Group>`` in the column hierarchy.
-    * The row hierarchy must contain a detail group — a leaf
-      ``<Group>`` without ``<GroupExpressions>``, whatever its name
-      (``Details``, ``Details1``, ...). Without one the tablix is
-      already matrix-shaped — re-running the conversion is a no-op so
-      we refuse with a clear "already a matrix" hint
-      (idempotency-by-explicit-refusal).
+    * ``row_group`` names a dynamic row group (not the detail group) that
+      encloses the detail rows; ``column_group`` names a dynamic column
+      group.
+    * The row hierarchy still has a detail group (a leaf ``<Group>``
+      without ``<GroupExpressions>``, any name) — without one the tablix
+      already is a matrix (idempotent-by-refusal).
+    * Hierarchy leaves match body rows / columns, and at least one body
+      column holds something other than a group expression (a value to
+      aggregate).
 
-    Action:
+    What it does:
 
-    1. Remove the detail ``<TablixMember>`` from its parent
-       ``<TablixMembers>``.
-    2. Remove the body row that leaf owned (found by walking the row
-       hierarchy, so trailing subtotal/footer rows are preserved).
-       If the detail leaf was its parent group's only child, the
-       parent group becomes the leaf and takes over that row instead
-       (an empty ``<TablixMembers/>`` is schema-invalid).
+    1. **Row headers** — every dynamic row group enclosing the detail rows
+       gets a ``TablixHeader``. Its content is the caption row
+       :func:`add_row_group` emitted (that textbox moves, keeping its name
+       and style; the row is deleted), else the body column showing the
+       group expression (below), else a new ``<group>_Header`` textbox.
+    2. **Caption columns** — a body column whose data cell is exactly a
+       row- or column-group expression only repeats a header; it is
+       removed (its width becomes the row header's ``Size``) unless
+       another kept row has content in it or it is a column group's only
+       column (then it stays, unaggregated, with a warning).
+    3. **Title row** — static ``KeepWithGroup=After`` rows of literal
+       captions above the data (the table's column titles) are deleted;
+       with two or more value columns left, their captions move into
+       ``TablixHeader`` cells of those columns' static members instead (a
+       header level under the column group, as Report Builder does).
+    4. **Data row** — the detail row is kept and re-bound to the
+       innermost enclosing group (the detail member becomes static, or is
+       dropped when it was the group's only child, the group becoming the
+       leaf). Its ``=Fields!X.Value`` cells (or arithmetic over fields)
+       become ``=<aggregate>(…)``; already-aggregated cells are left
+       alone, anything else is left with a warning. Other rows (totals,
+       footers) are untouched.
+    5. Header levels are padded so every hierarchy path has the same
+       depth, and the corner is created / resized
+       (:func:`pbirb_mcp.core.tablix_headers.ensure_corner`). The result
+       is checked with :func:`~pbirb_mcp.core.tablix_headers.shape_problems`;
+       any problem refuses the whole call.
 
-    ``row_group`` and ``column_group`` are kept as required arguments
-    so the caller asserts "yes I know which groups make this a
-    matrix" — the verb refuses fast on partially-grouped tablixes.
+    ``aggregate`` is one of :data:`MATRIX_AGGREGATES` (default ``Sum``).
 
-    Returns ``{tablix, kind, changed}`` with the canonical mutator
-    shape. ``changed`` lists the structural mutations applied.
+    Returns ``{tablix, kind, changed, row_headers, aggregated,
+    removed_rows, removed_columns, removed_textboxes, corner_textboxes,
+    warnings}`` — ``removed_rows`` / ``removed_columns`` are body indices
+    as they were before the call.
     """
+    canonical = {a.lower(): a for a in MATRIX_AGGREGATES}
+    if not isinstance(aggregate, str) or aggregate.lower() not in canonical:
+        raise ValueError(
+            f"aggregate must be one of {', '.join(MATRIX_AGGREGATES)}; got {aggregate!r}"
+        )
+    aggregate = canonical[aggregate.lower()]
+
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
 
-    # Row-group + column-group preconditions.
-    if _find_member_for_group(tablix, row_group) is None:
+    # ---- preconditions -----------------------------------------------------
+    row_member = _find_member_for_group(tablix, row_group)
+    if row_member is None:
         raise ValueError(
             f"row group {row_group!r} not found in tablix {tablix_name!r}; "
             "call add_row_group first or check the name."
         )
-    if not _has_column_group(tablix):
+    if is_detail_group(find_child(row_member, "Group")):
         raise ValueError(
-            f"column group {column_group!r} not found in tablix {tablix_name!r}; "
-            "call add_column_group first."
+            f"{row_group!r} is the detail group (a Group without GroupExpressions); "
+            "convert_to_matrix aggregates the detail rows into a row group — pass "
+            "that group (add one with add_row_group first)."
         )
-    # Optional: also verify the named column group exists by Name
-    # (cheap O(n) walk; defensive against typos).
     column_hierarchy = find_child(tablix, "TablixColumnHierarchy")
-    column_group_present = any(
-        (g.get("Name") or "") == column_group for g in column_hierarchy.iter(q("Group"))
-    )
-    if not column_group_present:
+    column_member = None
+    for member in column_hierarchy.iter(q("TablixMember")) if column_hierarchy is not None else ():
+        group = find_child(member, "Group")
+        if group is not None and group.get("Name") == column_group:
+            column_member = member
+            break
+    if column_member is None or not is_dynamic_group(find_child(column_member, "Group")):
         raise ValueError(
             f"column group {column_group!r} not found in tablix {tablix_name!r}; "
             "call add_column_group first."
         )
-
-    details_member = detail_member(tablix)
-    if details_member is None:
+    detail = detail_member(tablix)
+    if detail is None:
         raise ValueError(
             f"tablix {tablix_name!r} is already a matrix ({NO_DETAIL_GROUP} "
             "in the row hierarchy); convert_to_matrix is idempotent-by-refusal."
         )
-    details_row_idx = leaf_row_index(tablix, details_member)
+    row_hierarchy = find_child(tablix, "TablixRowHierarchy")
+    enclosing = []  # dynamic row groups around the detail leaf, innermost first
+    for ancestor in detail.iterancestors():
+        if ancestor is row_hierarchy:
+            break
+        if ancestor.tag == q("TablixMember") and is_dynamic_group(find_child(ancestor, "Group")):
+            enclosing.append(ancestor)
+    if all(m is not row_member for m in enclosing):
+        raise ValueError(
+            f"row group {row_group!r} does not enclose the detail rows of tablix "
+            f"{tablix_name!r}; pass a group the detail group is nested in."
+        )
 
-    parent_members = details_member.getparent()
-    siblings = find_children(parent_members, "TablixMember")
+    body = find_child(tablix, "TablixBody")
+    rows_root = find_child(body, "TablixRows") if body is not None else None
+    cols_root = find_child(body, "TablixColumns") if body is not None else None
+    rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
+    columns = find_children(cols_root, "TablixColumn") if cols_root is not None else []
+    n_row_leaves, n_col_leaves = len(row_leaves(tablix)), len(column_leaves(tablix))
+    if n_row_leaves != len(rows) or n_col_leaves != len(columns):
+        raise ValueError(
+            f"tablix {tablix_name!r} has {n_row_leaves} row leaves for {len(rows)} body "
+            f"rows and {n_col_leaves} column leaves for {len(columns)} body columns; "
+            "refusing to convert an inconsistent tablix."
+        )
+    data_index = leaf_row_index(tablix, detail)
+    data_row = rows[data_index]
+    data_cells = _row_cells(data_row)
+
+    # ---- analysis (no mutation yet) ----------------------------------------
+    warnings: list[str] = []
+    changed: list[str] = []
+    header_rows = {}  # id(group member) -> (leaf, row, caption textbox)
+    for member in enclosing:
+        if find_child(member, "TablixHeader") is None:
+            found = _group_header_row(tablix, member, rows)
+            if found is not None:
+                header_rows[id(member)] = found
+    header_leaves = [leaf for leaf, _row, _tb in header_rows.values()]
+    titles = _title_rows(tablix, [detail] + enclosing, rows, header_leaves)
+    dropped_rows = [row for _leaf, row, _tb in header_rows.values()] + [r for _l, r in titles]
+    kept_rows = [r for r in rows if r is not data_row and all(r is not d for d in dropped_rows)]
+
+    group_keys = {}  # expression key -> group name, row groups first
+    for member in enclosing:
+        key = _group_key(member)
+        if key is not None:
+            group_keys.setdefault(key, find_child(member, "Group").get("Name"))
+    for group in column_hierarchy.iter(q("Group")):
+        member = group.getparent()
+        key = _group_key(member) if is_dynamic_group(group) else None
+        if key is not None:
+            group_keys.setdefault(key, group.get("Name"))
+    caption_cols: dict[int, str] = {}  # body column -> expression key
+    for j, cell in enumerate(data_cells):
+        if tablix_spans.is_placeholder(cell) or tablix_spans.span(cell) != 1:
+            continue
+        key = _expression_key(_textbox_value(_cell_textbox(cell)))
+        if key in group_keys:
+            caption_cols[j] = key
+    if all(j in caption_cols for j in range(len(columns))):
+        raise ValueError(
+            f"every body column of tablix {tablix_name!r} shows a group expression, so "
+            "there is no value to aggregate; add a value column (e.g. "
+            "=Fields!Amount.Value) before converting."
+        )
+
+    # ---- mutation ----------------------------------------------------------
+    registry = names.NameRegistry(doc)
+    removed_textboxes: list[str] = []
+    # Row-header contents: the add_row_group caption textbox, detached
+    # before its row goes.
+    header_items: dict[int, etree._Element] = {}
+    for member_id, (_leaf, _row, textbox) in header_rows.items():
+        header_items[member_id] = textbox
+        textbox.getparent().remove(textbox)
+    header_sizes: dict[int, str] = {}
+
+    # Caption columns, right to left so indices stay valid.
+    removed_columns: list[int] = []
+    for j in sorted(caption_cols, reverse=True):
+        key = caption_cols[j]
+        label = group_keys[key]
+        if not all(_disposable_cell(_row_cells(r), j) for r in kept_rows):
+            warnings.append(
+                f"body column {j} shows group {label!r}'s expression but another row holds "
+                "content in it; kept (unaggregated)."
+            )
+            continue
+        member, emptied = removal_member(tablix, "column", j)
+        if emptied:
+            warnings.append(
+                f"body column {j} shows group {label!r}'s expression but it is the only "
+                "column of its column group; kept (unaggregated)."
+            )
+            continue
+        width = find_child(columns[j], "Width")
+        for group_member in enclosing:
+            if _group_key(group_member) != key or id(group_member) in header_sizes:
+                continue
+            if width is not None and (width.text or "").strip():
+                header_sizes[id(group_member)] = width.text.strip()
+            if id(group_member) not in header_items:
+                textbox = _cell_textbox(data_cells[j])
+                if textbox is not None:
+                    textbox.getparent().remove(textbox)
+                    header_items[id(group_member)] = textbox
+            break
+        detach(member)
+        detach(columns[j])
+        for row in rows:
+            cells_root = find_child(row, "TablixCells")
+            if cells_root is not None:
+                removed_textboxes.extend(tablix_spans.remove_cell(cells_root, j))
+        removed_columns.append(j)
+    removed_columns.sort()
+    if removed_columns:
+        changed.append("caption_columns_removed")
+
+    # Title row(s): captions move into column headers when they still
+    # label two or more value columns, otherwise they go with the row.
+    column_textboxes: list[str] = []
+    remaining = column_leaves(tablix)
+    if len(titles) == 1 and len(remaining) >= 2:
+        _title_leaf, title_row = titles[0]
+        cells = _row_cells(title_row)
+        movable = len(cells) == len(remaining) and all(
+            tablix_spans.span(c) == 1
+            and not tablix_spans.is_placeholder(c)
+            and _is_static_leaf(leaf)
+            and find_child(leaf, "TablixHeader") is None
+            for c, leaf in zip(cells, remaining)
+        )
+        if movable:
+            height = find_child(title_row, "Height")
+            size = (height.text or "").strip() if height is not None else ""
+            size = size or tablix_headers.DEFAULT_HEADER_SIZE[tablix_headers.COLUMN]
+            for cell, leaf in zip(cells, remaining):
+                textbox = _cell_textbox(cell)
+                if textbox is None:
+                    textbox = tablix_headers.new_textbox(registry.unique(f"{tablix_name}_Header"))
+                column_textboxes.append(textbox.get("Name"))
+                tablix_headers.insert_member_header(
+                    leaf, tablix_headers.header_around(size, textbox)
+                )
+            changed.append("column_headers_added")
+    row_index = {id(r): i for i, r in enumerate(rows)}
+    removed_rows = sorted(row_index[id(r)] for r in dropped_rows)
+    for leaf, row in [(leaf, row) for leaf, row, _tb in header_rows.values()] + titles:
+        detach(leaf)
+        removed_textboxes.extend(el.get("Name") for el in row.iter(q("Textbox")) if el.get("Name"))
+        detach(row)
+    if removed_rows:
+        changed.append("caption_rows_removed")
+
+    # The detail rows become the innermost group's data row.
+    parent_members = detail.getparent()
     owner = parent_members.getparent()
-    if len(siblings) == 1 and owner is not None and owner.tag == q("TablixMember"):
-        # The detail leaf was its group's only child: drop the now-empty
-        # <TablixMembers> so the group member becomes the leaf. Leaf count
-        # is unchanged, so the body row stays — it now belongs to the group.
-        owner.remove(parent_members)
-        changed = ["details_member_removed"]
+    if len(find_children(parent_members, "TablixMember")) == 1 and owner.tag == q("TablixMember"):
+        if find_child(detail, "Visibility") is not None:
+            warnings.append(
+                "the detail group's Visibility went with it; set it on the row group "
+                "with set_group_visibility if still wanted."
+            )
+        detach(parent_members)
     else:
-        parent_members.remove(details_member)
-        body = find_child(tablix, "TablixBody")
-        rows_root = find_child(body, "TablixRows") if body is not None else None
-        rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
-        if details_row_idx is not None and details_row_idx < len(rows):
-            rows_root.remove(rows[details_row_idx])
-        changed = ["details_member_removed", "details_body_row_removed"]
+        for local in ("Group", "SortExpressions"):
+            child = find_child(detail, local)
+            if child is not None:
+                tablix_spans.detach(child)
+    changed.append("details_member_removed")
+
+    # Aggregate the data cells (group-expression cells stay as they are:
+    # they are constant within the group).
+    field_types = _field_types(doc, tablix)
+    aggregated: list[str] = []
+    for cell in _row_cells(data_row):
+        contents = find_child(cell, "CellContents")
+        if contents is None:
+            continue
+        if _expression_key(_textbox_value(_cell_textbox(cell))) in group_keys:
+            continue
+        for textbox in contents.iter(q("Textbox")):
+            touched = False
+            for value in textbox.iter(q("Value")):
+                new_text, problem = _aggregate_value(value.text, aggregate)
+                if problem is not None:
+                    warnings.append(
+                        f"textbox {textbox.get('Name')!r} left as {value.text!r}: {problem}; "
+                        "aggregate it by hand."
+                    )
+                if new_text is None:
+                    continue
+                if aggregate in _NUMERIC_AGGREGATES:
+                    for ref in vbexpr.bang_references(value.text, "Fields"):
+                        kind = field_types.get(ref.name)
+                        if kind in ("string", "datetime", "boolean"):
+                            warnings.append(
+                                f"textbox {textbox.get('Name')!r}: {aggregate}() over "
+                                f"{kind} field {ref.name!r}; pick another aggregate "
+                                "(e.g. First or Count) if that is not intended."
+                            )
+                value.text = new_text
+                touched = True
+            if touched:
+                aggregated.append(textbox.get("Name"))
+    if aggregated:
+        changed.append("cells_aggregated")
+
+    # Row headers for every enclosing group.
+    row_headers: list[str] = []
+    for member in reversed(enclosing):  # outermost first
+        if find_child(member, "TablixHeader") is not None:
+            continue
+        item = header_items.get(id(member))
+        if item is None:
+            name = registry.unique(f"{find_child(member, 'Group').get('Name')}_Header")
+            expr = find_children(
+                find_child(find_child(member, "Group"), "GroupExpressions"), "GroupExpression"
+            )
+            item = tablix_headers.new_textbox(name, expr[0].text or "" if expr else "")
+        size = header_sizes.get(id(member), tablix_headers.DEFAULT_HEADER_SIZE[tablix_headers.ROW])
+        tablix_headers.insert_member_header(member, tablix_headers.header_around(size, item))
+        row_headers.append(item.get("Name"))
+    if row_headers:
+        changed.append("row_headers_added")
+
+    padded = tablix_headers.pad_header_levels(tablix, tablix_headers.ROW, registry)
+    padded += tablix_headers.pad_header_levels(tablix, tablix_headers.COLUMN, registry)
+    corner_before = tablix_headers.corner_shape(tablix)
+    corner = tablix_headers.ensure_corner(
+        tablix, registry, rows_at="bottom" if column_textboxes else "top"
+    )
+    removed_textboxes.extend(corner["removed"])
+    if corner_before is None and tablix_headers.corner_shape(tablix) is not None:
+        changed.append("corner_created")
+    elif corner["created"] or corner["removed"]:
+        changed.append("corner_resized")
+
+    problems = tablix_headers.shape_problems(tablix)
+    if problems:
+        raise ValueError(
+            f"converting tablix {tablix_name!r} would leave an inconsistent matrix "
+            f"({'; '.join(problems)}); nothing was changed."
+        )
 
     doc.save()
     return {
         "tablix": tablix_name,
         "kind": "Tablix",
         "changed": changed,
+        "row_headers": row_headers,
+        "column_headers": column_textboxes,
+        "aggregated": aggregated,
+        "removed_rows": removed_rows,
+        "removed_columns": removed_columns,
+        "removed_textboxes": removed_textboxes,
+        "blank_headers": padded,
+        "corner_textboxes": corner["created"],
+        "warnings": warnings,
     }
 
 
