@@ -564,12 +564,16 @@ def register_all_tools(server: MCPServer) -> None:
             "Sync a dataset's <Fields> block against the shape detected "
             "in its DAX <CommandText>. Eliminates the manual 'open "
             "Report Builder → right-click → Refresh Fields' step after "
-            "a query rewrite. Recognises SELECTCOLUMNS aliases and "
-            "Table[Col] tokens (SUMMARIZECOLUMNS / ad-hoc). Adds missing "
-            "fields; lists orphans without auto-removing (caller decides "
-            "what to drop). Returns {added, orphans, unchanged, "
-            "warnings}. Cheap regex-based detection — bare EVALUATE "
-            "'Table' returns a warning."
+            "a query rewrite. Matches existing Fields to the query's "
+            "result columns by <DataField> (Table[Col] / [Alias]), not by "
+            "Name. Adds a Field per unbound column the way Report Builder "
+            "does: Name sanitised (Amount (USD) -> Amount__USD_; "
+            "duplicates Name1, Name2 ...), DataField Table[Col] or "
+            "[Alias]. Lists orphans without auto-removing (caller decides "
+            "what to drop). Returns {added: [{name, data_field}], "
+            "orphans: [{name, data_field}], unchanged: [names], "
+            "warnings}. When the DAX can't be fully analysed (e.g. bare "
+            "EVALUATE 'Table') nothing is added and warnings explain why."
         ),
         input_schema={
             "type": "object",

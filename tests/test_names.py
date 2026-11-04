@@ -433,11 +433,12 @@ class TestGeneratedNames:
             "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], \"Total Sales\", [Amt])",
         )
         r = dataset.refresh_dataset_fields(str(rdl_path), "MainDataset")
-        assert r["added"] == ["Total_Sales"]
+        # #37: the alias binds as [Total Sales] (Report Builder's shape).
+        assert r["added"] == [{"name": "Total_Sales", "data_field": "[Total Sales]"}]
         assert any("Total Sales" in w for w in r["warnings"])
         doc = RDLDocument.open(rdl_path)
         field = [f for f in doc.root.iter(q("Field")) if f.get("Name") == "Total_Sales"][0]
-        assert field.find(q("DataField")).text == "Total Sales"
+        assert field.find(q("DataField")).text == "[Total Sales]"
         assert _rules(rdl_path, "invalid-identifier") == []
         out_of_sync = _rules(rdl_path, "dataset-fields-out-of-sync")
         assert not [i for i in out_of_sync if "Total_Sales" in i["location"]]

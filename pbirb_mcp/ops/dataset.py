@@ -17,6 +17,7 @@ add it.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import Any, Optional
 
 from lxml import etree
@@ -24,10 +25,10 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset
-from pbirb_mcp.core.names import is_identifier, sanitize_identifier, validate_identifier
+from pbirb_mcp.core.names import MAX_IDENTIFIER_LENGTH, is_identifier, validate_identifier
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q
 from pbirb_mcp.ops.dax import COLUMN as DAX_COLUMN
-from pbirb_mcp.ops.dax import result_columns
+from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
 from pbirb_mcp.ops.filter_types import type_mismatch_warnings, wrap_with_format
 
 
@@ -1065,12 +1066,59 @@ def _extract_dax_qualified_data_fields(
     return targets, warnings
 
 
+_NON_WORD_CHAR_RE = re.compile(r"\W")
+
+
+def rb_field_name(column_name: str, taken: Iterable[str] = ()) -> str:
+    """Report Builder-style ``<Field Name>`` for a result column.
+
+    Mirrors Report Builder's Refresh Fields: every character that is not
+    a letter, digit or underscore becomes ``_`` (``Amount (USD)`` →
+    ``Amount__USD_``, ``Region (EU)`` → ``Region__EU_``), and a name
+    already in ``taken`` gets a numeric suffix (``Name``, ``Name1``,
+    ``Name2`` …). A name that would not start with a letter (``2024``,
+    ``_D``) is prefixed with ``Field`` so it stays a valid RDL identifier
+    (:func:`pbirb_mcp.core.names.validate_identifier`).
+    """
+    stem = _NON_WORD_CHAR_RE.sub("_", column_name or "")
+    if not stem:
+        stem = "Field"
+    elif not is_identifier(stem[:1]):
+        stem = f"Field{stem}"
+    stem = stem[:MAX_IDENTIFIER_LENGTH]
+    taken_set = set(taken)
+    if stem not in taken_set:
+        return stem
+    i = 1
+    while True:
+        suffix = str(i)
+        candidate = stem[: MAX_IDENTIFIER_LENGTH - len(suffix)] + suffix
+        if candidate not in taken_set:
+            return candidate
+        i += 1
+
+
+def _data_bound_fields(dataset: etree._Element) -> list[tuple[etree._Element, str]]:
+    """``(field, DataField text)`` for every data-bound ``<Field>`` (one
+    with a ``<DataField>``) in document order. Calculated fields are
+    skipped."""
+    out: list[tuple[etree._Element, str]] = []
+    fields_root = find_child(dataset, "Fields")
+    if fields_root is None:
+        return out
+    for f in find_children(fields_root, "Field"):
+        df = find_child(f, "DataField")
+        if df is not None:
+            out.append((f, df.text or ""))
+    return out
+
+
 def refresh_dataset_fields(
     path: str,
     dataset_name: str,
 ) -> dict[str, Any]:
-    """Sync a dataset's ``<Fields>`` block against shape detected in its
-    DAX ``<CommandText>``. Eliminates the manual "open Report Builder
+    """Sync a dataset's ``<Fields>`` block against the result columns of
+    its DAX ``<CommandText>``. Eliminates the manual "open Report Builder
     → right-click → Refresh Fields" step after a query rewrite.
 
     Parses the dataset's DAX with :func:`pbirb_mcp.ops.dax.result_columns`
@@ -1080,20 +1128,29 @@ def refresh_dataset_fields(
     wrappers and ``VAR ... RETURN``. Columns referenced only in filters,
     ORDER BY, measure definitions or comments are not result columns.
 
-    Compares the extracted set against the existing ``<Fields>`` block:
-    - **Adds** missing data-bound fields (each as ``<Field
-      Name="X"><DataField>X</DataField></Field>``; ``rd:TypeName`` is
-      omitted — Report Builder defaults to String).
-    - **Lists orphans** without auto-removing them. Removing an orphan
-      could break ``Fields!X.Value`` references that the LLM forgot to
-      update; the user reviews the orphan list and removes intentionally.
+    Existing Fields are matched to columns by their **DataField**
+    (:func:`pbirb_mcp.ops.dax.data_field_matches` — ``Table[Col]`` /
+    ``[Alias]``, quotes and case ignored), never by Field Name, so
+    Report Builder's sanitised names (``Amount__USD_`` bound to
+    ``Sales[Amount (USD)]``) are recognised as in sync.
 
-    Returns ``{added: list[str], orphans: list[str], unchanged:
-    list[str], warnings: list[str]}``.
+    - **Adds** a data-bound Field for every column no Field is bound to,
+      written the way Report Builder's Refresh Fields writes it:
+      ``Name`` = :func:`rb_field_name` (``Region (EU)`` →
+      ``Region__EU_``; a duplicate ``Name`` becomes ``Name1``, …) and
+      ``<DataField>`` = the column's qualified binding (``Sales[Region
+      (EU)]``, or ``[Total]`` for an alias). ``rd:TypeName`` is omitted.
+    - **Lists orphans** — data-bound Fields bound to no result column —
+      without removing them (removing could break ``Fields!X.Value``
+      references); the caller reviews and removes intentionally.
+    - **Refuses to add** anything when the parser returned warnings
+      (bare ``EVALUATE 'Table'``, unknown table functions, …): the column
+      list may then be incomplete, so ``added`` and ``orphans`` are empty
+      and the warnings say why.
 
-    Structural shape detection, not a DAX evaluator: unrecognised shapes
-    (e.g. bare ``EVALUATE 'Table'``) return a warning rather than
-    failing the call.
+    Returns ``{added: [{name, data_field}], orphans: [{name,
+    data_field}], unchanged: [field names], warnings: [str]}``. The file
+    is only written when something is added.
     """
     doc = RDLDocument.open(path)
     dataset = resolve_dataset(doc, dataset_name)
@@ -1109,45 +1166,53 @@ def refresh_dataset_fields(
             "warnings": [f"dataset {dataset_name!r} has no <CommandText>; nothing to refresh."],
         }
 
-    raw_extracted, warnings = _extract_dax_field_names(command_text)
-    sanitized_data_fields: dict[str, str] = {}
-    # A DAX alias like "Total Sales" is not a valid RDL field name. Map it
-    # to an identifier (Total_Sales) for the Field Name and keep the raw
-    # column name in <DataField> — the shape Report Builder's own Refresh
-    # Fields produces — so the written report stays loadable.
-    extracted: list[str] = []
-    for raw in raw_extracted:
-        if is_identifier(raw):
-            extracted.append(raw)
+    columns, parser_warnings = result_columns(command_text)
+    warnings = list(parser_warnings)
+
+    bound = _data_bound_fields(dataset)
+    unchanged: list[str] = []
+    orphans: list[dict[str, str]] = []
+    for f, df_text in bound:
+        if any(data_field_matches(df_text, c) for c in columns):
+            unchanged.append(f.get("Name") or "")
+        else:
+            orphans.append({"name": f.get("Name") or "", "data_field": df_text})
+
+    if parser_warnings:
+        warnings.append(
+            "no Fields added and no orphans reported: the DAX result columns could "
+            "not be fully determined (see the warnings above)."
+        )
+        return {"added": [], "orphans": [], "unchanged": unchanged, "warnings": warnings}
+
+    fields_root = find_child(dataset, "Fields")
+    taken = (
+        {f.get("Name") for f in find_children(fields_root, "Field") if f.get("Name")}
+        if fields_root is not None
+        else set()
+    )
+    added: list[dict[str, str]] = []
+    seen_keys: set[str] = set()
+    for col in columns:
+        key = normalize_data_field(col.data_field)
+        if key in seen_keys:
             continue
-        field_name = sanitize_identifier(raw, fallback="Field")
-        extracted.append(field_name)
-        sanitized_data_fields[field_name] = raw
-        warnings = list(warnings) + [
-            f"result column {raw!r} is not a valid RDL field name; "
-            f"its field is named {field_name!r} (DataField keeps {raw!r})."
-        ]
-
-    fields_root = _ensure_fields_block(dataset)
-    existing_fields = find_children(fields_root, "Field")
-    existing_names = [f.get("Name") for f in existing_fields if f.get("Name") is not None]
-    extracted_set = set(extracted)
-    existing_set = set(existing_names)
-
-    added: list[str] = []
-    orphans = sorted(existing_set - extracted_set)
-    unchanged = sorted(extracted_set & existing_set)
-
-    for name in extracted:
-        # The extractor keeps duplicate names (two tables can each
-        # return a ``Name`` column); never write two Fields with the
-        # same Name.
-        if name in existing_set or name in added:
+        seen_keys.add(key)
+        if any(data_field_matches(df_text, col) for _f, df_text in bound):
             continue
+        name = rb_field_name(col.name, taken)
+        taken.add(name)
+        if fields_root is None:
+            fields_root = _ensure_fields_block(dataset)
         new_field = etree.SubElement(fields_root, q("Field"), Name=name)
         df_node = etree.SubElement(new_field, q("DataField"))
-        df_node.text = encode_text(sanitized_data_fields.get(name, name))
-        added.append(name)
+        df_node.text = encode_text(col.data_field)
+        added.append({"name": name, "data_field": col.data_field})
+        if name != col.name:
+            warnings.append(
+                f"result column {col.name!r} was added as Field {name!r} "
+                f"(DataField {col.data_field!r})."
+            )
 
     if added:
         doc.save()
@@ -1167,6 +1232,7 @@ __all__ = [
     "add_query_parameter",
     "get_dataset",
     "list_dataset_filters",
+    "rb_field_name",
     "refresh_dataset_fields",
     "remove_calculated_field",
     "remove_dataset_filter",

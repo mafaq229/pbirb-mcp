@@ -47,9 +47,10 @@ Rules (18):
   diverges from ``<CommandText>``.
 * ``tablix-span-misplaced`` (error) — ``<ColSpan>``/``<RowSpan>``
   outside ``<CellContents>``.
-* ``dataset-fields-out-of-sync`` (warn, v0.3.1) — ``<Field>`` declared
-  but the dataset's DAX ``<CommandText>`` doesn't return that column.
-  Reuses :func:`pbirb_mcp.ops.dataset._extract_dax_field_names`.
+* ``dataset-fields-out-of-sync`` (warn, v0.3.1) — data-bound ``<Field>``
+  whose ``<DataField>`` matches no column the dataset's DAX
+  ``<CommandText>`` returns (:func:`pbirb_mcp.ops.dax.result_columns`,
+  matched with :func:`pbirb_mcp.ops.dax.data_field_matches`).
 * ``duplicate-name`` (error, #20) — two report items / groups share a
   ``Name`` (one report-wide namespace across body, header, footer and
   every nested container), or two data sources / datasets / parameters /
@@ -70,7 +71,8 @@ from pbirb_mcp.core import names
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q
 from pbirb_mcp.ops import vbexpr
-from pbirb_mcp.ops.dataset import _extract_dax_field_names, _is_pbidataset_dataset
+from pbirb_mcp.ops.dataset import _is_pbidataset_dataset
+from pbirb_mcp.ops.dax import data_field_matches, result_columns
 
 Issue = dict[str, Any]
 
@@ -737,7 +739,10 @@ def _rule_dataset_fields_out_of_sync(doc: RDLDocument) -> list[Issue]:
     nobody has called the refresh tool yet but the dataset query was
     rewritten in a way that drops columns.
 
-    Reuses :func:`pbirb_mcp.ops.dataset._extract_dax_field_names`. When
+    Matches each Field's ``<DataField>`` (not its Name — Report Builder
+    names ``Sales[Amount (USD)]`` ``Amount__USD_``) against the DAX
+    result columns with :func:`pbirb_mcp.ops.dax.data_field_matches`
+    (the same rule ``refresh_dataset_fields`` uses). When
     the extractor returns warnings (the DAX shape isn't recognisable —
     e.g. bare ``EVALUATE 'Table'``), the rule silently skips that
     dataset rather than false-flagging every declared field as orphan.
@@ -754,16 +759,15 @@ def _rule_dataset_fields_out_of_sync(doc: RDLDocument) -> list[Issue]:
         cmd = find_child(query, "CommandText")
         if cmd is None or not (cmd.text or "").strip():
             continue
-        extracted, warnings = _extract_dax_field_names(cmd.text)
+        columns, warnings = result_columns(cmd.text)
         if warnings:
             # Unparseable shape — skip rather than false-flag.
             continue
-        if not extracted:
+        if not columns:
             continue
         fields_root = find_child(ds, "Fields")
         if fields_root is None:
             continue
-        extracted_set = set(extracted)
         for f in find_children(fields_root, "Field"):
             name = f.get("Name")
             if name is None:
@@ -773,13 +777,10 @@ def _rule_dataset_fields_out_of_sync(doc: RDLDocument) -> list[Issue]:
             # skip them.
             if find_child(f, "Value") is not None and find_child(f, "DataField") is None:
                 continue
-            if name in extracted_set:
-                continue
-            # refresh_dataset_fields names a non-identifier alias
-            # ("Total Sales") Total_Sales and keeps the raw alias in
-            # <DataField>; that field is in sync.
             data_field = find_child(f, "DataField")
-            if data_field is not None and data_field.text in extracted_set:
+            if data_field is not None and any(
+                data_field_matches(data_field.text, c) for c in columns
+            ):
                 continue
             issues.append(
                 {
