@@ -7,6 +7,100 @@
   then `/plugin install pbirb-mcp@pbirb` (wires up the `uvx pbirb-mcp` server
   automatically). No change to the published Python package.
 
+### M1 — Foundations (v0.4.1 review, #113)
+
+Shared helpers that later fixes build on, plus the bugs they close.
+
+#### Added
+- `pbirb_mcp/core/names.py` — one report-wide name registry
+  (`report_scope_names`, `ensure_unique`, `unique_name`,
+  `validate_identifier`) (#20).
+- Lint rules `duplicate-name` and `invalid-identifier` (errors) (#20).
+- `pbirb_mcp/core/argcheck.py` — server-side argument validation against
+  each tool's `inputSchema` (#19).
+- `pbirb_mcp/core/units.py` — one unit-aware RDL size parser/validator (#22).
+- `pbirb_mcp/core/tablix_shape.py` — structural tablix helpers: detail
+  member, data leaf, leaf ↔ body-row index (#23).
+- `pbirb_mcp/ops/vbexpr.py` — VB expression tokenizer used by lint (#21).
+- `pbirb_mcp/ops/dax.py` — DAX tokenizer + result-column parser (#24).
+- `pbirb_mcp/ops/batch.py` — batch-op allow-list (#27).
+- `commit_editing_transaction(force=true)` to overwrite a file that changed
+  on disk since the transaction started (#26).
+- `verify_report(baseline_path=…)`; issues carry `new: true|false` with
+  `introduced_count` / `preexisting_count` / `introduced_error_count`
+  (#28).
+- Every tool that works on a report file declares an optional
+  `transaction_id` in its `inputSchema` (#19).
+
+#### Changed
+- **Names** (#20): creators reject names that aren't CLS identifiers
+  (`''`, `My Box`, `1st`, `A&B` …) for report items, groups, parameters,
+  data sources, calculated/dataset fields and embedded images. A report
+  item or group name that clashes with any item or group anywhere in the
+  report raises (`ValueError` naming where the clash is) — previously
+  only the target container or one tablix was checked. Generated names
+  get Report Builder-style suffixes (`Details1`, `X_Rect1`) instead of
+  duplicating, and payloads report the names actually emitted.
+  `refresh_dataset_fields` turns an alias like `Total Sales` into field
+  `Total_Sales` (raw alias kept in `<DataField>`).
+- **Byte-faithful save** (#18): the UTF-8 BOM, CRLF line ends, trailing
+  newline (or its absence), XML declaration, the exact root start tag
+  (`MustUnderstand="df"` first) and `<X></X>` empty elements survive a
+  save. Inserted elements are indented to their parent's depth;
+  `raw_xml_replace` keeps the following sibling on its own line.
+- **Argument validation** (#19): wrong types now return an `isError`
+  `{"error_type": "InvalidArguments", "param", "expected", "got"}` instead
+  of being acted on (`"false"` was truthy) or surfacing as Python
+  `TypeError` text; unknown and missing parameters likewise. No coercion.
+  Published schemas no longer use `["T", "null"]` type lists or `oneOf`
+  (null is still accepted for optional parameters).
+  `set_column_width.column` / `style_tablix_row.row` are published as
+  strings; a digit string is an index.
+- **Size validation** (#22): every size argument is validated before the
+  file is opened — `ValueError("<field>: invalid RDL size '<v>'; …")`.
+  Unitless, comma-decimal, exponent and >160in sizes are refused; zero or
+  negative dimensions and negative positions/margins/padding are refused
+  (Line width/height may be negative); `=` expressions still pass for
+  style sizes; `create_report(page_setup=…)` is validated too.
+- **Detail group found by structure** (#23): tools that needed the group
+  named `Details` now work on `Details1`, `<list>_Details` or any name;
+  on a matrix, `style_tablix_row("details")`, `add_subtotal_row` and
+  `add_tablix_column` use the innermost group's leaf row.
+  `convert_to_matrix` removes the detail leaf's own row (not the last row)
+  and never leaves an empty `<TablixMembers/>`.
+- **Lint** (#21): `expression-syntax` ignores delimiters inside string
+  literals/comments and now reports unterminated string literals;
+  `double-encoded-entities` skips `<Code>`, `<CommandText>`,
+  `<ImageData>`, `rd:*` and HTML-markup runs; `missing-field-reference` /
+  `multi-value-eq` ignore references in literals and comments, and
+  `multi-value-eq` no longer fires on `<=` / `>=`.
+- **DAX column extraction** (#24): `refresh_dataset_fields`,
+  `dataset-fields-out-of-sync` and `preserve_field_names` now read only
+  the query's result columns (not FILTER / ORDER BY / measure arguments /
+  comments) and understand SUMMARIZECOLUMNS / ADDCOLUMNS / GROUPBY
+  name-expression pairs, VAR … RETURN and `'O''Neil'`-style names.
+- **Transaction isolation** (#25): only calls carrying a transaction's id
+  see its in-memory tree. Calls without it read the committed file, and
+  writing a held path without the id is a `TransactionConflictError`
+  (the file is unchanged). Expiry is enforced on every lookup.
+  `duplicate_report` from a held source writes the copy and leaves the
+  source's ids alone; `validate_report` / `verify_report` inside a
+  transaction check its tree.
+- **Safe commits** (#26): an op that raises inside a transaction is rolled
+  back; commit refuses when the file changed on disk since start (unless
+  `force`); hardlinks to a held file are refused; a failed save keeps the
+  transaction open and retryable.
+- **Batch allow-list** (#27): `apply_edits` / `dry_run_edit` refuse
+  transaction-control, nested-batch, create/duplicate/backup/restore ops
+  up front with `OpNotAllowed`; an op returning `committed/saved: false`
+  counts as failed; `dry_run_edit` inside a transaction previews its tree.
+- **Commit verify** (#28): commit / `apply_edits` run XSD as well as lint
+  and block only on errors the transaction introduced.
+  `PBIRB_MCP_AUTO_VERIFY` routes on an explicit `mutating` tool flag, so
+  `raw_xml_replace`, `apply_edits`, `create_report`, `convert_to_matrix`,
+  `refresh_dataset_fields`, `restore_from_backup` and `duplicate_report`
+  are verified too.
+
 ## [0.4.1] - 2026-06-18
 
 ### Added
