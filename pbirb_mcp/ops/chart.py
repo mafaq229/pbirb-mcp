@@ -55,45 +55,22 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import chart_shape, names, units
+from pbirb_mcp.core import chart_shape, chart_types, names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError, resolve_dataset
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, find_children, q
 from pbirb_mcp.ops.body import _ensure_body_report_items, _resolve_body
 
-# RDL ChartSeriesType + Subtype enumeration (covers the common shapes;
-# extend if a real session needs Funnel / Pyramid / Polar / Range etc.).
-_VALID_SERIES_TYPES = frozenset(
-    {
-        "Column",
-        "Bar",
-        "Line",
-        "Area",
-        "Pie",
-        "Doughnut",
-        "Range",
-        "Scatter",
-        "Bubble",
-        "Stock",
-        "Polar",
-        "Radar",
-        "Funnel",
-        "Pyramid",
-    }
+# inputSchema descriptions for the series_type / series_subtype args of the
+# series tools, generated from the enum tables so they cannot drift.
+SERIES_TYPE_DOC = (
+    f"RDL ChartSeries Type: {' / '.join(chart_types.SERIES_TYPES)}. "
+    f"Shorthands (normalised): {', '.join(sorted(chart_types.TYPE_ALIASES))}."
 )
-_VALID_SERIES_SUBTYPES = frozenset(
-    {
-        "Plain",
-        "Stacked",
-        "PercentStacked",
-        "Smooth",
-        "Exploded",
-        "SmoothLine",
-        "100",
-        "Line",
-        "Spline",
-    }
+SERIES_SUBTYPE_DOC = (
+    f"Must suit the type — {chart_types.describe()}. "
+    "Shorthands: SmoothLine/Spline -> Smooth, 100 -> PercentStacked."
 )
 
 
@@ -650,10 +627,17 @@ def add_chart_series(
     series_name: str,
     value_field: str,
     series_type: str = "Column",
-    series_subtype: str = "Plain",
+    series_subtype: Optional[str] = None,
 ) -> dict[str, Any]:
     """Append a new ``<ChartSeries>`` to the named chart, together with its
     ``ChartSeriesHierarchy`` member.
+
+    ``series_type`` / ``series_subtype`` must be an RDL pair (see
+    :mod:`pbirb_mcp.core.chart_types`); shorthands such as ``Pie`` or
+    ``Bubble`` are normalised to ``Shape/Pie`` / ``Scatter/Bubble``.
+    ``series_subtype=None`` (default) takes the type's default subtype
+    (``Plain``; ``Pie`` for Shape). The result's ``type`` / ``subtype``
+    are the canonical values written.
 
     The series is built with ``Y = Sum(Fields!<value_field>.Value)`` —
     same shape :func:`insert_chart_from_template` emits for the first
@@ -672,15 +656,9 @@ def add_chart_series(
     Refuses if ``series_name`` is already used by a series or a derived
     series of the chart.
     """
-    if series_type not in _VALID_SERIES_TYPES:
-        raise ValueError(
-            f"series_type {series_type!r} not valid; expected one of {sorted(_VALID_SERIES_TYPES)}"
-        )
-    if series_subtype not in _VALID_SERIES_SUBTYPES:
-        raise ValueError(
-            f"series_subtype {series_subtype!r} not valid; "
-            f"expected one of {sorted(_VALID_SERIES_SUBTYPES)}"
-        )
+    series_type, series_subtype = chart_types.normalize_series_type(series_type, series_subtype)
+    if series_subtype is None:
+        series_subtype = chart_types.DEFAULT_SUBTYPE[series_type]
 
     doc = RDLDocument.open(path)
     chart = _resolve_chart(doc, chart_name)
@@ -803,31 +781,36 @@ def set_chart_series_type(
     Bar series + a Line series in the same chart renders as a combo
     bar+line. Set each series's type independently with this tool.
 
-    ``series_type`` ∈ Column / Bar / Line / Area / Pie / Doughnut /
-    Range / Scatter / Bubble / Stock / Polar / Radar / Funnel / Pyramid.
+    ``series_type`` ∈ Column / Bar / Line / Area / Shape / Scatter /
+    Range / Polar, and ``series_subtype`` must suit it:
 
-    ``series_subtype`` ∈ Plain / Stacked / PercentStacked / Smooth /
-    Exploded / SmoothLine / 100 / Line / Spline.
+    * Column, Bar: Plain / Stacked / PercentStacked
+    * Line: Plain / Smooth / Stepped
+    * Area: Plain / Smooth / Stacked / PercentStacked
+    * Shape: Pie / ExplodedPie / Doughnut / ExplodedDoughnut / Funnel /
+      Pyramid / TreeMap / Sunburst
+    * Scatter: Plain / Bubble
+    * Range: Plain / Smooth / Column / Bar / Stock / Candlestick /
+      BoxPlot / ErrorBar
+    * Polar: Plain / Radar
 
-    v0.4 commit 22: ``series_subtype`` now defaults to ``None`` instead
-    of ``"Plain"``. None means "preserve whatever Subtype is already
-    on disk" — a Bar/Stacked series can have its type changed to
-    Column without losing the Stacked subtype. Pre-v0.4 always wrote
-    Plain unless the caller supplied otherwise, which silently reset
-    stacked-bar charts on a no-op subtype edit.
+    Shorthands are normalised before writing (``Pie`` → ``Shape/Pie``,
+    ``Bubble`` → ``Scatter/Bubble``, ``Radar`` → ``Polar/Radar``,
+    ``Stock`` → ``Range/Stock``, ``SmoothLine`` → ``Line/Smooth``, subtype
+    ``100`` → ``PercentStacked`` …; see
+    :data:`pbirb_mcp.core.chart_types.TYPE_ALIASES`).
 
-    Returns ``{chart, series, changed: list[str]}`` — empty list when the
-    inputs match the existing values (no-op short-circuit, no save).
+    ``series_subtype=None`` (default) keeps the stored subtype when it
+    suits the new type (Bar/Stacked → Column keeps Stacked). When it does
+    not (Bar/Stacked → Shape), it is reset to the new type's default
+    (``Plain``; ``Pie`` for Shape) and ``"Subtype"`` is reported in
+    ``changed``.
+
+    Returns ``{chart, series, kind, type, subtype, changed: list[str]}`` —
+    ``type`` / ``subtype`` are the canonical values now on the series;
+    ``changed`` is empty when they already matched (no save).
     """
-    if series_type not in _VALID_SERIES_TYPES:
-        raise ValueError(
-            f"series_type {series_type!r} not valid; expected one of {sorted(_VALID_SERIES_TYPES)}"
-        )
-    if series_subtype is not None and series_subtype not in _VALID_SERIES_SUBTYPES:
-        raise ValueError(
-            f"series_subtype {series_subtype!r} not valid; "
-            f"expected one of {sorted(_VALID_SERIES_SUBTYPES)}"
-        )
+    series_type, series_subtype = chart_types.normalize_series_type(series_type, series_subtype)
 
     doc = RDLDocument.open(path)
     chart = _resolve_chart(doc, chart_name)
@@ -836,17 +819,36 @@ def set_chart_series_type(
 
     type_node = find_child(series, "Type")
     subtype_node = find_child(series, "Subtype")
+
+    if series_subtype is None:
+        stored = subtype_node.text if subtype_node is not None else None
+        effective = chart_types.RDL_DEFAULT_SUBTYPE if stored is None else stored.strip()
+        effective = chart_types.SUBTYPE_ALIASES.get(effective, effective)
+        valid = chart_types.SUBTYPES_BY_TYPE[series_type]
+        if effective not in valid:
+            series_subtype = chart_types.DEFAULT_SUBTYPE[series_type]
+        elif stored is not None and stored != effective:
+            # A legacy shorthand on disk (e.g. 'SmoothLine') that maps to a
+            # subtype of the new type: write its canonical form.
+            series_subtype = effective
+
     changed: list[str] = []
 
     if type_node is None:
-        type_node = etree.SubElement(series, q("Type"))
+        type_node = etree.Element(q("Type"))
+        anchor = find_child(series, "ChartDataPoints")
+        if anchor is not None:
+            anchor.addnext(type_node)
+        else:
+            series.insert(0, type_node)
     if type_node.text != series_type:
         type_node.text = series_type
         changed.append("Type")
 
     if series_subtype is not None:
         if subtype_node is None:
-            subtype_node = etree.SubElement(series, q("Subtype"))
+            subtype_node = etree.Element(q("Subtype"))
+            type_node.addnext(subtype_node)
         if subtype_node.text != series_subtype:
             subtype_node.text = series_subtype
             changed.append("Subtype")
@@ -857,6 +859,8 @@ def set_chart_series_type(
         "chart": chart_name,
         "series": series_name,
         "kind": "ChartSeries",
+        "type": series_type,
+        "subtype": subtype_node.text if subtype_node is not None else None,
         "changed": changed,
     }
 

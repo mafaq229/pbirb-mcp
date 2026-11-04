@@ -3302,8 +3302,11 @@ def register_all_tools(server: MCPServer) -> None:
             "Build and append a basic Column chart to <Body>/<ReportItems>. "
             "Single category axis grouped by category_field; single Y series "
             "Sum(Fields!<value_field>.Value). dataset_name must already exist. "
-            "Change <Type> post-insert (e.g. to Bar / Line / Pie) by "
-            "editing the chart directly."
+            "The series is Column/Plain; change it post-insert with "
+            "set_chart_series_type (RDL Types: Column, Bar, Line, Area, "
+            "Shape, Scatter, Range, Polar — e.g. a pie chart is "
+            "Shape/Pie, a doughnut Shape/Doughnut, a stepped line "
+            "Line/Stepped)."
         ),
         input_schema={
             "type": "object",
@@ -3342,7 +3345,10 @@ def register_all_tools(server: MCPServer) -> None:
             "(=Sum(Fields!<value_field>.Value)). series_type defaults to "
             "Column; combine series of different types in one chart for "
             "combo charts (e.g. Bar + Line). series_subtype defaults to "
-            "Plain. Also creates the series' ChartSeriesHierarchy member "
+            "the type's default (Plain; Pie for Shape). The pair must be "
+            "a real RDL Type/Subtype (see set_chart_series_type); "
+            "shorthands like Pie or Bubble are normalised and the "
+            "canonical type/subtype returned. Also creates the series' ChartSeriesHierarchy member "
             "(<ChartMember><Label>series_name</Label>, the legend text; a "
             "sibling of any dynamic series group) and one ChartDataPoint "
             "per category leaf, so series and members stay matched by "
@@ -3360,18 +3366,13 @@ def register_all_tools(server: MCPServer) -> None:
                 "value_field": {"type": "string"},
                 "series_type": {
                     "type": "string",
-                    "description": (
-                        "Column / Bar / Line / Area / Pie / Doughnut / "
-                        "Range / Scatter / Bubble / Stock / Polar / Radar "
-                        "/ Funnel / Pyramid"
-                    ),
+                    "default": "Column",
+                    "description": chart.SERIES_TYPE_DOC,
                 },
                 "series_subtype": {
-                    "type": "string",
-                    "description": (
-                        "Plain / Stacked / PercentStacked / Smooth / "
-                        "Exploded / SmoothLine / 100 / Line / Spline"
-                    ),
+                    "type": ["string", "null"],
+                    "default": None,
+                    "description": chart.SERIES_SUBTYPE_DOC,
                 },
             },
             "required": ["path", "chart_name", "series_name", "value_field"],
@@ -3414,12 +3415,21 @@ def register_all_tools(server: MCPServer) -> None:
             "Update <Type> and optionally <Subtype> on a named "
             "ChartSeries. Combo charts work by setting different "
             "types per series in the same chart (e.g. one Bar series "
-            "and one Line series). v0.4: series_subtype defaults to "
-            "null/None — omit to PRESERVE the existing subtype. "
-            "Pass 'Stacked' / 'PercentStacked' / 'Plain' / etc. to "
-            "override. Pre-v0.4 always wrote 'Plain' by default, "
-            "silently resetting stacked-bar charts on type-only edits. "
-            "Returns {chart, series, kind, changed: list[str]} — "
+            "and one Line series). Only real RDL pairs are written — "
+            "Column/Bar: Plain|Stacked|PercentStacked; Line: "
+            "Plain|Smooth|Stepped; Area: Plain|Smooth|Stacked|"
+            "PercentStacked; Shape: Pie|ExplodedPie|Doughnut|"
+            "ExplodedDoughnut|Funnel|Pyramid|TreeMap|Sunburst; Scatter: "
+            "Plain|Bubble; Range: Plain|Smooth|Column|Bar|Stock|"
+            "Candlestick|BoxPlot|ErrorBar; Polar: Plain|Radar. "
+            "Shorthands are normalised (Pie -> Shape/Pie, Bubble -> "
+            "Scatter/Bubble, Radar -> Polar/Radar, Stock -> Range/Stock, "
+            "SmoothLine -> Line/Smooth, subtype 100 -> PercentStacked). "
+            "series_subtype null/omitted keeps the existing subtype when "
+            "it suits the new type, otherwise resets it to the type's "
+            "default (Plain; Pie for Shape) and reports 'Subtype' in "
+            "changed. Returns {chart, series, kind, type, subtype, "
+            "changed: list[str]} with the canonical pair — changed is "
             "empty when inputs match existing values."
         ),
         input_schema={
@@ -3428,8 +3438,15 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "chart_name": {"type": "string"},
                 "series_name": {"type": "string"},
-                "series_type": {"type": "string"},
-                "series_subtype": {"type": ["string", "null"], "default": None},
+                "series_type": {
+                    "type": "string",
+                    "description": chart.SERIES_TYPE_DOC,
+                },
+                "series_subtype": {
+                    "type": ["string", "null"],
+                    "default": None,
+                    "description": chart.SERIES_SUBTYPE_DOC,
+                },
             },
             "required": ["path", "chart_name", "series_name", "series_type"],
             "additionalProperties": False,
