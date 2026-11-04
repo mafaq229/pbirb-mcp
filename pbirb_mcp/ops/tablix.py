@@ -24,6 +24,13 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_tablix
+from pbirb_mcp.core.tablix_shape import (
+    NO_DETAIL_GROUP,
+    detail_member,
+    is_detail_group,
+    is_dynamic_group,
+    leaf_row_index,
+)
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 from pbirb_mcp.ops.filter_types import type_mismatch_warnings, wrap_with_format
 
@@ -426,15 +433,11 @@ def remove_row_group(
     tool. Unwraps the group's children back to its parent and removes the
     matching group-header row at body row 0.
 
-    Refuses to remove the conventional ``Details`` group — a tablix without
-    leaves is not useful, and Report Builder treats Details specially.
+    Refuses to remove the detail group (a ``<Group>`` without
+    ``<GroupExpressions>`` — ``Details``, ``Details1``, ...): a tablix
+    without its detail leaf is not useful, and Report Builder treats the
+    detail group specially.
     """
-    if group_name == "Details":
-        raise ValueError(
-            "Details is the conventional leaf group and cannot be removed; "
-            "drop the entire tablix instead if you really mean it."
-        )
-
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
 
@@ -443,6 +446,12 @@ def remove_row_group(
         raise ElementNotFoundError(
             f"row-axis group {group_name!r} not found in tablix {tablix_name!r}; "
             "use remove_column_group for a column-axis group."
+        )
+    if is_detail_group(find_child(member, "Group")):
+        raise ValueError(
+            f"{group_name!r} is the detail group (a Group without "
+            "GroupExpressions) and cannot be removed; drop the entire "
+            "tablix instead if you really mean it."
         )
 
     inner_members = find_child(member, "TablixMembers")
@@ -574,18 +583,20 @@ def set_detail_row_visibility(
     expression: str,
     toggle_textbox: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Set ``<Visibility>`` on the ``Details`` group's TablixMember.
+    """Set ``<Visibility>`` on the detail group's TablixMember.
 
-    The detail group is the conventional leaf in a Power BI paginated
-    tablix — Report Builder always emits it as ``<Group Name="Details" />``.
-    Hiding it is how callers conditionally suppress the per-row body
-    without restructuring the hierarchy.
+    The detail group is the row-hierarchy leaf whose ``<Group>`` has no
+    ``<GroupExpressions>``. Report Builder names it ``Details`` for the
+    first table in a report, ``Details1``... for later ones (group names
+    are report-wide unique) and authors rename it, so it is found by
+    shape, not by name. Hiding it is how callers conditionally suppress
+    the per-row body without restructuring the hierarchy.
     """
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
-    member = _find_member_for_group(tablix, "Details")
+    member = detail_member(tablix)
     if member is None:
-        raise ElementNotFoundError(f"tablix {tablix_name!r} has no Details group")
+        raise ElementNotFoundError(f"tablix {tablix_name!r} has {NO_DETAIL_GROUP}")
 
     new_vis = etree.Element(q("Visibility"))
     hidden = etree.SubElement(new_vis, q("Hidden"))
@@ -713,32 +724,15 @@ def set_tablix_size(
 
 
 def _has_column_group(tablix: etree._Element) -> bool:
-    """True iff the column hierarchy contains any user-named ``<Group
-    Name="...">`` (Details excluded). Matches the matrix-shape
-    precondition: a column hierarchy with at least one named group
-    is what makes a matrix matrix-shaped."""
+    """True iff the column hierarchy contains any dynamic ``<Group>``
+    (one with ``<GroupExpressions>``; detail-shaped groups excluded,
+    whatever their name). Matches the matrix-shape precondition: a
+    column hierarchy with at least one dynamic group is what makes a
+    matrix matrix-shaped."""
     column_hierarchy = find_child(tablix, "TablixColumnHierarchy")
     if column_hierarchy is None:
         return False
-    for group in column_hierarchy.iter(q("Group")):
-        name = group.get("Name") or ""
-        if name and name != "Details":
-            return True
-    return False
-
-
-def _find_details_row_member(tablix: etree._Element) -> Optional[etree._Element]:
-    """Find the ``<TablixMember>`` in the row hierarchy whose child
-    is ``<Group Name="Details">``. Returns ``None`` when no Details
-    member is present (e.g. already converted to matrix)."""
-    row_hierarchy = find_child(tablix, "TablixRowHierarchy")
-    if row_hierarchy is None:
-        return None
-    for member in row_hierarchy.iter(q("TablixMember")):
-        group = find_child(member, "Group")
-        if group is not None and (group.get("Name") or "") == "Details":
-            return member
-    return None
+    return any(is_dynamic_group(group) for group in column_hierarchy.iter(q("Group")))
 
 
 def convert_to_matrix(
@@ -747,7 +741,7 @@ def convert_to_matrix(
     row_group: str,
     column_group: str,
 ) -> dict[str, Any]:
-    """Drop the ``Details`` leaf from a tablix that already has a named
+    """Drop the detail leaf from a tablix that already has a named
     row group and named column group, converting it into a matrix shape.
 
     Pre-conditions (all checked, refuses with :class:`ValueError`):
@@ -756,18 +750,22 @@ def convert_to_matrix(
       ``<TablixMember>/<Group>`` in the row hierarchy.
     * ``column_group`` must be the ``Name`` of an existing
       ``<TablixMember>/<Group>`` in the column hierarchy.
-    * The row hierarchy must contain a ``<Group Name="Details">``.
-      Without one the tablix is already matrix-shaped — re-running
-      the conversion is a no-op so we refuse with a clear "already
-      a matrix" hint (idempotency-by-explicit-refusal).
+    * The row hierarchy must contain a detail group — a leaf
+      ``<Group>`` without ``<GroupExpressions>``, whatever its name
+      (``Details``, ``Details1``, ...). Without one the tablix is
+      already matrix-shaped — re-running the conversion is a no-op so
+      we refuse with a clear "already a matrix" hint
+      (idempotency-by-explicit-refusal).
 
     Action:
 
-    1. Remove the ``<TablixMember>`` whose group is Details from its
-       parent ``<TablixMembers>``.
-    2. Remove the final body row from ``<TablixBody>/<TablixRows>`` —
-       Details is the deepest row-hierarchy leaf in the
-       ``add_row_group`` shape, so its data lives in the last row.
+    1. Remove the detail ``<TablixMember>`` from its parent
+       ``<TablixMembers>``.
+    2. Remove the body row that leaf owned (found by walking the row
+       hierarchy, so trailing subtotal/footer rows are preserved).
+       If the detail leaf was its parent group's only child, the
+       parent group becomes the leaf and takes over that row instead
+       (an empty ``<TablixMembers/>`` is schema-invalid).
 
     ``row_group`` and ``column_group`` are kept as required arguments
     so the caller asserts "yes I know which groups make this a
@@ -802,28 +800,37 @@ def convert_to_matrix(
             "call add_column_group first."
         )
 
-    details_member = _find_details_row_member(tablix)
+    details_member = detail_member(tablix)
     if details_member is None:
         raise ValueError(
-            f"tablix {tablix_name!r} is already a matrix (no Details row group "
+            f"tablix {tablix_name!r} is already a matrix ({NO_DETAIL_GROUP} "
             "in the row hierarchy); convert_to_matrix is idempotent-by-refusal."
         )
+    details_row_idx = leaf_row_index(tablix, details_member)
 
     parent_members = details_member.getparent()
-    parent_members.remove(details_member)
-
-    # Remove the last body row — that's where Details rendered.
-    body = find_child(tablix, "TablixBody")
-    rows_root = find_child(body, "TablixRows")
-    rows = find_children(rows_root, "TablixRow")
-    if rows:
-        rows_root.remove(rows[-1])
+    siblings = find_children(parent_members, "TablixMember")
+    owner = parent_members.getparent()
+    if len(siblings) == 1 and owner is not None and owner.tag == q("TablixMember"):
+        # The detail leaf was its group's only child: drop the now-empty
+        # <TablixMembers> so the group member becomes the leaf. Leaf count
+        # is unchanged, so the body row stays — it now belongs to the group.
+        owner.remove(parent_members)
+        changed = ["details_member_removed"]
+    else:
+        parent_members.remove(details_member)
+        body = find_child(tablix, "TablixBody")
+        rows_root = find_child(body, "TablixRows") if body is not None else None
+        rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
+        if details_row_idx is not None and details_row_idx < len(rows):
+            rows_root.remove(rows[details_row_idx])
+        changed = ["details_member_removed", "details_body_row_removed"]
 
     doc.save()
     return {
         "tablix": tablix_name,
         "kind": "Tablix",
-        "changed": ["details_member_removed", "details_body_row_removed"],
+        "changed": changed,
     }
 
 

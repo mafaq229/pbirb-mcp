@@ -27,6 +27,7 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix, resolve_textbox
+from pbirb_mcp.core.tablix_shape import NO_DETAIL_GROUP, data_row_index, detail_row_index
 from pbirb_mcp.core.xpath import find_child, find_children, q
 
 # Per RDL XSD, the order of <Style> children includes (subset relevant here):
@@ -341,42 +342,6 @@ def set_textbox_style(
 # ---- alternating row color -----------------------------------------------
 
 
-def _detail_row_index(tablix: etree._Element) -> Optional[int]:
-    """Return the body-row index of the ``Details`` leaf in a depth-first
-    walk of the row hierarchy. ``None`` if the tablix has no Details group.
-
-    Body rows correspond 1:1 with leaf TablixMembers in document order, so
-    counting leaves until we find the Details group yields the right
-    ``TablixBody/TablixRows/TablixRow`` index — even after add_row_group
-    nests the original hierarchy under a new outer group.
-    """
-    rh = find_child(tablix, "TablixRowHierarchy")
-    if rh is None:
-        return None
-    members_root = find_child(rh, "TablixMembers")
-    if members_root is None:
-        return None
-
-    counter = [0]
-    found_at: list[int] = []
-
-    def walk(member: etree._Element) -> None:
-        children = find_child(member, "TablixMembers")
-        leaves = list(children) if children is not None else []
-        if not leaves:
-            group = find_child(member, "Group")
-            if group is not None and group.get("Name") == "Details":
-                found_at.append(counter[0])
-            counter[0] += 1
-            return
-        for sub in leaves:
-            walk(sub)
-
-    for m in list(members_root):
-        walk(m)
-    return found_at[0] if found_at else None
-
-
 def set_alternating_row_color(
     path: str,
     tablix_name: str,
@@ -395,10 +360,10 @@ def set_alternating_row_color(
     """
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
-    detail_idx = _detail_row_index(tablix)
+    detail_idx = detail_row_index(tablix)
     if detail_idx is None:
         raise ElementNotFoundError(
-            f"tablix {tablix_name!r} has no Details group; alternating-row-color requires one"
+            f"tablix {tablix_name!r} has {NO_DETAIL_GROUP}; set_alternating_row_color requires one"
         )
 
     body = find_child(tablix, "TablixBody")
@@ -485,7 +450,7 @@ def set_conditional_row_color(
     one of its fields.
 
     Builds a ``Switch(...)`` expression from ``color_map`` and writes it
-    as the ``BackgroundColor`` style on every cell of the Details row —
+    as the ``BackgroundColor`` style on every cell of the detail row —
     same surface as ``set_alternating_row_color``, but conditional on a
     field value rather than ``RowNumber Mod 2``.
 
@@ -509,10 +474,10 @@ def set_conditional_row_color(
 
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
-    detail_idx = _detail_row_index(tablix)
+    detail_idx = detail_row_index(tablix)
     if detail_idx is None:
         raise ElementNotFoundError(
-            f"tablix {tablix_name!r} has no Details group; set_conditional_row_color requires one"
+            f"tablix {tablix_name!r} has {NO_DETAIL_GROUP}; set_conditional_row_color requires one"
         )
 
     body = find_child(tablix, "TablixBody")
@@ -1076,7 +1041,7 @@ def _group_row_index(
     elif position == "footer":
         # A "real" group footer is a placeholder TablixMember WITHOUT
         # a <Group> child — the shape add_subtotal_row(position="footer")
-        # emits. The Details leaf has <Group Name="Details">; if it
+        # emits. The detail leaf carries a <Group> (no GroupExpressions); if it
         # happens to be the last child, that's NOT a footer. Likewise,
         # bare add_row_group leaves the group with [header, ...,
         # Details] and no real footer.
@@ -1101,7 +1066,9 @@ def _resolve_row_index(tablix: etree._Element, row: object) -> int:
     - ``int`` — taken as the body row index directly; range-checked.
     - ``"header"`` — first leaf with ``KeepWithGroup=After`` (the
       conventional column header).
-    - ``"details"`` — the leaf with ``Group Name="Details"``.
+    - ``"details"`` — the detail leaf (a ``<Group>`` without
+      ``<GroupExpressions>``, whatever its name); on a matrix with no
+      detail group, the innermost dynamic row group's leaf.
     - ``"<group>_header"`` — header leaf of a named row group.
     - ``"<group>_footer"`` — footer leaf of a named row group (when
       present, e.g. after ``add_subtotal_row``).
@@ -1128,11 +1095,12 @@ def _resolve_row_index(tablix: etree._Element, row: object) -> int:
         raise TypeError(f"row must be int or str; got {type(row).__name__}")
 
     if row == "details":
-        idx = _detail_row_index(tablix)
+        idx = data_row_index(tablix)
         if idx is None:
             raise ElementNotFoundError(
-                f"tablix {tablix.get('Name')!r} has no Details group; "
-                "no row with role 'details' to resolve"
+                f"tablix {tablix.get('Name')!r} has {NO_DETAIL_GROUP} and "
+                "no dynamic row group; no row with role 'details' to resolve. "
+                "Use an integer row index instead."
             )
         return idx
     if row == "header":
@@ -1221,7 +1189,10 @@ def style_tablix_row(
       ``<TablixBody>/<TablixRows>``.
     - **"header"**: first leaf with ``KeepWithGroup=After`` (the
       conventional column header row).
-    - **"details"**: the row containing the ``Details`` group leaf.
+    - **"details"**: the row containing the detail group leaf (a
+      ``<Group>`` without ``<GroupExpressions>`` — ``Details``,
+      ``Details1``, ...); on a matrix (no detail group), the innermost
+      dynamic row group's leaf row.
     - **"<group>_header"**: header row of a named row group (the group
       created by ``add_row_group("<group>", ...)``).
     - **"<group>_footer"**: footer row of a named row group (present

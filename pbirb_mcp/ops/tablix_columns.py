@@ -36,8 +36,8 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
+from pbirb_mcp.core.tablix_shape import data_row_index
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
-from pbirb_mcp.ops.styling import _detail_row_index
 from pbirb_mcp.ops.tablix import (
     _apply_sort_to_member,
     _apply_visibility_to_member,
@@ -396,16 +396,19 @@ def add_tablix_column(
     """Append (or insert) a new column into a tablix.
 
     ``column_name`` is the textbox name placed in the column's *data*
-    row (the row whose ``<TablixMember>`` carries ``<Group Name="Details">``,
-    walked depth-first through any wrapping groups). It must be unique
+    row (the row whose ``<TablixMember>`` carries the detail group — a
+    ``<Group>`` without ``<GroupExpressions>``, whatever its name — walked
+    depth-first through any wrapping groups; on a matrix, the innermost
+    dynamic row group's leaf row). It must be unique
     report-wide. ``expression`` is the value placed inside that
     textbox's ``<TextRun>`` (typically ``=Fields!X.Value``).
 
     For a tablix with ≥ 2 rows: row 0 (header) gets ``header_text``
-    (default = ``column_name``) as a literal; the Details row gets
+    (default = ``column_name``) as a literal; the data row gets
     ``expression``; every other row (group headers between row 0 and
-    Details, subtotal/footer rows after Details) gets a blank cell.
-    Tablixes with no Details group fall back to "last row = data row".
+    the data row, subtotal/footer rows after it) gets a blank cell.
+    Tablixes with neither a detail group nor a dynamic row group fall
+    back to "last row = data row".
     Cell textbox names follow ``<column_name>`` for the data-row cell
     and ``<column_name>_<row_index>`` for non-data cells.
 
@@ -469,13 +472,14 @@ def add_tablix_column(
     n_rows = len(rows)
     header_text_value = header_text if header_text is not None else column_name
 
-    # Find the data row by walking the row hierarchy for the Details leaf.
-    # This is correct after add_row_group nests the original hierarchy and
-    # after add_subtotal_row appends a footer row — the literal "last row"
-    # is the subtotal in that case, not the detail. Fall back to last-row
-    # behavior for tablixes without a Details group.
-    detail_idx = _detail_row_index(tablix)
-    data_row_idx = detail_idx if detail_idx is not None else n_rows - 1
+    # Find the data row by walking the row hierarchy for the detail leaf
+    # (structurally: a Group without GroupExpressions), else the innermost
+    # dynamic group's leaf. This is correct after add_row_group nests the
+    # original hierarchy and after add_subtotal_row appends a footer row —
+    # the literal "last row" is the subtotal in that case, not the data.
+    # Fall back to last-row behavior for all-static tablixes.
+    data_idx = data_row_index(tablix)
+    data_row_idx = data_idx if data_idx is not None and data_idx < n_rows else n_rows - 1
 
     for i, row in enumerate(rows):
         cells_root = find_child(row, "TablixCells")
@@ -494,8 +498,8 @@ def add_tablix_column(
             cell_text = header_text_value
             tb_name = f"{column_name}_{i}"
         else:
-            # Middle rows (between header and Details) and footer rows
-            # (subtotals after Details): blank cells.
+            # Middle rows (between header and the data row) and footer
+            # rows (subtotals after it): blank cells.
             cell_text = ""
             tb_name = f"{column_name}_{i}"
 
