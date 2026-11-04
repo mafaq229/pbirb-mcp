@@ -165,13 +165,16 @@ class TestLegacyV02Migration:
     def test_legacy_col_span_migrated_to_cell_contents(self, rdl_path):
         # Simulate a v0.2-broken file.
         self._inject_legacy_span(rdl_path, row=0, col=0, local="ColSpan", value="2")
-        # Re-touch the cell with another span — the migration should run.
+        # Re-touch the cell with another span — the migration should run. The
+        # migrated span now really covers column 1, whose header has text, so
+        # it takes force=True (which clears that cell) — see the refusal test.
         set_cell_span(
             path=str(rdl_path),
             tablix_name="MainTable",
             row_index=0,
             column_name="HeaderProductID",
             row_span=1,
+            force=True,
         )
         tablix = _tablix(RDLDocument.open(rdl_path), "MainTable")
         cell = _cell(tablix, 0, 0)
@@ -183,6 +186,49 @@ class TestLegacyV02Migration:
         # Nothing left on TablixCell.
         assert find_child(cell, "ColSpan") is None
         assert find_child(cell, "RowSpan") is None
+
+    def test_migrated_span_covering_content_refused_file_unchanged(self, rdl_path):
+        self._inject_legacy_span(rdl_path, row=0, col=0, local="ColSpan", value="2")
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="v0.2-style ColSpan"):
+            set_cell_span(
+                path=str(rdl_path),
+                tablix_name="MainTable",
+                row_index=0,
+                column_name="HeaderProductID",
+                row_span=1,
+            )
+        assert rdl_path.read_bytes() == before
+
+    def test_migrated_span_leaves_a_structurally_valid_tablix(self, rdl_path):
+        from pbirb_mcp.ops.lint import lint_report
+
+        self._inject_legacy_span(rdl_path, row=0, col=0, local="ColSpan", value="2")
+        out = set_cell_span(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            row_index=0,
+            column_name="HeaderProductID",
+            row_span=1,
+            force=True,
+        )
+        assert out["cleared"] == ["HeaderProductName"]
+        assert [i for i in lint_report(str(rdl_path), ["tablix-structure"])["issues"]] == []
+
+    def test_explicit_col_span_overrides_the_legacy_span(self, rdl_path):
+        from pbirb_mcp.ops.lint import lint_report
+
+        self._inject_legacy_span(rdl_path, row=0, col=0, local="ColSpan", value="2")
+        set_cell_span(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            row_index=0,
+            column_name="HeaderProductID",
+            col_span=1,
+        )
+        text = rdl_path.read_text()
+        assert 'Name="HeaderProductName"' in text
+        assert [i for i in lint_report(str(rdl_path), ["tablix-structure"])["issues"]] == []
 
     def test_legacy_collision_prefers_legacy_value(self, rdl_path):
         """If both old (TablixCell child) and new (CellContents child) exist,
@@ -207,6 +253,7 @@ class TestLegacyV02Migration:
             row_index=0,
             column_name="HeaderProductID",
             row_span=1,
+            force=True,
         )
         tablix = _tablix(RDLDocument.open(rdl_path), "MainTable")
         cell = _cell(tablix, 0, 0)
