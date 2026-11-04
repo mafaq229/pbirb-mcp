@@ -17,11 +17,11 @@ already matches.
 
 from __future__ import annotations
 
-import re
 from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
 
@@ -46,19 +46,6 @@ _PAGE_CHILD_ORDER = (
     "ColumnSpacing",
     "Style",
 )
-
-
-# Regex for an RDL size string: a positive number plus an explicit unit.
-_SIZE_RE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(in|cm|mm|pt|pc)\s*$")
-
-# Conversion factors to inches.
-_TO_INCHES = {
-    "in": 1.0,
-    "cm": 1.0 / 2.54,
-    "mm": 1.0 / 25.4,
-    "pt": 1.0 / 72.0,
-    "pc": 1.0 / 6.0,
-}
 
 
 def _resolve_page(doc: RDLDocument) -> etree._Element:
@@ -92,16 +79,6 @@ def _remove_if_present(page: etree._Element, local: str) -> None:
         page.remove(existing)
 
 
-def _parse_size_to_inches(size: str) -> float:
-    m = _SIZE_RE.match(size or "")
-    if not m:
-        raise ValueError(
-            f"invalid RDL size {size!r}; expected '<number><unit>' "
-            "with unit in (in, cm, mm, pt, pc)"
-        )
-    return float(m.group(1)) * _TO_INCHES[m.group(2)]
-
-
 # ---- set_page_setup -------------------------------------------------------
 
 
@@ -115,6 +92,14 @@ def set_page_setup(
     margin_right: Optional[str] = None,
     columns: Optional[int] = None,
 ) -> dict[str, Any]:
+    page_height = units.dimension(page_height, "page_height")
+    page_width = units.dimension(page_width, "page_width")
+    margin_top = units.position(margin_top, "margin_top")
+    margin_bottom = units.position(margin_bottom, "margin_bottom")
+    margin_left = units.position(margin_left, "margin_left")
+    margin_right = units.position(margin_right, "margin_right")
+    if columns is not None and columns < 1:
+        raise ValueError("columns must be >= 1")
     updates: list[tuple[str, Optional[str]]] = [
         ("PageHeight", page_height),
         ("PageWidth", page_width),
@@ -139,8 +124,6 @@ def set_page_setup(
         changed.append(local)
 
     if columns is not None:
-        if columns < 1:
-            raise ValueError("columns must be >= 1")
         if columns == 1:
             _remove_if_present(page, "Columns")
         else:
@@ -165,8 +148,8 @@ def set_page_orientation(path: str, orientation: str) -> dict[str, Any]:
     if h_node is None or w_node is None:
         raise ValueError("page has no PageHeight/PageWidth to orient")
 
-    h_in = _parse_size_to_inches(h_node.text or "")
-    w_in = _parse_size_to_inches(w_node.text or "")
+    h_in = units.to_inches(h_node.text or "")
+    w_in = units.to_inches(w_node.text or "")
     is_currently_landscape = w_in > h_in
     wants_landscape = orientation == "Landscape"
 
@@ -259,6 +242,8 @@ def set_body_size(
     """
     if width is None and height is None:
         raise ValueError("set_body_size requires at least one of width / height")
+    width = units.dimension(width, "width")
+    height = units.dimension(height, "height")
 
     doc = RDLDocument.open(path)
     section = _resolve_report_section(doc)

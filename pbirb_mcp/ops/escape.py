@@ -114,6 +114,7 @@ def raw_xml_replace(path: str, xpath: str, content: str) -> dict[str, Any]:
     new_node = children[0]
 
     parent = target.getparent()
+    new_node.tail = target.tail
     parent.replace(target, new_node)
     doc.save()
     return {

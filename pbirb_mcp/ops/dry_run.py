@@ -61,6 +61,9 @@ def dry_run_edit(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
 
     The original file is never modified.
     """
+    from pbirb_mcp.core import transactions as _tx
+    from pbirb_mcp.ops.batch import check_ops, payload_reports_failure
+
     src = Path(path)
     if not src.is_file():
         raise FileNotFoundError(f"path {path!r} is not a regular file")
@@ -68,13 +71,22 @@ def dry_run_edit(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
         raise ValueError("ops must be a list of {tool, args} entries")
 
     server = _build_server()
-    original_bytes = src.read_bytes()
+    # Refuse non-batchable ops before any temp file is created.
+    check_ops(server, ops)
+
+    # Called inside the transaction that holds `path`: preview against the
+    # transaction's in-memory tree, not the (older) disk bytes.
+    owner = _tx.owned_transaction(str(src.resolve()))
+    original_bytes = owner.doc.to_bytes() if owner is not None else src.read_bytes()
     original_text = original_bytes.decode("utf-8", errors="replace")
 
     with tempfile.NamedTemporaryFile(suffix=".rdl", prefix="pbirb-dry-run-", delete=False) as tmp:
         tmp_path = Path(tmp.name)
     try:
-        shutil.copy(str(src), str(tmp_path))
+        if owner is not None:
+            tmp_path.write_bytes(original_bytes)
+        else:
+            shutil.copy(str(src), str(tmp_path))
 
         applied: list[dict[str, Any]] = []
         for i, op in enumerate(ops):
@@ -130,6 +142,25 @@ def dry_run_edit(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
 
                 applied.append({"tool": tool, "ok": False, "error": _json.loads(text)})
                 break
+            import json as _json
+
+            try:
+                parsed = _json.loads(text)
+            except ValueError:
+                parsed = None
+            if payload_reports_failure(parsed):
+                applied.append(
+                    {
+                        "tool": tool,
+                        "ok": False,
+                        "result_text": text,
+                        "error": {
+                            "error_type": "OpFailed",
+                            "message": "op reported committed/saved = false",
+                        },
+                    }
+                )
+                break
             applied.append({"tool": tool, "ok": True, "result_text": text})
 
         # Always compute a diff + verify against the tempfile state. Even
@@ -151,6 +182,11 @@ def dry_run_edit(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
     finally:
         with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()
+        # Defensive: nothing may outlive the preview (e.g. an auto-backup
+        # an op took of the temp copy).
+        for leftover in tmp_path.parent.glob(tmp_path.name + ".bak.*"):
+            with contextlib.suppress(OSError):
+                leftover.unlink()
 
 
 __all__ = ["dry_run_edit"]

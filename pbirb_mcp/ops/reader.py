@@ -18,6 +18,7 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.tablix_shape import is_dynamic_group
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q, qrd
 
 
@@ -122,10 +123,11 @@ def _tablix_summary(tablix: etree._Element) -> dict[str, Any]:
     Heuristics:
     * ``rows``/``columns`` — direct counts of ``<TablixRow>`` and
       ``<TablixColumn>`` inside ``<TablixBody>``.
-    * ``has_groups`` — True iff any user-named ``<Group Name="...">``
-      exists in either the row or column hierarchy. The default
-      ``Details`` row group does NOT count (it ships in every
-      template-inserted tablix).
+    * ``has_groups`` — True iff any dynamic ``<Group>`` (one with
+      ``<GroupExpressions>``) exists in either the row or column
+      hierarchy. The detail group (no ``<GroupExpressions>``) does NOT
+      count, whatever it is named — ``Details``, ``Details1``, ... (it
+      ships in every template-inserted tablix).
     * ``has_subtotals`` — True iff any static ``<TablixMember>`` (no
       ``<Group>`` child) is nested INSIDE another member's
       ``<TablixMembers>`` that DOES have a ``<Group>``. That's exactly
@@ -151,7 +153,7 @@ def _tablix_summary(tablix: etree._Element) -> dict[str, Any]:
         if h is None:
             continue
         for group in h.iter(f"{{{RDL_NS}}}Group"):
-            if (group.get("Name") or "") != "Details":
+            if is_dynamic_group(group):
                 has_groups = True
                 break
         if has_groups:

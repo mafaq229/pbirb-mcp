@@ -65,8 +65,10 @@ def duplicate_report(
         shutil.copy(str(src), str(dst))
         return {"src": str(src), "dst": str(dst), "regenerated_ids": []}
 
-    # Open the source, rewrite GUIDs, save to dst.
-    doc = RDLDocument.open(src)
+    # Open the source and work on a private copy: inside a transaction
+    # open() hands back the transaction's live tree, and regenerating the
+    # GUIDs in place would rewrite the SOURCE's ids at commit.
+    doc = RDLDocument.open(src).copy_to(dst)
     regenerated: list[str] = []
 
     # rd:DataSourceID — one per <DataSource>.

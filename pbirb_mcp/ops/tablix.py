@@ -21,9 +21,17 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_tablix
+from pbirb_mcp.core.tablix_shape import (
+    NO_DETAIL_GROUP,
+    detail_member,
+    is_detail_group,
+    is_dynamic_group,
+    leaf_row_index,
+)
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 from pbirb_mcp.ops.filter_types import type_mismatch_warnings, wrap_with_format
 
@@ -236,10 +244,6 @@ def _find_member_for_group(tablix: etree._Element, group_name: str) -> Optional[
     return None
 
 
-def _group_names_in_tablix(tablix: etree._Element) -> set[str]:
-    return {g.get("Name") for g in tablix.iter(q("Group")) if g.get("Name") is not None}
-
-
 def _column_count(tablix: etree._Element) -> int:
     body = find_child(tablix, "TablixBody")
     cols_root = find_child(body, "TablixColumns") if body is not None else None
@@ -249,24 +253,22 @@ def _column_count(tablix: etree._Element) -> int:
 
 
 def _build_group_header_row(
-    column_count: int,
-    group_name: str,
+    textbox_names: list[str],
     group_expression: str,
 ) -> etree._Element:
     """Build a TablixRow whose first cell renders the group expression and
-    whose remaining cells are blank textboxes. Textbox names are derived
-    from the group name (``<group>_Header_<col_index>``) — Report Builder
-    enforces report-wide uniqueness, so the caller is responsible for
-    unique group names.
+    whose remaining cells are blank textboxes — one cell per entry of
+    ``textbox_names``. The caller generates those names (normally
+    ``<group>_Header_<col_index>``) through :mod:`pbirb_mcp.core.names`
+    so they are report-wide unique.
     """
     row = etree.Element(q("TablixRow"))
     height = etree.SubElement(row, q("Height"))
     height.text = "0.25in"
     cells_root = etree.SubElement(row, q("TablixCells"))
-    for i in range(column_count):
+    for i, textbox_name in enumerate(textbox_names):
         cell = etree.SubElement(cells_root, q("TablixCell"))
         contents = etree.SubElement(cell, q("CellContents"))
-        textbox_name = f"{group_name}_Header_{i}"
         tb = etree.SubElement(contents, q("Textbox"), Name=textbox_name)
         etree.SubElement(tb, q("CanGrow")).text = "true"
         etree.SubElement(tb, q("KeepTogether")).text = "true"
@@ -360,11 +362,17 @@ def add_row_group(
             "outer-group wrapping is implemented in this commit."
         )
 
+    names.validate_identifier(group_name, "group")
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
 
-    if group_name in _group_names_in_tablix(tablix):
-        raise ValueError(f"group name {group_name!r} already exists in tablix {tablix_name!r}")
+    # Group names share the report-wide namespace with report items.
+    registry = names.NameRegistry(doc)
+    registry.ensure_unique(group_name)
+    registry.claim(group_name)
+    header_names = [
+        registry.unique(f"{group_name}_Header_{i}") for i in range(_column_count(tablix))
+    ]
 
     members_root = _row_hierarchy_members(tablix)
     existing_children = list(members_root)
@@ -399,11 +407,7 @@ def add_row_group(
     rows_root = find_child(body, "TablixRows")
     if rows_root is None:
         rows_root = etree.SubElement(body, q("TablixRows"))
-    new_row = _build_group_header_row(
-        column_count=_column_count(tablix),
-        group_name=group_name,
-        group_expression=group_expression,
-    )
+    new_row = _build_group_header_row(header_names, group_expression)
     rows_root.insert(0, new_row)
 
     doc.save()
@@ -411,6 +415,7 @@ def add_row_group(
         "tablix": tablix_name,
         "group": group_name,
         "expression": group_expression,
+        "header_textboxes": header_names,
     }
 
 
@@ -426,15 +431,11 @@ def remove_row_group(
     tool. Unwraps the group's children back to its parent and removes the
     matching group-header row at body row 0.
 
-    Refuses to remove the conventional ``Details`` group — a tablix without
-    leaves is not useful, and Report Builder treats Details specially.
+    Refuses to remove the detail group (a ``<Group>`` without
+    ``<GroupExpressions>`` — ``Details``, ``Details1``, ...): a tablix
+    without its detail leaf is not useful, and Report Builder treats the
+    detail group specially.
     """
-    if group_name == "Details":
-        raise ValueError(
-            "Details is the conventional leaf group and cannot be removed; "
-            "drop the entire tablix instead if you really mean it."
-        )
-
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
 
@@ -443,6 +444,12 @@ def remove_row_group(
         raise ElementNotFoundError(
             f"row-axis group {group_name!r} not found in tablix {tablix_name!r}; "
             "use remove_column_group for a column-axis group."
+        )
+    if is_detail_group(find_child(member, "Group")):
+        raise ValueError(
+            f"{group_name!r} is the detail group (a Group without "
+            "GroupExpressions) and cannot be removed; drop the entire "
+            "tablix instead if you really mean it."
         )
 
     inner_members = find_child(member, "TablixMembers")
@@ -574,18 +581,20 @@ def set_detail_row_visibility(
     expression: str,
     toggle_textbox: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Set ``<Visibility>`` on the ``Details`` group's TablixMember.
+    """Set ``<Visibility>`` on the detail group's TablixMember.
 
-    The detail group is the conventional leaf in a Power BI paginated
-    tablix — Report Builder always emits it as ``<Group Name="Details" />``.
-    Hiding it is how callers conditionally suppress the per-row body
-    without restructuring the hierarchy.
+    The detail group is the row-hierarchy leaf whose ``<Group>`` has no
+    ``<GroupExpressions>``. Report Builder names it ``Details`` for the
+    first table in a report, ``Details1``... for later ones (group names
+    are report-wide unique) and authors rename it, so it is found by
+    shape, not by name. Hiding it is how callers conditionally suppress
+    the per-row body without restructuring the hierarchy.
     """
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
-    member = _find_member_for_group(tablix, "Details")
+    member = detail_member(tablix)
     if member is None:
-        raise ElementNotFoundError(f"tablix {tablix_name!r} has no Details group")
+        raise ElementNotFoundError(f"tablix {tablix_name!r} has {NO_DETAIL_GROUP}")
 
     new_vis = etree.Element(q("Visibility"))
     hidden = etree.SubElement(new_vis, q("Hidden"))
@@ -613,8 +622,7 @@ def set_row_height(
     row_index: int,
     height: str,
 ) -> dict[str, Any]:
-    if not height or not height.strip():
-        raise ValueError("height must be a non-empty RDL size (e.g. '0.25in', '1cm')")
+    height = units.validate_size(height, field="height", allow_zero=False)
 
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
@@ -657,15 +665,13 @@ def set_tablix_size(
     feedback bug #10).
 
     Both values are RDL size strings (``'4in'``, ``'10cm'``, etc.).
-    Empty / whitespace-only values are rejected.
+    Malformed (e.g. unitless, empty) or non-positive values are rejected.
 
     Returns ``{tablix, kind, changed: list[str]}`` — empty list when
     inputs match existing (no save).
     """
-    if height is not None and (not height or not height.strip()):
-        raise ValueError("height must be a non-empty RDL size (e.g. '4in', '10cm')")
-    if width is not None and (not width or not width.strip()):
-        raise ValueError("width must be a non-empty RDL size (e.g. '4in', '10cm')")
+    height = units.dimension(height, "height")
+    width = units.dimension(width, "width")
     if height is None and width is None:
         return {"tablix": name, "kind": "Tablix", "changed": []}
 
@@ -713,32 +719,15 @@ def set_tablix_size(
 
 
 def _has_column_group(tablix: etree._Element) -> bool:
-    """True iff the column hierarchy contains any user-named ``<Group
-    Name="...">`` (Details excluded). Matches the matrix-shape
-    precondition: a column hierarchy with at least one named group
-    is what makes a matrix matrix-shaped."""
+    """True iff the column hierarchy contains any dynamic ``<Group>``
+    (one with ``<GroupExpressions>``; detail-shaped groups excluded,
+    whatever their name). Matches the matrix-shape precondition: a
+    column hierarchy with at least one dynamic group is what makes a
+    matrix matrix-shaped."""
     column_hierarchy = find_child(tablix, "TablixColumnHierarchy")
     if column_hierarchy is None:
         return False
-    for group in column_hierarchy.iter(q("Group")):
-        name = group.get("Name") or ""
-        if name and name != "Details":
-            return True
-    return False
-
-
-def _find_details_row_member(tablix: etree._Element) -> Optional[etree._Element]:
-    """Find the ``<TablixMember>`` in the row hierarchy whose child
-    is ``<Group Name="Details">``. Returns ``None`` when no Details
-    member is present (e.g. already converted to matrix)."""
-    row_hierarchy = find_child(tablix, "TablixRowHierarchy")
-    if row_hierarchy is None:
-        return None
-    for member in row_hierarchy.iter(q("TablixMember")):
-        group = find_child(member, "Group")
-        if group is not None and (group.get("Name") or "") == "Details":
-            return member
-    return None
+    return any(is_dynamic_group(group) for group in column_hierarchy.iter(q("Group")))
 
 
 def convert_to_matrix(
@@ -747,7 +736,7 @@ def convert_to_matrix(
     row_group: str,
     column_group: str,
 ) -> dict[str, Any]:
-    """Drop the ``Details`` leaf from a tablix that already has a named
+    """Drop the detail leaf from a tablix that already has a named
     row group and named column group, converting it into a matrix shape.
 
     Pre-conditions (all checked, refuses with :class:`ValueError`):
@@ -756,18 +745,22 @@ def convert_to_matrix(
       ``<TablixMember>/<Group>`` in the row hierarchy.
     * ``column_group`` must be the ``Name`` of an existing
       ``<TablixMember>/<Group>`` in the column hierarchy.
-    * The row hierarchy must contain a ``<Group Name="Details">``.
-      Without one the tablix is already matrix-shaped — re-running
-      the conversion is a no-op so we refuse with a clear "already
-      a matrix" hint (idempotency-by-explicit-refusal).
+    * The row hierarchy must contain a detail group — a leaf
+      ``<Group>`` without ``<GroupExpressions>``, whatever its name
+      (``Details``, ``Details1``, ...). Without one the tablix is
+      already matrix-shaped — re-running the conversion is a no-op so
+      we refuse with a clear "already a matrix" hint
+      (idempotency-by-explicit-refusal).
 
     Action:
 
-    1. Remove the ``<TablixMember>`` whose group is Details from its
-       parent ``<TablixMembers>``.
-    2. Remove the final body row from ``<TablixBody>/<TablixRows>`` —
-       Details is the deepest row-hierarchy leaf in the
-       ``add_row_group`` shape, so its data lives in the last row.
+    1. Remove the detail ``<TablixMember>`` from its parent
+       ``<TablixMembers>``.
+    2. Remove the body row that leaf owned (found by walking the row
+       hierarchy, so trailing subtotal/footer rows are preserved).
+       If the detail leaf was its parent group's only child, the
+       parent group becomes the leaf and takes over that row instead
+       (an empty ``<TablixMembers/>`` is schema-invalid).
 
     ``row_group`` and ``column_group`` are kept as required arguments
     so the caller asserts "yes I know which groups make this a
@@ -802,28 +795,37 @@ def convert_to_matrix(
             "call add_column_group first."
         )
 
-    details_member = _find_details_row_member(tablix)
+    details_member = detail_member(tablix)
     if details_member is None:
         raise ValueError(
-            f"tablix {tablix_name!r} is already a matrix (no Details row group "
+            f"tablix {tablix_name!r} is already a matrix ({NO_DETAIL_GROUP} "
             "in the row hierarchy); convert_to_matrix is idempotent-by-refusal."
         )
+    details_row_idx = leaf_row_index(tablix, details_member)
 
     parent_members = details_member.getparent()
-    parent_members.remove(details_member)
-
-    # Remove the last body row — that's where Details rendered.
-    body = find_child(tablix, "TablixBody")
-    rows_root = find_child(body, "TablixRows")
-    rows = find_children(rows_root, "TablixRow")
-    if rows:
-        rows_root.remove(rows[-1])
+    siblings = find_children(parent_members, "TablixMember")
+    owner = parent_members.getparent()
+    if len(siblings) == 1 and owner is not None and owner.tag == q("TablixMember"):
+        # The detail leaf was its group's only child: drop the now-empty
+        # <TablixMembers> so the group member becomes the leaf. Leaf count
+        # is unchanged, so the body row stays — it now belongs to the group.
+        owner.remove(parent_members)
+        changed = ["details_member_removed"]
+    else:
+        parent_members.remove(details_member)
+        body = find_child(tablix, "TablixBody")
+        rows_root = find_child(body, "TablixRows") if body is not None else None
+        rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
+        if details_row_idx is not None and details_row_idx < len(rows):
+            rows_root.remove(rows[details_row_idx])
+        changed = ["details_member_removed", "details_body_row_removed"]
 
     doc.save()
     return {
         "tablix": tablix_name,
         "kind": "Tablix",
-        "changed": ["details_member_removed", "details_body_row_removed"],
+        "changed": changed,
     }
 
 
@@ -857,7 +859,8 @@ def set_tablix_corner(
 
     Either ``text`` (literal value) or ``expression`` (VB.NET ``=...``
     string) — mutually exclusive. The textbox's ``Name`` is
-    deterministic: ``<tablix_name>_Corner``. Replaces any existing
+    deterministic: ``<tablix_name>_Corner`` (suffixed ``_Corner1``, …
+    only if another report item or group already uses that name). Replaces any existing
     TablixCorner block; idempotent in the "same text/expression →
     same bytes" sense.
 
@@ -887,13 +890,17 @@ def set_tablix_corner(
             "Call add_column_group first."
         )
 
-    textbox_name = f"{tablix_name}_Corner"
     value_text = expression if expression is not None else text
 
     changed: list[str] = []
 
     # Remove any existing TablixCorner so the rewrite is deterministic.
     existing = find_child(tablix, "TablixCorner")
+    # The corner being replaced doesn't count as a clash, so a re-run keeps
+    # the same "<tablix>_Corner" name (same text -> same bytes).
+    textbox_name = names.NameRegistry(
+        doc, exclude=[existing] if existing is not None else []
+    ).unique(f"{tablix_name}_Corner")
     if existing is not None:
         tablix.remove(existing)
         changed.append("replaced_existing")

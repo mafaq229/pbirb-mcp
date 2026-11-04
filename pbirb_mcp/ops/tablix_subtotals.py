@@ -5,20 +5,25 @@ existing row-group's ``<TablixMembers>`` and adds a matching body
 row. Each cell of the new row either holds an aggregate expression
 (when the user supplies one for that column) or is blank.
 
-Aggregates are matched to columns by **textbox name in the Details
-row** — the same handle used by :func:`add_tablix_column` and
+Aggregates are matched to columns by **textbox name in the group's
+data row** — the same handle used by :func:`add_tablix_column` and
 :func:`remove_tablix_column`. The user passes a list of
-``{"column": <Details-row textbox name>, "expression": <aggregate>}``
+``{"column": <data-row textbox name>, "expression": <aggregate>}``
 entries; only listed columns get aggregate cells, all others stay
 blank.
 
-Why "Details row" and not "last row": after one ``add_subtotal_row``
-call with ``position="footer"``, the literal last row is the new
-subtotal we just added — its cells have synthesized names like
-``<group>_Footer_<col>``. A second call would mistakenly look those
-up instead of the original data row's textbox names. Walking the row
-hierarchy for the ``Details`` leaf is correct under any wrapping.
-Tablixes without a ``Details`` group fall back to last-row behaviour.
+The data row is :func:`pbirb_mcp.core.tablix_shape.data_leaf` scoped to
+the target group: the detail leaf under the group (a ``<Group>`` without
+``<GroupExpressions>``, whatever it is named — ``Details``,
+``Details1``, ...), or, in a matrix with no detail group, the first leaf
+of the innermost dynamic group in the group's subtree.
+
+Why not "last row": after one ``add_subtotal_row`` call with
+``position="footer"``, the literal last row is the new subtotal we just
+added — its cells have synthesized names like ``<group>_Footer_<col>``.
+A second call would mistakenly look those up instead of the original
+data row's textbox names (and in a matrix the last row is often a grand
+total). Walking the row hierarchy is correct under any wrapping.
 
 Position:
 
@@ -39,11 +44,12 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
+from pbirb_mcp.core.tablix_shape import data_row_index
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
-from pbirb_mcp.ops.styling import _detail_row_index
 
 _VALID_POSITIONS = frozenset({"header", "footer"})
 
@@ -61,14 +67,16 @@ def _find_row_member_wrapper(tablix: etree._Element, group_name: str) -> Optiona
     return None
 
 
-def _data_row_textbox_names(tablix: etree._Element) -> list[Optional[str]]:
-    """Return the textbox name at each column index of the Details row.
+def _data_row_textbox_names(
+    tablix: etree._Element, group: Optional[etree._Element] = None
+) -> list[Optional[str]]:
+    """Return the textbox name at each column index of the data row.
 
-    The Details row is identified by walking the row hierarchy for the
-    ``Details`` leaf (same approach used by ``set_alternating_row_color``
-    and the post-fix ``add_tablix_column``). Falls back to the literal
-    last row when the tablix has no Details group — preserves v0.1
-    behaviour for tablixes that never had a Details leaf to begin with.
+    The data row is :func:`~pbirb_mcp.core.tablix_shape.data_leaf`'s row,
+    scoped to ``group`` (a row-group ``TablixMember``) when given: the
+    detail leaf if there is one, else the innermost dynamic group's leaf.
+    Falls back to the literal last row only when the row hierarchy has
+    neither (an all-static tablix).
     """
     body = find_child(tablix, "TablixBody")
     rows_root = find_child(body, "TablixRows") if body is not None else None
@@ -78,8 +86,8 @@ def _data_row_textbox_names(tablix: etree._Element) -> list[Optional[str]]:
     if not rows:
         return []
 
-    detail_idx = _detail_row_index(tablix)
-    target_row = rows[detail_idx] if detail_idx is not None else rows[-1]
+    data_idx = data_row_index(tablix, group)
+    target_row = rows[data_idx] if data_idx is not None and data_idx < len(rows) else rows[-1]
 
     cells_root = find_child(target_row, "TablixCells")
     if cells_root is None:
@@ -121,8 +129,9 @@ def add_subtotal_row(
     """Add a subtotal row to ``group_name``'s row-axis member.
 
     ``aggregates`` is a list of ``{"column": <textbox-name>, "expression":
-    <aggregate>}`` entries. ``column`` matches against the **Details
-    row's** textbox names — i.e. the same identifiers ``add_tablix_column``
+    <aggregate>}`` entries. ``column`` matches against the **group's
+    data row** textbox names (its detail row, or in a matrix the
+    innermost group's row) — i.e. the same identifiers ``add_tablix_column``
     uses for its ``column_name``. Columns not listed get blank cells. New
     cell textbox names are ``<group>_<Header|Footer>_<col>`` — synthesized
     to stay report-wide unique.
@@ -161,7 +170,7 @@ def add_subtotal_row(
     etree.SubElement(new_row, q("Height")).text = "0.25in"
     cells_root = etree.SubElement(new_row, q("TablixCells"))
 
-    column_names = _data_row_textbox_names(tablix)
+    column_names = _data_row_textbox_names(tablix, wrapper)
     aggregates_by_column = {a["column"]: a["expression"] for a in aggregates}
 
     # Validate all referenced columns exist in the data row.
@@ -174,8 +183,14 @@ def add_subtotal_row(
         )
 
     member_index_label = "Footer" if position == "footer" else "Header"
+    # Generated names go through the report-wide registry: a "header"
+    # subtotal's <group>_Header_<i> would otherwise collide with the
+    # group-header row add_row_group already emitted under that name.
+    registry = names.NameRegistry(doc)
+    emitted: list[str] = []
     for col_idx, col_textbox in enumerate(column_names):
-        textbox_name = f"{group_name}_{member_index_label}_{col_idx}"
+        textbox_name = registry.unique(f"{group_name}_{member_index_label}_{col_idx}")
+        emitted.append(textbox_name)
         cell_text = (
             aggregates_by_column[col_textbox]
             if col_textbox is not None and col_textbox in aggregates_by_column
@@ -207,6 +222,7 @@ def add_subtotal_row(
         "group": group_name,
         "position": position,
         "aggregates": list(aggregates),
+        "textboxes": emitted,
     }
 
 
@@ -274,6 +290,7 @@ def add_subtotal_column(
         raise ValueError(
             f"position {position!r} not valid; expected one of {sorted(_VALID_COLUMN_POSITIONS)}"
         )
+    width = units.validate_size(width, field="width", allow_zero=False)
 
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
@@ -349,14 +366,18 @@ def add_subtotal_column(
     else:
         cols_root.insert(column_insert_index, new_column)
 
-    # Subtotal-column textbox names: <group>_TotalColumn_<row>.
+    # Subtotal-column textbox names: <group>_TotalColumn_<row>, suffixed
+    # when taken report-wide (e.g. a second subtotal column on the group).
     label = "TotalColumn"
+    registry = names.NameRegistry(doc)
+    emitted: list[str] = []
     for row_idx, row in enumerate(rows):
         cells_root = find_child(row, "TablixCells")
         if cells_root is None:
             cells_root = etree.SubElement(row, q("TablixCells"))
         cell_text = aggregates_by_row.get(row_idx, "")
-        textbox_name = f"{group_name}_{label}_{row_idx}"
+        textbox_name = registry.unique(f"{group_name}_{label}_{row_idx}")
+        emitted.append(textbox_name)
         new_cell = _build_subtotal_cell(textbox_name, cell_text)
         if column_insert_index >= len(find_children(cells_root, "TablixCell")):
             cells_root.append(new_cell)
@@ -372,6 +393,7 @@ def add_subtotal_column(
         "kind": "TablixMember",
         "column_index": column_insert_index,
         "changed": ["member_added", "column_added", "cells_added"],
+        "textboxes": emitted,
     }
 
 

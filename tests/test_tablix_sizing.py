@@ -99,7 +99,7 @@ class TestSetColumnWidthByIndex:
             )
 
     def test_empty_width_rejected(self, rdl_path):
-        with pytest.raises(ValueError, match="non-empty"):
+        with pytest.raises(ValueError, match="invalid RDL size"):
             set_column_width(
                 path=str(rdl_path),
                 tablix_name="MainTable",
@@ -198,11 +198,11 @@ class TestSetTablixSize:
         assert result["changed"] == ["Width"]
 
     def test_empty_height_rejected(self, rdl_path):
-        with pytest.raises(ValueError, match="non-empty"):
+        with pytest.raises(ValueError, match="invalid RDL size"):
             set_tablix_size(path=str(rdl_path), name="MainTable", height="")
 
     def test_empty_width_rejected(self, rdl_path):
-        with pytest.raises(ValueError, match="non-empty"):
+        with pytest.raises(ValueError, match="invalid RDL size"):
             set_tablix_size(path=str(rdl_path), name="MainTable", width="   ")
 
     def test_unknown_tablix_raises(self, rdl_path):

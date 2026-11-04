@@ -26,11 +26,11 @@ from typing import Any
 
 from lxml import etree
 
+from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_group
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, q
 from pbirb_mcp.ops.body import _ensure_body_report_items, _names_in, _resolve_body
-from pbirb_mcp.ops.page import _SIZE_RE, _TO_INCHES
 from pbirb_mcp.ops.tablix import _insert_member_child
 
 # ---- set_group_page_break -----------------------------------------------
@@ -384,39 +384,11 @@ def _kwg_result(tablix: str, group: str, value: str, changed: bool) -> dict:
 # ---- add_rectangle (Phase 11 commit 41) ---------------------------------
 
 
-def _parse_size(s: str) -> tuple[float, str]:
-    """Parse an RDL size string into ``(value, unit)``. Reuses the regex
-    + unit set from :mod:`pbirb_mcp.ops.page`."""
-    m = _SIZE_RE.match(s or "")
-    if not m:
-        raise ValueError(
-            f"invalid RDL size {s!r}; expected '<number><unit>' with unit in (in, cm, mm, pt, pc)"
-        )
-    return float(m.group(1)), m.group(2)
-
-
-def _format_size(value: float, unit: str) -> str:
-    """Render ``value`` with ``unit``. Integer values render without a
-    decimal point to match Report Builder's emitted shape."""
-    if value == int(value):
-        return f"{int(value)}{unit}"
-    # Up to 5 decimal places, trailing zeros stripped — same convention
-    # Report Builder uses for fractional inches.
-    return f"{value:.5f}".rstrip("0").rstrip(".") + unit
-
-
 def _coord_subtract(child_coord: str, container_coord: str) -> str:
-    """Return ``child - container`` as an RDL size string. When both
-    use the same unit, arithmetic stays in that unit; otherwise both
-    are converted to the container's unit before subtracting.
-    """
-    cv, cu = _parse_size(child_coord)
-    rv, ru = _parse_size(container_coord)
-    if cu == ru:
-        return _format_size(cv - rv, cu)
-    cv_in = cv * _TO_INCHES[cu]
-    rv_in = rv * _TO_INCHES[ru]
-    return _format_size((cv_in - rv_in) / _TO_INCHES[ru], ru)
+    """Return ``child - container`` as an RDL size string in the
+    container's unit (which is also the child's unit when they match)."""
+    unit = units.parse_size(container_coord).unit
+    return units.format_size(units.to_inches(child_coord) - units.to_inches(container_coord), unit)
 
 
 def add_rectangle(
@@ -446,14 +418,14 @@ def add_rectangle(
 
     Returns ``{name, kind: 'Rectangle', moved: list[str]}``.
     """
+    names.validate_identifier(name, "rectangle")
+    top, left, width, height = units.box(top, left, width, height)
     contained_items = list(contained_items or [])
 
     doc = RDLDocument.open(path)
+    names.ensure_unique(doc, name)
     body = _resolve_body(doc)
     items = _ensure_body_report_items(body)
-
-    if name in _names_in(items):
-        raise ValueError(f"body item named {name!r} already exists; pick a unique name")
 
     # Resolve every contained item up front — fail before mutating the tree.
     if contained_items:
@@ -521,22 +493,28 @@ def add_list(
     a Rectangle inside the single cell. Items the user later places
     inside the rectangle repeat once per dataset row.
 
-    Returns ``{name, kind: 'Tablix', dataset, rectangle: <name>_Rect}``.
-    The inner Rectangle's name is ``<name>_Rect`` for stable subsequent
-    reference (callers can look it up by that name when adding inner
-    items via ``set_textbox_value`` / ``add_body_textbox`` etc.).
+    Returns ``{name, kind: 'Tablix', dataset, rectangle, details_group}``.
+    The inner Rectangle is named ``<name>_Rect`` and the detail group
+    ``<name>_Details`` — each suffixed (``<name>_Rect1``, …) when that
+    name is already taken report-wide, so read the actual names from the
+    payload.
 
     Refuses on duplicate name. Refuses if ``dataset_name`` isn't a real
     dataset.
     """
+    names.validate_identifier(name, "list")
+    top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
     resolve_dataset(doc, dataset_name)  # raises if absent
+    registry = names.NameRegistry(doc)
+    registry.ensure_unique(name)
+    registry.claim(name)
+    # Generated names: suffixed (X_Rect1, ...) if a report item or group
+    # already uses them (e.g. an earlier add_list('X_Rect') tablix).
+    rect_name = registry.unique(f"{name}_Rect")
+    details_name = registry.unique(f"{name}_Details")
     body = _resolve_body(doc)
     items = _ensure_body_report_items(body)
-    if name in _names_in(items):
-        raise ValueError(f"body item named {name!r} already exists; pick a unique name")
-
-    rect_name = f"{name}_Rect"
 
     tablix = etree.Element(q("Tablix"), Name=name)
 
@@ -569,7 +547,7 @@ def add_list(
     # Group Name uses the same convention insert_tablix_from_template uses
     # ("Details") but suffixed with the list name to avoid collisions when
     # multiple lists exist in one report.
-    etree.SubElement(details_member, q("Group"), Name=f"{name}_Details")
+    etree.SubElement(details_member, q("Group"), Name=details_name)
 
     # ---- footer fields ----
     etree.SubElement(tablix, q("DataSetName")).text = dataset_name
@@ -588,6 +566,7 @@ def add_list(
         "kind": "Tablix",
         "dataset": dataset_name,
         "rectangle": rect_name,
+        "details_group": details_name,
     }
 
 
@@ -636,16 +615,22 @@ def add_line(
     Refuses on duplicate name or unknown ``line_style``. Returns
     ``{name, kind: 'Line'}``.
     """
+    names.validate_identifier(name, "line")
     if line_style not in _VALID_LINE_STYLES:
         raise ValueError(
             f"unknown line_style {line_style!r}; valid values: {list(_VALID_LINE_STYLES)}"
         )
+    top = units.position(top, "top")
+    left = units.position(left, "left")
+    # Line Width / Height are the vector to the end point: may be negative.
+    width = units.validate_size(width, field="width", allow_negative=True)
+    height = units.validate_size(height, field="height", allow_negative=True)
+    line_thickness = units.style_size(line_thickness, "line_thickness", positive=True)
 
     doc = RDLDocument.open(path)
+    names.ensure_unique(doc, name)
     body = _resolve_body(doc)
     items = _ensure_body_report_items(body)
-    if name in _names_in(items):
-        raise ValueError(f"body item named {name!r} already exists; pick a unique name")
 
     line = etree.Element(q("Line"), Name=name)
     # Per RDL XSD Line child order: Style, Top, Left, Height, Width,

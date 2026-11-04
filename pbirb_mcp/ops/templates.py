@@ -19,11 +19,12 @@ from typing import Any
 
 from lxml import etree
 
+from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import resolve_dataset
-from pbirb_mcp.core.xpath import find_child, q, qrd
-from pbirb_mcp.ops.body import _ensure_body_report_items, _names_in, _resolve_body
+from pbirb_mcp.core.xpath import q, qrd
+from pbirb_mcp.ops.body import _ensure_body_report_items, _resolve_body
 
 # ---- shared cell builders -------------------------------------------------
 
@@ -51,18 +52,6 @@ def _build_cell_textbox(name: str, value_text: str) -> etree._Element:
     return cell
 
 
-def _all_named_items(doc: RDLDocument) -> set[str]:
-    """Names of every Tablix / Textbox / Image / Chart in the body."""
-    body = _resolve_body(doc)
-    items = find_child(body, "ReportItems")
-    return _names_in(items) if items is not None else set()
-
-
-def _ensure_no_collision(doc: RDLDocument, name: str) -> None:
-    if name in _all_named_items(doc):
-        raise ValueError(f"body item named {name!r} already exists; pick a unique name")
-
-
 # ---- insert_tablix_from_template -----------------------------------------
 
 
@@ -78,11 +67,24 @@ def insert_tablix_from_template(
 ) -> dict[str, Any]:
     if not columns:
         raise ValueError("columns must list at least one field name")
+    names.validate_identifier(name, "tablix")
+    for col_name in columns:
+        names.validate_identifier(col_name, "column field")
+    if len(set(columns)) != len(columns):
+        raise ValueError(f"columns lists a field more than once: {list(columns)!r}")
+    top, left, width, height = units.box(top, left, width, height)
 
     doc = RDLDocument.open(path)
     # Validate dataset exists; the resolver raises ElementNotFoundError if not.
     resolve_dataset(doc, dataset_name)
-    _ensure_no_collision(doc, name)
+    registry = names.NameRegistry(doc)
+    registry.ensure_unique(name)
+    registry.claim(name)
+    # Generated names — suffixed when taken anywhere in the report, so a
+    # second template emits Details1 rather than a second Details.
+    header_names = [registry.unique(f"{name}_Header_{c}") for c in columns]
+    detail_names = [registry.unique(f"{name}_{c}") for c in columns]
+    details_group = registry.unique("Details")
 
     tablix = etree.Element(q("Tablix"), Name=name)
 
@@ -98,16 +100,16 @@ def insert_tablix_from_template(
     header_row = etree.SubElement(rows_root, q("TablixRow"))
     etree.SubElement(header_row, q("Height")).text = "0.25in"
     header_cells = etree.SubElement(header_row, q("TablixCells"))
-    for col_name in columns:
+    for col_name, tb_name in zip(columns, header_names):
         # Header textbox name follows the fixture's "Header<Name>" convention,
         # prefixed with the tablix name to avoid report-wide collisions.
-        header_cells.append(_build_cell_textbox(f"{name}_Header_{col_name}", col_name))
+        header_cells.append(_build_cell_textbox(tb_name, col_name))
     # Detail row.
     detail_row = etree.SubElement(rows_root, q("TablixRow"))
     etree.SubElement(detail_row, q("Height")).text = "0.25in"
     detail_cells = etree.SubElement(detail_row, q("TablixCells"))
-    for col_name in columns:
-        detail_cells.append(_build_cell_textbox(f"{name}_{col_name}", f"=Fields!{col_name}.Value"))
+    for col_name, tb_name in zip(columns, detail_names):
+        detail_cells.append(_build_cell_textbox(tb_name, f"=Fields!{col_name}.Value"))
 
     # ---- TablixColumnHierarchy ----
     col_h = etree.SubElement(tablix, q("TablixColumnHierarchy"))
@@ -123,7 +125,7 @@ def insert_tablix_from_template(
     etree.SubElement(header_member, q("KeepWithGroup")).text = "After"
     # Details leaf.
     details_member = etree.SubElement(row_members, q("TablixMember"))
-    etree.SubElement(details_member, q("Group"), Name="Details")
+    etree.SubElement(details_member, q("Group"), Name=details_group)
 
     # ---- footer fields: dataset binding + layout ----
     etree.SubElement(tablix, q("DataSetName")).text = dataset_name
@@ -141,7 +143,14 @@ def insert_tablix_from_template(
     items.append(tablix)
 
     doc.save()
-    return {"name": name, "kind": "Tablix", "columns": list(columns)}
+    return {
+        "name": name,
+        "kind": "Tablix",
+        "columns": list(columns),
+        "header_textboxes": header_names,
+        "detail_textboxes": detail_names,
+        "details_group": details_group,
+    }
 
 
 # Chart template insertion moved to pbirb_mcp.ops.chart in v0.3.0

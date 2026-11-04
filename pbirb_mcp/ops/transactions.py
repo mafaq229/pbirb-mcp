@@ -4,15 +4,17 @@
   return a ``transaction_id``. Subsequent edit tools that include
   ``transaction_id`` in their arguments operate against the same
   in-memory tree without touching disk.
-* :func:`commit_editing_transaction` — lint the in-memory tree;
-  abort on any error-severity issue; clear the in-transaction flag;
-  call ``doc.save()`` once (atomic .tmp + rename); deregister.
+* :func:`commit_editing_transaction` — verify (XSD + structural + lint)
+  the in-memory tree; abort on any error-severity issue the transaction
+  INTRODUCED (issues already in the file at start are reported with
+  ``new: false`` but don't block); clear the in-transaction flag; call
+  ``doc.save()`` once (atomic .tmp + rename); deregister.
 * :func:`cancel_editing_transaction` — deregister without saving.
   The in-memory tree is GC'd; the on-disk file is unchanged.
 
 These are thin shims over :mod:`pbirb_mcp.core.transactions` (the
-pure-data registry) and :func:`pbirb_mcp.ops.lint._lint_doc` (the
-already-open-doc lint entry point added in v0.4 commit 12).
+pure-data registry) and :func:`pbirb_mcp.ops.validate.verify_doc` (the
+already-open-doc verify entry point).
 
 See also :func:`apply_edits` (v0.4 commit 11) for the single-call
 atomic-batch flavour.
@@ -24,7 +26,7 @@ from typing import Any
 
 from pbirb_mcp.core import transactions as _registry
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.ops.lint import _lint_doc
+from pbirb_mcp.ops.validate import baseline_of, mark_new_issues, verify_doc
 
 
 def start_editing_transaction(path: str) -> dict[str, Any]:
@@ -42,6 +44,9 @@ def start_editing_transaction(path: str) -> dict[str, Any]:
     tx_id = _registry.register(doc)
     tx = _registry.lookup_by_id(tx_id)
     assert tx is not None  # noqa: S101 — defensive sanity
+    # Baseline: what's already wrong with the file. Commit only blocks on
+    # errors the transaction introduces.
+    tx.baseline = baseline_of(verify_doc(doc))
     return {
         "transaction_id": tx_id,
         "path": tx.abspath,
@@ -49,17 +54,27 @@ def start_editing_transaction(path: str) -> dict[str, Any]:
     }
 
 
-def commit_editing_transaction(transaction_id: str) -> dict[str, Any]:
-    """Lint the in-memory tree, save once, deregister.
+def commit_editing_transaction(transaction_id: str, force: bool = False) -> dict[str, Any]:
+    """Verify the in-memory tree, save once, deregister.
 
-    Aborts (without saving) if lint surfaces any ``severity=='error'``
-    issue — the caller can fix the offending state via additional
-    transaction-aware edits and re-commit. Warnings do not abort.
+    Runs XSD + structural checks + lint on the in-memory tree. Aborts
+    (without saving) if that surfaces any ``severity=='error'`` issue
+    that wasn't already in the file when the transaction started — the
+    caller can fix the offending state via additional transaction-aware
+    edits and re-commit. Warnings and pre-existing errors do not abort.
 
-    Returns ``{transaction_id, path, saved, verify}``. ``verify``
-    mirrors the shape :func:`pbirb_mcp.ops.validate.verify_report`
-    returns: ``{valid, issues, rules_run}``. On lint-error abort,
-    ``saved`` is ``False`` and ``verify.valid`` is ``False``.
+    Returns ``{transaction_id, path, saved, verify}``. ``verify`` is
+    ``{valid, issues, rules_run, xsd_used, introduced_count,
+    preexisting_count, introduced_error_count}``; every issue carries
+    ``new: true|false``. ``valid`` is ``False`` whenever any error remains
+    (pre-existing ones included). On abort ``saved`` is ``False``.
+
+    Refuses (``saved: False`` plus an ``error`` message, transaction
+    left open) when the file changed on disk since the transaction
+    started — e.g. Report Builder saved it meanwhile — unless
+    ``force=True``. If the save itself fails (permissions, disk full) the
+    error is raised and the transaction stays open, so the commit can be
+    retried or the transaction cancelled with the disk untouched.
 
     Raises :class:`ValueError` ``TransactionError``-style when the
     transaction id is unknown or already expired.
@@ -71,9 +86,27 @@ def commit_editing_transaction(transaction_id: str) -> dict[str, Any]:
             "call start_editing_transaction to open a fresh one"
         )
 
-    lint_result = _lint_doc(tx.doc)
-    has_error = any(i.get("severity") == "error" for i in lint_result["issues"])
-    if has_error:
+    if not force and tx.fingerprint is not None:
+        current = _registry.file_fingerprint(tx.abspath)
+        if current != tx.fingerprint:
+            return {
+                "transaction_id": transaction_id,
+                "path": tx.abspath,
+                "saved": False,
+                "error": (
+                    "file changed on disk since the transaction started; "
+                    "committing would overwrite those changes. Cancel and "
+                    "start a fresh transaction, or pass force=true to "
+                    "overwrite them."
+                ),
+            }
+
+    verify = verify_doc(tx.doc)
+    if tx.baseline is not None:
+        verify = mark_new_issues(verify, tx.baseline)
+    else:
+        verify = mark_new_issues(verify, baseline_of({"issues": []}))
+    if verify["introduced_error_count"]:
         # Do NOT save. Leave the transaction open so the caller can fix
         # the offending state via additional transaction-aware calls
         # and re-commit. Return shape matches the success path so the
@@ -82,19 +115,25 @@ def commit_editing_transaction(transaction_id: str) -> dict[str, Any]:
             "transaction_id": transaction_id,
             "path": tx.abspath,
             "saved": False,
-            "verify": {"valid": False, **lint_result},
+            "verify": verify,
         }
 
     # Clear the flag so save_as actually writes; commit() then
-    # deregisters from the registry.
+    # deregisters from the registry. A failed save restores the flag and
+    # keeps the transaction registered — otherwise later "transactional"
+    # edits would write straight to disk and cancel couldn't undo them.
     tx.doc._in_transaction = False
-    tx.doc.save()
+    try:
+        tx.doc.save()
+    except Exception:
+        tx.doc._in_transaction = True
+        raise
     _registry.commit(transaction_id)
     return {
         "transaction_id": transaction_id,
         "path": tx.abspath,
         "saved": True,
-        "verify": {"valid": True, **lint_result},
+        "verify": verify,
     }
 
 
@@ -156,11 +195,16 @@ def apply_edits(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
         raise ValueError("ops must be a list of {tool, args} entries")
     from pathlib import Path as _Path  # noqa: N814 — local alias
 
+    from pbirb_mcp.ops.batch import check_ops, payload_reports_failure
+
     src = _Path(path)
     if not src.is_file():
         raise FileNotFoundError(f"path {path!r} is not a regular file")
 
     server = _build_server()
+    # Refuse transaction-control / nested-batch / out-of-tree-writing ops
+    # before the transaction even starts.
+    check_ops(server, ops)
 
     # Start the transaction by driving the public tool — exercises the
     # same code path the LLM does.
@@ -244,7 +288,23 @@ def apply_edits(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
             )
             failed = True
             break
-        applied.append({"tool": tool_name, "ok": True, "result": _extract_payload(resp)})
+        payload = _extract_payload(resp)
+        if payload_reports_failure(payload):
+            # A tool that *returns* failure (committed/saved false) failed.
+            applied.append(
+                {
+                    "tool": tool_name,
+                    "ok": False,
+                    "result": payload,
+                    "error": {
+                        "error_type": "OpFailed",
+                        "message": "op reported committed/saved = false",
+                    },
+                }
+            )
+            failed = True
+            break
+        applied.append({"tool": tool_name, "ok": True, "result": payload})
 
     if failed:
         # Roll back via the public cancel tool. Disk untouched because

@@ -30,7 +30,10 @@ insert_tablix_from_template(
     name="MainTable",
     dataset_name="MainDataset",
     column_names=["ProductID", "ProductName", "Amount"],
-    top="0.5in", left="0.5in", width="4in", height="0.5in",
+    top="0.5in",
+    left="0.5in",
+    width="4in",
+    height="0.5in",
 )
 
 # Add the row group (existing v0.2 tool).
@@ -98,12 +101,12 @@ The whole sequence can run as one `apply_edits` call:
 apply_edits(
     path="/path/to/report.rdl",
     ops=[
-        {"tool": "add_row_group",      "args": {...}},
-        {"tool": "add_column_group",   "args": {...}},
-        {"tool": "convert_to_matrix",  "args": {...}},
-        {"tool": "set_tablix_corner",  "args": {...}},
-        {"tool": "add_subtotal_column","args": {...}},
-        {"tool": "set_body_size",      "args": {...}},
+        {"tool": "add_row_group", "args": {...}},
+        {"tool": "add_column_group", "args": {...}},
+        {"tool": "convert_to_matrix", "args": {...}},
+        {"tool": "set_tablix_corner", "args": {...}},
+        {"tool": "add_subtotal_column", "args": {...}},
+        {"tool": "set_body_size", "args": {...}},
     ],
 )
 ```

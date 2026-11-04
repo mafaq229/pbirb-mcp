@@ -36,7 +36,9 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.names import validate_identifier
 from pbirb_mcp.core.xpath import RDL_NS, q, qrd
 
 _DEFAULT_PAGE_SETUP: dict[str, str] = {
@@ -81,7 +83,10 @@ def _emit_datasource_block(parent: etree._Element, datasource: Optional[dict[str
     if provider not in _VALID_PROVIDERS:
         raise ValueError(f"unknown provider {provider!r}; valid values: {_VALID_PROVIDERS!r}")
 
-    name = payload.get("name") or "DataSource1"
+    name = payload.get("name")
+    if name is None:
+        name = "DataSource1"
+    validate_identifier(name, "data source")
     workspace_url = payload.get("workspace_url")
     dataset_name = payload.get("dataset_name")
     integrated_security = payload.get("integrated_security", True)
@@ -140,7 +145,9 @@ def _build_minimal_rdl(
         for k, v in page_setup.items():
             if k not in cfg:
                 raise ValueError(f"unknown page_setup key {k!r}; valid keys: {sorted(cfg)}")
-            cfg[k] = v
+            # Margins may be zero; every page / body dimension must be > 0.
+            margin = k.startswith("margin_")
+            cfg[k] = units.validate_size(v, field=f"page_setup.{k}", allow_zero=margin)
 
     nsmap = {None: RDL_NS, "rd": "http://schemas.microsoft.com/SQLServer/reporting/reportdesigner"}
     root = etree.Element(q("Report"), nsmap=nsmap)

@@ -835,6 +835,7 @@ class TestAddList:
             "kind": "Tablix",
             "dataset": "MainDataset",
             "rectangle": "MyList_Rect",
+            "details_group": "MyList_Details",
         }
         tablix = _tablix(rdl_path, "MyList")
         assert tablix is not None

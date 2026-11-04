@@ -1,6 +1,6 @@
-"""Static-analysis lint rules (Phase 7 commit 31; v0.3.1 added rule 16).
+"""Static-analysis lint rules (Phase 7 commit 31; v0.3.1 added rule 16; #20 rules 17-18).
 
-Sixteen rules driven by the v0.2/v0.3 sweep feedback. Each rule is a
+Eighteen rules driven by the v0.2/v0.3 sweep feedback. Each rule is a
 small pure function that takes the open :class:`RDLDocument` and
 returns a list of issue dicts:
 
@@ -13,7 +13,7 @@ returns a list of issue dicts:
 The shape mirrors :mod:`pbirb_mcp.ops.validate` so :func:`verify_report`
 (commit 33) can union the two streams without reshaping.
 
-Rules (16):
+Rules (18):
 
 * ``multi-value-eq`` (warn) — multi-value param compared with ``=``.
 * ``unused-data-source`` (warn) — DataSource never referenced.
@@ -24,8 +24,9 @@ Rules (16):
   any dataset's ``<Fields>``.
 * ``page-number-out-of-chrome`` (error) — ``Globals!PageNumber`` /
   ``Globals!TotalPages`` outside header/footer.
-* ``expression-syntax`` (error) — expression with mismatched parens or
-  brackets.
+* ``expression-syntax`` (error) — expression with an unterminated
+  string literal or mismatched parens/brackets/braces (tokenized via
+  :mod:`pbirb_mcp.ops.vbexpr`, so literals and comments don't count).
 * ``dangling-embedded-image`` (error) — ``Image Source=Embedded`` whose
   ``Value`` doesn't name an ``<EmbeddedImage>``.
 * ``dangling-data-source-reference`` (error) —
@@ -40,7 +41,8 @@ Rules (16):
   ``<CellDefinitions>`` count mismatch.
 * ``double-encoded-entities`` (error) — element text contains
   ``&amp;``/``&lt;``/``&gt;``/``&quot;`` (the post-decode signature of a
-  double-encoding regression).
+  double-encoding regression). Skips ``<Code>``, ``<CommandText>``,
+  ``<ImageData>``, ``rd:*`` and HTML-markup text runs.
 * ``stale-designer-state`` (warn) — ``<rd:DesignerState>/<Statement>``
   diverges from ``<CommandText>``.
 * ``tablix-span-misplaced`` (error) — ``<ColSpan>``/``<RowSpan>``
@@ -48,6 +50,13 @@ Rules (16):
 * ``dataset-fields-out-of-sync`` (warn, v0.3.1) — ``<Field>`` declared
   but the dataset's DAX ``<CommandText>`` doesn't return that column.
   Reuses :func:`pbirb_mcp.ops.dataset._extract_dax_field_names`.
+* ``duplicate-name`` (error, #20) — two report items / groups share a
+  ``Name`` (one report-wide namespace across body, header, footer and
+  every nested container), or two data sources / datasets / parameters /
+  embedded images / fields of one dataset do.
+* ``invalid-identifier`` (error, #20) — a report item, group, data
+  source, dataset, parameter, embedded image or field ``Name`` is not a
+  CLS-compliant identifier (:func:`pbirb_mcp.core.names.validate_identifier`).
 """
 
 from __future__ import annotations
@@ -57,8 +66,10 @@ from typing import Any, Callable
 
 from lxml import etree
 
+from pbirb_mcp.core import names
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q
+from pbirb_mcp.ops import vbexpr
 from pbirb_mcp.ops.dataset import _extract_dax_field_names, _is_pbidataset_dataset
 
 Issue = dict[str, Any]
@@ -136,9 +147,6 @@ def _iter_expression_nodes(root: etree._Element):
 # ---- rule 1: multi-value-eq --------------------------------------------
 
 
-_PARAM_REF_RE = re.compile(r"Parameters!(\w+)\.Value")
-
-
 def _multi_value_param_names(root: etree._Element) -> set[str]:
     out: set[str] = set()
     for rp in root.iter(q("ReportParameter")):
@@ -150,48 +158,58 @@ def _multi_value_param_names(root: etree._Element) -> set[str]:
     return out
 
 
+def _is_eq(tok: vbexpr.Token) -> bool:
+    return tok.kind == vbexpr.OPERATOR and tok.text == "="
+
+
 def _rule_multi_value_eq(doc: RDLDocument) -> list[Issue]:
+    """Flag ``Parameters!X.Value = ...`` / ``... = Parameters!X.Value`` for
+    multi-value ``X``. Works on VB tokens, so references inside string
+    literals or comments don't count, and ``<=`` / ``>=`` / ``<>`` are
+    distinct operators rather than a bare ``=``. Indexed access
+    (``Parameters!X.Value(0) = ...``) is a scalar and isn't flagged.
+    """
     multi = _multi_value_param_names(doc.root)
     if not multi:
         return []
-    names_alt = "|".join(re.escape(n) for n in multi)
-    # Two directions: param on the LEFT (`Parameters!X.Value =`) or on
-    # the RIGHT (`= Parameters!X.Value`). `=(?!=)` keeps `==` out, but
-    # the LHS form must also reject the leading `=` that starts every
-    # RDL expression — handled by requiring a non-`=`-anchored prefix.
-    pattern_left = re.compile(r"Parameters!(" + names_alt + r")\.Value\s*=(?!=)")
-    pattern_right = re.compile(r"(?<!=)=\s*Parameters!(" + names_alt + r")\.Value")
     issues: list[Issue] = []
     seen: set[tuple[str, str]] = set()
     for elem in _iter_expression_nodes(doc.root):
-        if not elem.text or "Parameters!" not in elem.text:
+        if not elem.text or "parameters!" not in elem.text.lower():
             continue
-        # Strip the leading `=` that starts every expression — it would
-        # otherwise match pattern_right at the head and false-positive.
-        body = elem.text.lstrip()
-        if body.startswith("="):
-            body = body[1:]
-        for pattern in (pattern_left, pattern_right):
-            for m in pattern.finditer(body):
-                key = (_ancestor_chain(elem), m.group(1))
-                if key in seen:
-                    continue
-                seen.add(key)
-                issues.append(
-                    {
-                        "severity": "warning",
-                        "rule": "multi-value-eq",
-                        "location": _ancestor_chain(elem),
-                        "message": (
-                            f"multi-value parameter {m.group(1)!r} compared with '='; "
-                            "Value is an array."
-                        ),
-                        "suggestion": (
-                            f"use IN: ``Fields!X.Value IN (Parameters!{m.group(1)}.Value)`` "
-                            f'or JOIN(Parameters!{m.group(1)}.Value, ",")'
-                        ),
-                    }
-                )
+        tokens = vbexpr.tokenize_expression(elem.text)
+        if tokens is None:
+            continue
+        sig = vbexpr.significant(tokens)
+        for ref in vbexpr.bang_references(sig, "Parameters"):
+            if ref.name not in multi or (ref.member or "").lower() != "value":
+                continue
+            before = sig[ref.first - 1] if ref.first > 0 else None
+            after = sig[ref.last + 1] if ref.last + 1 < len(sig) else None
+            if after is not None and after.kind == vbexpr.DELIMITER and after.text == "(":
+                continue  # Parameters!X.Value(0) — indexed, a scalar
+            if not (
+                (before is not None and _is_eq(before)) or (after is not None and _is_eq(after))
+            ):
+                continue
+            key = (_ancestor_chain(elem), ref.name)
+            if key in seen:
+                continue
+            seen.add(key)
+            issues.append(
+                {
+                    "severity": "warning",
+                    "rule": "multi-value-eq",
+                    "location": _ancestor_chain(elem),
+                    "message": (
+                        f"multi-value parameter {ref.name!r} compared with '='; Value is an array."
+                    ),
+                    "suggestion": (
+                        f"use IN: ``Fields!X.Value IN (Parameters!{ref.name}.Value)`` "
+                        f'or JOIN(Parameters!{ref.name}.Value, ",")'
+                    ),
+                }
+            )
     return issues
 
 
@@ -278,9 +296,6 @@ def _rule_date_param_as_string(doc: RDLDocument) -> list[Issue]:
 # ---- rule 5: missing-field-reference -----------------------------------
 
 
-_FIELD_REF_RE = re.compile(r"Fields!(\w+)\.Value")
-
-
 def _all_field_names(doc: RDLDocument) -> set[str]:
     """Union of every ``<Field Name>`` in every dataset."""
     out: set[str] = set()
@@ -295,10 +310,17 @@ def _rule_missing_field_reference(doc: RDLDocument) -> list[Issue]:
     issues: list[Issue] = []
     seen: set[tuple[str, str]] = set()  # de-dupe by (location, field)
     for elem in _iter_expression_nodes(doc.root):
-        if not elem.text or "Fields!" not in elem.text:
+        if not elem.text or "fields!" not in elem.text.lower():
             continue
-        for m in _FIELD_REF_RE.finditer(elem.text):
-            field = m.group(1)
+        # Only real code counts: a non-``=`` value is a literal, and
+        # ``Fields!X.Value`` inside a string literal or comment is text.
+        tokens = vbexpr.tokenize_expression(elem.text)
+        if tokens is None:
+            continue
+        for ref in vbexpr.bang_references(tokens, "Fields"):
+            if (ref.member or "").lower() != "value":
+                continue
+            field = ref.name
             if field in valid:
                 continue
             loc = _ancestor_chain(elem)
@@ -362,41 +384,41 @@ def _rule_page_number_out_of_chrome(doc: RDLDocument) -> list[Issue]:
 # ---- rule 7: expression-syntax -----------------------------------------
 
 
-def _balanced(text: str, open_ch: str, close_ch: str) -> bool:
-    depth = 0
-    for ch in text:
-        if ch == open_ch:
-            depth += 1
-        elif ch == close_ch:
-            depth -= 1
-            if depth < 0:
-                return False
-    return depth == 0
-
-
 def _rule_expression_syntax(doc: RDLDocument) -> list[Issue]:
+    """Tokenize each ``=``-expression and report (a) an unterminated
+    string literal, else (b) the first ``()`` / ``[]`` / ``{}`` that
+    doesn't nest. Delimiters inside string/date literals and comments
+    are ignored, so ``=Fields!A.Value & ") "`` is fine.
+    """
     issues: list[Issue] = []
     for elem in _iter_expression_nodes(doc.root):
         text = elem.text
-        if not text or not text.lstrip().startswith("="):
+        tokens = vbexpr.tokenize_expression(text)
+        if tokens is None:
             continue
-        if not _balanced(text, "(", ")"):
+        bad_string = vbexpr.unterminated_string(tokens)
+        if bad_string is not None:
             issues.append(
                 {
                     "severity": "error",
                     "rule": "expression-syntax",
                     "location": _ancestor_chain(elem),
-                    "message": f"unbalanced parentheses in expression: {text[:80]!r}",
+                    "message": f"unterminated string literal in expression: {text[:80]!r}",
+                    "suggestion": (
+                        'close the string with a double quote; write a literal quote as ""'
+                    ),
                 }
             )
             continue
-        if not _balanced(text, "[", "]"):
+        bad_delim = vbexpr.first_unbalanced_delimiter(tokens)
+        if bad_delim is not None:
+            family = vbexpr.delimiter_family(bad_delim)
             issues.append(
                 {
                     "severity": "error",
                     "rule": "expression-syntax",
                     "location": _ancestor_chain(elem),
-                    "message": f"unbalanced brackets in expression: {text[:80]!r}",
+                    "message": f"unbalanced {family} in expression: {text[:80]!r}",
                 }
             )
     return issues
@@ -579,20 +601,49 @@ def _rule_parameter_layout_out_of_sync(doc: RDLDocument) -> list[Issue]:
 _DOUBLE_ENCODED_RE = re.compile(r"&(?:amp|lt|gt|quot);")
 
 
+# Elements whose text legitimately contains entity-like sequences: VB
+# code, query text (DAX/SQL/MDX string literals), and base64 payloads.
+# Anything outside the report's own namespace (``rd:*`` designer state,
+# ``am:``/``df:`` metadata, ...) is skipped too — it's never rendered.
+_DOUBLE_ENCODED_SKIP_TAGS = frozenset({"Code", "CommandText", "ImageData"})
+
+
+def _is_html_markup_run_value(elem: etree._Element) -> bool:
+    """True for ``<TextRun>/<Value>`` when the run has
+    ``<MarkupType>HTML</MarkupType>`` — entities are the markup there.
+    """
+    parent = elem.getparent()
+    if parent is None or etree.QName(parent.tag).localname != "TextRun":
+        return False
+    markup = find_child(parent, "MarkupType")
+    return markup is not None and (markup.text or "").strip().upper() == "HTML"
+
+
 def _rule_double_encoded_entities(doc: RDLDocument) -> list[Issue]:
     """Scan element text for the post-decode signature of double-encoding.
 
     XML decodes ``&amp;amp;`` to literal ``&amp;`` in ``.text``. So if a
     parsed text contains the four entity literals (``&amp;``, ``&lt;``,
     ``&gt;``, ``&quot;``), the source was double-encoded.
+
+    Only report-content elements are scanned: ``<Code>``,
+    ``<CommandText>``, ``<ImageData>``, non-RDL-namespace elements
+    (``rd:*`` etc.) and HTML-markup text runs are skipped, because a
+    literal ``&amp;`` is legitimate there.
     """
+    report_ns = etree.QName(doc.root.tag).namespace
     issues: list[Issue] = []
-    for elem in doc.root.iter():
+    for elem in doc.root.iter(etree.Element):
         text = elem.text
-        if not text:
+        if not text or "&" not in text:
+            continue
+        qname = etree.QName(elem.tag)
+        if qname.namespace != report_ns or qname.localname in _DOUBLE_ENCODED_SKIP_TAGS:
             continue
         m = _DOUBLE_ENCODED_RE.search(text)
         if not m:
+            continue
+        if _is_html_markup_run_value(elem):
             continue
         issues.append(
             {
@@ -724,6 +775,12 @@ def _rule_dataset_fields_out_of_sync(doc: RDLDocument) -> list[Issue]:
                 continue
             if name in extracted_set:
                 continue
+            # refresh_dataset_fields names a non-identifier alias
+            # ("Total Sales") Total_Sales and keeps the raw alias in
+            # <DataField>; that field is in sync.
+            data_field = find_child(f, "DataField")
+            if data_field is not None and data_field.text in extracted_set:
+                continue
             issues.append(
                 {
                     "severity": "warning",
@@ -740,6 +797,112 @@ def _rule_dataset_fields_out_of_sync(doc: RDLDocument) -> list[Issue]:
                     ),
                 }
             )
+    return issues
+
+
+# ---- rules 17-18: duplicate-name / invalid-identifier (#20) -------------
+
+
+def _per_kind_namespaces(doc: RDLDocument):
+    """Yield ``(label, elements)`` for each RDL namespace that keeps its own
+    uniqueness: data sources, datasets, parameters, embedded images, and
+    the fields of each dataset."""
+    root = doc.root
+    for container, child, label in (
+        ("DataSources", "DataSource", "DataSource"),
+        ("DataSets", "DataSet", "DataSet"),
+        ("ReportParameters", "ReportParameter", "ReportParameter"),
+        ("EmbeddedImages", "EmbeddedImage", "EmbeddedImage"),
+    ):
+        block = find_child(root, container)
+        if block is not None:
+            yield label, find_children(block, child)
+    datasets_root = find_child(root, "DataSets")
+    if datasets_root is not None:
+        for ds in find_children(datasets_root, "DataSet"):
+            fields_root = find_child(ds, "Fields")
+            if fields_root is not None:
+                yield (
+                    f"DataSet[Name={ds.get('Name')!r}]/Field",
+                    find_children(fields_root, "Field"),
+                )
+
+
+def _rule_duplicate_name(doc: RDLDocument) -> list[Issue]:
+    """Two report items / groups (one report-wide namespace), or two
+    entries of a per-kind namespace, share a ``Name``. Report Builder
+    refuses such a file and name-addressed tools raise
+    ``AmbiguousElementError`` on it."""
+    issues: list[Issue] = []
+    scope: dict[str, list[etree._Element]] = {}
+    for el in names.iter_scope_elements(doc):
+        scope.setdefault(el.get("Name"), []).append(el)
+    for name, els in scope.items():
+        if len(els) < 2:
+            continue
+        where = "; ".join(names.describe_location(e) for e in els)
+        issues.append(
+            {
+                "severity": "error",
+                "rule": "duplicate-name",
+                "location": _named_locator(els[1]),
+                "message": (
+                    f"name {name!r} is used {len(els)} times ({where}); report item "
+                    "and group names must be unique report-wide"
+                ),
+                "suggestion": "rename all but one so every report item and group name is unique",
+            }
+        )
+    for label, els in _per_kind_namespaces(doc):
+        counts: dict[str, int] = {}
+        for el in els:
+            n = el.get("Name")
+            if n is not None:
+                counts[n] = counts.get(n, 0) + 1
+        for name, count in counts.items():
+            if count < 2:
+                continue
+            issues.append(
+                {
+                    "severity": "error",
+                    "rule": "duplicate-name",
+                    "location": f"{label}[Name={name!r}]",
+                    "message": f"{count} {label} entries are named {name!r}; names must be unique",
+                    "suggestion": "rename or remove the duplicates",
+                }
+            )
+    return issues
+
+
+def _rule_invalid_identifier(doc: RDLDocument) -> list[Issue]:
+    """A report item, group, data source, dataset, parameter, embedded
+    image or field ``Name`` is not a valid RDL (CLS-compliant)
+    identifier — Report Builder refuses to load it."""
+    issues: list[Issue] = []
+
+    def check(el: etree._Element, location: str) -> None:
+        n = el.get("Name")
+        if n is None or names.is_identifier(n):
+            return
+        issues.append(
+            {
+                "severity": "error",
+                "rule": "invalid-identifier",
+                "location": location,
+                "message": (
+                    f"{etree.QName(el).localname} name {n!r} is not a valid RDL identifier "
+                    "(must start with a letter; letters, digits and underscores only; "
+                    f"at most {names.MAX_IDENTIFIER_LENGTH} characters)"
+                ),
+                "suggestion": f"rename it, e.g. to {names.sanitize_identifier(n)!r}",
+            }
+        )
+
+    for el in names.iter_scope_elements(doc):
+        check(el, _named_locator(el))
+    for label, els in _per_kind_namespaces(doc):
+        for el in els:
+            check(el, f"{label}[Name={el.get('Name')!r}]")
     return issues
 
 
@@ -763,6 +926,8 @@ _RULES: dict[str, Callable[[RDLDocument], list[Issue]]] = {
     "stale-designer-state": _rule_stale_designer_state,
     "tablix-span-misplaced": _rule_tablix_span_misplaced,
     "dataset-fields-out-of-sync": _rule_dataset_fields_out_of_sync,
+    "duplicate-name": _rule_duplicate_name,
+    "invalid-identifier": _rule_invalid_identifier,
 }
 
 ALL_RULES = tuple(_RULES.keys())
@@ -801,7 +966,7 @@ def _lint_doc(doc: RDLDocument, rules: list[str] | None = None) -> dict[str, Any
 def lint_report(path: str, rules: list[str] | None = None) -> dict[str, Any]:
     """Run lint rules against an RDL.
 
-    ``rules`` selects a subset by name; ``None`` runs all 16. Unknown
+    ``rules`` selects a subset by name; ``None`` runs all of them. Unknown
     rule names are rejected with ``ValueError`` so a typo doesn't quietly
     skip checks.
 

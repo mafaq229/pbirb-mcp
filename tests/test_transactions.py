@@ -10,6 +10,7 @@ public start/commit/cancel tools (commit 10).
 from __future__ import annotations
 
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -143,10 +144,12 @@ class TestSweepOrphans:
         shutil.copy(FIXTURE, b)
         doc_a = RDLDocument.open(a)
         doc_b = RDLDocument.open(b)
-        old_id = transactions.register(doc_a, now=0.0)
-        new_id = transactions.register(doc_b, now=500.0)
-        # Sweep at t=601 — old_id past expiry, new_id not yet.
-        expired = transactions.sweep_orphans(now=601.0)
+        # Lookups sweep against the real clock, so anchor near "now".
+        t0 = time.time()
+        old_id = transactions.register(doc_a, now=t0 - 601.0)
+        new_id = transactions.register(doc_b, now=t0 - 100.0)
+        # Sweep now — old_id past expiry, new_id not yet.
+        expired = transactions.sweep_orphans(now=t0)
         assert expired == [old_id]
         assert transactions.lookup_by_id(new_id) is not None
 
@@ -191,10 +194,18 @@ class TestRDLDocumentInterception:
     """
 
     def test_open_returns_registered_doc_by_identity(self, doc):
-        transactions.register(doc)
-        reopened = RDLDocument.open(doc.path)
+        tx_id = transactions.register(doc)
+        with transactions.activate(tx_id):
+            reopened = RDLDocument.open(doc.path)
         # SAME object — not a fresh parse.
         assert reopened is doc
+
+    def test_open_without_the_transaction_reads_disk(self, doc):
+        # Issue #25: a call that isn't routed through the transaction
+        # must not see (or write into) its in-memory tree.
+        transactions.register(doc)
+        other = RDLDocument.open(doc.path)
+        assert other is not doc
 
     def test_open_returns_fresh_parse_when_no_transaction(self, doc):
         # Sanity: with no active transaction, open() still parses fresh.
@@ -205,11 +216,12 @@ class TestRDLDocumentInterception:
 
     def test_open_normalises_path_via_resolve(self, doc, tmp_path):
         # Register under the canonical resolved path.
-        transactions.register(doc)
+        tx_id = transactions.register(doc)
         # Reopen via a non-canonical variant — same file, different
         # string. Must hit the registry.
         weird = Path(str(doc.path.parent / "." / doc.path.name))
-        reopened = RDLDocument.open(weird)
+        with transactions.activate(tx_id):
+            reopened = RDLDocument.open(weird)
         assert reopened is doc
 
     def test_save_noops_while_in_transaction(self, doc, tmp_path):
@@ -691,17 +703,17 @@ class TestEndToEndTransactionLifecycle:
         assert raw_main_top.text == "0.5in"
         assert raw_main_left.text == "0.5in"
 
-        # ----- Step 4: in-process describe_report ALSO reads the
-        # in-memory tree (registry interception is at RDLDocument.open
-        # — fires for ANY in-process caller). This is by design:
-        # consistent view across the whole process while the tx is
-        # open. The disk-vs-memory distinction is purely about WHEN
-        # save_as is allowed to write.
-        descr_mid = call("describe_report", {"path": str(doc.path)})
+        # ----- Step 4: describe_report routed through the transaction
+        # reads the in-memory tree; without the id it reads the
+        # committed (on-disk) state (issue #25 — transactions are
+        # isolated from calls that don't carry their id).
+        descr_mid = call("describe_report", {"path": str(doc.path), "transaction_id": tx_id})
         main_mid = next(item for item in descr_mid["body_items"] if item["name"] == "MainTable")
-        # In-process describe sees the in-flight mutations.
         assert main_mid["top"] == "1in"
         assert main_mid["left"] == "1in"
+        descr_disk = call("describe_report", {"path": str(doc.path)})
+        main_disk = next(item for item in descr_disk["body_items"] if item["name"] == "MainTable")
+        assert main_disk["top"] == "0.5in"
 
         # ----- Step 5: commit. Now the 3 mutations land in ONE
         # atomic save. Disk sha256 changes; raw bytes match the

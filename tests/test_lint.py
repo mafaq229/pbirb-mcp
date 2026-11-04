@@ -1,6 +1,7 @@
 """Tests for lint_report (Phase 7 commit 31; v0.3.1 added rule 16).
 
-16 rules. Each has a clean-input test (asserts no issues fire) and a
+18 rules (17-18, duplicate-name / invalid-identifier, are tested in
+tests/test_names.py). Each has a clean-input test (asserts no issues fire) and a
 dirty-input test (asserts exactly the expected rule fires). Dirty
 inputs are produced by mutating ``pbi_paginated_minimal.rdl`` in-test
 rather than maintaining a hand-written ``pbi_lint_warnings.rdl``
@@ -63,7 +64,7 @@ class TestLintRegistry:
         result = lint_report(str(rdl_path))
         assert result["issues"] == []
         assert set(result["rules_run"]) == set(ALL_RULES)
-        assert len(ALL_RULES) == 16
+        assert len(ALL_RULES) == 18
 
     def test_unknown_rule_rejected(self, rdl_path):
         with pytest.raises(ValueError, match="unknown lint rule"):
