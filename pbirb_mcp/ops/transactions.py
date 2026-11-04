@@ -184,11 +184,16 @@ def apply_edits(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
         raise ValueError("ops must be a list of {tool, args} entries")
     from pathlib import Path as _Path  # noqa: N814 — local alias
 
+    from pbirb_mcp.ops.batch import check_ops, payload_reports_failure
+
     src = _Path(path)
     if not src.is_file():
         raise FileNotFoundError(f"path {path!r} is not a regular file")
 
     server = _build_server()
+    # Refuse transaction-control / nested-batch / out-of-tree-writing ops
+    # before the transaction even starts.
+    check_ops(server, ops)
 
     # Start the transaction by driving the public tool — exercises the
     # same code path the LLM does.
@@ -272,7 +277,23 @@ def apply_edits(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
             )
             failed = True
             break
-        applied.append({"tool": tool_name, "ok": True, "result": _extract_payload(resp)})
+        payload = _extract_payload(resp)
+        if payload_reports_failure(payload):
+            # A tool that *returns* failure (committed/saved false) failed.
+            applied.append(
+                {
+                    "tool": tool_name,
+                    "ok": False,
+                    "result": payload,
+                    "error": {
+                        "error_type": "OpFailed",
+                        "message": "op reported committed/saved = false",
+                    },
+                }
+            )
+            failed = True
+            break
+        applied.append({"tool": tool_name, "ok": True, "result": payload})
 
     if failed:
         # Roll back via the public cancel tool. Disk untouched because

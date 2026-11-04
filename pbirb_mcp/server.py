@@ -63,6 +63,24 @@ INTERNAL_ERROR = -32603
 
 ToolHandler = Callable[..., Any]
 
+# Tools that may never run as an op inside apply_edits / dry_run_edit:
+# transaction control (would commit/cancel mid-batch), the batch tools
+# themselves (nesting), and tools that write to disk outside the batch's
+# tree (backup/restore/duplicate/create) or don't take a `path`.
+NON_BATCHABLE_TOOLS = frozenset(
+    {
+        "start_editing_transaction",
+        "commit_editing_transaction",
+        "cancel_editing_transaction",
+        "apply_edits",
+        "dry_run_edit",
+        "create_report",
+        "duplicate_report",
+        "restore_from_backup",
+        "backup_report",
+    }
+)
+
 
 @dataclass
 class Tool:
@@ -70,6 +88,8 @@ class Tool:
     description: str
     input_schema: dict
     handler: ToolHandler
+    # May this tool run as an op inside apply_edits / dry_run_edit?
+    batchable: bool = False
 
 
 class MCPServer:
@@ -82,10 +102,28 @@ class MCPServer:
         description: str,
         input_schema: dict,
         handler: ToolHandler,
+        *,
+        batchable: Optional[bool] = None,
     ) -> None:
+        """Register a tool.
+
+        ``batchable`` — may the tool run as an op in ``apply_edits`` /
+        ``dry_run_edit``. Defaults to: the schema declares ``path`` and the
+        tool isn't in :data:`NON_BATCHABLE_TOOLS`.
+        """
         if name in self._tools:
             raise ValueError(f"tool already registered: {name}")
-        self._tools[name] = Tool(name, description, input_schema, handler)
+        if batchable is None:
+            props = (input_schema or {}).get("properties", {})
+            batchable = "path" in props and name not in NON_BATCHABLE_TOOLS
+        self._tools[name] = Tool(name, description, input_schema, handler, batchable=batchable)
+
+    def is_batchable(self, name: str) -> bool:
+        tool = self._tools.get(name)
+        return tool is not None and tool.batchable
+
+    def has_tool(self, name: str) -> bool:
+        return name in self._tools
 
     # ---- protocol -----------------------------------------------------------
 
@@ -213,13 +251,23 @@ class MCPServer:
                     tx.doc.restore(snapshot)
                     raise
             else:
-                result = tool.handler(**arguments)
+                from pbirb_mcp.core import transactions as _tx
+
+                # Not routed: run outside any transaction, even when this
+                # call is nested inside a routed one (batch tools).
+                with _tx.activate(None):
+                    result = tool.handler(**arguments)
         except Exception as exc:  # noqa: BLE001
             logger.exception("tool %s raised", name)
             payload = {
                 "error_type": type(exc).__name__,
                 "message": str(exc) or repr(exc),
             }
+            # Exceptions may carry structured fields (e.g. OpNotAllowed's
+            # `tool`); merge them into the payload.
+            extra = getattr(exc, "payload", None)
+            if isinstance(extra, dict):
+                payload.update(extra)
             return {
                 "content": [{"type": "text", "text": json.dumps(payload, default=str)}],
                 "isError": True,
