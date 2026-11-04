@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import units
+from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
@@ -42,7 +42,6 @@ from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 from pbirb_mcp.ops.tablix import (
     _apply_sort_to_member,
     _apply_visibility_to_member,
-    _group_names_in_tablix,
 )
 
 # ---- column-hierarchy helpers ---------------------------------------------
@@ -86,20 +85,19 @@ def _row_count(tablix: etree._Element) -> int:
 
 
 def _build_column_header_cell(
-    group_name: str,
+    textbox_name: str,
     cell_text: str,
-    row_index: int,
 ) -> etree._Element:
     """Build one ``<TablixCell>`` for the new column-group header column.
 
     ``cell_text`` is the value placed inside the inner ``<TextRun>``;
     callers pass the group expression for row 0 and an empty string for
-    rows below. Textbox name is ``<group>_HeaderCol_<row_index>`` so the
-    report-wide uniqueness Report Builder enforces lines up cleanly.
+    rows below. The caller generates ``textbox_name`` (normally
+    ``<group>_HeaderCol_<row_index>``) via :mod:`pbirb_mcp.core.names`
+    so it is report-wide unique.
     """
     cell = etree.Element(q("TablixCell"))
     contents = etree.SubElement(cell, q("CellContents"))
-    textbox_name = f"{group_name}_HeaderCol_{row_index}"
     tb = etree.SubElement(contents, q("Textbox"), Name=textbox_name)
     etree.SubElement(tb, q("CanGrow")).text = "true"
     etree.SubElement(tb, q("KeepTogether")).text = "true"
@@ -145,13 +143,18 @@ def add_column_group(
             "outer-group wrapping is implemented in this commit."
         )
 
+    names.validate_identifier(group_name, "group")
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
 
-    # Group names are unique per tablix across both axes — Report Builder
-    # enforces this and we error early to avoid a silent corruption.
-    if group_name in _group_names_in_tablix(tablix):
-        raise ValueError(f"group name {group_name!r} already exists in tablix {tablix_name!r}")
+    # Group names share the report-wide namespace with report items —
+    # Report Builder enforces this; error early, before any mutation.
+    registry = names.NameRegistry(doc)
+    registry.ensure_unique(group_name)
+    registry.claim(group_name)
+    header_names = [
+        registry.unique(f"{group_name}_HeaderCol_{i}") for i in range(_row_count(tablix))
+    ]
 
     # ---- mutate column hierarchy ------------------------------------------
     members_root = _column_hierarchy_members(tablix)
@@ -203,9 +206,8 @@ def add_column_group(
             cells_root.insert(
                 0,
                 _build_column_header_cell(
-                    group_name=group_name,
+                    textbox_name=header_names[i],
                     cell_text=group_expression if i == 0 else "",
-                    row_index=i,
                 ),
             )
 
@@ -214,6 +216,7 @@ def add_column_group(
         "tablix": tablix_name,
         "group": group_name,
         "expression": group_expression,
+        "header_textboxes": header_names,
     }
 
 
@@ -348,17 +351,6 @@ def set_column_group_visibility(
 # ---- add_tablix_column / remove_tablix_column (v0.2 commit 2) -------------
 
 
-def _all_textbox_names(doc: RDLDocument) -> set[str]:
-    """Every Textbox.Name in the entire report. Report Builder enforces
-    report-wide uniqueness, so this is the right scope for collision check."""
-    names = set()
-    for tb in doc.root.iter(q("Textbox")):
-        n = tb.get("Name")
-        if n:
-            names.add(n)
-    return names
-
-
 def _build_tablix_column_cell(
     textbox_name: str,
     cell_text: str,
@@ -411,25 +403,26 @@ def add_tablix_column(
     Tablixes with neither a detail group nor a dynamic row group fall
     back to "last row = data row".
     Cell textbox names follow ``<column_name>`` for the data-row cell
-    and ``<column_name>_<row_index>`` for non-data cells.
+    and ``<column_name>_<row_index>`` for non-data cells (suffixed when
+    taken report-wide; the payload's ``textboxes`` lists the names
+    emitted, top to bottom).
 
     ``position`` is a 0-indexed insertion position; default = append.
     ``width`` defaults to ``"1in"``. Both the body's ``<TablixColumn>``
     and the column hierarchy's leaf ``<TablixMember>`` are inserted at
     the same position; existing column-group wrappers are not modified.
     """
+    names.validate_identifier(column_name, "textbox")
     width = units.dimension("1in" if width is None else width, "width")
 
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
 
-    # Report-wide name uniqueness — Report Builder enforces it and a
-    # collision is a silent corruption.
-    if column_name in _all_textbox_names(doc):
-        raise ValueError(
-            f"textbox name {column_name!r} already exists in this report; "
-            "pick a unique name (Report Builder enforces report-wide unique textbox names)."
-        )
+    # Report-wide name uniqueness (report items + groups) — Report Builder
+    # enforces it and a collision is a silent corruption.
+    registry = names.NameRegistry(doc)
+    registry.ensure_unique(column_name)
+    registry.claim(column_name)
 
     body = find_child(tablix, "TablixBody")
     if body is None:
@@ -481,6 +474,7 @@ def add_tablix_column(
     data_idx = data_row_index(tablix)
     data_row_idx = data_idx if data_idx is not None and data_idx < n_rows else n_rows - 1
 
+    emitted: list[str] = []
     for i, row in enumerate(rows):
         cells_root = find_child(row, "TablixCells")
         if cells_root is None:
@@ -496,12 +490,13 @@ def add_tablix_column(
         elif i == 0:
             # First row of multi-row tablix: header row.
             cell_text = header_text_value
-            tb_name = f"{column_name}_{i}"
+            tb_name = registry.unique(f"{column_name}_{i}")
         else:
             # Middle rows (between header and the data row) and footer
             # rows (subtotals after it): blank cells.
             cell_text = ""
-            tb_name = f"{column_name}_{i}"
+            tb_name = registry.unique(f"{column_name}_{i}")
+        emitted.append(tb_name)
 
         new_cell = _build_tablix_column_cell(tb_name, cell_text)
         if insert_at == len(find_children(cells_root, "TablixCell")):
@@ -515,6 +510,7 @@ def add_tablix_column(
         "column_name": column_name,
         "position": insert_at,
         "width": width,
+        "textboxes": emitted,
     }
 
 

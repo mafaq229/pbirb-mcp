@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import units
+from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError
@@ -128,13 +128,6 @@ def _ensure_report_items(section: etree._Element) -> etree._Element:
     return items
 
 
-def _names_in_section(section: etree._Element) -> set[str]:
-    items = find_child(section, "ReportItems")
-    if items is None:
-        return set()
-    return {el.get("Name") for el in list(items) if el.get("Name") is not None}
-
-
 # ---- builders -------------------------------------------------------------
 
 
@@ -228,8 +221,10 @@ def _add_textbox(
     width: str,
     height: str,
 ) -> dict[str, Any]:
+    names.validate_identifier(name, "textbox")
     top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
+    names.ensure_unique(doc, name)
     page = _resolve_page(doc)
     section = _ensure_page_section(page, region)
     # Default Height keeps Report Builder from rendering a 0in band when the
@@ -237,8 +232,6 @@ def _add_textbox(
     if find_child(section, "Height") is None:
         _set_or_create_text_in_order(section, "Height", "0.5in")
     items = _ensure_report_items(section)
-    if name in _names_in_section(section):
-        raise ValueError(f"item named {name!r} already exists in {region.section_local}")
     items.append(_build_textbox(name, text, top, left, width, height))
     doc.save()
     return {"region": region.name, "name": name}
@@ -259,15 +252,15 @@ def _add_image(
         raise ValueError(
             f"image_source must be one of {_VALID_IMAGE_SOURCES!r}; got {image_source!r}"
         )
+    names.validate_identifier(name, "image")
     top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
+    names.ensure_unique(doc, name)
     page = _resolve_page(doc)
     section = _ensure_page_section(page, region)
     if find_child(section, "Height") is None:
         _set_or_create_text_in_order(section, "Height", "0.5in")
     items = _ensure_report_items(section)
-    if name in _names_in_section(section):
-        raise ValueError(f"item named {name!r} already exists in {region.section_local}")
     items.append(_build_image(name, image_source, value, top, left, width, height))
     doc.save()
     return {"region": region.name, "name": name}

@@ -55,12 +55,12 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import units
+from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError, resolve_dataset
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, find_children, q
-from pbirb_mcp.ops.body import _ensure_body_report_items, _names_in, _resolve_body
+from pbirb_mcp.ops.body import _ensure_body_report_items, _resolve_body
 
 # RDL ChartSeriesType + Subtype enumeration (covers the common shapes;
 # extend if a real session needs Funnel / Pyramid / Polar / Range etc.).
@@ -141,18 +141,6 @@ def _find_series(series_collection: etree._Element, series_name: str) -> etree._
     )
 
 
-def _all_named_items(doc: RDLDocument) -> set[str]:
-    """Names of every Tablix / Textbox / Image / Chart in the body."""
-    body = _resolve_body(doc)
-    items = find_child(body, "ReportItems")
-    return _names_in(items) if items is not None else set()
-
-
-def _ensure_no_collision(doc: RDLDocument, name: str) -> None:
-    if name in _all_named_items(doc):
-        raise ValueError(f"body item named {name!r} already exists; pick a unique name")
-
-
 # ---- insert_chart_from_template -------------------------------------------
 
 
@@ -173,10 +161,14 @@ def insert_chart_from_template(
     one Y series (``=Sum(Fields!<value_field>.Value)``). Type defaults to
     Column; callers can change it post-insert via :func:`set_chart_series_type`.
     """
+    names.validate_identifier(name, "chart")
     top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
     resolve_dataset(doc, dataset_name)
-    _ensure_no_collision(doc, name)
+    registry = names.NameRegistry(doc)
+    registry.ensure_unique(name)
+    registry.claim(name)
+    category_group = registry.unique(f"{name}_CategoryGroup")
 
     chart = etree.Element(q("Chart"), Name=name)
 
@@ -184,7 +176,7 @@ def insert_chart_from_template(
     cat_hier = etree.SubElement(chart, q("ChartCategoryHierarchy"))
     cat_members = etree.SubElement(cat_hier, q("ChartMembers"))
     cat_member = etree.SubElement(cat_members, q("ChartMember"))
-    cat_group = etree.SubElement(cat_member, q("Group"), Name=f"{name}_CategoryGroup")
+    cat_group = etree.SubElement(cat_member, q("Group"), Name=category_group)
     cat_expressions = etree.SubElement(cat_group, q("GroupExpressions"))
     cat_expression = etree.SubElement(cat_expressions, q("GroupExpression"))
     cat_expression.text = encode_text(f"=Fields!{category_field}.Value")
@@ -251,6 +243,7 @@ def insert_chart_from_template(
         "type": "Column",
         "category_field": category_field,
         "value_field": value_field,
+        "category_group": category_group,
     }
 
 
@@ -1377,7 +1370,9 @@ def set_chart_series_grouping(
         member.remove(existing_group)
         changed.append("replaced_existing_group")
 
-    group_name = f"{series_name}_Group"
+    # The replaced group (if any) was removed above, so its name is free
+    # again and an idempotent re-run keeps "<series>_Group".
+    group_name = names.unique_name(doc, f"{series_name}_Group")
     group = etree.Element(q("Group"), Name=group_name)
     expressions = etree.SubElement(group, q("GroupExpressions"))
     etree.SubElement(expressions, q("GroupExpression")).text = encode_text(effective_expression)

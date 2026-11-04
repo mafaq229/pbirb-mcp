@@ -26,6 +26,7 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
+from pbirb_mcp.core.names import validate_identifier
 from pbirb_mcp.core.xpath import find_child, find_children, q
 
 # Per the RDL spec, embedded images only support these MIME types.
@@ -120,6 +121,10 @@ def add_embedded_image(
     mime_type: str,
     image_path: str,
 ) -> dict[str, Any]:
+    # Report Builder names embedded images with the same identifier rule
+    # as every other RDL name (its import dialog strips "logo 2.png" to
+    # "logo2"); the XSD only says normalizedString.
+    validate_identifier(name, "embedded image")
     if mime_type not in _VALID_MIME_TYPES:
         raise ValueError(f"mime_type must be one of {sorted(_VALID_MIME_TYPES)}; got {mime_type!r}")
 

@@ -1,6 +1,6 @@
-"""Static-analysis lint rules (Phase 7 commit 31; v0.3.1 added rule 16).
+"""Static-analysis lint rules (Phase 7 commit 31; v0.3.1 added rule 16; #20 rules 17-18).
 
-Sixteen rules driven by the v0.2/v0.3 sweep feedback. Each rule is a
+Eighteen rules driven by the v0.2/v0.3 sweep feedback. Each rule is a
 small pure function that takes the open :class:`RDLDocument` and
 returns a list of issue dicts:
 
@@ -13,7 +13,7 @@ returns a list of issue dicts:
 The shape mirrors :mod:`pbirb_mcp.ops.validate` so :func:`verify_report`
 (commit 33) can union the two streams without reshaping.
 
-Rules (16):
+Rules (18):
 
 * ``multi-value-eq`` (warn) — multi-value param compared with ``=``.
 * ``unused-data-source`` (warn) — DataSource never referenced.
@@ -50,6 +50,13 @@ Rules (16):
 * ``dataset-fields-out-of-sync`` (warn, v0.3.1) — ``<Field>`` declared
   but the dataset's DAX ``<CommandText>`` doesn't return that column.
   Reuses :func:`pbirb_mcp.ops.dataset._extract_dax_field_names`.
+* ``duplicate-name`` (error, #20) — two report items / groups share a
+  ``Name`` (one report-wide namespace across body, header, footer and
+  every nested container), or two data sources / datasets / parameters /
+  embedded images / fields of one dataset do.
+* ``invalid-identifier`` (error, #20) — a report item, group, data
+  source, dataset, parameter, embedded image or field ``Name`` is not a
+  CLS-compliant identifier (:func:`pbirb_mcp.core.names.validate_identifier`).
 """
 
 from __future__ import annotations
@@ -59,6 +66,7 @@ from typing import Any, Callable
 
 from lxml import etree
 
+from pbirb_mcp.core import names
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q
 from pbirb_mcp.ops import vbexpr
@@ -767,6 +775,12 @@ def _rule_dataset_fields_out_of_sync(doc: RDLDocument) -> list[Issue]:
                 continue
             if name in extracted_set:
                 continue
+            # refresh_dataset_fields names a non-identifier alias
+            # ("Total Sales") Total_Sales and keeps the raw alias in
+            # <DataField>; that field is in sync.
+            data_field = find_child(f, "DataField")
+            if data_field is not None and data_field.text in extracted_set:
+                continue
             issues.append(
                 {
                     "severity": "warning",
@@ -783,6 +797,112 @@ def _rule_dataset_fields_out_of_sync(doc: RDLDocument) -> list[Issue]:
                     ),
                 }
             )
+    return issues
+
+
+# ---- rules 17-18: duplicate-name / invalid-identifier (#20) -------------
+
+
+def _per_kind_namespaces(doc: RDLDocument):
+    """Yield ``(label, elements)`` for each RDL namespace that keeps its own
+    uniqueness: data sources, datasets, parameters, embedded images, and
+    the fields of each dataset."""
+    root = doc.root
+    for container, child, label in (
+        ("DataSources", "DataSource", "DataSource"),
+        ("DataSets", "DataSet", "DataSet"),
+        ("ReportParameters", "ReportParameter", "ReportParameter"),
+        ("EmbeddedImages", "EmbeddedImage", "EmbeddedImage"),
+    ):
+        block = find_child(root, container)
+        if block is not None:
+            yield label, find_children(block, child)
+    datasets_root = find_child(root, "DataSets")
+    if datasets_root is not None:
+        for ds in find_children(datasets_root, "DataSet"):
+            fields_root = find_child(ds, "Fields")
+            if fields_root is not None:
+                yield (
+                    f"DataSet[Name={ds.get('Name')!r}]/Field",
+                    find_children(fields_root, "Field"),
+                )
+
+
+def _rule_duplicate_name(doc: RDLDocument) -> list[Issue]:
+    """Two report items / groups (one report-wide namespace), or two
+    entries of a per-kind namespace, share a ``Name``. Report Builder
+    refuses such a file and name-addressed tools raise
+    ``AmbiguousElementError`` on it."""
+    issues: list[Issue] = []
+    scope: dict[str, list[etree._Element]] = {}
+    for el in names.iter_scope_elements(doc):
+        scope.setdefault(el.get("Name"), []).append(el)
+    for name, els in scope.items():
+        if len(els) < 2:
+            continue
+        where = "; ".join(names.describe_location(e) for e in els)
+        issues.append(
+            {
+                "severity": "error",
+                "rule": "duplicate-name",
+                "location": _named_locator(els[1]),
+                "message": (
+                    f"name {name!r} is used {len(els)} times ({where}); report item "
+                    "and group names must be unique report-wide"
+                ),
+                "suggestion": "rename all but one so every report item and group name is unique",
+            }
+        )
+    for label, els in _per_kind_namespaces(doc):
+        counts: dict[str, int] = {}
+        for el in els:
+            n = el.get("Name")
+            if n is not None:
+                counts[n] = counts.get(n, 0) + 1
+        for name, count in counts.items():
+            if count < 2:
+                continue
+            issues.append(
+                {
+                    "severity": "error",
+                    "rule": "duplicate-name",
+                    "location": f"{label}[Name={name!r}]",
+                    "message": f"{count} {label} entries are named {name!r}; names must be unique",
+                    "suggestion": "rename or remove the duplicates",
+                }
+            )
+    return issues
+
+
+def _rule_invalid_identifier(doc: RDLDocument) -> list[Issue]:
+    """A report item, group, data source, dataset, parameter, embedded
+    image or field ``Name`` is not a valid RDL (CLS-compliant)
+    identifier — Report Builder refuses to load it."""
+    issues: list[Issue] = []
+
+    def check(el: etree._Element, location: str) -> None:
+        n = el.get("Name")
+        if n is None or names.is_identifier(n):
+            return
+        issues.append(
+            {
+                "severity": "error",
+                "rule": "invalid-identifier",
+                "location": location,
+                "message": (
+                    f"{etree.QName(el).localname} name {n!r} is not a valid RDL identifier "
+                    "(must start with a letter; letters, digits and underscores only; "
+                    f"at most {names.MAX_IDENTIFIER_LENGTH} characters)"
+                ),
+                "suggestion": f"rename it, e.g. to {names.sanitize_identifier(n)!r}",
+            }
+        )
+
+    for el in names.iter_scope_elements(doc):
+        check(el, _named_locator(el))
+    for label, els in _per_kind_namespaces(doc):
+        for el in els:
+            check(el, f"{label}[Name={el.get('Name')!r}]")
     return issues
 
 
@@ -806,6 +926,8 @@ _RULES: dict[str, Callable[[RDLDocument], list[Issue]]] = {
     "stale-designer-state": _rule_stale_designer_state,
     "tablix-span-misplaced": _rule_tablix_span_misplaced,
     "dataset-fields-out-of-sync": _rule_dataset_fields_out_of_sync,
+    "duplicate-name": _rule_duplicate_name,
+    "invalid-identifier": _rule_invalid_identifier,
 }
 
 ALL_RULES = tuple(_RULES.keys())
@@ -844,7 +966,7 @@ def _lint_doc(doc: RDLDocument, rules: list[str] | None = None) -> dict[str, Any
 def lint_report(path: str, rules: list[str] | None = None) -> dict[str, Any]:
     """Run lint rules against an RDL.
 
-    ``rules`` selects a subset by name; ``None`` runs all 16. Unknown
+    ``rules`` selects a subset by name; ``None`` runs all of them. Unknown
     rule names are rejected with ``ValueError`` so a typo doesn't quietly
     skip checks.
 

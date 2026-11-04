@@ -37,6 +37,7 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError
+from pbirb_mcp.core.names import validate_identifier
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, XPATH_NS, find_child, find_children, q, qrd
 
 _XMLA_PREFIX = "powerbi://api.powerbi.com/v1.0/myorg/"
@@ -213,6 +214,7 @@ def add_data_source(
     DataSource names are report-wide unique) or if ``provider`` is
     unknown.
     """
+    validate_identifier(name, "data source")
     if provider not in _VALID_PROVIDERS:
         raise ValueError(f"unknown provider {provider!r}; valid values: {_VALID_PROVIDERS!r}")
 
@@ -363,6 +365,7 @@ def rename_data_source(
     """
     if new_name == old_name:
         raise ValueError("new_name and old_name are identical; nothing to rename.")
+    validate_identifier(new_name, "data source")
 
     doc = RDLDocument.open(path)
     root = doc.root

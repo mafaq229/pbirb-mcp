@@ -44,7 +44,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import units
+from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
@@ -183,8 +183,14 @@ def add_subtotal_row(
         )
 
     member_index_label = "Footer" if position == "footer" else "Header"
+    # Generated names go through the report-wide registry: a "header"
+    # subtotal's <group>_Header_<i> would otherwise collide with the
+    # group-header row add_row_group already emitted under that name.
+    registry = names.NameRegistry(doc)
+    emitted: list[str] = []
     for col_idx, col_textbox in enumerate(column_names):
-        textbox_name = f"{group_name}_{member_index_label}_{col_idx}"
+        textbox_name = registry.unique(f"{group_name}_{member_index_label}_{col_idx}")
+        emitted.append(textbox_name)
         cell_text = (
             aggregates_by_column[col_textbox]
             if col_textbox is not None and col_textbox in aggregates_by_column
@@ -216,6 +222,7 @@ def add_subtotal_row(
         "group": group_name,
         "position": position,
         "aggregates": list(aggregates),
+        "textboxes": emitted,
     }
 
 
@@ -359,14 +366,18 @@ def add_subtotal_column(
     else:
         cols_root.insert(column_insert_index, new_column)
 
-    # Subtotal-column textbox names: <group>_TotalColumn_<row>.
+    # Subtotal-column textbox names: <group>_TotalColumn_<row>, suffixed
+    # when taken report-wide (e.g. a second subtotal column on the group).
     label = "TotalColumn"
+    registry = names.NameRegistry(doc)
+    emitted: list[str] = []
     for row_idx, row in enumerate(rows):
         cells_root = find_child(row, "TablixCells")
         if cells_root is None:
             cells_root = etree.SubElement(row, q("TablixCells"))
         cell_text = aggregates_by_row.get(row_idx, "")
-        textbox_name = f"{group_name}_{label}_{row_idx}"
+        textbox_name = registry.unique(f"{group_name}_{label}_{row_idx}")
+        emitted.append(textbox_name)
         new_cell = _build_subtotal_cell(textbox_name, cell_text)
         if column_insert_index >= len(find_children(cells_root, "TablixCell")):
             cells_root.append(new_cell)
@@ -382,6 +393,7 @@ def add_subtotal_column(
         "kind": "TablixMember",
         "column_index": column_insert_index,
         "changed": ["member_added", "column_added", "cells_added"],
+        "textboxes": emitted,
     }
 
 

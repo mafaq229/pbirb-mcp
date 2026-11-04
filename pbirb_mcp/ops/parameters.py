@@ -29,6 +29,7 @@ from pbirb_mcp.core.ids import (
     resolve_dataset,
     resolve_parameter,
 )
+from pbirb_mcp.core.names import validate_identifier
 from pbirb_mcp.core.xpath import find_child, find_children, q
 
 _VALID_SOURCES = ("static", "query")
@@ -687,13 +688,14 @@ def add_parameter(
     Pair with :func:`set_parameter_available_values` /
     :func:`set_parameter_default_values` afterwards for value lists.
     """
+    validate_identifier(name, "parameter")
     if type not in _VALID_DATA_TYPES:
         raise ValueError(f"type {type!r} not valid; expected one of {list(_VALID_DATA_TYPES)}")
 
     doc = RDLDocument.open(path)
     root = doc.root
     rdl_ns = root.nsmap.get(None) or ""
-    # Check uniqueness.
+    # Check uniqueness (parameters are their own namespace).
     existing = [
         p.get("Name")
         for p in root.iter(f"{{{rdl_ns}}}ReportParameter")
@@ -844,6 +846,7 @@ def rename_parameter(
     """
     if new_name == old_name:
         raise ValueError("new_name and old_name are identical; nothing to rename.")
+    validate_identifier(new_name, "parameter")
 
     doc = RDLDocument.open(path)
     rdl_ns = doc.root.nsmap.get(None) or ""

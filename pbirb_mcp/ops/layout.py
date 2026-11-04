@@ -26,7 +26,7 @@ from typing import Any
 
 from lxml import etree
 
-from pbirb_mcp.core import units
+from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_group
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, q
@@ -418,15 +418,14 @@ def add_rectangle(
 
     Returns ``{name, kind: 'Rectangle', moved: list[str]}``.
     """
+    names.validate_identifier(name, "rectangle")
     top, left, width, height = units.box(top, left, width, height)
     contained_items = list(contained_items or [])
 
     doc = RDLDocument.open(path)
+    names.ensure_unique(doc, name)
     body = _resolve_body(doc)
     items = _ensure_body_report_items(body)
-
-    if name in _names_in(items):
-        raise ValueError(f"body item named {name!r} already exists; pick a unique name")
 
     # Resolve every contained item up front — fail before mutating the tree.
     if contained_items:
@@ -494,23 +493,28 @@ def add_list(
     a Rectangle inside the single cell. Items the user later places
     inside the rectangle repeat once per dataset row.
 
-    Returns ``{name, kind: 'Tablix', dataset, rectangle: <name>_Rect}``.
-    The inner Rectangle's name is ``<name>_Rect`` for stable subsequent
-    reference (callers can look it up by that name when adding inner
-    items via ``set_textbox_value`` / ``add_body_textbox`` etc.).
+    Returns ``{name, kind: 'Tablix', dataset, rectangle, details_group}``.
+    The inner Rectangle is named ``<name>_Rect`` and the detail group
+    ``<name>_Details`` — each suffixed (``<name>_Rect1``, …) when that
+    name is already taken report-wide, so read the actual names from the
+    payload.
 
     Refuses on duplicate name. Refuses if ``dataset_name`` isn't a real
     dataset.
     """
+    names.validate_identifier(name, "list")
     top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
     resolve_dataset(doc, dataset_name)  # raises if absent
+    registry = names.NameRegistry(doc)
+    registry.ensure_unique(name)
+    registry.claim(name)
+    # Generated names: suffixed (X_Rect1, ...) if a report item or group
+    # already uses them (e.g. an earlier add_list('X_Rect') tablix).
+    rect_name = registry.unique(f"{name}_Rect")
+    details_name = registry.unique(f"{name}_Details")
     body = _resolve_body(doc)
     items = _ensure_body_report_items(body)
-    if name in _names_in(items):
-        raise ValueError(f"body item named {name!r} already exists; pick a unique name")
-
-    rect_name = f"{name}_Rect"
 
     tablix = etree.Element(q("Tablix"), Name=name)
 
@@ -543,7 +547,7 @@ def add_list(
     # Group Name uses the same convention insert_tablix_from_template uses
     # ("Details") but suffixed with the list name to avoid collisions when
     # multiple lists exist in one report.
-    etree.SubElement(details_member, q("Group"), Name=f"{name}_Details")
+    etree.SubElement(details_member, q("Group"), Name=details_name)
 
     # ---- footer fields ----
     etree.SubElement(tablix, q("DataSetName")).text = dataset_name
@@ -562,6 +566,7 @@ def add_list(
         "kind": "Tablix",
         "dataset": dataset_name,
         "rectangle": rect_name,
+        "details_group": details_name,
     }
 
 
@@ -610,6 +615,7 @@ def add_line(
     Refuses on duplicate name or unknown ``line_style``. Returns
     ``{name, kind: 'Line'}``.
     """
+    names.validate_identifier(name, "line")
     if line_style not in _VALID_LINE_STYLES:
         raise ValueError(
             f"unknown line_style {line_style!r}; valid values: {list(_VALID_LINE_STYLES)}"
@@ -622,10 +628,9 @@ def add_line(
     line_thickness = units.style_size(line_thickness, "line_thickness", positive=True)
 
     doc = RDLDocument.open(path)
+    names.ensure_unique(doc, name)
     body = _resolve_body(doc)
     items = _ensure_body_report_items(body)
-    if name in _names_in(items):
-        raise ValueError(f"body item named {name!r} already exists; pick a unique name")
 
     line = etree.Element(q("Line"), Name=name)
     # Per RDL XSD Line child order: Style, Top, Left, Height, Width,

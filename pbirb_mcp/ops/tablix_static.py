@@ -16,15 +16,11 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import units
+from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import resolve_tablix
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
-
-
-def _all_textbox_names(doc: RDLDocument) -> set[str]:
-    return {tb.get("Name") for tb in doc.root.iter(q("Textbox")) if tb.get("Name")}
 
 
 def _build_static_cell(textbox_name: str, cell_text: str) -> etree._Element:
@@ -61,16 +57,25 @@ def add_static_row(
     right). Shorter list = blank cells for the trailing columns; longer
     list raises ``ValueError``. Each cell's textbox is named
     ``<row_name>_<col_index>``; the cell at column 0 also uses the bare
-    ``row_name`` for findability.
+    ``row_name`` for findability. ``row_name`` must be unique report-wide;
+    generated names are suffixed when taken (the payload's ``textboxes``
+    lists the names emitted).
 
     ``position`` is 0-indexed into ``<TablixRows>``; default = append.
     ``height`` defaults to ``"0.25in"``.
     """
+    names.validate_identifier(row_name, "textbox")
     height_value = units.dimension(height if height is not None else "0.25in", "height")
     cells = cells or []
 
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
+    # Report-wide uniqueness for the bare row_name (col 0 cell), checked
+    # before any mutation; the other cells' generated names are suffixed
+    # if taken.
+    registry = names.NameRegistry(doc)
+    registry.ensure_unique(row_name)
+    registry.claim(row_name)
 
     body = find_child(tablix, "TablixBody")
     if body is None:
@@ -91,20 +96,16 @@ def add_static_row(
     if insert_at < 0 or insert_at > n_rows:
         raise IndexError(f"position {position} out of range; tablix has {n_rows} row(s)")
 
-    # Validate name uniqueness for the bare row_name (col 0 cell).
-    existing = _all_textbox_names(doc)
-    if row_name in existing:
-        raise ValueError(
-            f"textbox name {row_name!r} already exists in this report; pick a unique name."
-        )
+    textbox_names = [row_name if n_cols else None] + [
+        registry.unique(f"{row_name}_{col_idx}") for col_idx in range(1, n_cols)
+    ]
 
     new_row = etree.Element(q("TablixRow"))
     etree.SubElement(new_row, q("Height")).text = height_value
     cells_root = etree.SubElement(new_row, q("TablixCells"))
     for col_idx in range(n_cols):
         cell_text = cells[col_idx] if col_idx < len(cells) else ""
-        textbox_name = row_name if col_idx == 0 else f"{row_name}_{col_idx}"
-        cells_root.append(_build_static_cell(textbox_name, cell_text))
+        cells_root.append(_build_static_cell(textbox_names[col_idx], cell_text))
 
     if insert_at == n_rows:
         rows_root.append(new_row)
@@ -131,6 +132,7 @@ def add_static_row(
         "row_name": row_name,
         "position": insert_at,
         "cells": list(cells),
+        "textboxes": [n for n in textbox_names if n is not None],
     }
 
 
@@ -148,16 +150,22 @@ def add_static_column(
     bottom). Shorter list = blank cells for the trailing rows; longer
     list raises ``ValueError``. Each cell's textbox is named
     ``<column_name>_<row_index>``; the cell at row 0 also uses the bare
-    ``column_name`` for findability.
+    ``column_name`` for findability. ``column_name`` must be unique
+    report-wide; generated names are suffixed when taken (the payload's
+    ``textboxes`` lists the names emitted).
 
     ``position`` is 0-indexed into ``<TablixColumns>``; default =
     append. ``width`` defaults to ``"1in"``.
     """
+    names.validate_identifier(column_name, "textbox")
     width_value = units.dimension(width if width is not None else "1in", "width")
     cells = cells or []
 
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
+    registry = names.NameRegistry(doc)
+    registry.ensure_unique(column_name)
+    registry.claim(column_name)
 
     body = find_child(tablix, "TablixBody")
     if body is None:
@@ -179,11 +187,9 @@ def add_static_column(
     if insert_at < 0 or insert_at > n_cols:
         raise IndexError(f"position {position} out of range; tablix has {n_cols} column(s)")
 
-    existing = _all_textbox_names(doc)
-    if column_name in existing:
-        raise ValueError(
-            f"textbox name {column_name!r} already exists in this report; pick a unique name."
-        )
+    textbox_names = [column_name] + [
+        registry.unique(f"{column_name}_{row_idx}") for row_idx in range(1, n_rows)
+    ]
 
     # Insert <TablixColumn> at insert_at.
     new_column = etree.Element(q("TablixColumn"))
@@ -199,8 +205,7 @@ def add_static_column(
         if cells_root is None:
             cells_root = etree.SubElement(row, q("TablixCells"))
         cell_text = cells[row_idx] if row_idx < len(cells) else ""
-        textbox_name = column_name if row_idx == 0 else f"{column_name}_{row_idx}"
-        new_cell = _build_static_cell(textbox_name, cell_text)
+        new_cell = _build_static_cell(textbox_names[row_idx], cell_text)
         existing_cells = find_children(cells_root, "TablixCell")
         if insert_at == len(existing_cells):
             cells_root.append(new_cell)
@@ -228,6 +233,7 @@ def add_static_column(
         "position": insert_at,
         "cells": list(cells),
         "width": width_value,
+        "textboxes": textbox_names[:n_rows],
     }
 
 

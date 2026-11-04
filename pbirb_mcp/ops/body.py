@@ -16,7 +16,7 @@ from typing import Any
 
 from lxml import etree
 
-from pbirb_mcp.core import units
+from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
@@ -69,12 +69,12 @@ def add_body_textbox(
     width: str,
     height: str,
 ) -> dict[str, Any]:
+    names.validate_identifier(name, "textbox")
     top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
+    names.ensure_unique(doc, name)
     body = _resolve_body(doc)
     items = _ensure_body_report_items(body)
-    if name in _names_in(items):
-        raise ValueError(f"body item named {name!r} already exists")
     items.append(_build_textbox(name, text, top, left, width, height))
     doc.save()
     return {"name": name, "kind": "Textbox"}
@@ -97,12 +97,12 @@ def add_body_image(
         raise ValueError(
             f"image_source must be one of {_VALID_IMAGE_SOURCES!r}; got {image_source!r}"
         )
+    names.validate_identifier(name, "image")
     top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
+    names.ensure_unique(doc, name)
     body = _resolve_body(doc)
     items = _ensure_body_report_items(body)
-    if name in _names_in(items):
-        raise ValueError(f"body item named {name!r} already exists")
     items.append(_build_image(name, image_source, value, top, left, width, height))
     doc.save()
     return {"name": name, "kind": "Image"}

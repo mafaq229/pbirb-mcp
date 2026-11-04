@@ -24,6 +24,7 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset
+from pbirb_mcp.core.names import is_identifier, sanitize_identifier, validate_identifier
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q
 from pbirb_mcp.ops.dax import COLUMN as DAX_COLUMN
 from pbirb_mcp.ops.dax import result_columns
@@ -769,6 +770,7 @@ def add_calculated_field(
     """
     if not field_name or not field_name.strip():
         raise ValueError("field_name must be a non-empty string")
+    validate_identifier(field_name, "field")
     if not expression or not expression.strip():
         raise ValueError("expression must be a non-empty string")
 
@@ -985,6 +987,7 @@ def add_dataset_field(
     """
     if not field_name or not field_name.strip():
         raise ValueError("field_name must be a non-empty string")
+    validate_identifier(field_name, "field")
     if not data_field or not data_field.strip():
         raise ValueError("data_field must be a non-empty string")
 
@@ -1106,7 +1109,24 @@ def refresh_dataset_fields(
             "warnings": [f"dataset {dataset_name!r} has no <CommandText>; nothing to refresh."],
         }
 
-    extracted, warnings = _extract_dax_field_names(command_text)
+    raw_extracted, warnings = _extract_dax_field_names(command_text)
+    sanitized_data_fields: dict[str, str] = {}
+    # A DAX alias like "Total Sales" is not a valid RDL field name. Map it
+    # to an identifier (Total_Sales) for the Field Name and keep the raw
+    # column name in <DataField> — the shape Report Builder's own Refresh
+    # Fields produces — so the written report stays loadable.
+    extracted: list[str] = []
+    for raw in raw_extracted:
+        if is_identifier(raw):
+            extracted.append(raw)
+            continue
+        field_name = sanitize_identifier(raw, fallback="Field")
+        extracted.append(field_name)
+        sanitized_data_fields[field_name] = raw
+        warnings = list(warnings) + [
+            f"result column {raw!r} is not a valid RDL field name; "
+            f"its field is named {field_name!r} (DataField keeps {raw!r})."
+        ]
 
     fields_root = _ensure_fields_block(dataset)
     existing_fields = find_children(fields_root, "Field")
@@ -1126,7 +1146,7 @@ def refresh_dataset_fields(
             continue
         new_field = etree.SubElement(fields_root, q("Field"), Name=name)
         df_node = etree.SubElement(new_field, q("DataField"))
-        df_node.text = encode_text(name)
+        df_node.text = encode_text(sanitized_data_fields.get(name, name))
         added.append(name)
 
     if added:
