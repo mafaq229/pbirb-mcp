@@ -74,16 +74,38 @@ NON_BATCHABLE_TOOLS = frozenset(
 )
 
 
+# Tools that manage transactions themselves: never routed through one,
+# and never given an injected `transaction_id` parameter.
+TRANSACTION_CONTROL_TOOLS = frozenset(
+    {"start_editing_transaction", "commit_editing_transaction", "cancel_editing_transaction"}
+)
+
+_TRANSACTION_ID_PARAM = {
+    "type": "string",
+    "description": (
+        "Optional. Run this call inside the editing transaction with this id "
+        "(from start_editing_transaction): reads and edits use its in-memory "
+        "tree; nothing reaches disk until commit_editing_transaction."
+    ),
+}
+
+
 @dataclass
 class Tool:
     name: str
     description: str
+    # The schema arguments are validated against (may use nullable type
+    # lists / oneOf).
     input_schema: dict
     handler: ToolHandler
     # May this tool run as an op inside apply_edits / dry_run_edit?
     batchable: bool = False
     # Does this tool write an RDL file? (drives PBIRB_MCP_AUTO_VERIFY)
     mutating: bool = False
+    # May a call carry `transaction_id` to run inside a transaction?
+    routable: bool = False
+    # The client-safe schema published in tools/list.
+    published_schema: Optional[dict] = None
 
 
 class MCPServer:
@@ -110,13 +132,32 @@ class MCPServer:
         ``PBIRB_MCP_AUTO_VERIFY`` on, the written file is verified after
         every successful call.
         """
+        from pbirb_mcp.core.argcheck import client_schema
+
         if name in self._tools:
             raise ValueError(f"tool already registered: {name}")
+        schema = dict(input_schema or {"type": "object", "properties": {}})
+        props = dict(schema.get("properties", {}) or {})
         if batchable is None:
-            props = (input_schema or {}).get("properties", {})
             batchable = "path" in props and name not in NON_BATCHABLE_TOOLS
+        # Every tool that works on a report file can run inside a
+        # transaction; declare `transaction_id` so schema-conformant clients
+        # may send it (issue #19).
+        routable = name not in TRANSACTION_CONTROL_TOOLS and (
+            "path" in props or "src_path" in props
+        )
+        if routable and "transaction_id" not in props:
+            props["transaction_id"] = _TRANSACTION_ID_PARAM
+            schema["properties"] = props
         self._tools[name] = Tool(
-            name, description, input_schema, handler, batchable=batchable, mutating=mutating
+            name,
+            description,
+            schema,
+            handler,
+            batchable=batchable,
+            mutating=mutating,
+            routable=routable,
+            published_schema=client_schema(schema),
         )
 
     def is_batchable(self, name: str) -> bool:
@@ -175,7 +216,7 @@ class MCPServer:
             {
                 "name": tool.name,
                 "description": tool.description,
-                "inputSchema": tool.input_schema,
+                "inputSchema": tool.published_schema or tool.input_schema,
             }
             for tool in self._tools.values()
         ]
@@ -202,10 +243,12 @@ class MCPServer:
         # On miss → structured isError that does NOT echo the opaque id
         # back (leakage guard). Orphans are swept lazily before every
         # transaction-aware lookup.
+        arguments = dict(arguments)
+
         in_transaction = False
         tx_id = None
         schema_props = (tool.input_schema or {}).get("properties", {})
-        if "transaction_id" in arguments and "transaction_id" not in schema_props:
+        if "transaction_id" in arguments and tool.routable:
             from pbirb_mcp.core import transactions as _tx
 
             tx_id = arguments.pop("transaction_id")
@@ -227,6 +270,21 @@ class MCPServer:
             if "path" in schema_props:
                 arguments["path"] = tx.abspath
             in_transaction = True
+
+        # Validate arguments against the tool's schema before dispatch
+        # (issue #19): wrong types used to reach the ops ("false" is
+        # truthy) or surface as Python TypeError text. Runs after routing
+        # so a transaction-routed call may leave `path` to the dispatcher.
+        from pbirb_mcp.core.argcheck import InvalidArguments, validate_arguments
+
+        try:
+            validate_arguments(tool.input_schema, arguments)
+        except InvalidArguments as exc:
+            payload = {"error_type": "InvalidArguments", "message": str(exc), **exc.payload}
+            return {
+                "content": [{"type": "text", "text": json.dumps(payload, default=str)}],
+                "isError": True,
+            }
 
         # Per MCP spec, tool-handler exceptions are surfaced in the result
         # content with `isError: true`, NOT as JSON-RPC errors. JSON-RPC errors

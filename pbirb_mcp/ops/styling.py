@@ -1116,6 +1116,10 @@ def _resolve_row_index(tablix: etree._Element, row: object) -> int:
         # Guard: bool is an int subclass in Python; reject explicitly so
         # a stray True / False doesn't silently become row 1 / 0.
         raise TypeError("row must be int or str; bool is rejected as ambiguous")
+    # tools/list publishes `row` as a string; a digit string is an index
+    # (no role or group name is all digits).
+    if isinstance(row, str) and row.isdigit():
+        row = int(row)
     if isinstance(row, int):
         if row < 0 or row >= len(rows):
             raise IndexError(

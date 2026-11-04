@@ -615,6 +615,10 @@ def _resolve_tablix_column_index(
     cols_root = find_child(body, "TablixColumns") if body is not None else None
     cols = find_children(cols_root, "TablixColumn") if cols_root is not None else []
 
+    # tools/list publishes `column` as a string; a digit string is an
+    # index (textbox names can't be all digits).
+    if isinstance(column, str) and column.isdigit():
+        column = int(column)
     if isinstance(column, int):
         if column < 0 or column >= len(cols):
             raise IndexError(
