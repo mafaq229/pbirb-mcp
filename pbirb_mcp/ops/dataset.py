@@ -3,9 +3,12 @@
 Edits the ``<DataSet>`` block of an RDL: the DAX command text and the
 ``<QueryParameters>`` collection that wires report parameters into the query.
 
-DAX bodies are accepted verbatim — we don't parse DAX, so the user (or
-Report Builder at preview time) is the source of truth for syntactic
-correctness. Empty / whitespace-only bodies are rejected up front because
+DAX bodies are stored verbatim — we don't validate DAX syntax, so the user
+(or Report Builder at preview time) is the source of truth for syntactic
+correctness. The query's *result columns* are read with the tokenizer in
+:mod:`pbirb_mcp.ops.dax` (``refresh_dataset_fields`` and
+``alias_strategy='preserve_field_names'``). Empty / whitespace-only bodies
+are rejected up front because
 Report Builder loads them but immediately errors at preview, which is a
 worse signal than a clear ValueError here.
 
