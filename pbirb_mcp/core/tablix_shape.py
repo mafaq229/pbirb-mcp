@@ -537,6 +537,48 @@ def static_member_like(
     return top, emitted
 
 
+def removal_member(
+    tablix: etree._Element, axis: str, index: int
+) -> tuple[etree._Element, list[etree._Element]]:
+    """The hierarchy member to delete so that body row/column ``index``
+    disappears together with exactly its leaf.
+
+    Starts at ``leaves[index]`` and climbs while the member is its
+    parent's only child — deleting it alone would leave an empty
+    ``<TablixMembers/>`` (XSD-invalid) and turn the parent into a leaf
+    with no body row. Returns ``(member, emptied_groups)``, where
+    ``emptied_groups`` are the group ``TablixMember`` elements climbed
+    through (outermost last): non-empty means the removal takes those
+    groups with it. Raises ``IndexError`` for an index with no leaf.
+    """
+    leaves = axis_leaves(tablix, axis)
+    if index < 0 or index >= len(leaves):
+        raise IndexError(f"{axis} {index} has no hierarchy leaf ({len(leaves)} leaves)")
+    member = leaves[index]
+    emptied: list[etree._Element] = []
+    if find_child(member, "Group") is not None:
+        emptied.append(member)  # a group whose own member is the leaf
+    while True:
+        owner = owner_member(member)
+        if owner is None or len(find_children(member.getparent(), "TablixMember")) > 1:
+            break
+        if find_child(owner, "Group") is not None:
+            emptied.append(owner)
+        member = owner
+    return member, emptied
+
+
+def detach(el: etree._Element) -> None:
+    """Remove ``el`` from its parent keeping the pretty-print layout: when
+    it is the last child, its tail (the parent's closing indent) moves to
+    the previous sibling instead of being lost with it."""
+    parent = el.getparent()
+    prev = el.getprevious()
+    if el.getnext() is None and prev is not None and el.tail is not None and not el.tail.strip():
+        prev.tail = el.tail
+    parent.remove(el)
+
+
 def insert_nth_child(
     parent: etree._Element, local_name: str, index: int, new_child: etree._Element
 ) -> None:
@@ -653,11 +695,13 @@ __all__ = [
     "body_count",
     "place_static_leaf",
     "placement_warnings",
+    "removal_member",
     "axis_leaves",
     "column_leaf",
     "column_leaves",
     "data_leaf",
     "data_row_index",
+    "detach",
     "detail_member",
     "detail_row_index",
     "find_group_member",

@@ -1998,13 +1998,15 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_tablix_column",
         description=(
-            "Remove the tablix column whose data-row cell holds a textbox "
-            "named column_name. Drops the matching TablixColumn, removes the "
-            "top-level TablixMember at that column index (only if it's a "
-            "leaf, never a column group wrapper), and removes the cell at "
-            "that index from every TablixRow. Merged (ColSpan) cells "
-            "shrink by one instead of losing their contents. Errors if no "
-            "row contains a textbox with the given name."
+            "Remove the tablix column whose body cell holds a textbox named "
+            "column_name: drops its TablixColumn, the cell at that index "
+            "from every row, and the column's own leaf in the column "
+            "hierarchy (found through any column groups, so leaves and "
+            "columns stay equal). Refuses the tablix's last column, and a "
+            "column that is the only column of a column group unless "
+            "remove_group=true (then the group member and its header go "
+            "too). Merged (ColSpan) cells shrink by one instead of losing their "
+            "contents. Errors if no row contains a textbox with the given name."
         ),
         input_schema={
             "type": "object",
@@ -2012,6 +2014,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "tablix_name": {"type": "string"},
                 "column_name": {"type": "string"},
+                "remove_group": {"type": "boolean", "default": False},
             },
             "required": ["path", "tablix_name", "column_name"],
             "additionalProperties": False,

@@ -39,9 +39,11 @@ from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
 from pbirb_mcp.core.tablix_shape import (
     column_leaves,
     data_row_index,
+    detach,
     insert_nth_child,
     place_static_leaf,
     placement_warnings,
+    removal_member,
 )
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 from pbirb_mcp.ops.tablix import (
@@ -572,17 +574,31 @@ def remove_tablix_column(
     path: str,
     tablix_name: str,
     column_name: str,
+    remove_group: bool = False,
 ) -> dict[str, Any]:
-    """Remove the column whose data-row textbox is named ``column_name``.
+    """Remove the column holding a body textbox named ``column_name``.
 
-    The column-index is discovered by scanning every row's cells for a
-    textbox with that exact name; the first hit's column-index is the
-    target. Removes the matching ``<TablixColumn>`` from
-    ``<TablixColumns>``, the matching top-level ``<TablixMember>`` from
-    the column hierarchy, and the cell at that index from every row.
+    The column index is found by scanning every row's cells for a textbox
+    with that exact name (first hit wins). The column's own hierarchy leaf
+    is found via the column hierarchy (leaf *i* owns body column *i*,
+    whatever groups wrap it) and removed together with the
+    ``<TablixColumn>`` and that cell of every row, so leaves and columns
+    stay equal. Inside a column group with other columns, exactly that
+    leaf goes.
+
+    Refuses, leaving the file untouched:
+
+    * the tablix's last column (an empty ``<TablixColumns>`` is invalid);
+    * a column whose removal would empty a column group (it is the
+      group's only column) — the error names the group; pass
+      ``remove_group=True`` to remove the group member (with its
+      ``TablixHeader``) as well;
+    * a tablix whose column hierarchy is already out of step with its
+      body (leaf count ≠ column count), where no leaf can be trusted.
 
     Errors with :class:`ElementNotFoundError` if no row contains a
-    textbox with the given name.
+    textbox with the given name. Returns ``{tablix, removed_column,
+    position, removed_groups}``.
     """
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
@@ -612,26 +628,36 @@ def remove_tablix_column(
             f"no textbox named {column_name!r} found in any row of tablix {tablix_name!r}"
         )
 
-    # ---- body: remove <TablixColumn> at target_index ---------------------
     cols_root = find_child(body, "TablixColumns")
-    if cols_root is not None:
-        cols = find_children(cols_root, "TablixColumn")
-        if target_index < len(cols):
-            cols_root.remove(cols[target_index])
+    cols = find_children(cols_root, "TablixColumn") if cols_root is not None else []
+    if len(cols) <= 1:
+        raise ValueError(
+            f"{column_name!r} is in the only column of tablix {tablix_name!r}; a tablix "
+            "needs at least one column — remove the tablix instead."
+        )
+    leaves = column_leaves(tablix)
+    if len(leaves) != len(cols):
+        raise ValueError(
+            f"tablix {tablix_name!r} has {len(leaves)} column-hierarchy leaves for "
+            f"{len(cols)} body columns, so the column's leaf can't be identified; "
+            "refusing to remove it."
+        )
 
-    # ---- column hierarchy: remove the top-level <TablixMember> at the
-    # same position. If a column group wraps that position, fall back to
-    # leaving the hierarchy alone — defensive, since group-wrapped removal
-    # is more nuanced and out of scope for this commit.
-    members_root = _column_hierarchy_members(tablix)
-    top_members = list(members_root)
-    if target_index < len(top_members):
-        candidate = top_members[target_index]
-        # Only remove a leaf-style member (no <Group> child); a group
-        # wrapper would mean the column belongs to a group whose width
-        # we'd otherwise silently change.
-        if find_child(candidate, "Group") is None:
-            members_root.remove(candidate)
+    # ---- column hierarchy: the column's own leaf (climbing out of any
+    # member it is the only child of, so no <TablixMembers/> is left empty).
+    member, emptied = removal_member(tablix, "column", target_index)
+    group_names = [find_child(g, "Group").get("Name") for g in emptied]
+    if emptied and not remove_group:
+        raise ValueError(
+            f"column {column_name!r} is the only column of column group "
+            f"{group_names[-1]!r}; removing it would empty the group. Pass "
+            "remove_group=true to remove the group with it, or use "
+            "remove_column_group."
+        )
+    detach(member)
+
+    # ---- body: remove <TablixColumn> at target_index ---------------------
+    detach(cols[target_index])
 
     # ---- rows: remove the cell at target_index from every row ------------
     # Span-aware (#34): a column covered by a merged cell shrinks that
@@ -650,6 +676,7 @@ def remove_tablix_column(
         "removed_column": column_name,
         "position": target_index,
         "removed_textboxes": removed_textboxes,
+        "removed_groups": group_names,
     }
 
 

@@ -27,6 +27,7 @@ from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_tablix
 from pbirb_mcp.core.tablix_shape import (
     NO_DETAIL_GROUP,
+    detach,
     detail_member,
     is_detail_group,
     is_dynamic_group,
@@ -460,17 +461,6 @@ def _is_subtotal_leaf(
     return bool(textboxes) and all(n.startswith(prefixes) for n in textboxes)
 
 
-def _detach(el: etree._Element) -> None:
-    """Remove ``el`` keeping the surrounding pretty-print layout: when it
-    is the last child, its tail (the parent's closing indent) moves to the
-    previous sibling."""
-    parent = el.getparent()
-    prev = el.getprevious()
-    if el.getnext() is None and prev is not None and el.tail is not None and not el.tail.strip():
-        prev.tail = el.tail
-    parent.remove(el)
-
-
 def _reindent(doc: RDLDocument, el: etree._Element) -> None:
     """Re-indent a moved (already known) subtree to its new depth; the
     save-time pass only indents newly created elements."""
@@ -618,13 +608,13 @@ def remove_row_group(
     for child in wrapped:
         anchor.addnext(child)
         anchor = child
-    _detach(member)
+    detach(member)
     for child in wrapped:
         _reindent(doc, child)
 
     # ---- body: delete exactly the group's own rows -----------------------
     for idx in reversed(removed_rows):
-        _detach(rows[idx])
+        detach(rows[idx])
 
     doc.save()
     return {
