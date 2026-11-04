@@ -38,6 +38,7 @@ from lxml import etree
 
 from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.geometry import REPORT_ITEM_TAGS
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
 from pbirb_mcp.ops.header_footer import fit_band
@@ -97,19 +98,8 @@ def _set_layout_value(item: etree._Element, local_name: str, value: str) -> bool
     return True
 
 
-# Item types we recognise as named ReportItems.
-_REPORT_ITEM_TAGS = (
-    "Tablix",
-    "Textbox",
-    "Image",
-    "Rectangle",
-    "Subreport",
-    "Chart",
-    "Map",
-    "Gauge",
-    "Line",
-    "List",
-)
+# Item types we recognise as named ReportItems (every RDL ReportItem tag).
+_REPORT_ITEM_TAGS = REPORT_ITEM_TAGS
 
 
 def _find_named_item(container: etree._Element, name: str) -> Optional[etree._Element]:

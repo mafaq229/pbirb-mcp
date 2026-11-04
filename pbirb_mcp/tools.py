@@ -59,6 +59,25 @@ _PATH_ONLY_SCHEMA: dict = {
 }
 
 
+# list_body_items / list_header_items / list_footer_items (#52).
+_LIST_ITEMS_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": "Absolute path to the .rdl file to read.",
+        },
+        "recursive": {
+            "type": "boolean",
+            "default": False,
+            "description": "Also list the items inside Rectangles (with parent set).",
+        },
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+
 def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="describe_report",
@@ -68,7 +87,12 @@ def register_all_tools(server: MCPServer) -> None:
             "planning edits. v0.4: `tablixes` returns rich shape hints "
             "[{name, rows, columns, has_groups, has_subtotals, has_spans}] "
             "(was bare strings — migrate with `[t['name'] for t in tablixes]`). "
-            "`charts` (new in v0.4) is a top-level array of chart names."
+            "`charts` (new in v0.4) is a top-level array of chart names. "
+            "Also: `subreports` [{name, report_name, parameters}], `maps`, "
+            "`gauges`, `body` {height, width}, `nested_items` (items inside "
+            "Rectangles, with parent/region); `page` fills absent sizes with "
+            "the RDL defaults (11in x 8.5in, 0in margins) and lists them in "
+            "`page.defaulted`."
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=reader.describe_report,
@@ -2445,21 +2469,24 @@ def register_all_tools(server: MCPServer) -> None:
             "Returns name, type (Tablix / Textbox / Image / Rectangle / "
             "Subreport / Chart / etc.), top, left, width, height. Use "
             "before set_body_item_position / set_body_item_size when you "
-            "don't already know what's in the body."
+            "don't already know what's in the body. Each entry has `parent` "
+            "(null at the top level); recursive=true also lists the items "
+            "inside each Rectangle, right after it, with parent = the "
+            "Rectangle's name (their top/left are relative to it)."
         ),
-        input_schema=_PATH_ONLY_SCHEMA,
+        input_schema=_LIST_ITEMS_SCHEMA,
         handler=reader.list_body_items,
     )
     server.register_tool(
         name="list_header_items",
         description="Same shape as list_body_items but for <PageHeader>.",
-        input_schema=_PATH_ONLY_SCHEMA,
+        input_schema=_LIST_ITEMS_SCHEMA,
         handler=reader.list_header_items,
     )
     server.register_tool(
         name="list_footer_items",
         description="Same shape as list_body_items but for <PageFooter>.",
-        input_schema=_PATH_ONLY_SCHEMA,
+        input_schema=_LIST_ITEMS_SCHEMA,
         handler=reader.list_footer_items,
     )
     server.register_tool(

@@ -13,12 +13,15 @@ from pathlib import Path
 
 import pytest
 
+from pbirb_mcp.ops.header_footer import set_page_header
 from pbirb_mcp.ops.reader import (
     describe_report,
     find_textbox_by_value,
     get_datasets,
     get_parameters,
     get_tablixes,
+    list_body_items,
+    list_header_items,
 )
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
@@ -244,6 +247,175 @@ class TestDescribeReportV03Extensions:
         doc.save()
         out = describe_report(path=str(rdl_path))
         assert out["designer_state_present"] is True
+
+
+# ---- #52: complete inventory ------------------------------------------------
+
+_INVENTORY_EXTRA = (
+    '<Rectangle Name="Rect1"><ReportItems>'
+    '<Textbox Name="Inner"><Paragraphs><Paragraph><TextRuns><TextRun><Value>x</Value>'
+    "</TextRun></TextRuns></Paragraph></Paragraphs>"
+    "<Top>0.1in</Top><Left>0.2in</Left><Height>0.25in</Height><Width>1in</Width></Textbox>"
+    '<Rectangle Name="Rect2"><ReportItems>'
+    '<Textbox Name="Deep"><Paragraphs><Paragraph><TextRuns><TextRun><Value>y</Value>'
+    "</TextRun></TextRuns></Paragraph></Paragraphs></Textbox>"
+    "</ReportItems><Top>0.5in</Top><Height>0.4in</Height><Width>1in</Width></Rectangle>"
+    "</ReportItems><Top>3in</Top><Height>1in</Height><Width>2in</Width></Rectangle>"
+    '<Subreport Name="Sub1"><ReportName>Child</ReportName>'
+    '<Parameters><Parameter Name="Region"><Value>=Parameters!DateFrom.Value</Value></Parameter>'
+    "</Parameters><Top>4in</Top><Height>1in</Height><Width>2in</Width></Subreport>"
+    '<GaugePanel Name="Gauge1"><Top>5in</Top><Height>1in</Height><Width>2in</Width></GaugePanel>'
+    '<CustomReportItem Name="CRI1"><Type>x</Type><Top>6in</Top><Height>1in</Height>'
+    "<Width>2in</Width></CustomReportItem>"
+)
+
+
+@pytest.fixture
+def inventory_path(tmp_path: Path) -> Path:
+    """The #52 repro: a Rectangle with nested items, a Subreport, a
+    GaugePanel and a CustomReportItem; PageHeight / PageWidth removed so
+    the RDL defaults apply."""
+    src = FIXTURE.read_text(encoding="utf-8")
+    marker = "</Tablix>\n        </ReportItems>"
+    assert marker in src
+    src = src.replace(marker, "</Tablix>" + _INVENTORY_EXTRA + "</ReportItems>")
+    src = src.replace("<PageHeight>11in</PageHeight>", "").replace(
+        "<PageWidth>8.5in</PageWidth>", ""
+    )
+    dest = tmp_path / "inventory.rdl"
+    dest.write_text(src, encoding="utf-8")
+    return dest
+
+
+class TestDescribeReportInventory:
+    def test_list_body_items_includes_gauge_and_custom_item(self, inventory_path):
+        items = list_body_items(path=str(inventory_path))
+        assert [(i["name"], i["type"]) for i in items] == [
+            ("MainTable", "Tablix"),
+            ("Rect1", "Rectangle"),
+            ("Sub1", "Subreport"),
+            ("Gauge1", "GaugePanel"),
+            ("CRI1", "CustomReportItem"),
+        ]
+        assert all(i["parent"] is None for i in items)
+
+    def test_list_body_items_recursive_lists_nested_items(self, inventory_path):
+        items = list_body_items(path=str(inventory_path), recursive=True)
+        assert [(i["name"], i["parent"]) for i in items] == [
+            ("MainTable", None),
+            ("Rect1", None),
+            ("Inner", "Rect1"),
+            ("Rect2", "Rect1"),
+            ("Deep", "Rect2"),
+            ("Sub1", None),
+            ("Gauge1", None),
+            ("CRI1", None),
+        ]
+        inner = next(i for i in items if i["name"] == "Inner")
+        assert (inner["top"], inner["left"], inner["width"]) == ("0.1in", "0.2in", "1in")
+
+    def test_describe_report_body_items_include_all_item_types(self, inventory_path):
+        out = describe_report(path=str(inventory_path))
+        names = [i["name"] for i in out["body_items"]]
+        assert names == ["MainTable", "Rect1", "Sub1", "Gauge1", "CRI1"]
+
+    def test_nested_items_carry_parent_and_region(self, inventory_path):
+        out = describe_report(path=str(inventory_path))
+        nested = {i["name"]: i for i in out["nested_items"]}
+        assert set(nested) == {"Inner", "Rect2", "Deep"}
+        assert nested["Inner"]["parent"] == "Rect1"
+        assert nested["Deep"]["parent"] == "Rect2"
+        assert nested["Inner"]["region"] == "body"
+        assert nested["Inner"]["type"] == "Textbox"
+
+    def test_subreport_gauge_map_inventories(self, inventory_path):
+        out = describe_report(path=str(inventory_path))
+        assert out["subreports"] == [
+            {
+                "name": "Sub1",
+                "report_name": "Child",
+                "parameters": [{"name": "Region", "value": "=Parameters!DateFrom.Value"}],
+            }
+        ]
+        assert out["gauges"] == ["Gauge1"]
+        assert out["maps"] == []
+
+    def test_body_size_reported(self, inventory_path):
+        out = describe_report(path=str(inventory_path))
+        # <Body>/<Height> and the section's <Width>.
+        assert out["body"] == {"height": "2in", "width": "5in"}
+
+    def test_missing_page_size_filled_with_rdl_defaults(self, inventory_path):
+        page = describe_report(path=str(inventory_path))["page"]
+        assert page["height"] == "11in"
+        assert page["width"] == "8.5in"
+        assert page["defaulted"] == ["height", "width"]
+        # Margins present in the file are reported as written.
+        assert page["margin_left"] == "1in"
+
+    def test_missing_margins_default_to_zero(self, rdl_path):
+        src = rdl_path.read_text(encoding="utf-8")
+        for local in ("LeftMargin", "RightMargin", "TopMargin", "BottomMargin"):
+            src = src.replace(f"<{local}>1in</{local}>", "")
+        rdl_path.write_text(src, encoding="utf-8")
+        page = describe_report(path=str(rdl_path))["page"]
+        assert page["margin_left"] == page["margin_top"] == "0in"
+        assert page["defaulted"] == ["margin_top", "margin_bottom", "margin_left", "margin_right"]
+
+    def test_fully_specified_page_has_empty_defaulted(self, rdl_path):
+        out = describe_report(path=str(rdl_path))
+        assert out["page"]["defaulted"] == []
+        assert out["nested_items"] == []
+        assert out["subreports"] == []
+        assert out["gauges"] == []
+
+    def test_header_rectangle_children(self, rdl_path):
+        set_page_header(path=str(rdl_path), height="1in")
+        src = rdl_path.read_text(encoding="utf-8")
+        header_items = (
+            '<ReportItems><Rectangle Name="HeaderBox"><ReportItems>'
+            '<Textbox Name="HeaderTitle"><Paragraphs><Paragraph><TextRuns><TextRun>'
+            "<Value>T</Value></TextRun></TextRuns></Paragraph></Paragraphs>"
+            "<Height>0.25in</Height><Width>1in</Width></Textbox></ReportItems>"
+            "<Height>0.8in</Height><Width>3in</Width></Rectangle></ReportItems>"
+        )
+        assert "<PageHeader>" in src
+        src = src.replace("<PageHeader>", "<PageHeader>" + header_items, 1)
+        rdl_path.write_text(src, encoding="utf-8")
+        assert [i["name"] for i in list_header_items(path=str(rdl_path))] == ["HeaderBox"]
+        deep = list_header_items(path=str(rdl_path), recursive=True)
+        assert [(i["name"], i["parent"]) for i in deep] == [
+            ("HeaderBox", None),
+            ("HeaderTitle", "HeaderBox"),
+        ]
+        nested = describe_report(path=str(rdl_path))["nested_items"]
+        assert [(i["name"], i["region"]) for i in nested] == [("HeaderTitle", "header")]
+
+    def test_positioning_tools_find_gauge_and_custom_item(self, inventory_path):
+        # positioning shared the same wrong tag list ("Gauge" / "List").
+        from pbirb_mcp.ops.positioning import set_body_item_position
+
+        assert set_body_item_position(str(inventory_path), "Gauge1", "5in", "1in")["changed"]
+        assert set_body_item_position(str(inventory_path), "CRI1", "6in", "1in")["changed"]
+        items = {i["name"]: i for i in list_body_items(path=str(inventory_path))}
+        assert items["Gauge1"]["left"] == items["CRI1"]["left"] == "1in"
+
+    def test_list_items_recursive_via_jsonrpc(self, inventory_path):
+        srv = MCPServer()
+        register_all_tools(srv)
+        resp = srv.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "list_body_items",
+                    "arguments": {"path": str(inventory_path), "recursive": True},
+                },
+            }
+        )
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        assert "Inner" in [i["name"] for i in payload]
 
 
 # ---- find_textbox_by_value ---------------------------------------------
