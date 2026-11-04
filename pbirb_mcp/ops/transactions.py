@@ -49,7 +49,7 @@ def start_editing_transaction(path: str) -> dict[str, Any]:
     }
 
 
-def commit_editing_transaction(transaction_id: str) -> dict[str, Any]:
+def commit_editing_transaction(transaction_id: str, force: bool = False) -> dict[str, Any]:
     """Lint the in-memory tree, save once, deregister.
 
     Aborts (without saving) if lint surfaces any ``severity=='error'``
@@ -61,6 +61,13 @@ def commit_editing_transaction(transaction_id: str) -> dict[str, Any]:
     returns: ``{valid, issues, rules_run}``. On lint-error abort,
     ``saved`` is ``False`` and ``verify.valid`` is ``False``.
 
+    Refuses (``saved: False`` plus an ``error`` message, transaction
+    left open) when the file changed on disk since the transaction
+    started — e.g. Report Builder saved it meanwhile — unless
+    ``force=True``. If the save itself fails (permissions, disk full) the
+    error is raised and the transaction stays open, so the commit can be
+    retried or the transaction cancelled with the disk untouched.
+
     Raises :class:`ValueError` ``TransactionError``-style when the
     transaction id is unknown or already expired.
     """
@@ -70,6 +77,21 @@ def commit_editing_transaction(transaction_id: str) -> dict[str, Any]:
             "transaction is unknown, expired, or already committed; "
             "call start_editing_transaction to open a fresh one"
         )
+
+    if not force and tx.fingerprint is not None:
+        current = _registry.file_fingerprint(tx.abspath)
+        if current != tx.fingerprint:
+            return {
+                "transaction_id": transaction_id,
+                "path": tx.abspath,
+                "saved": False,
+                "error": (
+                    "file changed on disk since the transaction started; "
+                    "committing would overwrite those changes. Cancel and "
+                    "start a fresh transaction, or pass force=true to "
+                    "overwrite them."
+                ),
+            }
 
     lint_result = _lint_doc(tx.doc)
     has_error = any(i.get("severity") == "error" for i in lint_result["issues"])
@@ -86,9 +108,15 @@ def commit_editing_transaction(transaction_id: str) -> dict[str, Any]:
         }
 
     # Clear the flag so save_as actually writes; commit() then
-    # deregisters from the registry.
+    # deregisters from the registry. A failed save restores the flag and
+    # keeps the transaction registered — otherwise later "transactional"
+    # edits would write straight to disk and cancel couldn't undo them.
     tx.doc._in_transaction = False
-    tx.doc.save()
+    try:
+        tx.doc.save()
+    except Exception:
+        tx.doc._in_transaction = True
+        raise
     _registry.commit(transaction_id)
     return {
         "transaction_id": transaction_id,

@@ -898,11 +898,22 @@ def register_all_tools(server: MCPServer) -> None:
             "rename), and deregister. Aborts (saved=False) if lint "
             "surfaces any severity='error' issue — the transaction "
             "stays OPEN so the caller can fix the offending state and "
-            "re-commit. Returns {transaction_id, path, saved, verify}."
+            "re-commit. Also refuses (saved=False, error) when the file "
+            "changed on disk since the transaction started, unless "
+            "force=true. Returns {transaction_id, path, saved, verify}."
         ),
         input_schema={
             "type": "object",
-            "properties": {"transaction_id": {"type": "string"}},
+            "properties": {
+                "transaction_id": {"type": "string"},
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Overwrite the file even if it changed on disk since "
+                        "the transaction started. Default false."
+                    ),
+                },
+            },
             "required": ["transaction_id"],
             "additionalProperties": False,
         },

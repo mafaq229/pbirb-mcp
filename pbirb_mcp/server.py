@@ -200,10 +200,18 @@ class MCPServer:
             if in_transaction:
                 from pbirb_mcp.core import transactions as _tx
 
-                # RDLDocument.open hands out the transaction's live tree
-                # only to calls running under its id.
-                with _tx.activate(tx_id):
-                    result = tool.handler(**arguments)
+                # Snapshot first: an op that mutates the shared tree and
+                # then raises must not leave its partial mutation for the
+                # next commit to save.
+                snapshot = tx.doc.snapshot()
+                try:
+                    # RDLDocument.open hands out the transaction's live
+                    # tree only to calls running under its id.
+                    with _tx.activate(tx_id):
+                        result = tool.handler(**arguments)
+                except Exception:
+                    tx.doc.restore(snapshot)
+                    raise
             else:
                 result = tool.handler(**arguments)
         except Exception as exc:  # noqa: BLE001

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import hashlib
 import os
 import time
 import uuid
@@ -64,10 +65,36 @@ class _Transaction:
     abspath: str  # the canonical resolve()d string — the registry key
     doc: RDLDocument
     expires_at: float  # unix timestamp
+    # (st_dev, st_ino) of the file at start — a hardlink is the same file.
+    inode: Optional[tuple] = None
+    # File fingerprint at start; commit refuses when the file changed.
+    fingerprint: Optional[tuple] = None
 
 
 _BY_ID: dict[str, _Transaction] = {}
 _BY_PATH: dict[str, str] = {}  # abspath → transaction_id
+_BY_INODE: dict[tuple, str] = {}  # (st_dev, st_ino) → transaction_id
+
+
+def _inode_of(path: str) -> Optional[tuple]:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def file_fingerprint(path: str) -> Optional[tuple]:
+    """``(st_dev, st_ino, st_mtime_ns, st_size, sha1)`` of ``path``, or
+    ``None`` when it can't be read."""
+    try:
+        st = os.stat(path)
+        with open(path, "rb") as fh:
+            digest = hashlib.sha1(fh.read()).hexdigest()  # noqa: S324 — change detection only
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size, digest)
+
 
 # The transaction the current tool call was routed through (set by the
 # dispatcher only when the call carried a valid ``transaction_id``).
@@ -141,11 +168,13 @@ def register(doc: RDLDocument, *, now: Optional[float] = None) -> str:
         raise TypeError("register() requires an RDLDocument")
 
     abspath = str(doc.path.resolve())
-    if abspath in _BY_PATH:
-        existing_id = _BY_PATH[abspath]
-        raise ValueError(
+    inode = _inode_of(abspath)
+    existing_id = _BY_PATH.get(abspath) or (_BY_INODE.get(inode) if inode else None)
+    if existing_id is not None:
+        raise TransactionConflictError(
             f"an active transaction ({existing_id!r}) already owns "
-            f"{abspath!r}; commit or cancel it before starting a new one"
+            f"{abspath!r} (or a hardlink to the same file); commit or "
+            "cancel it before starting a new one"
         )
 
     tx_id = uuid.uuid4().hex
@@ -155,9 +184,13 @@ def register(doc: RDLDocument, *, now: Optional[float] = None) -> str:
         abspath=abspath,
         doc=doc,
         expires_at=start + _timeout_seconds(),
+        inode=inode,
+        fingerprint=file_fingerprint(abspath),
     )
     _BY_ID[tx_id] = tx
     _BY_PATH[abspath] = tx_id
+    if inode is not None:
+        _BY_INODE[inode] = tx_id
     # Mark the document as in-transaction so save_as no-ops until commit.
     doc._in_transaction = True
     return tx_id
@@ -173,6 +206,10 @@ def lookup_by_id(transaction_id: str) -> Optional[_Transaction]:
 def lookup_by_path(abspath: str) -> Optional[_Transaction]:
     sweep_orphans()
     tx_id = _BY_PATH.get(abspath)
+    if tx_id is None and _BY_INODE:
+        # A hardlink (or other alias) of a held file is the same file.
+        inode = _inode_of(abspath)
+        tx_id = _BY_INODE.get(inode) if inode is not None else None
     if tx_id is None:
         return None
     return _BY_ID.get(tx_id)
@@ -188,6 +225,8 @@ def cancel(transaction_id: str) -> Optional[_Transaction]:
     if tx is None:
         return None
     _BY_PATH.pop(tx.abspath, None)
+    if tx.inode is not None and _BY_INODE.get(tx.inode) == transaction_id:
+        _BY_INODE.pop(tx.inode, None)
     # Defensive: clear the flag so any stray reference to the doc can
     # save normally again.
     with contextlib.suppress(AttributeError):
@@ -231,6 +270,7 @@ def _reset_for_tests() -> None:
     across test cases."""
     _BY_ID.clear()
     _BY_PATH.clear()
+    _BY_INODE.clear()
 
 
 __all__ = [
@@ -240,6 +280,7 @@ __all__ = [
     "active_transaction_id",
     "active_transactions",
     "check_writable",
+    "file_fingerprint",
     "cancel",
     "commit",
     "lookup_by_id",
