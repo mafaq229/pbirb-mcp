@@ -13,18 +13,24 @@ Key behaviours:
 * **Structural validation** — runs on demand via :meth:`RDLDocument.validate`.
   XSD validation is opt-in: drop the Microsoft RDL 2016 XSD into
   ``pbirb_mcp/schemas/reportdefinition.xsd`` and it picks up automatically.
-* **Round-trip canonical equality** — for a no-op edit, the c14n form before
-  and after save is identical. Tests enforce this on the bundled fixture.
+* **Byte-faithful round-trip** — :meth:`RDLDocument.open` records the
+  source's byte form (UTF-8 BOM, CRLF vs LF line ends, trailing newline,
+  the XML declaration, the exact root start tag, ``<X></X>`` vs ``<X />``
+  empty elements) and :meth:`RDLDocument.save_as` re-emits it, so a no-op
+  open → save is byte-identical and a one-value edit changes one line.
+  Elements inserted since open are indented to their parent's depth.
 """
 
 from __future__ import annotations
 
 import contextlib
+import copy
+import io
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 from lxml import etree
 
@@ -41,7 +47,162 @@ from pbirb_mcp.core.xpath import RD_NS, RDL_NS
 # making this substitution safe without a real XML parse.
 _SELF_CLOSING_NORMALISE = re.compile(rb"(?<=[^ /])/>")
 
+# Markup tokens, in document order. Used to recover per-element byte facts
+# lxml's tree doesn't carry (self-closing vs `<X></X>`, the root start tag
+# bytes). Attribute values may contain `>` but never `<`, so a start tag is
+# `<name` up to the first `>` outside quotes.
+_MARKUP_TOKEN = re.compile(
+    rb"<!--.*?-->"
+    rb"|<!\[CDATA\[.*?\]\]>"
+    rb"|<\?.*?\?>"
+    rb"|<!DOCTYPE(?:[^\[>]|\[.*?\])*>"
+    rb"|</[^>]*>"
+    rb"|<(?P<start>[^!?/>\s][^>\"']*(?:(?:\"[^\"]*\"|'[^']*')[^>\"']*)*)>",
+    re.DOTALL,
+)
+_DECLARATION = re.compile(rb"<\?xml\s[^?]*\?>")
+_BOM = b"\xef\xbb\xbf"
+# Encodings in which `\n`, `<` and `>` are single ASCII bytes, so the
+# byte-level fix-ups below are safe. Anything else (UTF-16, …) falls back to
+# plain serialisation.
+_ASCII_COMPATIBLE = {"utf-8", "utf8", "us-ascii", "ascii", "iso-8859-1", "latin-1", "cp1252"}
+
 PathLike = Union[str, os.PathLike]
+
+
+@dataclass
+class _SourceForm:
+    """Byte-level facts about the file a document was parsed from."""
+
+    has_bom: bool = False
+    newline: bytes = b"\n"
+    # Whitespace after the last markup (b"" when the file ends at `>`).
+    trailing: bytes = b"\n"
+    # Original `<?xml …?>` bytes; None when the source had no declaration.
+    declaration: Optional[bytes] = None
+    # Bytes between the declaration and the next markup (usually a newline).
+    after_declaration: bytes = b"\n"
+    # Original root start tag, plus the root identity it was valid for.
+    root_start_tag: Optional[bytes] = None
+    root_signature: Optional[tuple] = None
+    # True when the source writes self-closing tags as `<X />` (Report
+    # Builder style); False for `<X/>`.
+    spaced_self_close: bool = True
+    # False for documents built in memory (no source file).
+    from_source: bool = False
+
+
+def _root_signature(root: etree._Element) -> tuple:
+    return (
+        root.tag,
+        tuple(root.attrib.items()),
+        tuple(sorted((root.nsmap or {}).items(), key=str)),
+    )
+
+
+def _scan_source(raw: bytes, tree: etree._ElementTree) -> tuple:
+    """Return ``(form, expanded)``: the source's byte form, and the elements
+    written as ``<X></X>`` in the source (lxml can't tell them apart from
+    ``<X />`` once parsed)."""
+    form = _SourceForm(from_source=True)
+    data = raw
+    if data.startswith(_BOM):
+        form.has_bom = True
+        data = data[len(_BOM) :]
+    crlf = data.count(b"\r\n")
+    lone_lf = data.count(b"\n") - crlf
+    form.newline = b"\r\n" if crlf > lone_lf else b"\n"
+    stripped = data.rstrip(b" \t\r\n")
+    form.trailing = data[len(stripped) :]
+    m = _DECLARATION.match(data)
+    if m:
+        form.declaration = m.group(0)
+        rest = data[m.end() :]
+        form.after_declaration = rest[: len(rest) - len(rest.lstrip(b" \t\r\n"))]
+    else:
+        form.declaration = None
+
+    elements = [e for e in tree.iter() if isinstance(e.tag, str)]
+    starts = []
+    spaced = unspaced = 0
+    for tok in _MARKUP_TOKEN.finditer(data):
+        if tok.group("start") is None:
+            continue
+        body = tok.group("start")
+        self_closing = body.endswith(b"/")
+        if self_closing:
+            if body.endswith(b" /"):
+                spaced += 1
+            else:
+                unspaced += 1
+        # `<X …></X>` — a start tag immediately followed by its end tag.
+        expanded_empty = not self_closing and data.startswith(b"</", tok.end())
+        starts.append((tok, expanded_empty))
+    form.spaced_self_close = spaced >= unspaced
+
+    expanded = []
+    if starts and len(starts) == len(elements):
+        form.root_start_tag = starts[0][0].group(0)
+        form.root_signature = _root_signature(tree.getroot())
+        expanded = [
+            elem
+            for elem, (_tok, is_expanded) in zip(elements, starts)
+            if is_expanded and elem.text is None and len(elem) == 0
+        ]
+    return form, expanded
+
+
+def _find_root_start_tag(body: bytes) -> Optional[re.Match]:
+    for tok in _MARKUP_TOKEN.finditer(body):
+        if tok.group("start") is not None:
+            return tok
+    return None
+
+
+def _indent_unit(root: etree._Element) -> str:
+    text = root.text or ""
+    if "\n" in text:
+        unit = text.rsplit("\n", 1)[1]
+        if unit and not unit.strip():
+            return unit
+    return "  "
+
+
+def _is_ws(text: Optional[str]) -> bool:
+    return text is None or not text.strip()
+
+
+def indent_inserted(node: etree._Element, unit: str = "  ") -> None:
+    """Indent a freshly inserted subtree to its position in a pretty-printed tree.
+
+    Sets the whitespace before ``node`` (the previous sibling's tail, or the
+    parent's text), ``node``'s own tail, and the subtree's internal
+    indentation. Only whitespace-only text/tails are touched, so element
+    content is never altered. No-op when the parent is laid out on one line
+    (its existing children carry no newlines).
+    """
+    parent = node.getparent()
+    if parent is None:
+        return
+    siblings = [c for c in parent if c is not node]
+    holders = [parent.text] + [c.tail for c in siblings]
+    if siblings and not any(h and "\n" in h for h in holders):
+        return  # compact parent — keep it compact
+    depth = sum(1 for _ in node.iterancestors())
+    child_ws = "\n" + unit * depth
+    close_ws = "\n" + unit * (depth - 1)
+    prev = node.getprevious()
+    if prev is not None:
+        if _is_ws(prev.tail):
+            prev.tail = child_ws
+    elif _is_ws(parent.text):
+        parent.text = child_ws
+    if _is_ws(node.tail):
+        node.tail = child_ws if node.getnext() is not None else close_ws
+    if len(node):
+        tail = node.tail
+        etree.indent(node, space=unit, level=depth)
+        node.tail = tail
 
 
 @dataclass
@@ -51,6 +212,18 @@ class RDLDocument:
     path: Path
     tree: etree._ElementTree
     encoding: str
+    # Byte form of the source file (BOM, newlines, …). Documents built in
+    # memory (create_report) get Report Builder's defaults.
+    source_form: _SourceForm = field(default_factory=_SourceForm, repr=False)
+    # ids of the element proxies present at open/last save. Elements not in
+    # this set were inserted since and get indented on save. None disables
+    # the pass (documents built in memory).
+    _known: Optional[set] = field(default=None, repr=False, compare=False)
+    # Keeps the proxies behind `_known` alive so their ids stay unique.
+    _known_refs: Optional[list] = field(default=None, repr=False, compare=False)
+    # Elements the source wrote as `<X></X>`; re-emitted that way while
+    # they stay empty.
+    _expanded: list = field(default_factory=list, repr=False, compare=False)
 
     # ---- construction --------------------------------------------------------
 
@@ -77,9 +250,65 @@ class RDLDocument:
             strip_cdata=False,
             resolve_entities=False,
         )
-        tree = etree.parse(str(path), parser)
+        raw = path.read_bytes()
+        tree = etree.parse(io.BytesIO(raw), parser, base_url=str(path))
         encoding = tree.docinfo.encoding or "utf-8"
-        return cls(path=path, tree=tree, encoding=encoding)
+        form, expanded = _SourceForm(), []
+        if encoding.lower() in _ASCII_COMPATIBLE:
+            form, expanded = _scan_source(raw, tree)
+        doc = cls(path=path, tree=tree, encoding=encoding, source_form=form)
+        doc._expanded = expanded
+        doc._remember_elements()
+        return doc
+
+    def _remember_elements(self) -> None:
+        refs = list(self.tree.iter())
+        self._known_refs = refs
+        self._known = {id(e) for e in refs}
+
+    def snapshot(self) -> tuple:
+        """Deep copy of the tree plus the bookkeeping needed to restore it."""
+        tree_copy = copy.deepcopy(self.tree)
+        mapping = {id(a): b for a, b in zip(self.tree.iter(), tree_copy.iter())}
+        known = None
+        if self._known is not None:
+            known = [mapping[i] for i in self._known if i in mapping]
+        expanded = [mapping[id(e)] for e in self._expanded if id(e) in mapping]
+        return (tree_copy, known, expanded)
+
+    def restore(self, snap: tuple) -> None:
+        """Put back a tree captured by :meth:`snapshot`.
+
+        The snapshot stays reusable: the tree is copied again on restore.
+        """
+        tree_copy, known, expanded = snap
+        fresh = copy.deepcopy(tree_copy)
+        mapping = {id(a): b for a, b in zip(tree_copy.iter(), fresh.iter())}
+        self.tree = fresh
+        self._expanded = [mapping[id(e)] for e in expanded if id(e) in mapping]
+        if known is not None:
+            known = [mapping[id(e)] for e in known if id(e) in mapping]
+        if known is None:
+            self._known = None
+            self._known_refs = None
+        else:
+            self._known_refs = known
+            self._known = {id(e) for e in known}
+
+    def _indent_new_elements(self) -> None:
+        if self._known is None:
+            return
+        root = self.root
+        if "\n" not in (root.text or ""):
+            return  # source isn't pretty-printed — don't impose a layout
+        unit = _indent_unit(root)
+        known = self._known
+        for elem in list(root.iter()):
+            if id(elem) in known:
+                continue
+            parent = elem.getparent()
+            if parent is not None and id(parent) in known:
+                indent_inserted(elem, unit)
 
     # ---- accessors -----------------------------------------------------------
 
@@ -151,19 +380,9 @@ class RDLDocument:
         path = Path(path)
         tmp = path.with_name(path.name + ".tmp")
         try:
-            # Serialize body without the XML declaration so we can write the
-            # declaration ourselves with double quotes — Report Builder always
-            # uses <?xml version="1.0" encoding="utf-8"?> and tooling that
-            # diffs by string sees single quotes (lxml's default) as drift.
-            body = etree.tostring(self.tree, xml_declaration=False, encoding=self.encoding)
-            body = _SELF_CLOSING_NORMALISE.sub(b" />", body)
-            declaration = f'<?xml version="1.0" encoding="{self.encoding}"?>\n'.encode(
-                self.encoding
-            )
+            data = self.to_bytes()
             with open(tmp, "wb") as fh:
-                fh.write(declaration + body)
-                if not body.endswith(b"\n"):
-                    fh.write(b"\n")
+                fh.write(data)
         except Exception:
             if tmp.exists():
                 with contextlib.suppress(OSError):
@@ -171,6 +390,51 @@ class RDLDocument:
             raise
         os.replace(tmp, path)
         self.path = path
+        if self._known is not None:
+            self._remember_elements()
+
+    def to_bytes(self) -> bytes:
+        """Serialise the tree in the source file's byte form."""
+        self._indent_new_elements()
+        form = self.source_form
+        # Serialize body without the XML declaration so we can write the
+        # declaration ourselves with double quotes — Report Builder always
+        # uses <?xml version="1.0" encoding="utf-8"?> and tooling that
+        # diffs by string sees single quotes (lxml's default) as drift.
+        # lxml writes `<X/>` for text None and `<X></X>` for text "" —
+        # flip the source's expanded-empty elements for the duration.
+        flipped = [e for e in self._expanded if e.text is None and len(e) == 0]
+        for e in flipped:
+            e.text = ""
+        try:
+            body = etree.tostring(self.tree, xml_declaration=False, encoding=self.encoding)
+        finally:
+            for e in flipped:
+                e.text = None
+        if self.encoding.lower() not in _ASCII_COMPATIBLE:
+            declaration = f'<?xml version="1.0" encoding="{self.encoding}"?>\n'.encode(
+                self.encoding
+            )
+            return declaration + body + (b"" if body.endswith(b"\n") else b"\n")
+        if form.spaced_self_close:
+            body = _SELF_CLOSING_NORMALISE.sub(b" />", body)
+        body = body.rstrip(b" \t\r\n")
+        if form.newline != b"\n":
+            # The parser normalised every literal CR in text to LF and lxml
+            # escapes a real CR as `&#13;`, so every `\n` here is a line end.
+            body = body.replace(b"\n", form.newline)
+        if form.root_start_tag is not None and form.root_signature == _root_signature(self.root):
+            m = _find_root_start_tag(body)
+            if m is not None:
+                body = body[: m.start()] + form.root_start_tag + body[m.end() :]
+        if form.declaration is not None:
+            prolog = form.declaration + form.after_declaration
+        elif not form.from_source:
+            # Built in memory (no source) — Report Builder's declaration.
+            prolog = f'<?xml version="1.0" encoding="{self.encoding}"?>'.encode() + form.newline
+        else:
+            prolog = b""
+        return (_BOM if form.has_bom else b"") + prolog + body + form.trailing
 
 
 __all__ = [
