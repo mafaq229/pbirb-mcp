@@ -730,10 +730,10 @@ class TestConvertToMatrix:
 
 
 class TestSetTablixCorner:
-    """Phase F commit 18 — set_tablix_corner writes the <TablixCorner>
-    block with a single textbox at the top-left of a matrix-shaped
-    tablix. Required after convert_to_matrix (commit 17) — the corner
-    is where the LLM places the "Type" / "Region" caption.
+    """Phase F commit 18 — set_tablix_corner sets the top-left
+    <TablixCorner> cell of a matrix-shaped tablix. Requires the matrix
+    convert_to_matrix builds (row headers; #31) — the corner is where the
+    LLM places the "Type" / "Region" caption.
     """
 
     @pytest.fixture
@@ -749,6 +749,9 @@ class TestSetTablixCorner:
             tablix_name="MainTable",
             group_name="Date",
             group_expression="=Fields!ProductID.Value",
+        )
+        convert_to_matrix(
+            path=str(rdl_path), tablix_name="MainTable", row_group="Region", column_group="Date"
         )
         return rdl_path
 
@@ -802,8 +805,8 @@ class TestSetTablixCorner:
             set_tablix_corner(path=str(matrix_path), tablix_name="MainTable")
 
     def test_refuses_without_column_group(self, rdl_path):
-        # Pristine tablix — no column group exists.
-        with pytest.raises(ValueError, match="no named column group"):
+        # Pristine tablix — no column group, so no column headers.
+        with pytest.raises(ValueError, match="0 column-header row"):
             set_tablix_corner(
                 path=str(rdl_path),
                 tablix_name="MainTable",
@@ -817,8 +820,9 @@ class TestSetTablixCorner:
             tablix_name="MainTable",
             text="Category",
         )
-        # Second call signals it replaced an existing block.
-        assert "replaced_existing" in result["changed"]
+        # Second call edits the existing cell in place (#31).
+        assert result["changed"] == ["corner_written"]
+        assert result["name"] == "MainTable_Corner"
         doc = RDLDocument.open(matrix_path)
         value_node = self._corner(doc, "MainTable").find(f".//{{{RDL_NS}}}Value")
         assert value_node.text == "Category"

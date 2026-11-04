@@ -1768,15 +1768,20 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_tablix_corner",
         description=(
-            "Write the <TablixCorner> block — the top-left cell of a "
-            "matrix-shaped tablix that holds the row-axis caption "
-            "(e.g. 'Type'). Pass `text` for a literal value OR "
-            "`expression` for a VB.NET '=...' formula. Mutually "
-            "exclusive. Textbox name is deterministic: "
-            "'<tablix_name>_Corner'. Refuses if the tablix has no "
-            "named column group (the corner is only meaningful in a "
-            "matrix). Replaces any existing TablixCorner block. "
-            "Returns {tablix, name, kind: 'TablixCorner', changed}."
+            "Set the value of a <TablixCorner> cell — the top-left block "
+            "of a matrix, column-header depth x row-header depth, that "
+            "holds the row-axis caption (e.g. 'Type'). Pass `text` for a "
+            "literal value OR `expression` for a VB.NET '=...' formula "
+            "(mutually exclusive); `row`/`col` (0-based, default 0/0) "
+            "pick the cell. The corner is created or resized to the "
+            "header depths first (new cells: '<tablix_name>_Corner' "
+            "textboxes); the value is set in place, keeping the cell "
+            "textbox's name and style; an identical call changes nothing "
+            "(changed: []). Refuses when the tablix has no row headers or "
+            "no column headers (run convert_to_matrix first), and for a "
+            "cell outside the corner, covered by a span, or not holding a "
+            "textbox. Returns {tablix, name, kind: 'TablixCorner', row, "
+            "col, changed}."
         ),
         input_schema={
             "type": "object",
@@ -1785,6 +1790,8 @@ def register_all_tools(server: MCPServer) -> None:
                 "tablix_name": {"type": "string"},
                 "text": {"type": ["string", "null"], "default": None},
                 "expression": {"type": ["string", "null"], "default": None},
+                "row": {"type": "integer", "minimum": 0, "default": 0},
+                "col": {"type": "integer", "minimum": 0, "default": 0},
             },
             "required": ["path", "tablix_name"],
             "additionalProperties": False,

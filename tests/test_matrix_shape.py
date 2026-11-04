@@ -11,11 +11,13 @@ shape checker (:func:`pbirb_mcp.core.tablix_headers.shape_problems`).
 
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 from pathlib import Path
 
 import pytest
+from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.tablix_headers import (
@@ -27,9 +29,12 @@ from pbirb_mcp.core.tablix_headers import (
 )
 from pbirb_mcp.core.tablix_shape import column_leaves, detail_member, row_leaves
 from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
-from pbirb_mcp.ops.tablix import add_row_group, convert_to_matrix
+from pbirb_mcp.ops.page import set_body_size
+from pbirb_mcp.ops.styling import set_textbox_style
+from pbirb_mcp.ops.tablix import add_row_group, convert_to_matrix, set_tablix_corner
 from pbirb_mcp.ops.tablix_columns import add_column_group
 from pbirb_mcp.ops.tablix_static import add_static_row
+from pbirb_mcp.ops.tablix_subtotals import add_subtotal_column
 from pbirb_mcp.ops.templates import insert_tablix_from_template
 from pbirb_mcp.ops.validate import validate_report, verify_report
 from pbirb_mcp.server import MCPServer
@@ -99,6 +104,25 @@ def _assert_clean_matrix(path: Path, name: str = "MainTable"):
 def _documented_flow(path: Path) -> None:
     add_row_group(str(path), "MainTable", "Region", "=Fields!ProductName.Value")
     add_column_group(str(path), "MainTable", "Date", "=Fields!ProductID.Value")
+
+
+def _call(server: MCPServer, tool: str, **arguments):
+    resp = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments},
+        }
+    )
+    result = resp["result"]
+    return json.loads(result["content"][0]["text"]), bool(result.get("isError"))
+
+
+def _corner_cells(tablix):
+    corner = find_child(tablix, "TablixCorner")
+    rows = find_children(find_child(corner, "TablixCornerRows"), "TablixCornerRow")
+    return [find_children(r, "TablixCornerCell") for r in rows]
 
 
 # ---- the documented flow --------------------------------------------------
@@ -178,24 +202,16 @@ class TestDocumentedFlow:
         _documented_flow(rdl_path)
         srv = MCPServer()
         register_all_tools(srv)
-        resp = srv.handle_request(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "convert_to_matrix",
-                    "arguments": {
-                        "path": str(rdl_path),
-                        "tablix_name": "MainTable",
-                        "row_group": "Region",
-                        "column_group": "Date",
-                        "aggregate": "Avg",
-                    },
-                },
-            }
+        payload, is_error = _call(
+            srv,
+            "convert_to_matrix",
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            row_group="Region",
+            column_group="Date",
+            aggregate="Avg",
         )
-        payload = json.loads(resp["result"]["content"][0]["text"])
+        assert not is_error, payload
         assert payload["aggregated"] == ["Amount"]
         assert _body_values(_tablix(rdl_path)) == [["=Avg(Fields!Amount.Value)"]]
 
@@ -457,3 +473,209 @@ class TestShapes:
         assert children == ["Group", "TablixHeader"]
         tablix_children = [c.tag.split("}")[1] for c in tablix]
         assert tablix_children.index("TablixCorner") < tablix_children.index("TablixBody")
+
+
+# ---- set_tablix_corner -----------------------------------------------------
+
+
+class TestSetTablixCorner:
+    @pytest.fixture
+    def matrix(self, rdl_path):
+        _documented_flow(rdl_path)
+        convert_to_matrix(str(rdl_path), "MainTable", "Region", "Date")
+        return rdl_path
+
+    def test_styled_corner_keeps_name_and_style(self, matrix):
+        # The issue's repro: an author-styled, renamed corner textbox.
+        set_textbox_style(str(matrix), "MainTable_Corner", background_color="Navy")
+        matrix.write_text(
+            matrix.read_text(encoding="utf-8").replace("MainTable_Corner", "CornerCell"),
+            encoding="utf-8",
+        )
+        result = set_tablix_corner(str(matrix), "MainTable", text="Product")
+        assert result["name"] == "CornerCell"
+        assert result["changed"] == ["corner_written"]
+        tablix = _tablix(matrix)
+        corner = find_child(tablix, "TablixCorner")
+        assert _textbox_names(corner) == ["CornerCell"]
+        assert corner.find(f".//{{{RDL_NS}}}BackgroundColor").text == "Navy"
+        assert [v.text for v in corner.iter(q("Value"))] == ["Product"]
+
+        before = matrix.read_bytes()
+        again = set_tablix_corner(str(matrix), "MainTable", text="Product")
+        assert again["changed"] == []
+        assert again["name"] == "CornerCell"
+        assert matrix.read_bytes() == before
+
+    def test_expression_then_text_edit_the_same_cell(self, matrix):
+        set_tablix_corner(str(matrix), "MainTable", expression="=Parameters!P.Value")
+        result = set_tablix_corner(str(matrix), "MainTable", text="Type")
+        assert result["changed"] == ["corner_written"]
+        corner = find_child(_tablix(matrix), "TablixCorner")
+        assert [v.text for v in corner.iter(q("Value"))] == ["Type"]
+        _assert_clean_matrix(matrix)
+
+    def test_extra_runs_and_paragraphs_collapse(self, matrix):
+        doc = RDLDocument.open(matrix)
+        tablix = doc.root.find(f".//{{{RDL_NS}}}Tablix[@Name='MainTable']")
+        textbox = find_child(find_child(_corner_cells(tablix)[0][0], "CellContents"), "Textbox")
+        paragraphs = find_child(textbox, "Paragraphs")
+        paragraph = find_child(paragraphs, "Paragraph")
+        runs = find_child(paragraph, "TextRuns")
+        runs.append(copy.deepcopy(find_child(runs, "TextRun")))
+        paragraphs.append(copy.deepcopy(paragraph))
+        doc.save()
+
+        result = set_tablix_corner(str(matrix), "MainTable", text="Type")
+        assert result["changed"] == ["corner_written"]
+        corner = find_child(_tablix(matrix), "TablixCorner")
+        assert [v.text for v in corner.iter(q("Value"))] == ["Type"]
+        assert len(list(corner.iter(q("Paragraph")))) == 1
+        _assert_clean_matrix(matrix)
+
+    def test_refuses_without_row_headers(self, rdl_path):
+        # The old flow (no convert_to_matrix): column headers, no row
+        # headers — a corner there is a shape_problems defect.
+        _documented_flow(rdl_path)
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="1 column-header row.*0 row-header column"):
+            set_tablix_corner(str(rdl_path), "MainTable", text="Type")
+        assert rdl_path.read_bytes() == before
+
+    def test_refuses_without_column_headers(self, tmp_path):
+        # Row headers (a Report Builder table with a row group) but no
+        # column headers: no corner either.
+        header = (
+            '<TablixHeader><Size>1in</Size><CellContents><Textbox Name="PH">'
+            "<Paragraphs><Paragraph><TextRuns><TextRun><Value /></TextRun></TextRuns>"
+            "</Paragraph></Paragraphs></Textbox></CellContents></TablixHeader>"
+        )
+        path = _patched(
+            tmp_path,
+            '<Group Name="Details" />',
+            '<Group Name="Product"><GroupExpressions>'
+            "<GroupExpression>=Fields!ProductID.Value</GroupExpression>"
+            f"</GroupExpressions></Group>{header}"
+            '<TablixMembers><TablixMember><Group Name="Details" />'
+            "</TablixMember></TablixMembers>",
+        )
+        before = path.read_bytes()
+        with pytest.raises(ValueError, match="0 column-header row"):
+            set_tablix_corner(str(path), "MainTable", text="Type")
+        assert path.read_bytes() == before
+
+    def _nested(self, path):
+        add_row_group(str(path), "MainTable", "Inner", "=Fields!ProductName.Value")
+        add_row_group(str(path), "MainTable", "Outer", "=Fields!ProductID.Value")
+        add_column_group(str(path), "MainTable", "All", "=1")
+        convert_to_matrix(str(path), "MainTable", "Inner", "All")
+
+    def test_addresses_cells_by_row_and_col(self, rdl_path):
+        self._nested(rdl_path)
+        result = set_tablix_corner(str(rdl_path), "MainTable", text="Name", row=0, col=1)
+        assert result["name"] == "MainTable_Corner1"
+        assert (result["row"], result["col"]) == (0, 1)
+        cells = _corner_cells(_tablix(rdl_path))
+        assert [[v.text or "" for v in c.iter(q("Value"))] for c in cells[0]] == [[""], ["Name"]]
+        with pytest.raises(ValueError, match="outside"):
+            set_tablix_corner(str(rdl_path), "MainTable", text="x", row=1)
+        with pytest.raises(ValueError, match="non-negative integer"):
+            set_tablix_corner(str(rdl_path), "MainTable", text="x", col=-1)
+
+    def test_span_covered_cell_refused(self, rdl_path):
+        self._nested(rdl_path)
+        doc = RDLDocument.open(rdl_path)
+        tablix = doc.root.find(f".//{{{RDL_NS}}}Tablix[@Name='MainTable']")
+        first, second = _corner_cells(tablix)[0]
+        etree.SubElement(find_child(first, "CellContents"), q("ColSpan")).text = "2"
+        second.remove(find_child(second, "CellContents"))
+        doc.save()
+        assert shape_problems(_tablix(rdl_path)) == []
+        with pytest.raises(ValueError, match="ColSpan of cell"):
+            set_tablix_corner(str(rdl_path), "MainTable", text="x", col=1)
+        assert set_tablix_corner(str(rdl_path), "MainTable", text="x", col=0)["changed"]
+
+    def test_misshapen_corner_is_resized_not_replaced(self, rdl_path):
+        # Two value columns -> 2 column-header rows. With a corner row
+        # removed by hand the call restores the shape and keeps the
+        # surviving cell.
+        add_row_group(str(rdl_path), "MainTable", "Region", "=Fields!ProductName.Value")
+        add_column_group(str(rdl_path), "MainTable", "All", "=1")
+        convert_to_matrix(str(rdl_path), "MainTable", "Region", "All")
+        doc = RDLDocument.open(rdl_path)
+        tablix = doc.root.find(f".//{{{RDL_NS}}}Tablix[@Name='MainTable']")
+        rows_root = find_child(find_child(tablix, "TablixCorner"), "TablixCornerRows")
+        rows_root.remove(find_children(rows_root, "TablixCornerRow")[1])
+        doc.save()
+        kept = _textbox_names(find_child(_tablix(rdl_path), "TablixCorner"))
+
+        result = set_tablix_corner(str(rdl_path), "MainTable", text="Type", row=1)
+        assert result["changed"] == ["corner_resized", "corner_written"]
+        tablix = _assert_clean_matrix(rdl_path)
+        assert corner_shape(tablix) == (2, [1, 1])
+        assert kept[0] in _textbox_names(find_child(tablix, "TablixCorner"))
+
+    def test_via_server(self, matrix):
+        srv = MCPServer()
+        register_all_tools(srv)
+        payload, is_error = _call(
+            srv, "set_tablix_corner", path=str(matrix), tablix_name="MainTable", text="T", row=0
+        )
+        assert not is_error, payload
+        assert payload["changed"] == ["corner_written"]
+
+
+# ---- end to end -------------------------------------------------------------
+
+
+class TestEndToEnd:
+    def test_cookbook_sequence(self, rdl_path):
+        _documented_flow(rdl_path)
+        convert_to_matrix(str(rdl_path), "MainTable", "Region", "Date")
+        set_tablix_corner(str(rdl_path), "MainTable", text="Type")
+        add_subtotal_column(
+            str(rdl_path),
+            "MainTable",
+            "Date",
+            [{"row": 0, "expression": "=Sum(Fields!Amount.Value)"}],
+            position="after",
+            width="1in",
+        )
+        set_body_size(str(rdl_path), width="14in", height="10in")
+
+        tablix = _assert_clean_matrix(rdl_path)
+        assert _body_values(tablix) == [["=Sum(Fields!Amount.Value)", "=Sum(Fields!Amount.Value)"]]
+        assert corner_shape(tablix) == (1, [1])
+        corner = find_child(tablix, "TablixCorner")
+        assert [v.text for v in corner.iter(q("Value"))] == ["Type"]
+
+    def test_cookbook_batch(self, rdl_path):
+        srv = MCPServer()
+        register_all_tools(srv)
+        ops = [
+            {
+                "tool": "add_row_group",
+                "args": {
+                    "tablix_name": "MainTable",
+                    "group_name": "Region",
+                    "group_expression": "=Fields!ProductName.Value",
+                },
+            },
+            {
+                "tool": "add_column_group",
+                "args": {
+                    "tablix_name": "MainTable",
+                    "group_name": "Date",
+                    "group_expression": "=Fields!ProductID.Value",
+                },
+            },
+            {
+                "tool": "convert_to_matrix",
+                "args": {"tablix_name": "MainTable", "row_group": "Region", "column_group": "Date"},
+            },
+            {"tool": "set_tablix_corner", "args": {"tablix_name": "MainTable", "text": "Type"}},
+        ]
+        payload, is_error = _call(srv, "apply_edits", path=str(rdl_path), ops=ops)
+        assert not is_error, payload
+        assert payload["committed"], payload
+        _assert_clean_matrix(rdl_path)

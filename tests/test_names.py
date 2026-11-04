@@ -405,15 +405,19 @@ class TestGeneratedNames:
 
     def test_tablix_corner_suffixed_and_idempotent(self, rdl_path):
         _matrix(rdl_path)
+        tablix.convert_to_matrix(str(rdl_path), "MainTable", "Region", "Year")
         r1 = tablix.set_tablix_corner(str(rdl_path), "MainTable", text="a")
         assert r1["name"] == "MainTable_Corner"
         r2 = tablix.set_tablix_corner(str(rdl_path), "MainTable", text="a")
-        assert r2["name"] == "MainTable_Corner"  # replaced corner isn't a clash
+        assert r2["name"] == "MainTable_Corner"  # edited in place (#31)
+        assert r2["changed"] == []
         assert _dupes(rdl_path) == {}
 
     def test_tablix_corner_suffixed_on_foreign_clash(self, rdl_path):
-        _matrix(rdl_path)
+        # The corner textbox is now emitted by convert_to_matrix (#31).
         body.add_body_textbox(str(rdl_path), "MainTable_Corner", "x", *BOX)
+        _matrix(rdl_path)
+        tablix.convert_to_matrix(str(rdl_path), "MainTable", "Region", "Year")
         r = tablix.set_tablix_corner(str(rdl_path), "MainTable", text="a")
         assert r["name"] == "MainTable_Corner1"
         assert _dupes(rdl_path) == {}

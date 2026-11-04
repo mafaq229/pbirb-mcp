@@ -1417,14 +1417,14 @@ def convert_to_matrix(
         label = group_keys[key]
         if not all(_disposable_cell(_row_cells(r), j) for r in kept_rows):
             warnings.append(
-                f"body column {j} shows group {label!r}'s expression but another row holds "
+                f"body column {j} shows the expression of group {label!r} but another row holds "
                 "content in it; kept (unaggregated)."
             )
             continue
         member, emptied = removal_member(tablix, "column", j)
         if emptied:
             warnings.append(
-                f"body column {j} shows group {label!r}'s expression but it is the only "
+                f"body column {j} shows the expression of group {label!r} but it is the only "
                 "column of its column group; kept (unaggregated)."
             )
             continue
@@ -1595,24 +1595,41 @@ def convert_to_matrix(
     }
 
 
-# ---- set_tablix_corner (v0.4 commit 18) -----------------------------------
+# ---- set_tablix_corner (#31) ------------------------------------------------
 
 
-# Per RDL XSD, TablixCorner is the FIRST child of Tablix when present —
-# before TablixBody and the hierarchies. Inserting before any of these
-# anchors places the new element at the correct slot.
-_TABLIX_CORNER_FOLLOWED_BY = (
-    "TablixBody",
-    "TablixColumnHierarchy",
-    "TablixRowHierarchy",
-    "LayoutDirection",
-    "GroupsBeforeRowHeaders",
-    "RepeatColumnHeaders",
-    "RepeatRowHeaders",
-    "FixedColumnHeaders",
-    "FixedRowHeaders",
-    "DataSetName",
-)
+def _set_textbox_value(textbox: etree._Element, value: str) -> bool:
+    """Make ``value`` the textbox's only text run, in place: the first
+    run's ``<Value>`` is set (its Style and the textbox's Name / Style
+    stay); further runs and paragraphs are removed. Returns True iff
+    anything changed."""
+    paragraphs_root = find_child(textbox, "Paragraphs")
+    paragraphs = find_children(paragraphs_root, "Paragraph") if paragraphs_root is not None else []
+    runs_root = find_child(paragraphs[0], "TextRuns") if paragraphs else None
+    runs = find_children(runs_root, "TextRun") if runs_root is not None else []
+    value_node = find_child(runs[0], "Value") if runs else None
+    if value_node is None:
+        # No run to edit: give the textbox Report Builder's paragraph block.
+        fresh = find_child(tablix_headers.new_textbox("_", value), "Paragraphs")
+        if paragraphs_root is not None:
+            textbox.replace(paragraphs_root, fresh)
+        else:
+            anchor = find_child(textbox, "KeepTogether")
+            if anchor is None:
+                anchor = find_child(textbox, "CanGrow")
+            if anchor is not None:
+                anchor.addnext(fresh)
+            else:
+                textbox.insert(0, fresh)
+        return True
+    changed = False
+    if (value_node.text or "") != value:
+        value_node.text = value
+        changed = True
+    for extra in runs[1:] + paragraphs[1:]:
+        tablix_spans.detach(extra)
+        changed = True
+    return changed
 
 
 def set_tablix_corner(
@@ -1620,22 +1637,32 @@ def set_tablix_corner(
     tablix_name: str,
     text: Optional[str] = None,
     expression: Optional[str] = None,
+    row: int = 0,
+    col: int = 0,
 ) -> dict[str, Any]:
-    """Write the ``<TablixCorner>`` block with a single 1×1 textbox.
+    """Set the value of one ``<TablixCorner>`` cell of a matrix.
 
     Either ``text`` (literal value) or ``expression`` (VB.NET ``=...``
-    string) — mutually exclusive. The textbox's ``Name`` is
-    deterministic: ``<tablix_name>_Corner`` (suffixed ``_Corner1``, …
-    only if another report item or group already uses that name). Replaces any existing
-    TablixCorner block; idempotent in the "same text/expression →
-    same bytes" sense.
+    string) — mutually exclusive. ``row`` / ``col`` (0-based, default the
+    top-left cell) address a cell of the corner, which is column-header
+    depth x row-header depth.
 
-    Refuses if the tablix has no named column-axis group — the corner
-    block is only meaningful in a matrix shape. Without a column
-    group there are no row-header rows for the corner to sit over.
+    * The corner is first created or resized to that shape
+      (:func:`pbirb_mcp.core.tablix_headers.ensure_corner`; new cells are
+      blank textboxes named ``<tablix_name>_Corner``, suffixed through the
+      report-wide name registry).
+    * The value is set **in place**: the cell's textbox keeps its name and
+      style (extra text runs / paragraphs are dropped). An identical call
+      changes nothing and returns ``changed: []``.
 
-    Returns the canonical mutator shape
-    ``{tablix, name, kind: 'TablixCorner', changed: list[str]}``.
+    Refuses when either header depth is 0 (no corner exists in that shape
+    — run convert_to_matrix first), for a cell outside the corner or
+    covered by another cell's ColSpan / RowSpan, and for a cell holding
+    something other than a single textbox.
+
+    Returns ``{tablix, name, kind: 'TablixCorner', row, col, changed}``;
+    ``changed`` lists ``corner_created`` / ``corner_resized`` and
+    ``corner_written`` (the value changed).
     """
     if text is None and expression is None:
         raise ValueError(
@@ -1645,69 +1672,70 @@ def set_tablix_corner(
         raise ValueError(
             "set_tablix_corner: text and expression are mutually exclusive — pass only one"
         )
+    for label, index in (("row", row), ("col", col)):
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise ValueError(f"{label} must be a non-negative integer; got {index!r}")
 
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
 
-    if not _has_column_group(tablix):
+    n_rows = tablix_headers.header_depth(tablix, tablix_headers.COLUMN)
+    n_cols = tablix_headers.header_depth(tablix, tablix_headers.ROW)
+    if n_rows == 0 or n_cols == 0:
         raise ValueError(
-            f"tablix {tablix_name!r} has no named column group; the "
-            "TablixCorner block is only meaningful in a matrix shape. "
-            "Call add_column_group first."
+            f"tablix {tablix_name!r} has {n_rows} column-header row(s) x {n_cols} "
+            "row-header column(s); a TablixCorner exists only when both are non-zero. "
+            "Build the matrix first (add_column_group, then convert_to_matrix gives the "
+            "row groups their TablixHeaders)."
+        )
+    if row >= n_rows or col >= n_cols:
+        raise ValueError(
+            f"corner cell (row {row}, col {col}) is outside tablix {tablix_name!r}'s "
+            f"{n_rows} x {n_cols} corner."
         )
 
-    value_text = expression if expression is not None else text
-
+    registry = names.NameRegistry(doc)
+    shape_before = tablix_headers.corner_shape(tablix)
+    resized = tablix_headers.ensure_corner(tablix, registry)
     changed: list[str] = []
+    if shape_before is None:
+        changed.append("corner_created")
+    elif resized["created"] or resized["removed"]:
+        changed.append("corner_resized")
 
-    # Remove any existing TablixCorner so the rewrite is deterministic.
-    existing = find_child(tablix, "TablixCorner")
-    # The corner being replaced doesn't count as a clash, so a re-run keeps
-    # the same "<tablix>_Corner" name (same text -> same bytes).
-    textbox_name = names.NameRegistry(
-        doc, exclude=[existing] if existing is not None else []
-    ).unique(f"{tablix_name}_Corner")
-    if existing is not None:
-        tablix.remove(existing)
-        changed.append("replaced_existing")
+    corner = find_child(tablix, "TablixCorner")
+    corner_rows = find_children(find_child(corner, "TablixCornerRows"), "TablixCornerRow")
+    cells = find_children(corner_rows[row], "TablixCornerCell")
+    cell = cells[col]
+    if tablix_spans.is_placeholder(cell):
+        owner = tablix_spans.owner_map(cells)[col]
+        if owner != col:
+            raise ValueError(
+                f"corner cell (row {row}, col {col}) is covered by the ColSpan of cell "
+                f"(row {row}, col {owner}); address that cell."
+            )
+        raise ValueError(
+            f"corner cell (row {row}, col {col}) is covered by the RowSpan of a cell "
+            "above it; address that cell."
+        )
+    textbox = _cell_textbox(cell)
+    if textbox is None:
+        raise ValueError(
+            f"corner cell (row {row}, col {col}) of tablix {tablix_name!r} does not hold a "
+            "single textbox; refusing to overwrite it."
+        )
+    value = expression if expression is not None else text
+    if _set_textbox_value(textbox, encode_text(value)):
+        changed.append("corner_written")
 
-    corner = etree.Element(q("TablixCorner"))
-    rows_root = etree.SubElement(corner, q("TablixCornerRows"))
-    row = etree.SubElement(rows_root, q("TablixCornerRow"))
-    cell = etree.SubElement(row, q("TablixCornerCell"))
-    contents = etree.SubElement(cell, q("CellContents"))
-    tb = etree.SubElement(contents, q("Textbox"), Name=textbox_name)
-    etree.SubElement(tb, q("CanGrow")).text = "true"
-    etree.SubElement(tb, q("KeepTogether")).text = "true"
-    paragraphs = etree.SubElement(tb, q("Paragraphs"))
-    paragraph = etree.SubElement(paragraphs, q("Paragraph"))
-    textruns = etree.SubElement(paragraph, q("TextRuns"))
-    textrun = etree.SubElement(textruns, q("TextRun"))
-    value_node = etree.SubElement(textrun, q("Value"))
-    value_node.text = encode_text(value_text)
-    etree.SubElement(textrun, q("Style"))
-    etree.SubElement(paragraph, q("Style"))
-    etree.SubElement(tb, qrd("DefaultName")).text = textbox_name
-    etree.SubElement(tb, q("Style"))
-
-    # Insert before the first known follower (TablixBody, hierarchies,
-    # etc.). Per RDL XSD, TablixCorner is the first Tablix child slot.
-    for local in _TABLIX_CORNER_FOLLOWED_BY:
-        anchor = find_child(tablix, local)
-        if anchor is not None:
-            anchor.addprevious(corner)
-            break
-    else:
-        # Pathological: tablix has none of the expected children. Append.
-        tablix.append(corner)
-
-    changed.append("corner_written")
-
-    doc.save()
+    if changed:
+        doc.save()
     return {
         "tablix": tablix_name,
-        "name": textbox_name,
+        "name": textbox.get("Name"),
         "kind": "TablixCorner",
+        "row": row,
+        "col": col,
         "changed": changed,
     }
 
@@ -1715,6 +1743,7 @@ def set_tablix_corner(
 __all__ = [
     "add_row_group",
     "add_tablix_filter",
+    "MATRIX_AGGREGATES",
     "convert_to_matrix",
     "list_tablix_filters",
     "remove_row_group",
