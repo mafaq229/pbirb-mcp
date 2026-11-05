@@ -423,6 +423,17 @@ CASES: dict[str, Case] = {
     ),
     "move_report_item": Case({"name": "Note", "to": "header"}, setup=[BODY_BOX]),
     "ungroup_rectangle": Case({"name": "Panel"}, second="refuses", setup=[BODY_BOX, PANEL]),
+    # #111: the repeat finds old_name gone and new_name present — already renamed.
+    "rename_report_item": Case(
+        {"old_name": "Note", "new_name": "Remark"},
+        setup=[
+            BODY_BOX,
+            (
+                "add_body_textbox",
+                {**BODY_BOX[1], "name": "Echo", "text": "=ReportItems!Note.Value"},
+            ),
+        ],
+    ),
     "raw_xml_replace": Case(
         {
             "xpath": "r:ReportSections/r:ReportSection/r:Body/r:Height",

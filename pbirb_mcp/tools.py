@@ -42,6 +42,7 @@ from pbirb_mcp.ops import expressions as _expressions
 from pbirb_mcp.ops import layout as _layout
 from pbirb_mcp.ops import layout_helpers as _layout_helpers
 from pbirb_mcp.ops import lint as _lint
+from pbirb_mcp.ops import rename as _rename
 from pbirb_mcp.ops import scratch as _scratch
 from pbirb_mcp.ops import transactions as _transactions
 from pbirb_mcp.ops.response_format import RESPONSE_FORMAT_PARAM, with_response_format
@@ -1458,6 +1459,36 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_containers.ungroup_rectangle,
+        mutating=True,
+    )
+    server.register_tool(
+        name="rename_report_item",
+        description=(
+            "Rename a textbox, rectangle, image, tablix, chart or group anywhere in the "
+            "report and rewrite every reference to it (ReportItems!, ToggleItem, scope "
+            "strings, RepeatWith, sort targets)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_name": {"type": "string"},
+                "new_name": {"type": "string"},
+                "kind": {
+                    "type": "string",
+                    "enum": list(_rename.KINDS),
+                    "description": "Only when old_name is ambiguous.",
+                },
+                "rename_inner": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "List tablix: also rename <old>_Rect / <old>_Details.",
+                },
+            },
+            "required": ["path", "old_name", "new_name"],
+            "additionalProperties": False,
+        },
+        handler=_rename.rename_report_item,
         mutating=True,
     )
 

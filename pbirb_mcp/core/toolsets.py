@@ -220,6 +220,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "add_line",
             "move_report_item",
             "ungroup_rectangle",
+            "rename_report_item",
             "get_rectangle",
             "get_image",
             "set_image_sizing",

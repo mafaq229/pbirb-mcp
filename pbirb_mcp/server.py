@@ -118,6 +118,7 @@ DESTRUCTIVE_TOOLS = frozenset(
 AUTO_BACKUP_TOOLS = (DESTRUCTIVE_TOOLS - {"restore_from_backup"}) | {
     "rename_data_source",
     "rename_parameter",
+    "rename_report_item",
     "update_dataset_query",
     "refresh_dataset_fields",
 }
@@ -126,7 +127,7 @@ AUTO_BACKUP_TOOLS = (DESTRUCTIVE_TOOLS - {"restore_from_backup"}) | {
 # reports nothing changed and leaves the file alone (issue #61). Published
 # as idempotentHint (#54). tests/test_annotations.py keeps this equal to the
 # "noop" cases of tests/test_idempotency.py; a tool whose repeat call
-# refuses (creators, removers, renames) or appends again is not listed.
+# refuses (creators, removers, most renames) or appends again is not listed.
 IDEMPOTENT_TOOLS = frozenset(
     {
         "center_item",
@@ -134,6 +135,7 @@ IDEMPOTENT_TOOLS = frozenset(
         "move_report_item",
         "raw_xml_replace",
         "refresh_dataset_fields",
+        "rename_report_item",
         "reorder_parameters",
         "set_alternating_row_color",
         "set_body_item_position",
