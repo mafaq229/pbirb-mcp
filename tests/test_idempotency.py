@@ -734,6 +734,15 @@ VARIANTS: list[tuple[str, Case]] = [
             {"textbox_name": TB, "border_color": "Red", "border_width": "1pt", "can_shrink": True}
         ),
     ),
+    (
+        "set_textbox_style",
+        Case({"textbox_name": TB, "font_style": "Italic", "text_decoration": "underline"}),
+    ),
+    (
+        "set_textbox_style_bulk",
+        Case({"textbox_names": ["HeaderProductID"], "font_weight": "700", "font_style": "Italic"}),
+    ),
+    ("style_tablix_row", Case({"tablix_name": "MainTable", "row": 0, "text_decoration": "None"})),
     ("set_parameter_prompt", Case({"name": "DateFrom", "prompt": ""})),
     (
         "set_parameter_available_values",

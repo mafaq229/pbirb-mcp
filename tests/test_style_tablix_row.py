@@ -133,7 +133,7 @@ class TestStyleTablixRowByIndex:
                 path=str(rdl_path),
                 tablix_name="MainTable",
                 row=[0],  # type: ignore[arg-type]
-                background_color="#000",
+                background_color="#000000",
             )
 
 
@@ -175,7 +175,7 @@ class TestStyleTablixRowByRole:
                 path=str(rdl_path),
                 tablix_name="MainTable",
                 row="banner",
-                background_color="#000",
+                background_color="#000000",
             )
 
 
@@ -250,7 +250,7 @@ class TestStyleTablixRowByGroupRole:
                 path=str(rdl_path),
                 tablix_name="MainTable",
                 row="Region_footer",
-                background_color="#FFF",
+                background_color="#FFFFFF",
             )
 
     def test_unknown_group_header_raises(self, rdl_path):
@@ -259,7 +259,7 @@ class TestStyleTablixRowByGroupRole:
                 path=str(rdl_path),
                 tablix_name="MainTable",
                 row="Imaginary_header",
-                background_color="#FFF",
+                background_color="#FFFFFF",
             )
 
 
@@ -293,7 +293,7 @@ class TestHeadlineCollapseRatio:
             path=str(rdl_path),
             tablix_name="MainTable",
             row=0,
-            background_color="#000",
+            background_color="#000000",
         )
         assert result["skipped"] == []
 

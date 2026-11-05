@@ -2916,12 +2916,13 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_textbox_style",
         description=(
-            "Format a textbox or tablix cell: font, size, weight, color, number "
-            "format, alignment, background, borders, padding, "
-            "can_grow/can_shrink. Each property lands on the right RDL style "
-            "node; only those passed are written. A cell's textbox name works "
-            "(e.g. 'HeaderAmount'). Or pass `cell` (tablix + column "
-            "header/field/index + row) instead of textbox_name."
+            "Format a textbox or tablix cell: font, size, weight, italic, color, "
+            "underline, number format, alignment, background, borders, padding, "
+            "can_grow/can_shrink. Only properties passed are written; font/color/"
+            "format apply to every run, text_align to every paragraph; invalid "
+            "literals are refused. A cell's textbox name works (e.g. "
+            "'HeaderAmount'), or pass `cell` (tablix + column header/field/index "
+            "+ row)."
         ),
         input_schema={
             "type": "object",
@@ -2936,16 +2937,24 @@ def register_all_tools(server: MCPServer) -> None:
                 },
                 "font_weight": {
                     "type": ["string", "null"],
-                    "description": "Normal | Bold | Lighter | ... or numeric.",
+                    "description": "Thin | Light | Normal | Medium | SemiBold | Bold | Heavy | ... or 100-900.",
+                },
+                "font_style": {
+                    "type": ["string", "null"],
+                    "description": "Normal | Italic.",
                 },
                 "color": {
                     "type": ["string", "null"],
-                    "description": "Text color — '#RRGGBB' or named.",
+                    "description": "Text color — named, '#RRGGBB' or '#AARRGGBB'.",
+                },
+                "text_decoration": {
+                    "type": ["string", "null"],
+                    "description": "None | Underline | Overline | LineThrough.",
                 },
                 "background_color": {"type": ["string", "null"]},
                 "border_style": {
                     "type": ["string", "null"],
-                    "description": "None | Solid | Dotted | Dashed | Double.",
+                    "description": "None | Solid | Dotted | Dashed | Double | ...",
                 },
                 "border_color": {"type": ["string", "null"]},
                 "border_width": {"type": ["string", "null"]},
@@ -3119,7 +3128,9 @@ def register_all_tools(server: MCPServer) -> None:
                 "font_family": {"type": ["string", "null"]},
                 "font_size": {"type": ["string", "null"]},
                 "font_weight": {"type": ["string", "null"]},
+                "font_style": {"type": ["string", "null"]},
                 "color": {"type": ["string", "null"]},
+                "text_decoration": {"type": ["string", "null"]},
                 "background_color": {"type": ["string", "null"]},
                 "border_style": {"type": ["string", "null"]},
                 "border_color": {"type": ["string", "null"]},
@@ -3222,7 +3233,9 @@ def register_all_tools(server: MCPServer) -> None:
                 "font_family": {"type": ["string", "null"]},
                 "font_size": {"type": ["string", "null"]},
                 "font_weight": {"type": ["string", "null"]},
+                "font_style": {"type": ["string", "null"]},
                 "color": {"type": ["string", "null"]},
+                "text_decoration": {"type": ["string", "null"]},
                 "background_color": {"type": ["string", "null"]},
                 "border_style": {"type": ["string", "null"]},
                 "border_color": {"type": ["string", "null"]},

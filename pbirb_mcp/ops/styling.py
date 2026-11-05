@@ -21,11 +21,12 @@ a different name than data column 0" indirection.
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import units
+from pbirb_mcp.core import style_values, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix, resolve_textbox
@@ -182,23 +183,191 @@ def _resolve_paragraph_run(
 # ---- public tool ----------------------------------------------------------
 
 
-# Style kwargs that carry an RDL size. All are StringOrExpression in the
-# XSD, so ``=`` expressions pass untouched; literals must be valid sizes,
-# >= 0 (FontSize > 0).
-_STYLE_SIZE_KWARGS = (
+def _size(field: str, *, positive: bool = False) -> Callable[[Any], Any]:
+    return lambda v: units.style_size(v, field, positive=positive)
+
+
+def _check(validator: Callable[..., Any], field: str) -> Callable[[Any], Any]:
+    return lambda v: validator(v, field)
+
+
+def _boolean(field: str) -> Callable[[Any], Any]:
+    def check(v: Any) -> Any:
+        if v is not None and not isinstance(v, bool):
+            raise ValueError(f"{field}: expected true or false; got {v!r}")
+        return v
+
+    return check
+
+
+def _string(field: str) -> Callable[[Any], Any]:
+    def check(v: Any) -> Any:
+        if v is not None and not isinstance(v, str):
+            raise ValueError(f"{field}: expected a string; got {type(v).__name__}")
+        return v
+
+    return check
+
+
+# Every style kwarg the three style tools (set_textbox_style,
+# set_textbox_style_bulk, style_tablix_row) accept:
+#   kwarg -> (level, RDL local name, validator)
+# ``level`` is where the property lives (see the module docstring):
+#   textbox   direct Textbox child (CanGrow / CanShrink), NOT inside Style
+#   box       Textbox/Style
+#   border    Textbox/Style/Border
+#   paragraph every Paragraph/Style
+#   run       every TextRun/Style
+# The validators run before the document is opened (sizes via #22's
+# core/units.py, colours and enums via core/style_values.py); each passes
+# ``=`` expressions through untouched. Within a level, table order is the
+# order entries appear in ``changed``.
+_STYLE_FIELDS: dict[str, tuple[str, str, Callable[[Any], Any]]] = {
+    "can_grow": ("textbox", "CanGrow", _boolean("can_grow")),
+    "can_shrink": ("textbox", "CanShrink", _boolean("can_shrink")),
+    "background_color": ("box", "BackgroundColor", _check(style_values.color, "background_color")),
+    "vertical_align": (
+        "box",
+        "VerticalAlign",
+        _check(style_values.vertical_align, "vertical_align"),
+    ),
+    "padding_top": ("box", "PaddingTop", _size("padding_top")),
+    "padding_bottom": ("box", "PaddingBottom", _size("padding_bottom")),
+    "padding_left": ("box", "PaddingLeft", _size("padding_left")),
+    "padding_right": ("box", "PaddingRight", _size("padding_right")),
+    "writing_mode": ("box", "WritingMode", _check(style_values.writing_mode, "writing_mode")),
+    "border_style": ("border", "Style", _check(style_values.border_style, "border_style")),
+    "border_color": ("border", "Color", _check(style_values.color, "border_color")),
+    "border_width": ("border", "Width", _size("border_width")),
+    "text_align": ("paragraph", "TextAlign", _check(style_values.text_align, "text_align")),
+    "font_family": ("run", "FontFamily", _string("font_family")),
+    "font_size": ("run", "FontSize", _size("font_size", positive=True)),
+    "font_weight": ("run", "FontWeight", _check(style_values.font_weight, "font_weight")),
+    "font_style": ("run", "FontStyle", _check(style_values.font_style, "font_style")),
+    "color": ("run", "Color", _check(style_values.color, "color")),
+    "format": ("run", "Format", _string("format")),
+    "text_decoration": (
+        "run",
+        "TextDecoration",
+        _check(style_values.text_decoration, "text_decoration"),
+    ),
+}
+# The kwargs in signature order — also the order they are validated in,
+# so the first bad argument (as written) is the one reported.
+STYLE_KWARGS: tuple[str, ...] = (
+    "font_family",
     "font_size",
+    "font_weight",
+    "font_style",
+    "color",
+    "text_decoration",
+    "background_color",
+    "border_style",
+    "border_color",
     "border_width",
+    "text_align",
+    "vertical_align",
+    "format",
     "padding_top",
     "padding_bottom",
     "padding_left",
     "padding_right",
+    "writing_mode",
+    "can_grow",
+    "can_shrink",
 )
+assert set(STYLE_KWARGS) == set(_STYLE_FIELDS)
+_LEVELS = ("textbox", "box", "border", "paragraph", "run")
 
 
-def _validate_style_sizes(kwargs: dict[str, Any]) -> None:
-    """Validate (and canonicalise in place) the size-typed style kwargs."""
-    for key in _STYLE_SIZE_KWARGS:
-        kwargs[key] = units.style_size(kwargs.get(key), key, positive=key == "font_size")
+def _style_props(kwargs: dict[str, Any], tool: str) -> dict[str, dict[str, Any]]:
+    """Validate the style kwargs and group the supplied (non-None) ones
+    by level: ``{level: {RDL local: value}}``. Raises ``TypeError`` for an
+    unknown kwarg and ``ValueError`` for a bad value — before any file is
+    opened."""
+    unknown = sorted(set(kwargs) - set(_STYLE_FIELDS))
+    if unknown:
+        raise TypeError(
+            f"{tool}() got unexpected style argument(s) {unknown}; valid: {list(STYLE_KWARGS)}"
+        )
+    clean = {kwarg: _STYLE_FIELDS[kwarg][2](kwargs.get(kwarg)) for kwarg in STYLE_KWARGS}
+    props: dict[str, dict[str, Any]] = {level: {} for level in _LEVELS}
+    for kwarg, (level, local, _validate) in _STYLE_FIELDS.items():
+        if clean[kwarg] is not None:
+            props[level][local] = clean[kwarg]
+    return props
+
+
+def _no_style(props: dict[str, dict[str, Any]]) -> bool:
+    return not any(props.values())
+
+
+def _note(changed: list[str], entry: str) -> None:
+    if entry not in changed:
+        changed.append(entry)
+
+
+def _apply_textbox_style(textbox: etree._Element, props: dict[str, dict[str, Any]]) -> list[str]:
+    """Write ``props`` (from :func:`_style_props`) onto ``textbox``, in
+    memory, and return the changed sub-paths (``"box.PaddingTop"``,
+    ``"run.Color"``, ...). Paragraph properties go on every
+    ``<Paragraph>``, run properties on every ``<TextRun>`` of every
+    paragraph, so a "Label: value" textbox restyles as a whole."""
+    changed: list[str] = []
+
+    # CanGrow / CanShrink: direct Textbox children (before <Paragraphs>).
+    for local, value in props["textbox"].items():
+        if _set_or_create_textbox_direct_child(textbox, local, "true" if value else "false"):
+            _note(changed, f"textbox.{local}")
+
+    if props["box"] or props["border"]:
+        outer_style = _ensure_style(textbox)
+        for local, value in props["box"].items():
+            if _set_or_create_in_style(outer_style, local, value):
+                _note(changed, f"box.{local}")
+        if props["border"]:
+            border = _ensure_border(outer_style)
+            for local, value in props["border"].items():
+                # Border children share a small fixed sub-order.
+                if set_text_if_different(border, local, encode_text(value)):
+                    _note(changed, f"border.{local}")
+
+    if props["paragraph"] or props["run"]:
+        # Bootstraps Paragraphs/Paragraph/TextRuns/TextRun when absent.
+        _resolve_paragraph_run(textbox)
+        for paragraph in find_children(find_child(textbox, "Paragraphs"), "Paragraph"):
+            if props["paragraph"]:
+                p_style = _ensure_style(paragraph)
+                for local, value in props["paragraph"].items():
+                    if _set_or_create_in_style(p_style, local, value):
+                        _note(changed, f"paragraph.{local}")
+            if props["run"]:
+                for textrun in _textruns_of(paragraph):
+                    r_style = _ensure_style(textrun)
+                    for local, value in props["run"].items():
+                        if _set_or_create_in_style(r_style, local, value):
+                            _note(changed, f"run.{local}")
+    return changed
+
+
+def _style_textboxes(
+    doc: RDLDocument, names: list[str], props: dict[str, dict[str, Any]]
+) -> tuple[list[str], list[str], list[str]]:
+    """Apply ``props`` to each named textbox of ``doc`` (in memory).
+    Returns ``(affected, skipped, changed)``: names that resolved, names
+    that didn't, and the sorted union of changed sub-paths."""
+    affected: list[str] = []
+    skipped: list[str] = []
+    union_changed: set[str] = set()
+    for name in names:
+        try:
+            textbox = resolve_textbox(doc, name)
+        except ElementNotFoundError:
+            skipped.append(name)
+            continue
+        affected.append(name)
+        union_changed.update(_apply_textbox_style(textbox, props))
+    return affected, skipped, sorted(union_changed)
 
 
 def set_textbox_style(
@@ -208,14 +377,16 @@ def set_textbox_style(
     font_family: Optional[str] = None,
     font_size: Optional[str] = None,
     font_weight: Optional[str] = None,
+    font_style: Optional[str] = None,
     color: Optional[str] = None,
+    text_decoration: Optional[str] = None,
     background_color: Optional[str] = None,
     border_style: Optional[str] = None,
     border_color: Optional[str] = None,
     border_width: Optional[str] = None,
     text_align: Optional[str] = None,
     vertical_align: Optional[str] = None,
-    format: Optional[str] = None,
+    format: Optional[str] = None,  # noqa: A002 - tool-facing
     padding_top: Optional[str] = None,
     padding_bottom: Optional[str] = None,
     padding_left: Optional[str] = None,
@@ -230,116 +401,34 @@ def set_textbox_style(
     - **Box-level** (``Textbox/Style``): ``background_color``, ``vertical_align``,
       ``padding_top|bottom|left|right``, ``writing_mode``.
     - **Border** (``Textbox/Style/Border``): ``border_style|color|width``.
-    - **Paragraph** (``Textbox/Paragraphs/Paragraph/Style``): ``text_align``.
-    - **Run** (``Textbox/.../TextRun/Style``): ``font_family|size|weight``,
-      ``color``, ``format``.
+    - **Paragraph** (every ``Paragraph/Style``): ``text_align``.
+    - **Run** (every ``TextRun/Style`` of every paragraph):
+      ``font_family|size|weight|style``, ``color``, ``format``,
+      ``text_decoration``. To style one run of a multi-run textbox
+      differently, use :func:`set_textbox_runs`.
     - **Direct Textbox children** (NOT inside Style): ``can_grow``, ``can_shrink``.
+
+    Literal values are validated before the file is opened — sizes per
+    #22 (core/units.py), colours and enum styles per
+    :mod:`pbirb_mcp.core.style_values` (enums are written in their
+    canonical spelling, ``"center"`` -> ``"Center"``). An ``=``
+    expression passes through for every field. A bad value raises
+    ``ValueError`` naming the field and the valid values.
 
     Returns ``{textbox, changed: list[str]}`` with prefixed sub-paths
     (``"box.PaddingTop"``, ``"textbox.CanGrow"``, etc.). All-None call
     is a no-op short-circuit.
     """
-    font_size = units.style_size(font_size, "font_size", positive=True)
-    border_width = units.style_size(border_width, "border_width")
-    padding_top = units.style_size(padding_top, "padding_top")
-    padding_bottom = units.style_size(padding_bottom, "padding_bottom")
-    padding_left = units.style_size(padding_left, "padding_left")
-    padding_right = units.style_size(padding_right, "padding_right")
-    box_props = {
-        "BackgroundColor": background_color,
-        "VerticalAlign": vertical_align,
-        "PaddingTop": padding_top,
-        "PaddingBottom": padding_bottom,
-        "PaddingLeft": padding_left,
-        "PaddingRight": padding_right,
-        "WritingMode": writing_mode,
-    }
-    paragraph_props = {
-        "TextAlign": text_align,
-    }
-    run_props = {
-        "FontFamily": font_family,
-        "FontSize": font_size,
-        "FontWeight": font_weight,
-        "Color": color,
-        "Format": format,
-    }
-    border_props = {
-        "Style": border_style,
-        "Color": border_color,
-        "Width": border_width,
-    }
-    direct_textbox_props: dict[str, Optional[bool]] = {
-        "CanGrow": can_grow,
-        "CanShrink": can_shrink,
-    }
-
-    nothing_to_do = (
-        all(v is None for v in box_props.values())
-        and all(v is None for v in paragraph_props.values())
-        and all(v is None for v in run_props.values())
-        and all(v is None for v in border_props.values())
-        and all(v is None for v in direct_textbox_props.values())
-    )
-    if nothing_to_do:
+    kwargs = {k: v for k, v in locals().items() if k in _STYLE_FIELDS}
+    props = _style_props(kwargs, "set_textbox_style")
+    if _no_style(props):
         # No-op — leave the file bytes untouched so callers can defensively
         # call this with all-None args without forcing a save.
         return {"textbox": textbox_name, "changed": []}
 
     doc = RDLDocument.open(path)
     textbox = resolve_textbox(doc, textbox_name)
-
-    changed: list[str] = []
-
-    # Direct Textbox children — CanGrow / CanShrink — written as direct
-    # Textbox children, NOT inside Style. Per the RDL XSD they appear
-    # before <Paragraphs>.
-    for local, value in direct_textbox_props.items():
-        if value is None:
-            continue
-        text_value = "true" if value else "false"
-        if _set_or_create_textbox_direct_child(textbox, local, text_value):
-            changed.append(f"textbox.{local}")
-
-    # Box level + border (border lives inside Textbox/Style/Border).
-    if any(v is not None for v in box_props.values()) or any(
-        v is not None for v in border_props.values()
-    ):
-        outer_style = _ensure_style(textbox)
-        for local, value in box_props.items():
-            if value is None:
-                continue
-            if _set_or_create_in_style(outer_style, local, value):
-                changed.append(f"box.{local}")
-        if any(v is not None for v in border_props.values()):
-            border = _ensure_border(outer_style)
-            for local, value in border_props.items():
-                if value is None:
-                    continue
-                # Border children share a small fixed sub-order.
-                if set_text_if_different(border, local, encode_text(value)):
-                    changed.append(f"border.{local}")
-
-    # Paragraph + run levels.
-    if any(v is not None for v in paragraph_props.values()) or any(
-        v is not None for v in run_props.values()
-    ):
-        paragraph, textrun = _resolve_paragraph_run(textbox)
-        if any(v is not None for v in paragraph_props.values()):
-            p_style = _ensure_style(paragraph)
-            for local, value in paragraph_props.items():
-                if value is None:
-                    continue
-                if _set_or_create_in_style(p_style, local, value):
-                    changed.append(f"paragraph.{local}")
-        if any(v is not None for v in run_props.values()):
-            r_style = _ensure_style(textrun)
-            for local, value in run_props.items():
-                if value is None:
-                    continue
-                if _set_or_create_in_style(r_style, local, value):
-                    changed.append(f"run.{local}")
-
+    changed = _apply_textbox_style(textbox, props)
     if changed:
         doc.save()
     return {"textbox": textbox_name, "changed": changed}
@@ -624,6 +713,10 @@ def _normalise_run_spec(i: int, run: Any) -> dict[str, Any]:
         style["FontSize"] = units.style_size(
             style["FontSize"], f"runs[{i}].font_size", positive=True
         )
+    for kwarg, local in _RUN_KWARG_TO_STYLE_LOCAL:
+        validate = style_values.BY_STYLE_LOCAL.get(local)
+        if validate is not None and style.get(local) is not None:
+            style[local] = validate(style[local], f"runs[{i}].{kwarg}")
 
     spec: dict[str, Any] = {"text": text, "paragraph_index": paragraph_index, "style": style}
     if "markup_type" in run:
@@ -1010,96 +1103,31 @@ def set_textbox_value(
 def set_textbox_style_bulk(
     path: str,
     textbox_names: list[str],
-    *,
-    font_family: Optional[str] = None,
-    font_size: Optional[str] = None,
-    font_weight: Optional[str] = None,
-    color: Optional[str] = None,
-    background_color: Optional[str] = None,
-    border_style: Optional[str] = None,
-    border_color: Optional[str] = None,
-    border_width: Optional[str] = None,
-    text_align: Optional[str] = None,
-    vertical_align: Optional[str] = None,
-    format: Optional[str] = None,  # noqa: A002 - tool-facing
-    padding_top: Optional[str] = None,
-    padding_bottom: Optional[str] = None,
-    padding_left: Optional[str] = None,
-    padding_right: Optional[str] = None,
-    writing_mode: Optional[str] = None,
-    can_grow: Optional[bool] = None,
-    can_shrink: Optional[bool] = None,
+    **style: Any,
 ) -> dict[str, Any]:
     """Apply the same style kwargs to every named textbox in one call.
 
-    Same kwarg surface as :func:`set_textbox_style`. Iterates over each
-    name; missing names land in ``skipped`` rather than raising. Atomic
-    per-textbox: a successful textbox is saved even if a later one is
-    missing — that mirrors how individual ``set_textbox_style`` calls
-    would have behaved if invoked sequentially.
+    Same kwarg surface (:data:`STYLE_KWARGS`), routing and validation as
+    :func:`set_textbox_style`; every value is checked before the file is
+    opened. Missing names land in ``skipped`` rather than raising; the
+    textboxes that resolve are styled and saved together.
 
     Returns ``{textboxes: [names], skipped: [names], changed: list[str]}``
     where ``changed`` is the **union** of sub-paths affected across all
     textboxes (e.g. ``["box.PaddingTop", "run.FontWeight"]``). Empty
     ``textbox_names`` and all-None kwargs both short-circuit to a no-op.
-
-    Designed for the recurring "style 21+ headers + 21 data + 21 totals
-    cells the same way" loop that v0.2 forced into 63 individual tool
-    calls. RAG-Report session feedback #6.
     """
-    style_kwargs: dict[str, Any] = {
-        "font_family": font_family,
-        "font_size": font_size,
-        "font_weight": font_weight,
-        "color": color,
-        "background_color": background_color,
-        "border_style": border_style,
-        "border_color": border_color,
-        "border_width": border_width,
-        "text_align": text_align,
-        "vertical_align": vertical_align,
-        "format": format,
-        "padding_top": padding_top,
-        "padding_bottom": padding_bottom,
-        "padding_left": padding_left,
-        "padding_right": padding_right,
-        "writing_mode": writing_mode,
-        "can_grow": can_grow,
-        "can_shrink": can_shrink,
-    }
-    # Validate up front so a bad value fails before ANY textbox is written.
-    _validate_style_sizes(style_kwargs)
+    props = _style_props(style, "set_textbox_style_bulk")
     if not textbox_names:
-        return {
-            "textboxes": [],
-            "skipped": [],
-            "changed": [],
-        }
-    if all(v is None for v in style_kwargs.values()):
-        return {
-            "textboxes": list(textbox_names),
-            "skipped": [],
-            "changed": [],
-        }
+        return {"textboxes": [], "skipped": [], "changed": []}
+    if _no_style(props):
+        return {"textboxes": list(textbox_names), "skipped": [], "changed": []}
 
-    affected: list[str] = []
-    skipped: list[str] = []
-    union_changed: set[str] = set()
-    for name in textbox_names:
-        try:
-            result = set_textbox_style(path, name, **style_kwargs)
-        except ElementNotFoundError:
-            skipped.append(name)
-            continue
-        affected.append(name)
-        for entry in result.get("changed", []):
-            union_changed.add(entry)
-
-    return {
-        "textboxes": affected,
-        "skipped": skipped,
-        "changed": sorted(union_changed),
-    }
+    doc = RDLDocument.open(path)
+    affected, skipped, changed = _style_textboxes(doc, list(textbox_names), props)
+    if changed:
+        doc.save()
+    return {"textboxes": affected, "skipped": skipped, "changed": changed}
 
 
 # ---- style_tablix_row ----------------------------------------------------
@@ -1353,31 +1381,9 @@ def style_tablix_row(
     path: str,
     tablix_name: str,
     row: object,
-    *,
-    font_family: Optional[str] = None,
-    font_size: Optional[str] = None,
-    font_weight: Optional[str] = None,
-    color: Optional[str] = None,
-    background_color: Optional[str] = None,
-    border_style: Optional[str] = None,
-    border_color: Optional[str] = None,
-    border_width: Optional[str] = None,
-    text_align: Optional[str] = None,
-    vertical_align: Optional[str] = None,
-    format: Optional[str] = None,  # noqa: A002 - tool-facing
-    padding_top: Optional[str] = None,
-    padding_bottom: Optional[str] = None,
-    padding_left: Optional[str] = None,
-    padding_right: Optional[str] = None,
-    writing_mode: Optional[str] = None,
-    can_grow: Optional[bool] = None,
-    can_shrink: Optional[bool] = None,
+    **style: Any,
 ) -> dict[str, Any]:
     """Apply the same style kwargs to every cell in a tablix row in ONE call.
-
-    Headline tool of v0.3 Phase 6 — replaces the recurring 12-cells-per-
-    row × N-rows pattern that turned a single styling intent into 12+
-    individual ``set_textbox_style`` invocations.
 
     ``row`` accepts:
     - **Integer**: 0-based body row index. Range-checked against
@@ -1393,11 +1399,9 @@ def style_tablix_row(
     - **"<group>_footer"**: footer row of a named row group (present
       after ``add_subtotal_row("<group>", position="footer", ...)``).
 
-    Style kwargs are identical to :func:`set_textbox_style`; this tool
-    delegates the actual writes to :func:`set_textbox_style_bulk` so
-    the encoding rules from Phase 0, the Style child-order from Phase 2,
-    and the canonical ``{textboxes, changed, skipped}`` shape all
-    transfer for free.
+    Style kwargs, routing and validation are identical to
+    :func:`set_textbox_style`; the writes share
+    :func:`set_textbox_style_bulk`'s helpers.
 
     Returns ``{tablix, row, row_index, kind: 'TablixRow', cells:
     list[str], changed: list[str], skipped: list[str]}``.
@@ -1405,48 +1409,30 @@ def style_tablix_row(
     ``skipped`` lists names that didn't resolve (rare — e.g. malformed
     cells without a Textbox child).
     """
+    props = _style_props(style, "style_tablix_row")
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
     row_index = _resolve_row_index(tablix, row)
     cell_names = _row_cell_textbox_names(tablix, row_index)
-    # Don't save here — set_textbox_style_bulk handles the writes.
-    # We just opened to discover names.
-
-    bulk_result = set_textbox_style_bulk(
-        path=path,
-        textbox_names=cell_names,
-        font_family=font_family,
-        font_size=font_size,
-        font_weight=font_weight,
-        color=color,
-        background_color=background_color,
-        border_style=border_style,
-        border_color=border_color,
-        border_width=border_width,
-        text_align=text_align,
-        vertical_align=vertical_align,
-        format=format,
-        padding_top=padding_top,
-        padding_bottom=padding_bottom,
-        padding_left=padding_left,
-        padding_right=padding_right,
-        writing_mode=writing_mode,
-        can_grow=can_grow,
-        can_shrink=can_shrink,
-    )
-
+    if _no_style(props):
+        cells, skipped, changed = list(cell_names), [], []
+    else:
+        cells, skipped, changed = _style_textboxes(doc, cell_names, props)
+        if changed:
+            doc.save()
     return {
         "tablix": tablix_name,
         "row": row,
         "row_index": row_index,
         "kind": "TablixRow",
-        "cells": bulk_result["textboxes"],
-        "changed": bulk_result["changed"],
-        "skipped": bulk_result["skipped"],
+        "cells": cells,
+        "changed": changed,
+        "skipped": skipped,
     }
 
 
 __all__ = [
+    "STYLE_KWARGS",
     "set_alternating_row_color",
     "set_conditional_row_color",
     "set_textbox_runs",
