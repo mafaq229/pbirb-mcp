@@ -97,25 +97,25 @@ Atomic batch: open once → apply ops → lint → save once. Opens an internal 
 
 *read-only*
 
-Return a static cheat-sheet of common RDL expression patterns: globals, parameters, fields, aggregates, conditionals, strings, dates. Each entry is {name, syntax, example, description}. Call this when authoring a textbox value or filter expression instead of guessing — and note the explicit encoding hint for the `&` concat operator.
+Return a static cheat-sheet of common RDL expression patterns: globals, parameters, fields, aggregates (incl. the scope argument, CountRows, RowNumber, RunningValue, InScope), lookups (Lookup / LookupSet / MultiLookup), conditionals, strings, dates. Each entry is {name, syntax, example, description}. Call this when authoring a textbox value or filter expression instead of guessing — and note the explicit encoding hint for the `&` concat operator.
 
 ### `count_where`
 
 *read-only*
 
-Emit =Sum(IIf(`<condition>`, 1, 0)) — the SSRS conditional-count idiom. condition is an RDL expression body (no leading '='). Returns a complete top-level expression suitable for set_textbox_value or any RDL `<Value>` sink.
+Emit =Count(IIf(`<condition>`, 1, Nothing)) — count the rows matching a condition (Count skips Nothing; 0 when none match). condition is an RDL expression body; one leading '=' is dropped. scope (a dataset, data region or group name) appends the aggregate's scope argument, `, "<scope>"` (quotes doubled) — needed outside a data region. Returns a complete top-level expression suitable for set_textbox_value or any RDL `<Value>` sink.
 
 ### `sum_where`
 
 *read-only*
 
-Emit =Sum(IIf(`<condition>`, `<field_expression>`, 0)) — the SSRS conditional-sum idiom. Both args are expression bodies (no leading '=').
+Emit =Sum(IIf(`<condition>`, `<field_expression>`, Nothing)) — sum a value where a condition holds. The false branch is Nothing, not 0: an Int32 0 mixed with the Double / Decimal values of Power BI numeric columns fails with 'aggregate function on data of varying data types'; Sum ignores Nothing (the result is blank when no row matches). Both args are expression bodies; one leading '=' on each is dropped. scope works as in count_where.
 
 ### `iif_format`
 
 *read-only*
 
-Emit =IIf(`<condition>`, `<true_value>`, `<false_value>`). All three args are expression bodies (no leading '='); string literals must already be quoted, e.g. true_value='"Yes"'.
+Emit =IIf(`<condition>`, `<true_value>`, `<false_value>`). All three args are expression bodies (one leading '=' on each is dropped); string literals must already be quoted, e.g. true_value='"Yes"'.
 
 ## `data`
 

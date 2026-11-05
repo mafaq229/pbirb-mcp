@@ -10,16 +10,17 @@ Two related surfaces:
   not ``&amp;`` for the concat operator).
 
 * :func:`count_where` / :func:`sum_where` / :func:`iif_format` — pure
-  string-building emitters for the recurring ``Sum(IIf(cond, 1, 0))``
-  / ``Sum(IIf(cond, X, 0))`` / ``IIf(cond, T, F)`` patterns. Each
-  returns a complete top-level RDL expression with leading ``=``.
-  No I/O, no validation — the user can paste the result into
-  ``set_textbox_value`` or pass it to ``add_dataset_filter`` directly.
+  string-building emitters for the recurring ``Count(IIf(cond, 1,
+  Nothing))`` / ``Sum(IIf(cond, X, Nothing))`` / ``IIf(cond, T, F)``
+  patterns. Each returns a complete top-level RDL expression with
+  leading ``=``; one leading ``=`` on an argument is dropped (#96). No
+  I/O — the user can paste the result into ``set_textbox_value`` or
+  pass it to ``add_dataset_filter`` directly.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 _REFERENCE: dict[str, list[dict[str, str]]] = {
     "globals": [
@@ -75,9 +76,20 @@ _REFERENCE: dict[str, list[dict[str, str]]] = {
             "syntax": "Parameters!<Name>.Label",
             "example": "=Parameters!Region.Label",
             "description": (
-                "Human-readable label (when LabelExpression is set on "
-                "the parameter). Falls back to Value otherwise."
+                "Display label of the selected value: the label of its "
+                "available-values entry (a ValidValues <Label>, or the "
+                "LabelField of a dataset-backed list). Same as Value when "
+                "the parameter has no labels; an array for multi-value."
             ),
+        },
+        {
+            "name": "IsMultiValue",
+            "syntax": "Parameters!<Name>.IsMultiValue",
+            "example": (
+                '=IIf(Parameters!Region.IsMultiValue, Join(Parameters!Region.Value, ", "), '
+                "Parameters!Region.Value)"
+            ),
+            "description": "True when the parameter is declared multi-value.",
         },
         {
             "name": "Count",
@@ -107,7 +119,17 @@ _REFERENCE: dict[str, list[dict[str, str]]] = {
             "name": "IsMissing",
             "syntax": "Fields!<Name>.IsMissing",
             "example": '=IIf(Fields!Email.IsMissing, "n/a", Fields!Email.Value)',
-            "description": "True when the dataset returned no value for the field.",
+            "description": (
+                "True when the field is absent from the dataset's result set "
+                "(the query no longer returns that column). It is not a null "
+                "test — for a null value use IsNothing(Fields!X.Value)."
+            ),
+        },
+        {
+            "name": "IsNothing",
+            "syntax": "IsNothing(<expr>)",
+            "example": '=IIf(IsNothing(Fields!Email.Value), "n/a", Fields!Email.Value)',
+            "description": "True when the value is null (Nothing).",
         },
     ],
     "aggregates": [
@@ -142,22 +164,101 @@ _REFERENCE: dict[str, list[dict[str, str]]] = {
             "description": "First/last value in document order within scope.",
         },
         {
-            "name": "Conditional Count",
-            "syntax": "Sum(IIf(<condition>, 1, 0))",
-            "example": '=Sum(IIf(Fields!Status.Value = "Active", 1, 0))',
+            "name": "Scope argument",
+            "syntax": 'Sum(<expr>, "<scope>")',
+            "example": '=Sum(Fields!Amount.Value, "MainDataset")',
             "description": (
-                "SSRS idiom for 'count rows matching condition'. The "
-                "count_where emitter (Phase 9 commit 38) builds this for you."
+                "Every aggregate takes an optional scope: a dataset, data "
+                "region or group name (in quotes). Required outside a data "
+                "region (a body or header textbox) to say which dataset to "
+                "aggregate; inside one, a group or region name widens the "
+                "scope (e.g. percent of total)."
+            ),
+        },
+        {
+            "name": "CountRows",
+            "syntax": 'CountRows(["<scope>"])',
+            "example": '=CountRows("MainDataset")',
+            "description": "Number of rows in scope (nulls included).",
+        },
+        {
+            "name": "RowNumber",
+            "syntax": "RowNumber(<scope> | Nothing)",
+            "example": "=RowNumber(Nothing)",
+            "description": (
+                "Running row count within a scope; Nothing means the "
+                "outermost data region. Common for alternating row colours."
+            ),
+        },
+        {
+            "name": "RunningValue",
+            "syntax": 'RunningValue(<expr>, <aggregate>, "<scope>" | Nothing)',
+            "example": "=RunningValue(Fields!Amount.Value, Sum, Nothing)",
+            "description": "Running aggregate (Sum, Count, Max, …) up to the current row.",
+        },
+        {
+            "name": "InScope",
+            "syntax": 'InScope("<scope>")',
+            "example": '=IIf(InScope("ProductGroup"), Sum(Fields!Amount.Value), Nothing)',
+            "description": (
+                "True when the current cell is inside the named group or "
+                "data region — tells detail / subtotal cells of a matrix apart."
+            ),
+        },
+        {
+            "name": "Conditional Count",
+            "syntax": "Count(IIf(<condition>, 1, Nothing))",
+            "example": '=Count(IIf(Fields!Status.Value = "Active", 1, Nothing))',
+            "description": (
+                "Count rows matching a condition: Count skips Nothing, so "
+                "non-matching rows don't count (0 when none match). The "
+                "count_where emitter builds this."
             ),
         },
         {
             "name": "Conditional Sum",
-            "syntax": "Sum(IIf(<condition>, Fields!<X>.Value, 0))",
-            "example": '=Sum(IIf(Fields!Status.Value = "Active", Fields!Amount.Value, 0))',
+            "syntax": "Sum(IIf(<condition>, Fields!<X>.Value, Nothing))",
+            "example": ('=Sum(IIf(Fields!Status.Value = "Active", Fields!Amount.Value, Nothing))'),
             "description": (
-                "SSRS idiom for 'sum X where condition'. The sum_where "
-                "emitter (Phase 9 commit 38) builds this for you."
+                "Sum X where a condition holds. Use Nothing, not 0, for the "
+                "false branch: an Int32 0 mixed with Double / Decimal values "
+                "fails ('aggregate function on data of varying data types'); "
+                "Sum ignores Nothing (blank when no row matches). The "
+                "sum_where emitter builds this."
             ),
+        },
+    ],
+    "lookups": [
+        {
+            "name": "Lookup",
+            "syntax": 'Lookup(<source_expr>, <dest_expr>, <result_expr>, "<DataSet>")',
+            "example": (
+                '=Lookup(Fields!ProductID.Value, Fields!ID.Value, Fields!Name.Value, "Products")'
+            ),
+            "description": (
+                "Value from another dataset: the first row of <DataSet> "
+                "whose dest_expr equals source_expr (evaluated in the "
+                "current scope); result_expr is evaluated in <DataSet>. "
+                "Nothing when no row matches."
+            ),
+        },
+        {
+            "name": "LookupSet",
+            "syntax": 'LookupSet(<source_expr>, <dest_expr>, <result_expr>, "<DataSet>")',
+            "example": (
+                "=Join(LookupSet(Fields!OrderID.Value, Fields!OrderID.Value, "
+                'Fields!Item.Value, "Lines"), ", ")'
+            ),
+            "description": "Like Lookup but returns every matching row's result (an array).",
+        },
+        {
+            "name": "MultiLookup",
+            "syntax": 'MultiLookup(<source_array>, <dest_expr>, <result_expr>, "<DataSet>")',
+            "example": (
+                '=Join(MultiLookup(Split(Fields!Codes.Value, ","), Fields!Code.Value, '
+                'Fields!Name.Value, "Codes"), ", ")'
+            ),
+            "description": "Lookup for each value of an array (e.g. a multi-value parameter).",
         },
     ],
     "conditionals": [
@@ -267,8 +368,8 @@ _REFERENCE: dict[str, list[dict[str, str]]] = {
 def get_expression_reference() -> dict[str, Any]:
     """Return a static catalogue of common RDL expression patterns.
 
-    Categories: globals, parameters, fields, aggregates, conditionals,
-    strings, dates. Each entry is ``{name, syntax, example,
+    Categories: globals, parameters, fields, aggregates, lookups,
+    conditionals, strings, dates. Each entry is ``{name, syntax, example,
     description}``. Use this as the first lookup when authoring a
     textbox value or filter expression — saves a round-trip through
     "what's the right RDL syntax for X?" and explicitly calls out the
@@ -278,56 +379,83 @@ def get_expression_reference() -> dict[str, Any]:
     return {cat: [dict(entry) for entry in entries] for cat, entries in _REFERENCE.items()}
 
 
-# ---- aggregate-expression emitters (Phase 9 commit 38) ------------------
+# ---- aggregate-expression emitters ------------------------------------
 
 
-def count_where(condition: str) -> str:
-    """Emit ``=Sum(IIf(<condition>, 1, 0))`` — the SSRS conditional
-    count idiom.
+def _body(label: str, value: object) -> str:
+    """An argument as an expression body: one leading ``=`` (after
+    whitespace) is dropped (#96) — callers routinely pass ``=Fields!…``,
+    which pasted into ``IIf(`` gave an invalid ``IIf(=Fields!…``."""
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("="):
+            text = text[1:].strip()
+        if text:
+            return text
+    raise ValueError(f"{label} must be a non-empty expression body")
 
-    No field argument: the count-rows-matching-condition pattern
-    doesn't reference a field directly. ``condition`` is any RDL
-    expression body (no leading ``=``).
+
+def _scope_arg(scope: Optional[str]) -> str:
+    """``, "<scope>"`` (quotes doubled) for an aggregate, or ``""``."""
+    if scope is None:
+        return ""
+    if not isinstance(scope, str) or not scope.strip():
+        raise ValueError("scope must be a non-empty dataset, data region or group name")
+    return ', "' + scope.strip().replace('"', '""') + '"'
+
+
+def count_where(condition: str, scope: Optional[str] = None) -> str:
+    """Emit ``=Count(IIf(<condition>, 1, Nothing))`` — count the rows
+    matching a condition.
+
+    ``Count`` skips ``Nothing``, so non-matching rows don't count, and
+    the result is 0 (not blank) when none match. (The older
+    ``Sum(IIf(cond, 1, 0))`` idiom is equivalent; ``Count`` keeps the
+    two emitters on the same Nothing-based pattern.)
+
+    ``condition`` is an RDL expression body; one leading ``=`` is
+    dropped. ``scope`` (a dataset, data region or group name) is passed
+    as the aggregate's scope argument — needed outside a data region.
 
     Returns a complete top-level RDL expression with leading ``=``
     suitable for ``set_textbox_value``, a tablix cell ``<Value>``,
     or any other RDL expression sink.
     """
-    if not isinstance(condition, str) or not condition.strip():
-        raise ValueError("condition must be a non-empty expression body")
-    return f"=Sum(IIf({condition}, 1, 0))"
+    cond = _body("condition", condition)
+    return f"=Count(IIf({cond}, 1, Nothing){_scope_arg(scope)})"
 
 
-def sum_where(field_expression: str, condition: str) -> str:
-    """Emit ``=Sum(IIf(<condition>, <field_expression>, 0))`` — the
-    SSRS conditional sum idiom.
+def sum_where(field_expression: str, condition: str, scope: Optional[str] = None) -> str:
+    """Emit ``=Sum(IIf(<condition>, <field_expression>, Nothing))`` — sum
+    a value where a condition holds.
+
+    The false branch is ``Nothing``, not ``0`` (#96): an Int32 ``0``
+    mixed with ``System.Double`` / ``Decimal`` values (every Power BI
+    numeric column) fails with "aggregate function on data of varying
+    data types". ``Sum`` ignores Nothing; it is blank when no row
+    matches.
 
     ``field_expression`` is the value to sum (typically
-    ``Fields!X.Value`` or an expression body). ``condition`` is any
-    RDL expression body (no leading ``=``).
+    ``Fields!X.Value``) and ``condition`` any RDL expression body; one
+    leading ``=`` on either is dropped. ``scope`` is the aggregate's
+    scope argument, as in :func:`count_where`.
     """
-    if not isinstance(field_expression, str) or not field_expression.strip():
-        raise ValueError("field_expression must be a non-empty expression body")
-    if not isinstance(condition, str) or not condition.strip():
-        raise ValueError("condition must be a non-empty expression body")
-    return f"=Sum(IIf({condition}, {field_expression}, 0))"
+    value = _body("field_expression", field_expression)
+    cond = _body("condition", condition)
+    return f"=Sum(IIf({cond}, {value}, Nothing){_scope_arg(scope)})"
 
 
 def iif_format(condition: str, true_value: str, false_value: str) -> str:
     """Emit ``=IIf(<condition>, <true_value>, <false_value>)``.
 
-    All three arguments are RDL expression bodies (no leading ``=``).
-    String literals must already be quoted, e.g.
+    All three arguments are RDL expression bodies; one leading ``=`` on
+    each is dropped. String literals must already be quoted, e.g.
     ``iif_format("Fields!Active.Value", '"Yes"', '"No"')``.
     """
-    for label, val in (
-        ("condition", condition),
-        ("true_value", true_value),
-        ("false_value", false_value),
-    ):
-        if not isinstance(val, str) or not val.strip():
-            raise ValueError(f"{label} must be a non-empty expression body")
-    return f"=IIf({condition}, {true_value}, {false_value})"
+    cond = _body("condition", condition)
+    t = _body("true_value", true_value)
+    f = _body("false_value", false_value)
+    return f"=IIf({cond}, {t}, {f})"
 
 
 __all__ = [

@@ -1120,7 +1120,7 @@ def register_all_tools(server: MCPServer) -> None:
         name="get_expression_reference",
         description=(
             "Cheat sheet of RDL expression patterns (globals, parameters, fields, "
-            "aggregates, conditionals, strings, dates) with syntax and examples. "
+            "aggregates, lookups, conditionals, strings, dates) with syntax and examples. "
             "Use it when writing an expression instead of guessing."
         ),
         input_schema={
@@ -1134,8 +1134,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="count_where",
         description=(
-            "Build a conditional count expression: =Sum(IIf(condition, 1, 0)). "
-            "condition is an expression body without the leading '='."
+            "Build a conditional count expression: =Count(IIf(condition, 1, "
+            "Nothing)). A leading '=' on condition is dropped; scope adds the "
+            "aggregate's scope argument."
         ),
         input_schema={
             "type": "object",
@@ -1145,6 +1146,11 @@ def register_all_tools(server: MCPServer) -> None:
                     "description": (
                         "RDL expression body, e.g. 'Fields!Status.Value = \"Active\"'."
                     ),
+                },
+                "scope": {
+                    "type": ["string", "null"],
+                    "default": None,
+                    "description": "Aggregate scope: dataset, data region or group name.",
                 },
             },
             "required": ["condition"],
@@ -1157,8 +1163,8 @@ def register_all_tools(server: MCPServer) -> None:
         name="sum_where",
         description=(
             "Build a conditional sum expression: =Sum(IIf(condition, "
-            "field_expression, 0)). Both arguments are expression bodies without "
-            "'='."
+            "field_expression, Nothing)). Leading '=' is dropped; scope adds the "
+            "aggregate's scope argument."
         ),
         input_schema={
             "type": "object",
@@ -1173,6 +1179,11 @@ def register_all_tools(server: MCPServer) -> None:
                         "RDL expression body, e.g. 'Fields!Status.Value = \"Active\"'."
                     ),
                 },
+                "scope": {
+                    "type": ["string", "null"],
+                    "default": None,
+                    "description": "Aggregate scope: dataset, data region or group name.",
+                },
             },
             "required": ["field_expression", "condition"],
             "additionalProperties": False,
@@ -1184,8 +1195,8 @@ def register_all_tools(server: MCPServer) -> None:
         name="iif_format",
         description=(
             "Build an =IIf(condition, true_value, false_value) expression, e.g. "
-            "for conditional text or colours. Arguments are expression bodies "
-            "without '='; quote string literals ('\"Yes\"')."
+            "for conditional text or colours. Arguments are expression bodies (a "
+            "leading '=' is dropped); quote string literals ('\"Yes\"')."
         ),
         input_schema={
             "type": "object",
