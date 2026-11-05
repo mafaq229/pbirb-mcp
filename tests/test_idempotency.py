@@ -645,6 +645,52 @@ CASES: dict[str, Case] = {
 # (clearing, alternative sources, …). Same contract.
 VARIANTS: list[tuple[str, Case]] = [
     (
+        "set_datasource_connection",
+        Case(
+            {
+                "name": "PowerBIDataset",
+                "workspace_url": "Sales WS",
+                "dataset_name": "Sales; Model",
+                "provider": "pbidataset",
+                "catalog_id": "sobe_wowvirtualserver-1",
+                "identity_provider": "https://login.microsoftonline.com/organizations, x",
+            }
+        ),
+    ),
+    (
+        # A PBIDATASET source repointed without catalog_id: the second call
+        # keeps the (display-name) catalog and changes nothing.
+        "set_datasource_connection",
+        Case(
+            {"name": "Pbi", "workspace_url": "Other WS", "dataset_name": "Model 2"},
+            setup=[
+                (
+                    "add_data_source",
+                    {
+                        "name": "Pbi",
+                        "workspace_url": "WS",
+                        "dataset_name": "Model",
+                        "provider": "pbidataset",
+                    },
+                )
+            ],
+        ),
+    ),
+    (
+        "add_data_source",
+        Case(
+            {
+                "name": "Pbi",
+                "workspace_url": "powerbi://api.powerbi.com/v1.0/myorg/WS",
+                "dataset_name": "Model",
+                "provider": "pbidataset",
+                "catalog_id": "sobe-1",
+                "identity_provider": "idp",
+            },
+            second="refuses",
+        ),
+    ),
+    (
         "set_group_sort",
         Case(
             {

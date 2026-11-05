@@ -288,14 +288,14 @@ class TestAddDataSource:
 
 
 class TestAddDataSourcePbidataset:
-    """v0.4 — `provider="pbidataset"` emits the modern PBI Desktop shape:
+    """`provider="pbidataset"` emits the Report Builder shape:
 
     * ``<DataProvider>PBIDATASET</DataProvider>``
     * ``<ConnectString>Data Source=pbiazure://api.powerbi.com/;Initial
-      Catalog=<dataset>;Integrated Security=ClaimsToken``
+      Catalog=<catalog>;Integrated Security=ClaimsToken``
     * Adds ``<rd:PowerBIWorkspaceName>`` and ``<rd:PowerBIDatasetName>``
       siblings for human-readable display in Report Builder.
-    * Omits ``<rd:SecurityType>`` (auth lives in the ConnectString).
+    * ``<rd:SecurityType>None</rd:SecurityType>`` (#71).
 
     Recognised round-trip-safe by ``_is_pbidataset_dataset`` so the
     PBIDATASET ``@``-prefix defence kicks in on datasets bound to this
@@ -359,10 +359,10 @@ class TestAddDataSourcePbidataset:
         etree.SubElement(query, q("DataSourceName")).text = "ModernSource"
         assert _is_pbidataset_dataset(doc, synthetic) is True
 
-    def test_pbidataset_omits_security_type_element(self, rdl_path):
-        """The real PBIDATASET shape (see fixtures/RAG Report.rdl) does
-        NOT carry an <rd:SecurityType> element — auth is encoded in
-        Integrated Security=ClaimsToken inside the ConnectString.
+    def test_pbidataset_writes_security_type_none(self, rdl_path):
+        """Every real Report Builder PBIDATASET source carries
+        ``<rd:SecurityType>None</rd:SecurityType>`` (#71) — auth itself is
+        ``Integrated Security=ClaimsToken`` inside the ConnectString.
         """
         from pbirb_mcp.core.xpath import RD_NS
 
@@ -377,7 +377,7 @@ class TestAddDataSourcePbidataset:
         ds = next(
             d for d in doc.root.iter(f"{{{RDL_NS}}}DataSource") if d.get("Name") == "ModernSource"
         )
-        assert ds.find(f"{{{RD_NS}}}SecurityType") is None
+        assert ds.find(f"{{{RD_NS}}}SecurityType").text == "None"
 
     def test_unknown_provider_rejected(self, rdl_path):
         with pytest.raises(ValueError, match="unknown provider"):
@@ -501,6 +501,213 @@ class TestRenameDataSource:
                 old_name="NoSuch",
                 new_name="X",
             )
+
+
+IDP = (
+    "https://login.microsoftonline.com/organizations, "
+    "https://analysis.windows.net/powerbi/api, 929d0ec0-7a41-4b1e-bc7c-b754a28bddcc"
+)
+RB_SOURCE = (
+    '<DataSource Name="Model">'
+    "<ConnectionProperties><DataProvider>PBIDATASET</DataProvider>"
+    "<ConnectString>Data Source=pbiazure://api.powerbi.com/;"
+    f'Identity Provider="{IDP}";'
+    "Initial Catalog=sobe_wowvirtualserver-0f1e2d3c;Integrated Security=ClaimsToken"
+    "</ConnectString></ConnectionProperties>"
+    "<rd:SecurityType>None</rd:SecurityType>"
+    "<rd:DataSourceID>44444444-4444-4444-4444-444444444444</rd:DataSourceID>"
+    "<rd:PowerBIWorkspaceName>Sales WS</rd:PowerBIWorkspaceName>"
+    "<rd:PowerBIDatasetName>Sales Model</rd:PowerBIDatasetName></DataSource>"
+)
+
+
+@pytest.fixture
+def rb_path(tmp_path: Path) -> Path:
+    """The minimal fixture plus a Report Builder–authored PBIDATASET source."""
+    dest = tmp_path / "rb.rdl"
+    text = FIXTURE.read_text(encoding="utf-8")
+    text = text.replace("</DataSources>", RB_SOURCE + "</DataSources>", 1)
+    dest.write_text(text, encoding="utf-8")
+    return dest
+
+
+def _ds_xml(path: Path, name: str) -> str:
+    """The DataSource's canonical XML, minus its (random) DataSourceID."""
+    from lxml import etree
+
+    from pbirb_mcp.core.xpath import RD_NS
+
+    doc = RDLDocument.open(path)
+    ds = next(d for d in doc.root.iter(f"{{{RDL_NS}}}DataSource") if d.get("Name") == name)
+    ds = etree.fromstring(etree.tostring(ds))
+    ds.find(f"{{{RD_NS}}}DataSourceID").text = "-"
+    for el in ds.iter():
+        el.tail = None
+        if el.text is not None and not el.text.strip():
+            el.text = None
+    return etree.tostring(ds, encoding="unicode")
+
+
+class TestPbidatasetConnection:
+    """#71: the real PBIDATASET shape is preserved and emitted; connect
+    strings are escaped."""
+
+    def test_set_keeps_pbidataset_provider_and_updates_labels(self, rb_path):
+        result = set_datasource_connection(str(rb_path), "Model", "Sales WS", "Sales Model v2")
+        ds = get_data_source(str(rb_path), "Model")
+        assert ds["data_provider"] == "PBIDATASET"
+        assert ds["connect_string"].startswith("Data Source=pbiazure://api.powerbi.com/;")
+        assert "Integrated Security=ClaimsToken" in ds["connect_string"]
+        assert ds["integrated_security"] is None  # no <IntegratedSecurity> element
+        assert ds["security_type"] == "None"
+        assert ds["powerbi_dataset_name"] == "Sales Model v2"
+        assert ds["powerbi_workspace_name"] == "Sales WS"
+        # The Identity Provider key survives the rewrite, still quoted.
+        assert f'Identity Provider="{IDP}"' in ds["connect_string"]
+        assert result["before"]["powerbi_dataset_name"] == "Sales Model"
+        assert result["after"] == ds
+        # No catalog_id: the display name goes in Initial Catalog, with a warning.
+        assert "Initial Catalog=Sales Model v2;" in ds["connect_string"]
+        assert result["warnings"] and "catalog_id" in result["warnings"][0]
+
+    def test_set_with_catalog_id(self, rb_path):
+        result = set_datasource_connection(
+            str(rb_path), "Model", "Other WS", "Sales Model", catalog_id="sobe_wowvirtualserver-99"
+        )
+        ds = get_data_source(str(rb_path), "Model")
+        assert "Initial Catalog=sobe_wowvirtualserver-99;" in ds["connect_string"]
+        assert ds["powerbi_workspace_name"] == "Other WS"
+        assert result["warnings"] == []
+
+    def test_set_same_model_keeps_internal_id_and_bytes(self, rb_path):
+        before = rb_path.read_bytes()
+        result = set_datasource_connection(
+            str(rb_path), "Model", "powerbi://api.powerbi.com/v1.0/myorg/Sales WS", "Sales Model"
+        )
+        assert result["changed"] is False
+        assert result["warnings"] == []
+        assert rb_path.read_bytes() == before
+
+    def test_workspace_url_prefix_stripped_from_label(self, rdl_path):
+        add_data_source(
+            str(rdl_path),
+            "Pbi",
+            "powerbi://api.powerbi.com/v1.0/myorg/Sales WS",
+            "Sales Model",
+            provider="pbidataset",
+        )
+        assert get_data_source(str(rdl_path), "Pbi")["powerbi_workspace_name"] == "Sales WS"
+
+    def test_add_pbidataset_with_ids_matches_report_builder_shape(self, rdl_path, rb_path):
+        result = add_data_source(
+            str(rdl_path),
+            "Model",
+            "Sales WS",
+            "Sales Model",
+            provider="pbidataset",
+            catalog_id="sobe_wowvirtualserver-0f1e2d3c",
+            identity_provider=IDP,
+        )
+        assert result["warnings"] == []
+        assert _ds_xml(rdl_path, "Model") == _ds_xml(rb_path, "Model")
+
+    def test_add_then_set_gives_the_add_shape(self, rdl_path, tmp_path):
+        other = tmp_path / "other.rdl"
+        shutil.copy(FIXTURE, other)
+        kwargs = {"provider": "pbidataset", "catalog_id": "sobe-1", "identity_provider": IDP}
+        add_data_source(str(rdl_path), "Src", "Sales WS", "Sales Model", **kwargs)
+        add_data_source(str(other), "Src", "Old WS", "Old Model", provider="pbidataset")
+        set_datasource_connection(
+            str(other), "Src", "Sales WS", "Sales Model", catalog_id="sobe-1", identity_provider=IDP
+        )
+        assert _ds_xml(other, "Src") == _ds_xml(rdl_path, "Src")
+
+    def test_explicit_provider_converts_sql_to_pbidataset(self, rdl_path):
+        set_datasource_connection(
+            str(rdl_path), "PowerBIDataset", "WS", "Model", provider="pbidataset"
+        )
+        ds = get_data_source(str(rdl_path), "PowerBIDataset")
+        assert ds["data_provider"] == "PBIDATASET"
+        assert ds["integrated_security"] is None
+        assert ds["security_type"] == "None"
+        assert ds["data_source_id"] == "11111111-1111-1111-1111-111111111111"
+        assert ds["connect_string"] == (
+            "Data Source=pbiazure://api.powerbi.com/;Initial Catalog=Model;"
+            "Integrated Security=ClaimsToken"
+        )
+
+    def test_explicit_provider_converts_pbidataset_to_sql(self, rb_path):
+        set_datasource_connection(str(rb_path), "Model", "WS", "Model", provider="sql")
+        ds = get_data_source(str(rb_path), "Model")
+        assert ds["data_provider"] == "SQL"
+        assert ds["connect_string"] == (
+            "Data Source=powerbi://api.powerbi.com/v1.0/myorg/WS;Initial Catalog=Model"
+        )
+        assert ds["integrated_security"] is True
+        assert ds["security_type"] == "Integrated"
+        assert ds["powerbi_workspace_name"] is None
+        assert ds["powerbi_dataset_name"] is None
+
+    def test_other_provider_refused_without_explicit_provider(self, rdl_path):
+        text = rdl_path.read_text(encoding="utf-8").replace(
+            "<DataProvider>SQL</DataProvider>", "<DataProvider>OLEDB</DataProvider>", 1
+        )
+        rdl_path.write_text(text, encoding="utf-8")
+        with pytest.raises(ValueError, match="OLEDB"):
+            set_datasource_connection(str(rdl_path), "PowerBIDataset", "WS", "Model")
+
+    def test_unknown_provider_argument_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="unknown provider"):
+            set_datasource_connection(str(rdl_path), "PowerBIDataset", "WS", "M", provider="x")
+
+    @pytest.mark.parametrize("provider", ["sql", "pbidataset"])
+    def test_injected_keys_are_quoted(self, rdl_path, provider):
+        from pbirb_mcp.core.connection import get_value, parse_connect_string
+
+        evil = 'm;Integrated Security=SSPI;Data Source="elsewhere"'
+        add_data_source(str(rdl_path), "Inj", "ws", evil, provider=provider)
+        cs = get_data_source(str(rdl_path), "Inj")["connect_string"]
+        pairs = parse_connect_string(cs)
+        assert [k for k, _v in pairs].count("Data Source") == 1
+        assert get_value(pairs, "Initial Catalog") == evil
+        set_datasource_connection(str(rdl_path), "Inj", "ws;x=y", evil, catalog_id=evil)
+        pairs = parse_connect_string(get_data_source(str(rdl_path), "Inj")["connect_string"])
+        assert [k for k, _v in pairs].count("Data Source") == 1
+        assert get_value(pairs, "Initial Catalog") == evil
+
+    def test_output_is_xsd_valid(self, rb_path):
+        from pbirb_mcp.ops.validate import validate_report
+
+        set_datasource_connection(str(rb_path), "Model", "WS 2", "Model 2", catalog_id="id-2")
+        add_data_source(str(rb_path), "New", "WS", "M", provider="pbidataset")
+        assert validate_report(str(rb_path))["valid"]
+
+
+class TestConnectStringSyntax:
+    def test_round_trip_with_quotes(self):
+        from pbirb_mcp.core.connection import format_connect_string, parse_connect_string
+
+        pairs = [("Data Source", "a"), ("Initial Catalog", 'x;"y"=z'), ("Identity Provider", IDP)]
+        text = format_connect_string(pairs)
+        assert 'Initial Catalog="x;""y""=z"' in text
+        assert parse_connect_string(text) == pairs
+
+    def test_parses_single_quotes_and_whitespace(self):
+        from pbirb_mcp.core.connection import parse_connect_string
+
+        assert parse_connect_string(" Data Source = a ; Initial Catalog='b;c''d' ;;") == [
+            ("Data Source", "a"),
+            ("Initial Catalog", "b;c'd"),
+        ]
+
+    def test_merge_is_verbatim_when_nothing_changes(self):
+        from pbirb_mcp.core.connection import merge_connect_string
+
+        text = "Data Source = a;Initial Catalog=b"
+        assert merge_connect_string(text, [("Initial Catalog", "b")]) == text
+        assert merge_connect_string(text, [("Identity Provider", "p")]) == (
+            "Data Source=a;Identity Provider=p;Initial Catalog=b"
+        )
 
 
 class TestToolRegistration:

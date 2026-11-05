@@ -285,6 +285,77 @@ class TestCreateReportWithDatasource:
         assert "Integrated Security=ClaimsToken" not in result["connect_string"]
 
 
+def _ds_canonical(path: Path, name: str) -> str:
+    """The DataSource's XML with whitespace and its random DataSourceID
+    normalised away."""
+    from lxml import etree
+
+    from pbirb_mcp.core.xpath import RD_NS
+
+    doc = RDLDocument.open(path)
+    ds = next(d for d in doc.root.iter(f"{{{RDL_NS}}}DataSource") if d.get("Name") == name)
+    ds = etree.fromstring(etree.tostring(ds))
+    ds.find(f"{{{RD_NS}}}DataSourceID").text = "-"
+    for el in ds.iter():
+        el.tail = None
+        if el.text is not None and not el.text.strip():
+            el.text = None
+    return etree.tostring(ds, encoding="unicode")
+
+
+class TestOneConnectionShape:
+    """#71: create_report, add_data_source and set_datasource_connection
+    write one identical shape, per provider."""
+
+    FIXTURE = Path(__file__).parent / "fixtures" / "pbi_paginated_minimal.rdl"
+
+    @pytest.mark.parametrize(
+        ("provider", "extra"),
+        [
+            ("pbidataset", {}),
+            ("pbidataset", {"catalog_id": "sobe-1", "identity_provider": "p, q"}),
+            ("sql", {}),
+            ("sql", {"catalog_id": "sobe-1"}),
+        ],
+    )
+    def test_three_entry_points_agree(self, tmp_path: Path, provider, extra):
+        import shutil
+
+        from pbirb_mcp.ops.datasource import add_data_source, set_datasource_connection
+        from pbirb_mcp.ops.validate import validate_report
+
+        ws, model = "powerbi://api.powerbi.com/v1.0/myorg/Sales WS", "Sales; Model"
+        scratch = tmp_path / "scratch.rdl"
+        result = create_report(
+            str(scratch),
+            datasource={
+                "name": "Src",
+                "workspace_url": ws,
+                "dataset_name": model,
+                "provider": provider,
+                **extra,
+            },
+        )
+        added = tmp_path / "added.rdl"
+        shutil.copy(self.FIXTURE, added)
+        add_data_source(str(added), "Src", ws, model, provider=provider, **extra)
+        repointed = tmp_path / "repointed.rdl"
+        shutil.copy(self.FIXTURE, repointed)
+        add_data_source(str(repointed), "Src", "Old WS", "Old", provider=provider)
+        set_datasource_connection(str(repointed), "Src", ws, model, **extra)
+
+        shape = _ds_canonical(scratch, "Src")
+        assert _ds_canonical(added, "Src") == shape
+        assert _ds_canonical(repointed, "Src") == shape
+        for p in (scratch, added, repointed):
+            assert validate_report(str(p))["valid"]
+        if provider == "pbidataset":
+            assert "<rd:SecurityType>None</rd:SecurityType>" in shape
+            assert "<rd:PowerBIWorkspaceName>Sales WS</rd:PowerBIWorkspaceName>" in shape
+            assert ("warnings" in result) == (not extra)
+        assert 'Initial Catalog="' in shape or "Initial Catalog=sobe-1" in shape
+
+
 class TestCreateReportToolRegistration:
     def test_tool_registered(self):
         from pbirb_mcp.server import MCPServer

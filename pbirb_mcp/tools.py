@@ -280,9 +280,11 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_datasource_connection",
         description=(
-            "Point a data source at a Power BI workspace/semantic model (XMLA). "
-            "workspace_url takes a workspace name or a full powerbi:// URL; "
-            "DataProvider is set to SQL (the AS provider id RDL uses)."
+            "Point a data source at another Power BI workspace/semantic model. "
+            "Keeps the source's provider (PBIDATASET stays PBIDATASET, SQL stays "
+            "XMLA) and updates its workspace/model labels; provider converts. "
+            "catalog_id sets a PBIDATASET source's Initial Catalog (the model id). "
+            "Returns before/after."
         ),
         input_schema={
             "type": "object",
@@ -298,11 +300,27 @@ def register_all_tools(server: MCPServer) -> None:
                 },
                 "dataset_name": {
                     "type": "string",
-                    "description": "PBI semantic model (Initial Catalog).",
+                    "description": "PBI semantic model display name.",
                 },
                 "integrated_security": {
                     "type": "boolean",
                     "description": "Default true. False omits the element.",
+                },
+                "provider": {
+                    "type": ["string", "null"],
+                    "enum": ["sql", "pbidataset", None],
+                    "default": None,
+                    "description": "Omit to keep the source's current provider.",
+                },
+                "catalog_id": {
+                    "type": ["string", "null"],
+                    "default": None,
+                    "description": "Initial Catalog; PBIDATASET: the model's internal id.",
+                },
+                "identity_provider": {
+                    "type": ["string", "null"],
+                    "default": None,
+                    "description": "PBIDATASET Identity Provider value.",
                 },
             },
             "required": ["path", "name", "workspace_url", "dataset_name"],
@@ -345,8 +363,9 @@ def register_all_tools(server: MCPServer) -> None:
             "Add a data source for a Power BI workspace/semantic model. "
             "workspace_url takes a workspace name or powerbi:// URL; gets a fresh "
             "DataSourceID; refuses a duplicate name. provider='sql' (default) "
-            "writes the XMLA (DataProvider=SQL) shape, 'pbidataset' the Power BI "
-            "Desktop (PBIDATASET) shape."
+            "writes the XMLA (DataProvider=SQL) shape, 'pbidataset' the Report "
+            "Builder (PBIDATASET) shape; catalog_id is its Initial Catalog (the "
+            "model id)."
         ),
         input_schema={
             "type": "object",
@@ -361,6 +380,8 @@ def register_all_tools(server: MCPServer) -> None:
                     "enum": ["sql", "pbidataset"],
                     "default": "sql",
                 },
+                "catalog_id": {"type": ["string", "null"], "default": None},
+                "identity_provider": {"type": ["string", "null"], "default": None},
             },
             "required": ["path", "name", "workspace_url", "dataset_name"],
             "additionalProperties": False,

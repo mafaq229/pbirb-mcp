@@ -129,13 +129,13 @@ Change the value expression of an existing query parameter. Same PBIDATASET @-pr
 
 *idempotent*
 
-Repoint a DataSource at a Power BI XMLA endpoint. workspace_url accepts a bare workspace name or a full powerbi:// URL; DataProvider is set to SQL (the AS provider id in RDL).
+Repoint a DataSource at another Power BI workspace / semantic model, in the source's own shape. provider omitted keeps the current provider: a PBIDATASET source stays PBIDATASET (pbiazure:// ConnectString with its other keys such as Identity Provider kept, `<rd:SecurityType>None`, `<rd:PowerBIWorkspaceName>` / `<rd:PowerBIDatasetName>` labels updated — the workspace label is the bare name, any powerbi://…/myorg/ prefix stripped); a SQL source keeps the XMLA shape (Data Source=powerbi://…/myorg/`<workspace>`;Initial Catalog=`<model>`, `<IntegratedSecurity>`, `<rd:SecurityType>`). A source with no DataProvider gets the SQL shape; any other provider is refused unless provider='sql'/'pbidataset' converts it. PBIDATASET's Initial Catalog is the model's internal id (sobe_wowvirtualserver-`<guid>` in Report Builder output): catalog_id sets it; without it the current id is kept when the workspace and model labels are unchanged, otherwise the display name is written and a warning returned. identity_provider sets PBIDATASET's Identity Provider. Values are quoted when they contain `;`, `=` or quotes, so a name can't inject keys. Returns {name, data_provider, connect_string, integrated_security, changed, before, after, warnings}; before/after are get_data_source shapes.
 
 ### `list_data_sources`
 
 *read-only*
 
-Return a rich list of every `<DataSource>` in the report — name, data_provider, connect_string, integrated_security, shared_reference, security_type, data_source_id. describe_report.data_sources returns names only; this tool is the authoring-friendly read.
+Return a rich list of every `<DataSource>` in the report — name, data_provider, connect_string, integrated_security, shared_reference, security_type, data_source_id, powerbi_workspace_name, powerbi_dataset_name (the rd: labels). describe_report.data_sources returns names only; this tool is the authoring-friendly read.
 
 ### `get_data_source`
 
@@ -145,7 +145,7 @@ Single-DataSource read-back (parity with get_textbox / get_image / get_rectangle
 
 ### `add_data_source`
 
-Create a new `<DataSource>` for a Power BI XMLA endpoint. workspace_url accepts a bare workspace name or a full powerbi:// URL. Generates a fresh rd:DataSourceID GUID. Refuses if a DataSource of the same name already exists. provider='sql' (default) emits the legacy DataProvider=SQL + powerbi:// ConnectString + `<rd:SecurityType>` shape; provider='pbidataset' emits the modern PBI Desktop shape — DataProvider=PBIDATASET, pbiazure:// ConnectString with ClaimsToken auth, plus `<rd:PowerBIWorkspaceName>` / `<rd:PowerBIDatasetName>` siblings, no `<rd:SecurityType>`.
+Create a new `<DataSource>` for a Power BI XMLA endpoint. workspace_url accepts a bare workspace name or a full powerbi:// URL. Generates a fresh rd:DataSourceID GUID. Refuses if a DataSource of the same name already exists. provider='sql' (default) emits the legacy DataProvider=SQL + powerbi:// ConnectString + `<IntegratedSecurity>` + `<rd:SecurityType>Integrated` shape; provider='pbidataset' emits the shape Power BI Report Builder writes — DataProvider=PBIDATASET, `Data Source=pbiazure://api.powerbi.com/;[Identity Provider=…;]Initial Catalog=…;Integrated Security=ClaimsToken`, `<rd:SecurityType>None`, plus `<rd:PowerBIWorkspaceName>` (bare workspace name; a powerbi:// URL prefix is stripped) / `<rd:PowerBIDatasetName>` labels. catalog_id is the Initial Catalog — for PBIDATASET the model's internal id (sobe_wowvirtualserver-`<guid>`); without it the display name is used and a warning returned. identity_provider (PBIDATASET only) sets Identity Provider. Values are quoted when they contain `;`, `=` or quotes. Returns the get_data_source shape plus {kind, warnings}. create_report's datasource and set_datasource_connection write the identical shape.
 
 ### `remove_data_source`
 
@@ -843,7 +843,7 @@ Clone an .rdl to a new path. When regenerate_ids=true (default), every `<rd:Data
 
 ### `create_report`
 
-Emit a minimal valid RDL from scratch at `path`. Refuses if `path` exists (no clobbering). Default page_setup is US Letter portrait with 1in margins; pass any subset of {page_height, page_width, margin_top, margin_bottom, margin_left, margin_right, body_width, body_height} to override. Pass `datasource` {name, workspace_url, dataset_name, provider, integrated_security} to wire a real PBI XMLA endpoint; omit for a placeholder DataSource1 + DataSet1 stub the caller fills in via subsequent tools. Validates structurally + against the bundled XSD before saving (atomic .tmp + rename). Returns {path, validated, size_bytes}.
+Emit a minimal valid RDL from scratch at `path`. Refuses if `path` exists (no clobbering). Default page_setup is US Letter portrait with 1in margins; pass any subset of {page_height, page_width, margin_top, margin_bottom, margin_left, margin_right, body_width, body_height} to override. Pass `datasource` {name, workspace_url, dataset_name, provider, integrated_security, catalog_id, identity_provider} to wire a real Power BI connection in exactly the add_data_source shape; omit it (or workspace_url / dataset_name) for a placeholder DataSource1 + DataSet1 stub the caller fills in via subsequent tools. Validates structurally + against the bundled XSD before saving (atomic .tmp + rename). Returns {path, validated, size_bytes}, plus warnings when the connection builder has any (e.g. a PBIDATASET catalog taken from the display name).
 
 ### `raw_xml_view`
 

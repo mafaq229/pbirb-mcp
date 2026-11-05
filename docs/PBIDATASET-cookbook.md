@@ -44,16 +44,16 @@ Override with `force_at_prefix=True` for the rare cases that need the
 `_is_pbidataset_dataset` recognises two shapes for "this dataset is
 PBIDATASET":
 
-1. **Modern.** `<DataProvider>PBIDATASET</DataProvider>` — what current
-   Power BI Desktop emits.
+1. **Modern.** `<DataProvider>PBIDATASET</DataProvider>` — what Power
+   BI Report Builder writes (every source in the real reports we've
+   seen), and what `add_data_source(provider="pbidataset")` emits.
 2. **Legacy.** `<DataProvider>SQL</DataProvider>` plus a
    `<ConnectString>` starting with `Data Source=powerbi://...` — the
-   wire identifier our own `set_datasource_connection` and current
-   `add_data_source` emit.
+   XMLA shape `add_data_source` writes by default (`provider="sql"`).
 
-Both are functionally equivalent; the resolver doesn't care. (The
-v0.4 roadmap tracks bumping `add_data_source` to emit the modern
-shape.)
+The resolver treats both the same. `set_datasource_connection` keeps a
+source's provider (a PBIDATASET source stays PBIDATASET) unless you
+pass `provider=` to convert it.
 
 ## DesignerState sync
 
@@ -161,21 +161,21 @@ walking each dataset's `<QueryParameters>` block manually.
 Run `verify_report` to surface all three plus every other lint rule
 (and the XSD check) in one call.
 
-## v0.4 — `add_data_source(provider="pbidataset")`
+## The PBIDATASET connection shape
 
-Pre-v0.4, `add_data_source` always emitted the legacy
-`<DataProvider>SQL</DataProvider>` + `powerbi://api.powerbi.com/v1.0/myorg/<workspace>`
-ConnectString shape. Current Power BI Desktop emits the modern
-PBIDATASET shape directly; for fresh-report authoring, match what RB
-itself writes today.
+`add_data_source(provider="pbidataset")`, `create_report(datasource={...,
+"provider": "pbidataset"})` and `set_datasource_connection` on a
+PBIDATASET source all write the shape Power BI Report Builder writes:
 
 ```python
 add_data_source(
     path="/path/to/report.rdl",
     name="PowerBIDataset",
-    workspace_url="ADNOC",
-    dataset_name="RAG Report",
-    provider="pbidataset",  # NEW in v0.4 — default is "sql" for back-compat
+    workspace_url="ADNOC",  # or powerbi://api.powerbi.com/v1.0/myorg/ADNOC
+    dataset_name="RAG Report",  # display name -> rd:PowerBIDatasetName
+    provider="pbidataset",  # default is "sql" (the legacy XMLA shape)
+    catalog_id="sobe_wowvirtualserver-<guid>",  # Initial Catalog (the model id)
+    identity_provider="https://login.microsoftonline.com/organizations, ...",  # optional
 )
 ```
 
@@ -185,8 +185,9 @@ Bytes:
 <DataSource Name="PowerBIDataset">
   <ConnectionProperties>
     <DataProvider>PBIDATASET</DataProvider>
-    <ConnectString>Data Source=pbiazure://api.powerbi.com/;Initial Catalog=RAG Report;Integrated Security=ClaimsToken</ConnectString>
+    <ConnectString>Data Source=pbiazure://api.powerbi.com/;Identity Provider="https://login.microsoftonline.com/organizations, ...";Initial Catalog=sobe_wowvirtualserver-&lt;guid&gt;;Integrated Security=ClaimsToken</ConnectString>
   </ConnectionProperties>
+  <rd:SecurityType>None</rd:SecurityType>
   <rd:DataSourceID>...</rd:DataSourceID>
   <rd:PowerBIWorkspaceName>ADNOC</rd:PowerBIWorkspaceName>
   <rd:PowerBIDatasetName>RAG Report</rd:PowerBIDatasetName>
@@ -194,22 +195,23 @@ Bytes:
 ```
 
 Notes:
-- `<DataProvider>PBIDATASET</DataProvider>` instead of `SQL`.
-- `pbiazure://api.powerbi.com/` ConnectString with `Integrated
-  Security=ClaimsToken` (vs the legacy `powerbi://api.powerbi.com/v1.0/myorg/<workspace>`).
-- `<rd:PowerBIWorkspaceName>` and `<rd:PowerBIDatasetName>` siblings
-  for RB display.
-- No `<rd:SecurityType>` element — auth lives in the ConnectString.
+- `Initial Catalog` is the semantic model's internal id, not its
+  display name. Copy it from a source Report Builder wrote for that
+  model. Without `catalog_id` the display name is written and the call
+  returns a warning: the connection may not resolve.
+- The workspace appears only in `<rd:PowerBIWorkspaceName>`, as a bare
+  name; a `powerbi://…/myorg/` prefix is stripped.
+- `<rd:SecurityType>None</rd:SecurityType>`; auth is `Integrated
+  Security=ClaimsToken` inside the ConnectString.
+- Connect-string values containing `;`, `=` or quotes are written
+  double-quoted (`"` doubled), so a name can't inject keys.
 
-Both shapes round-trip through `_is_pbidataset_dataset` so the
-`@`-prefix defence kicks in regardless. The default `provider="sql"`
-preserves v0.3.x byte output exactly — existing fixtures and tests
-see no surprise.
-
-`create_report(datasource={..., "provider": "pbidataset"})` (v0.4
-commit 14) emits the same shape inside a scratch RDL, so a
-brand-new report can ship with a real PBI XMLA connection in one
-call.
+`set_datasource_connection` keeps the provider. On a PBIDATASET source
+it keeps the other connect-string keys (`Identity Provider`, a
+non-default `pbiazure://` host) and updates both labels. Without
+`catalog_id` it keeps the current `Initial Catalog` only when the
+workspace and model labels don't change. Pass `provider="sql"` or
+`provider="pbidataset"` to convert a source on purpose.
 
 ## See also
 
