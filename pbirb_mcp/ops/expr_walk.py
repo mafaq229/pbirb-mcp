@@ -17,6 +17,13 @@ Public API::
     aggregate_calls(tokens) -> list[Call]              # Sum(…, "Scope"), Lookup(…) …
     enclosing_calls(calls, index) -> list[Call]        # innermost first
     ScopeIndex(root)                                   # datasets / regions / groups
+    find_field_references(root, dataset, field)        # consumers of one field (#72)
+    locator(elem) -> str                               # Type[Name='X']/Sub/Path label
+    parameter_references(tokens, name=None)            # Parameters!X / ("X") / Report.Parameters…
+    iter_parameter_references(root, name=None)         # (elem, text, tokens, refs), incl. <Code>
+    rename_parameter_references(text, tokens, refs, new)
+    parameter_dependency_edges(root) / parameter_dependencies(root)
+    forward_dependencies(order, edges)                 # dependants declared before a dependency
 
 All token indices refer to the *significant* token list (whitespace and
 comments dropped) — what :func:`expression_tokens` returns and what
@@ -399,10 +406,336 @@ class ScopeIndex:
         return None
 
 
+# ---- field consumers (#72) -------------------------------------------------
+
+
+def locator(elem: etree._Element, max_named: int = 3) -> str:
+    """Human-readable locator for ``elem``: its nearest ``max_named`` named
+    ancestors (``Type[Name='X']``, outermost first, joined by ``>``), then
+    the unnamed path below the nearest one (joined by ``/``) — e.g.
+    ``Tablix[Name='T']>Textbox[Name='Amount']/Paragraphs/Paragraph/TextRuns/TextRun/Value``
+    or ``ReportParameter[Name='P']/ValidValues/DataSetReference/ValueField``.
+    Walks to the root, so a named ancestor is never missed.
+    """
+    path: list[str] = []
+    named: list[str] = []
+    cur: Optional[etree._Element] = elem
+    while cur is not None and len(named) < max_named:
+        if isinstance(cur.tag, str):
+            local = _local(cur)
+            if cur.get("Name"):
+                named.append(f"{local}[Name={cur.get('Name')!r}]")
+            elif not named:
+                path.append(local)
+        cur = cur.getparent()
+    head = ">".join(reversed(named))
+    tail = "/".join(reversed(path))
+    if head and tail:
+        return f"{head}/{tail}"
+    return head or tail or "(unnamed)"
+
+
+class FieldReference(NamedTuple):
+    """One consumer of a dataset field, found by :func:`find_field_references`.
+
+    ``element`` holds the reference; ``locator`` labels it (see
+    :func:`locator`); ``kind`` is ``"expression"`` (``Fields!X…`` /
+    ``Fields("X")`` in an ``=``-expression) or ``"dataset_reference"``
+    (a parameter's ``DataSetReference/ValueField|LabelField``); ``text``
+    is the matched source text (the reference, or the bare field name);
+    ``scope`` is the dataset the reference was resolved to, ``None`` when
+    it could not be resolved statically (counted as a reference anyway).
+    """
+
+    element: etree._Element
+    locator: str
+    kind: str
+    text: str
+    scope: Optional[str]
+
+
+def _resolve_ref_dataset(
+    ref: Ref,
+    calls: Sequence[Call],
+    region_ds: Optional[str],
+    index: ScopeIndex,
+) -> tuple[bool, Optional[str]]:
+    """``(resolved, dataset)`` for one ``Fields`` reference: the innermost
+    enclosing call with a literal scope wins (a group / data region name
+    resolves to the dataset it reads); a ``Lookup`` with a non-literal
+    dataset, or an unknown scope name, is unresolved; otherwise the data
+    region's / DataSet's dataset; outside any region, the report's only
+    dataset (unresolved when there are several)."""
+    for call in enclosing_calls(calls, ref.first):  # innermost first
+        if call.scope is not None:
+            ds = index.resolve(call.scope)
+            return (ds is not None), ds
+        if call.kind == LOOKUP:
+            return False, None
+    if region_ds is not None:
+        return True, region_ds
+    if len(index.datasets) == 1:
+        return True, next(iter(index.datasets))
+    return False, None
+
+
+def find_field_references(
+    root: etree._Element, dataset_name: str, field_name: str
+) -> list[FieldReference]:
+    """Every consumer of field ``field_name`` of dataset ``dataset_name``, in
+    document order (#72). Public so other guards can reuse it.
+
+    1. ``Fields!N.<member>`` and ``Fields("N")[.<member>]`` in any
+       ``=``-expression (:func:`iter_expressions`, VB tokens — names in
+       string literals or comments don't count), kept when the reference's
+       dataset scope is ``dataset_name``: an aggregate's / lookup's literal
+       scope argument, else the nearest data region's ``DataSetName``
+       (Tablix, Chart, GaugePanel, map data region, CustomReportItem), else
+       the enclosing ``<DataSet>`` (calculated fields, dataset filters),
+       else the report's only dataset. A reference whose scope can't be
+       resolved statically is kept too — a guard should err on the side
+       of refusing.
+    2. ``DataSetReference`` elements (a parameter's ValidValues /
+       DefaultValue query) with ``DataSetName == dataset_name`` whose
+       ``ValueField`` or ``LabelField`` is ``field_name`` — bare names, not
+       expressions.
+
+    The field's own ``<Field>`` definition is not a consumer and is skipped.
+    """
+    ns = etree.QName(root).namespace
+    index = ScopeIndex(root)
+
+    def own_definition(elem: etree._Element) -> bool:
+        # <DataSet Name=dataset_name>/<Fields>/<Field Name=field_name>/<Value>
+        field = elem.getparent()
+        fields = field.getparent() if field is not None else None
+        ds = fields.getparent() if fields is not None else None
+        return (
+            ds is not None
+            and _local(field) == "Field"
+            and field.get("Name") == field_name
+            and _local(ds) == "DataSet"
+            and ds.get("Name") == dataset_name
+        )
+
+    hits: list[tuple[etree._Element, FieldReference]] = []
+    for elem, text in iter_expressions(root):
+        if field_name not in text:
+            continue
+        sig = expression_tokens(text)
+        if not sig:
+            continue
+        refs = [r for r in references(sig, "Fields") if r.name == field_name]
+        if not refs or own_definition(elem):
+            continue
+        calls = aggregate_calls(sig)
+        region_ds = dataset_scope(elem)
+        for ref in refs:
+            resolved, ds = _resolve_ref_dataset(ref, calls, region_ds, index)
+            if resolved and ds != dataset_name:
+                continue
+            hits.append(
+                (
+                    elem,
+                    FieldReference(
+                        elem, locator(elem), "expression", text[ref.start : ref.end], ds
+                    ),
+                )
+            )
+
+    for dsref in root.iter(f"{{{ns}}}DataSetReference"):
+        names = _children(dsref, ns, "DataSetName")
+        if not names or (names[0].text or "").strip() != dataset_name:
+            continue
+        for slot in ("ValueField", "LabelField"):
+            for el in _children(dsref, ns, slot):
+                if (el.text or "").strip() == field_name:
+                    hits.append(
+                        (
+                            el,
+                            FieldReference(
+                                el, locator(el), "dataset_reference", field_name, dataset_name
+                            ),
+                        )
+                    )
+
+    order = {el: i for i, el in enumerate(root.iter())}
+    hits.sort(key=lambda h: order.get(h[0], 0))
+    return [h[1] for h in hits]
+
+
+# ---- report-parameter references (#73) and dependencies (#74) ---------------
+
+
+def _is_report_qualifier(tokens: Sequence[vbexpr.Token], i: int) -> bool:
+    """``tokens[i-2:i]`` is ``Report .`` (custom code's ``Report.Parameters``)."""
+    return (
+        i >= 2
+        and tokens[i - 1].kind == vbexpr.OPERATOR
+        and tokens[i - 1].text == "."
+        and tokens[i - 2].kind == vbexpr.IDENTIFIER
+        and tokens[i - 2].text.lower() == "report"
+        and not _after_member_access(tokens, i - 2)
+    )
+
+
+def parameter_references(
+    tokens: Sequence[vbexpr.Token], name: Optional[str] = None, *, qualified: bool = True
+) -> list[Ref]:
+    """Every report-parameter reference in ``tokens`` (significant tokens):
+    ``Parameters!X`` / ``Parameters("X")`` with any member (``.Value``,
+    ``.Label``, ``.Count``, ``.IsMultiValue`` …) or none. With
+    ``qualified`` (default) also ``Report.Parameters!X`` /
+    ``Report.Parameters("X")``, the form custom code uses. ``name``
+    filters on the parameter name (case-sensitive, like RDL names).
+
+    In every form the parameter-name token is ``tokens[ref.first + 2]``:
+    an identifier for ``!X``, a string literal for ``("X")``.
+    """
+    drop: set = set()
+    if qualified:
+        for i in range(2, len(tokens)):
+            t = tokens[i]
+            if (
+                t.kind == vbexpr.IDENTIFIER
+                and t.text.lower() == "parameters"
+                and _is_report_qualifier(tokens, i)
+            ):
+                drop.update((i - 2, i - 1))
+    keep = [i for i in range(len(tokens)) if i not in drop]
+    view = [tokens[i] for i in keep]
+    out = []
+    for r in references(view, "Parameters"):
+        if name is not None and r.name != name:
+            continue
+        out.append(r._replace(first=keep[r.first], last=keep[r.last]))
+    return out
+
+
+def rename_parameter_references(
+    text: str, tokens: Sequence[vbexpr.Token], refs: Sequence[Ref], new_name: str
+) -> str:
+    """``text`` with the parameter name of each of ``refs`` (from
+    :func:`parameter_references` over ``tokens``, whose offsets index
+    ``text``) replaced by ``new_name``; nothing else changes."""
+    pieces = []
+    pos = 0
+    for ref in sorted(refs, key=lambda r: r.first):
+        tok = tokens[ref.first + 2]
+        if tok.kind == vbexpr.STRING:
+            replacement = '"' + new_name.replace('"', '""') + '"'
+        else:
+            replacement = new_name
+        pieces.append(text[pos : tok.start])
+        pieces.append(replacement)
+        pos = tok.end
+    pieces.append(text[pos:])
+    return "".join(pieces)
+
+
+def iter_parameter_references(
+    root: etree._Element, name: Optional[str] = None
+) -> Iterator[tuple[etree._Element, str, list, list]]:
+    """``(element, text, tokens, refs)`` for every element holding a
+    report-parameter reference (see :func:`parameter_references`): every
+    expression (:func:`iter_expressions`) plus the report's ``<Code>``
+    block (``Report.Parameters!X``). ``tokens`` are the significant tokens
+    whose offsets index ``text``; ``refs`` is never empty."""
+    for elem, text in iter_expressions(root):
+        if "parameters" not in text.lower():
+            continue
+        sig = expression_tokens(text)
+        if not sig:
+            continue
+        refs = parameter_references(sig, name)
+        if refs:
+            yield elem, text, sig, refs
+    ns = etree.QName(root).namespace
+    for code in root.iter(f"{{{ns}}}Code" if ns else "Code"):
+        text = code.text
+        if not text or "parameters" not in text.lower():
+            continue
+        sig = vbexpr.significant(vbexpr.tokenize(text))
+        refs = [r for r in parameter_references(sig, name) if _is_report_qualifier(sig, r.first)]
+        if refs:
+            yield code, text, sig, refs
+
+
+def parameter_dependency_edges(root: etree._Element) -> dict[str, list[tuple[str, str]]]:
+    """For each ``<ReportParameter>`` (declaration order), the parameters
+    it depends on as ``(dependency, via)`` pairs, in document order (may
+    repeat). Sources: expressions in its ``<DefaultValue>`` /
+    ``<ValidValues>``, and — for a ``<DataSetReference>`` there — every
+    ``Parameters!`` reference in that dataset (its query parameters,
+    filters, calculated fields). ``via`` says which (``"DefaultValue"``,
+    ``"ValidValues dataset 'X'"`` …). Report Builder evaluates
+    parameters in declaration order, so a dependency must be declared
+    earlier."""
+    ns = etree.QName(root).namespace
+
+    def kids(elem: etree._Element, local: str) -> list:
+        return _children(elem, ns, local)
+
+    def names_in(elem: etree._Element) -> list[str]:
+        return [r.name for _e, _t, _s, refs in iter_parameter_references(elem) for r in refs]
+
+    datasets: dict[str, etree._Element] = {}
+    for block in kids(root, "DataSets"):
+        for ds in kids(block, "DataSet"):
+            if ds.get("Name"):
+                datasets.setdefault(ds.get("Name"), ds)
+    out: dict[str, list[tuple[str, str]]] = {}
+    for block in kids(root, "ReportParameters"):
+        for param in kids(block, "ReportParameter"):
+            pname = param.get("Name")
+            if not pname:
+                continue
+            deps: list[tuple[str, str]] = []
+            for tag in ("DefaultValue", "ValidValues"):
+                for section in kids(param, tag):
+                    deps.extend((dep, tag) for dep in names_in(section))
+                    for dsref in section.iter(f"{{{ns}}}DataSetReference"):
+                        ds_name = ""
+                        for n in kids(dsref, "DataSetName"):
+                            ds_name = (n.text or "").strip()
+                        ds = datasets.get(ds_name)
+                        if ds is not None:
+                            via = f"{tag} dataset {ds_name!r}"
+                            deps.extend((dep, via) for dep in names_in(ds))
+            out.setdefault(pname, deps)
+    return out
+
+
+def parameter_dependencies(root: etree._Element) -> dict[str, set]:
+    """``{parameter: {parameters it depends on}}`` (see
+    :func:`parameter_dependency_edges`)."""
+    return {p: {d for d, _via in edges} for p, edges in parameter_dependency_edges(root).items()}
+
+
+def forward_dependencies(
+    order: Sequence[str], edges: dict[str, list[tuple[str, str]]]
+) -> list[tuple[str, str, str]]:
+    """``(parameter, dependency, via)`` for each dependency declared at or
+    after its dependant in ``order`` (``dependency == parameter`` is a
+    self-dependency). Unknown names are ignored; each pair once."""
+    pos = {n: i for i, n in enumerate(order)}
+    out = []
+    for name in order:
+        seen: set = set()
+        for dep, via in edges.get(name, ()):
+            j = pos.get(dep)
+            if j is None or j < pos[name] or dep in seen:
+                continue
+            seen.add(dep)
+            out.append((name, dep, via))
+    return out
+
+
 __all__ = [
     "AGGREGATE",
     "Call",
     "EXCLUDED_TAGS",
+    "FieldReference",
     "LOOKUP",
     "Ref",
     "SCOPE_ONLY",
@@ -411,7 +744,16 @@ __all__ = [
     "dataset_scope",
     "enclosing_calls",
     "expression_tokens",
+    "find_field_references",
     "iter_expressions",
+    "locator",
     "references",
     "scope_region",
+    # report-parameter references / dependencies (#73, #74)
+    "forward_dependencies",
+    "iter_parameter_references",
+    "parameter_dependencies",
+    "parameter_dependency_edges",
+    "parameter_references",
+    "rename_parameter_references",
 ]

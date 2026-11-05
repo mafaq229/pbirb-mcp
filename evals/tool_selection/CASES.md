@@ -38,14 +38,14 @@ Every edit case is also graded by the structural gate (XSD + lint errors the edi
 | s07 | style | medium | synth | fleet_utilization.rdl | `set_textbox_runs` | 28 |
 | s08 | style | hard | feedback | fleet_utilization.rdl | `set_textbox_runs` | 28 |
 | s09 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 28 |
-| l01 | layout | easy | synth | fleet_utilization.rdl | `set_page_orientation` | 50 |
-| l02 | layout | easy | feedback | fleet_utilization.rdl | `set_body_item_position` | 50 |
-| l03 | layout | medium | feedback | fleet_utilization.rdl | `set_page_footer` → `add_footer_textbox` | 50 |
-| l04 | layout | hard | feedback | fleet_utilization.rdl | `set_page_header` → `add_header_textbox` | 50 |
-| l05 | layout | hard | feedback | fleet_utilization.rdl | `set_page_setup` → `set_body_size` | 50 |
-| l06 | layout | easy | synth | fleet_utilization.rdl | `add_line` | 50 |
-| l07 | layout | medium | synth | fleet_utilization.rdl | `set_element_visibility` | 50 |
-| l08 | layout | hard | synth | fleet_utilization.rdl | `add_embedded_image` → `set_page_header` → `add_header_image` | 50 |
+| l01 | layout | easy | synth | fleet_utilization.rdl | `set_page_orientation` | 52 |
+| l02 | layout | easy | feedback | fleet_utilization.rdl | `set_body_item_position` | 52 |
+| l03 | layout | medium | feedback | fleet_utilization.rdl | `set_page_footer` → `add_footer_textbox` | 52 |
+| l04 | layout | hard | feedback | fleet_utilization.rdl | `set_page_header` → `add_header_textbox` | 52 |
+| l05 | layout | hard | feedback | fleet_utilization.rdl | `set_page_setup` → `set_body_size` | 52 |
+| l06 | layout | easy | synth | fleet_utilization.rdl | `add_line` | 52 |
+| l07 | layout | medium | synth | fleet_utilization.rdl | `set_element_visibility` | 52 |
+| l08 | layout | hard | synth | fleet_utilization.rdl | `add_embedded_image` → `set_page_header` → `add_header_image` | 52 |
 | c01 | chart | medium | feedback | fleet_utilization.rdl | `set_chart_series_type` | 27 |
 | c02 | chart | hard | feedback | fleet_utilization.rdl | `set_chart_series_grouping` | 27 |
 | c03 | chart | hard | feedback | fleet_utilization.rdl | `set_chart_data_labels` | 27 |
@@ -58,8 +58,8 @@ Every edit case is also graded by the structural gate (XSD + lint errors the edi
 | t09 | tablix | medium | synth | fleet_utilization.rdl | `add_static_row` → `set_cell_span` | 45 |
 | t10 | tablix | hard | synth | fleet_rb.rdl | `add_subtotal_row` | 45 |
 | t11 | tablix | medium | synth | fleet_utilization.rdl | `add_column_group` | 45 |
-| t12 | tablix | medium | synth | fleet_rb.rdl | _known gap_ (#67) | 45 |
-| t13 | tablix | easy | synth | fleet_utilization.rdl | _known gap_ (#66) | 45 |
+| t12 | tablix | medium | synth | fleet_rb.rdl | `set_repeat_header_rows` | 46 |
+| t13 | tablix | easy | synth | fleet_utilization.rdl | `set_group_sort` | 45 |
 | s10 | style | hard | synth | fleet_rb.rdl | `set_textbox_runs` | 28 |
 | c07 | chart | medium | synth | fleet_utilization.rdl | `add_chart_series` → `remove_chart_series` | 27 |
 | c08 | chart | easy | synth | fleet_rb.rdl | `remove_chart_series` | 27 |
@@ -389,14 +389,12 @@ Repeat the table's columns side by side once per site, with the site name as a h
 ```text
 When the table runs onto more than one page, repeat the column heading row at the top of every page.
 ```
-Known gap: #67: no tool sets RepeatOnNewPage on the static column-header member; set_repeat_on_new_page only addresses members that wrap a group
 
 ## t13 · tablix · easy
 
 ```text
 Sort the table rows by asset name in reverse alphabetical order, Z to A.
 ```
-Known gap: #66: set_group_sort takes no sort direction, and negating the expression can't reverse a text sort
 
 ## s10 · style · hard
 

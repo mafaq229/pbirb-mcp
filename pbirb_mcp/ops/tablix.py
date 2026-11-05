@@ -17,6 +17,9 @@ the right anchor before placing a freshly-created ``<Filters>`` element.
 
 from __future__ import annotations
 
+import contextlib
+import copy
+import re
 from typing import Any, Optional
 
 from lxml import etree
@@ -25,10 +28,11 @@ from pbirb_mcp.core import names, tablix_headers, tablix_spans, units
 from pbirb_mcp.core.document import RDLDocument, indent_inserted
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_tablix
-from pbirb_mcp.core.mutation import changed_by, set_node_text
+from pbirb_mcp.core.mutation import ChangeTracker, fingerprint, set_node_text
 from pbirb_mcp.core.tablix_shape import (
     NO_DETAIL_GROUP,
     column_leaves,
+    data_leaf,
     detach,
     detail_member,
     is_detail_group,
@@ -44,6 +48,7 @@ from pbirb_mcp.ops import vbexpr
 from pbirb_mcp.ops import visibility as _visibility
 from pbirb_mcp.ops.filter_types import (
     _canonical_typename_group,
+    encode_filter_texts,
     type_mismatch_warnings,
     wrap_with_format,
 )
@@ -179,24 +184,29 @@ def add_tablix_filter(
 
     filters_root = _ensure_filters_block(tablix)
 
+    written_expression, written_values, entity_warnings = encode_filter_texts(
+        effective_expression, values
+    )
+    warnings.extend(entity_warnings)
+
     filter_node = etree.SubElement(filters_root, q("Filter"))
     expr_node = etree.SubElement(filter_node, q("FilterExpression"))
-    expr_node.text = encode_text(effective_expression)
+    expr_node.text = written_expression
     op_node = etree.SubElement(filter_node, q("Operator"))
     op_node.text = operator
     values_root = etree.SubElement(filter_node, q("FilterValues"))
-    for v in values:
+    for v in written_values:
         v_node = etree.SubElement(values_root, q("FilterValue"))
-        v_node.text = encode_text(v)
+        v_node.text = v
 
     new_index = len(find_children(filters_root, "Filter")) - 1
     doc.save()
     return {
         "tablix": tablix_name,
         "index": new_index,
-        "expression": effective_expression,
+        "expression": written_expression,
         "operator": operator,
-        "values": list(values),
+        "values": written_values,
         "formatted": field_format is not None,
         "warnings": warnings,
     }
@@ -350,6 +360,102 @@ def _insert_member_child(member: etree._Element, new_child: etree._Element) -> N
 
 # ---- add_row_group --------------------------------------------------------
 
+ROW_GROUP_HEADER_MODES = ("auto", "row", "column", "none")
+
+
+def _parse_wrap(wrap: Any) -> Optional[str]:
+    """``None`` for ``"details"`` / ``"all"`` (checked by the caller), the
+    group name for ``"member:<group>"``; ``ValueError`` otherwise."""
+    if wrap in ("details", "all"):
+        return None
+    if isinstance(wrap, str) and wrap.startswith("member:") and wrap[len("member:") :].strip():
+        return wrap[len("member:") :].strip()
+    raise ValueError(f"wrap must be 'details', 'all' or 'member:<group>'; got {wrap!r}")
+
+
+def _child_on_path(level: etree._Element, leaf: etree._Element) -> Optional[etree._Element]:
+    """The ``TablixMember`` child of ``level`` (a ``<TablixMembers>``)
+    that is ``leaf`` or one of its ancestors, or ``None``."""
+    node: Optional[etree._Element] = leaf
+    while node is not None:
+        if node.getparent() is level:
+            return node
+        node = node.getparent()
+    return None
+
+
+def _wrap_targets(
+    tablix: etree._Element,
+    tablix_name: str,
+    parent_group: Optional[str],
+    wrap: Any,
+) -> tuple[etree._Element, list[etree._Element]]:
+    """``(members list receiving the new group, members it wraps)``."""
+    member_name = _parse_wrap(wrap)
+    parent: Optional[etree._Element] = None
+    if parent_group is not None:
+        parent = _find_member_for_group(tablix, parent_group)
+        if parent is None:
+            raise ElementNotFoundError(
+                f"row-axis parent_group {parent_group!r} not found in tablix {tablix_name!r}"
+            )
+        level = find_child(parent, "TablixMembers")
+        if level is None or not find_children(level, "TablixMember"):
+            raise ValueError(
+                f"parent_group {parent_group!r} has no nested members (its own member is "
+                "the leaf that owns a body row); there is nothing to group inside it"
+            )
+    else:
+        level = _row_hierarchy_members(tablix)
+
+    if member_name is not None:
+        target = _find_member_for_group(tablix, member_name)
+        if target is None:
+            raise ElementNotFoundError(
+                f"row-axis group {member_name!r} (wrap='member:{member_name}') not found "
+                f"in tablix {tablix_name!r}"
+            )
+        if parent_group is not None and target.getparent() is not level:
+            raise ValueError(
+                f"group {member_name!r} is not a direct child of parent_group "
+                f"{parent_group!r}; omit parent_group to wrap it where it is"
+            )
+        return target.getparent(), [target]
+
+    children = find_children(level, "TablixMember")
+    if wrap == "all":
+        if not children:
+            raise ValueError(f"tablix {tablix_name!r} has no row members to wrap")
+        return level, children
+
+    # wrap == "details": the member at this level on the path to the data
+    # row (the detail leaf, or a matrix's innermost group leaf).
+    leaf = data_leaf(tablix, parent) if parent is not None else data_leaf(tablix)
+    target = _child_on_path(level, leaf) if leaf is not None else None
+    if target is None:
+        where = f"group {parent_group!r}" if parent_group is not None else f"tablix {tablix_name!r}"
+        raise ValueError(
+            f"{where} has {NO_DETAIL_GROUP} and no dynamic row group to wrap; pass "
+            "wrap='all' or wrap='member:<group>'"
+        )
+    return level, [target]
+
+
+def _shift_tablix_width(tablix: etree._Element, delta_in: float) -> None:
+    """Add ``delta_in`` inches to the tablix's ``<Width>`` (in its own
+    unit) — a row-header column added or removed. Left alone when absent
+    or unparsable."""
+    width = find_child(tablix, "Width")
+    try:
+        size = units.parse_size((width.text or "").strip()) if width is not None else None
+    except ValueError:
+        return
+    if size is None:
+        return
+    total = units.to_inches(width.text.strip()) + delta_in
+    if total > 0:
+        width.text = units.format_size(total, size.unit)
+
 
 def add_row_group(
     path: str,
@@ -357,25 +463,58 @@ def add_row_group(
     group_name: str,
     group_expression: str,
     parent_group: Optional[str] = None,
+    wrap: str = "details",
+    header: str = "auto",
 ) -> dict[str, Any]:
-    """Wrap the current top-level row hierarchy in a new outer group.
+    """Add a dynamic row group around part of the row hierarchy — Report
+    Builder's "Add Group > Parent Group".
 
-    A new ``<TablixMember>`` is created at the top of the row hierarchy
-    holding ``<Group Name=...>`` and a fresh group-header leaf member; all
-    previously top-level members move underneath it. A matching group-header
-    row is inserted at body row 0 with the group expression in the first
-    cell.
+    Where the group goes:
 
-    ``parent_group`` is reserved for nesting a new group beneath an existing
-    one (e.g. add City under Region) — not yet implemented.
+    * ``parent_group`` — the existing row group the new one nests directly
+      inside (default: the top level of the row hierarchy).
+    * ``wrap`` — which members at that level it wraps:
+
+      - ``"details"`` (default): only the member on the path to the data
+        row (the detail leaf, or on a matrix the innermost group). Static
+        rows at that level — the column-header row, a grand total — stay
+        outside, so they render once.
+      - ``"member:<group>"``: that row group's member, wherever it sits
+        (``parent_group``, when given, must be its parent).
+      - ``"all"``: every member at that level (the pre-#65 behaviour:
+        static header / total rows repeat per group instance).
+
+    ``header`` — how the group shows its value:
+
+    * ``"row"``: a group-header row (static leaf, ``KeepWithGroup=After``)
+      inserted at the first wrapped row's body index, the expression in its
+      first cell (textboxes ``<group>_Header_<i>``).
+    * ``"column"``: a row-header cell (``<TablixHeader>``, textbox
+      ``<group>_Header``) — a column left of the body. Other paths get
+      blank header levels so the header area stays rectangular, and the
+      ``TablixCorner`` is created / resized.
+    * ``"none"``: no header (the group wraps just its rows).
+    * ``"auto"`` (default): ``"column"`` when the row hierarchy already
+      has row-header cells (a matrix — ``"row"`` / ``"none"`` are refused
+      there, they would break its header grid), else ``"row"``.
+
+    Refuses (file untouched) a duplicate name, an unknown group, a tablix
+    whose row leaves don't match its body rows (``"row"``), and any result
+    with a tablix-shape problem it did not have before.
+
+    Returns ``{tablix, group, expression, parent_group, wrap, header,
+    wrapped, header_row, header_textboxes, corner_textboxes, changed}`` —
+    ``header`` the mode actually used, ``wrapped`` the
+    group names (``None`` for static members) of the wrapped members,
+    ``header_row`` the inserted body row index (``None`` unless
+    ``header="row"``).
     """
-    if parent_group is not None:
-        raise NotImplementedError(
-            "parent_group nesting is not yet supported; only top-level "
-            "outer-group wrapping is implemented in this commit."
-        )
-
     names.validate_identifier(group_name, "group")
+    _parse_wrap(wrap)
+    if header not in ROW_GROUP_HEADER_MODES:
+        raise ValueError(
+            f"header must be one of {', '.join(ROW_GROUP_HEADER_MODES)}; got {header!r}"
+        )
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
 
@@ -383,52 +522,101 @@ def add_row_group(
     registry = names.NameRegistry(doc)
     registry.ensure_unique(group_name)
     registry.claim(group_name)
-    header_names = [
-        registry.unique(f"{group_name}_Header_{i}") for i in range(_column_count(tablix))
-    ]
 
-    members_root = _row_hierarchy_members(tablix)
-    existing_children = list(members_root)
+    has_row_headers = tablix_headers.header_depth(tablix, tablix_headers.ROW) > 0
+    if header == "auto":
+        header = "column" if has_row_headers else "row"
+    elif header != "column" and has_row_headers:
+        raise ValueError(
+            f"tablix {tablix_name!r} has row-header cells (TablixHeader), so a new row "
+            f"group needs one too; header={header!r} would leave its header grid uneven. "
+            "Use header='column' (or 'auto')."
+        )
 
-    # New outer wrapper member:
+    _level, wrapped = _wrap_targets(tablix, tablix_name, parent_group, wrap)
+    problems_before = set(tablix_headers.shape_problems(tablix))
+
+    body = find_child(tablix, "TablixBody")
+    rows_root = find_child(body, "TablixRows") if body is not None else None
+    header_row: Optional[int] = None
+    if header == "row":
+        n_rows = len(find_children(rows_root, "TablixRow")) if rows_root is not None else 0
+        n_leaves = len(row_leaves(tablix))
+        if n_leaves != n_rows:
+            raise ValueError(
+                f"tablix {tablix_name!r} has {n_leaves} row leaves for {n_rows} body rows, "
+                "so the group-header row's position is ambiguous; refusing."
+            )
+        header_row = leaf_row_index(tablix, subtree_leaves(wrapped[0])[0])
+
+    # ---- hierarchy -----------------------------------------------------
     #   <TablixMember>
     #     <Group Name=...><GroupExpressions><GroupExpression>...
+    #     [<TablixHeader>...]                         -- header="column"
     #     <TablixMembers>
-    #       <TablixMember><KeepWithGroup>After</KeepWithGroup></TablixMember>  -- group header leaf
-    #       ...existing children moved here...
-    #     </TablixMembers>
-    #   </TablixMember>
-    new_outer = etree.Element(q("TablixMember"))
-    group = etree.SubElement(new_outer, q("Group"), Name=group_name)
+    #       [<TablixMember><KeepWithGroup>After</...>] -- header="row"
+    #       ...wrapped members, moved here in order...
+    new_member = etree.Element(q("TablixMember"))
+    group = etree.SubElement(new_member, q("Group"), Name=group_name)
     expr_root = etree.SubElement(group, q("GroupExpressions"))
-    expr_node = etree.SubElement(expr_root, q("GroupExpression"))
-    expr_node.text = encode_text(group_expression)
-
-    inner_members = etree.SubElement(new_outer, q("TablixMembers"))
-    header_leaf = etree.SubElement(inner_members, q("TablixMember"))
-    keep = etree.SubElement(header_leaf, q("KeepWithGroup"))
-    keep.text = "After"
-
-    for child in existing_children:
-        members_root.remove(child)
+    etree.SubElement(expr_root, q("GroupExpression")).text = encode_text(group_expression)
+    inner_members = etree.SubElement(new_member, q("TablixMembers"))
+    header_names: list[str] = []
+    if header == "row":
+        header_leaf = etree.SubElement(inner_members, q("TablixMember"))
+        etree.SubElement(header_leaf, q("KeepWithGroup")).text = "After"
+    wrapped[0].addprevious(new_member)
+    for child in wrapped:
         inner_members.append(child)
 
-    members_root.append(new_outer)
+    corner: dict[str, Any] = {"created": [], "removed": []}
+    if header == "column":
+        name = registry.unique(f"{group_name}_Header")
+        size = tablix_headers.first_header_size(tablix, tablix_headers.ROW)
+        tablix_headers.insert_member_header(
+            new_member, tablix_headers.new_header(size, name, group_expression)
+        )
+        header_names.append(name)
+        header_names += tablix_headers.pad_header_levels(tablix, tablix_headers.ROW, registry)
+        corner = tablix_headers.ensure_corner(tablix, registry)
+        # The row-header column widens the rendered tablix.
+        _shift_tablix_width(tablix, units.to_inches(size))
+    elif header == "row":
+        header_names = [
+            registry.unique(f"{group_name}_Header_{i}") for i in range(_column_count(tablix))
+        ]
+        if rows_root is None:
+            rows_root = etree.SubElement(body, q("TablixRows"))
+        existing_rows = find_children(rows_root, "TablixRow")
+        new_row = _build_group_header_row(header_names, group_expression)
+        if header_row < len(existing_rows):
+            existing_rows[header_row].addprevious(new_row)
+        else:
+            rows_root.append(new_row)
 
-    # Body: insert a new row at position 0 for the group header.
-    body = find_child(tablix, "TablixBody")
-    rows_root = find_child(body, "TablixRows")
-    if rows_root is None:
-        rows_root = etree.SubElement(body, q("TablixRows"))
-    new_row = _build_group_header_row(header_names, group_expression)
-    rows_root.insert(0, new_row)
+    new_problems = [p for p in tablix_headers.shape_problems(tablix) if p not in problems_before]
+    if new_problems:
+        raise ValueError(
+            f"adding row group {group_name!r} to tablix {tablix_name!r} would leave "
+            f"{'; '.join(new_problems)}; nothing was changed."
+        )
 
     doc.save()
     return {
         "tablix": tablix_name,
         "group": group_name,
         "expression": group_expression,
+        "parent_group": parent_group,
+        "wrap": wrap,
+        "header": header,
+        "wrapped": [
+            find_child(m, "Group").get("Name") if find_child(m, "Group") is not None else None
+            for m in wrapped
+        ],
+        "header_row": header_row,
         "header_textboxes": header_names,
+        "corner_textboxes": corner["created"],
+        "changed": True,
     }
 
 
@@ -495,7 +683,15 @@ def remove_row_group(
       other members follow it, and it either precedes nested/detail members
       or is marked as a header (``KeepWithGroup=After`` or a
       ``<group>_Header_…`` row) — what :func:`add_row_group` creates, and
-      Report Builder's group header row. Its body row is deleted.
+      Report Builder's group header row. Its body row is deleted. A row of
+      literal captions only is not a group header unless it is a
+      ``<group>_Header_…`` row: it is the table's column-title row,
+      wrapped by ``add_row_group(wrap="all", header="none"|"column")``.
+    * **row-header cell** — a ``<TablixHeader>`` on the group member
+      (``add_row_group(header="column")``) goes with it; the blank header
+      levels other rows got as padding are removed and the corner is
+      resized, so the header grid stays even. Refused when those other
+      header cells hold content.
     * **subtotals** — static leaf children emitted by ``add_subtotal_row``
       (textboxes named ``<group>_Subtotal…``, or ``<group>_Header_…`` /
       ``<group>_Footer_…`` from older versions). Deleted with their rows
@@ -510,12 +706,13 @@ def remove_row_group(
 
     Refuses, leaving the file untouched: the detail group (a ``<Group>``
     without ``<GroupExpressions>``); a group whose member is itself a leaf
-    (it owns a body row, e.g. after convert_to_matrix); a group carrying a
-    row-header ``TablixHeader`` (removing it changes the matrix's header
-    depth); and a group holding only its own header/subtotal rows.
+    (it owns a body row, e.g. after convert_to_matrix); a row-header
+    group whose removal would drop header content elsewhere (above); and
+    a group holding only its own header/subtotal rows.
 
     Returns ``{tablix, removed, removed_rows, kept_subtotal_rows}`` — body
-    row indices as they were before the call.
+    row indices as they were before the call — plus ``removed_textboxes``
+    (header / padding / corner textboxes) when a row-header cell went.
     """
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
@@ -543,12 +740,8 @@ def remove_row_group(
             "leaf that owns a body row, so removing it would delete or re-bind "
             "that row; refusing."
         )
-    if find_child(member, "TablixHeader") is not None:
-        raise ValueError(
-            f"group {group_name!r} carries a row-header cell (TablixHeader); "
-            "removing it would change the matrix's header depth, which this "
-            "tool does not do."
-        )
+    row_header = find_child(member, "TablixHeader")
+    row_depth = tablix_headers.header_depth(tablix, tablix_headers.ROW)
 
     # Leaf -> body row map, taken before any mutation.
     body = find_child(tablix, "TablixBody")
@@ -576,14 +769,18 @@ def remove_row_group(
     if _is_static_leaf(first) and all(first is not s for s in subtotals):
         followers = [c for c in inner_children[1:] if all(c is not s for s in subtotals)]
         keep = find_child(first, "KeepWithGroup")
-        marked = (keep is not None and (keep.text or "").strip() == "After") or any(
-            n.startswith(f"{group_name}_Header_") for n in _row_textbox_names(body_row(first))
-        )
+        first_row = body_row(first)
+        named = any(n.startswith(f"{group_name}_Header_") for n in _row_textbox_names(first_row))
+        # A row of literal captions only (the table's column-title row,
+        # wrapped by add_row_group(wrap="all") without a header row of
+        # its own) is never the group header unless add_row_group named it.
+        title = not named and first_row is not None and _is_title_row(first_row)
+        marked = named or (keep is not None and (keep.text or "").strip() == "After")
         # A leading static row is the group header when wrapped members
         # follow it and it either precedes nested/detail members or is
         # marked as a header; otherwise (e.g. a lone static child, or
         # static data + total) it is the group's data row.
-        if followers and (marked or any(not _is_static_leaf(c) for c in followers)):
+        if followers and not title and (marked or any(not _is_static_leaf(c) for c in followers)):
             header = first
 
     doomed = ([header] if header is not None else []) + ([] if keep_subtotals else subtotals)
@@ -624,12 +821,32 @@ def remove_row_group(
     for idx in reversed(removed_rows):
         detach(rows[idx])
 
+    # ---- row-header cell (header="column"): one header level fewer ------
+    removed_textboxes: list[str] = []
+    if row_header is not None:
+        removed_textboxes = tablix_spans.report_item_names(row_header)
+        try:
+            removed_textboxes += tablix_headers.unpad_header_levels(tablix, tablix_headers.ROW)
+        except ValueError as exc:
+            raise ValueError(
+                f"group {group_name!r} carries a row-header cell (TablixHeader) and other "
+                f"rows' header cells are not blank padding ({exc}); removing it would "
+                "leave an uneven header grid, so nothing was changed."
+            ) from None
+        corner = tablix_headers.ensure_corner(tablix, names.NameRegistry(doc))
+        removed_textboxes += corner["removed"]
+        size = find_child(row_header, "Size")
+        if tablix_headers.header_depth(tablix, tablix_headers.ROW) < row_depth and size is not None:
+            with contextlib.suppress(ValueError):  # unparsable Size: Width stays
+                _shift_tablix_width(tablix, -units.to_inches((size.text or "").strip()))
+
     doc.save()
     return {
         "tablix": tablix_name,
         "removed": group_name,
         "removed_rows": removed_rows,
         "kept_subtotal_rows": kept_rows,
+        **({"removed_textboxes": removed_textboxes} if removed_textboxes else {}),
         **({"warnings": warnings} if warnings else {}),
     }
 
@@ -637,22 +854,135 @@ def remove_row_group(
 # ---- set_group_sort -------------------------------------------------------
 
 
-def _apply_sort_to_member(member: etree._Element, sort_expressions: list[str]) -> None:
+SORT_DIRECTIONS = ("Ascending", "Descending")
+
+# "=Fields!X.Value DESC" — SQL-style direction suffix, which RDL would store
+# (and Report Builder evaluate) as part of the expression.
+_TRAILING_DIRECTION_RE = re.compile(r"\s(asc|desc|ascending|descending)\s*$", re.IGNORECASE)
+
+
+def sort_entries(sort_expressions: Any) -> list[tuple[str, Optional[str]]]:
+    """Normalise a ``sort_expressions`` argument to ``[(value, direction)]``.
+
+    Each entry is an expression string or ``{"value", "direction"?}``;
+    ``direction`` is ``"Ascending"`` / ``"Descending"``, or ``None`` when the
+    entry doesn't say (a plain string, or a dict without ``direction``):
+    the existing entry with the same Value keeps its Direction, a new one
+    sorts ascending.
+    """
+    if not isinstance(sort_expressions, list):
+        raise ValueError("sort_expressions must be a list")
+    out: list[tuple[str, Optional[str]]] = []
+    for i, entry in enumerate(sort_expressions):
+        direction: Optional[str] = None
+        if isinstance(entry, str):
+            value = entry
+        elif isinstance(entry, dict):
+            unknown = sorted(set(entry) - {"value", "direction"})
+            if unknown:
+                raise ValueError(
+                    f"sort_expressions[{i}]: unknown key(s) {unknown}; use 'value' and 'direction'"
+                )
+            value = entry.get("value")
+            direction = entry.get("direction")
+            if direction is not None and direction not in SORT_DIRECTIONS:
+                raise ValueError(
+                    f"sort_expressions[{i}].direction must be 'Ascending' or "
+                    f"'Descending', got {direction!r}"
+                )
+        else:
+            raise ValueError(
+                f"sort_expressions[{i}] must be an expression string or "
+                "{'value': ..., 'direction': ...}"
+            )
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"sort_expressions[{i}]: value must be a non-empty expression")
+        if _TRAILING_DIRECTION_RE.search(value):
+            raise ValueError(
+                f"sort_expressions[{i}] {value!r} ends in a sort direction, which RDL "
+                "would store as part of the expression; pass "
+                "{'value': '<expression>', 'direction': 'Descending'} instead"
+            )
+        out.append((value, direction))
+    return out
+
+
+def _sort_direction(sort: etree._Element) -> str:
+    node = find_child(sort, "Direction")
+    text = (node.text or "").strip() if node is not None else ""
+    return text or "Ascending"
+
+
+def read_sort(owner: etree._Element) -> list[dict[str, str]]:
+    """``owner``'s ``<SortExpressions>`` as ``[{value, direction}]``."""
+    block = find_child(owner, "SortExpressions")
+    if block is None:
+        return []
+    out = []
+    for sort in find_children(block, "SortExpression"):
+        value = find_child(sort, "Value")
+        out.append(
+            {
+                "value": (value.text or "") if value is not None else "",
+                "direction": _sort_direction(sort),
+            }
+        )
+    return out
+
+
+def _apply_sort_to_member(
+    member: etree._Element, entries: list[tuple[str, Optional[str]]]
+) -> list[dict[str, str]]:
     """Hierarchy-agnostic core of set_group_sort / set_column_group_sort —
-    operates on an already-resolved TablixMember."""
+    operates on an already-resolved TablixMember.
+
+    Replaces the member's ``<SortExpressions>`` with ``entries`` (from
+    :func:`sort_entries`); an entry without a direction keeps the existing
+    entry with the same Value as it is (its Direction included).
+    ``<Direction>`` is written only for Descending. An empty list removes
+    the block (an empty ``<SortExpressions/>`` is XSD-invalid). An
+    identical block is left untouched. Returns the resulting sort keys.
+    """
+    existing_block = find_child(member, "SortExpressions")
+    if not entries:
+        if existing_block is not None:
+            detach(existing_block)
+        return []
+
+    existing: dict[Optional[str], etree._Element] = {}
+    if existing_block is not None:
+        for sort in find_children(existing_block, "SortExpression"):
+            value = find_child(sort, "Value")
+            existing.setdefault(value.text if value is not None else None, sort)
+
     new_block = etree.Element(q("SortExpressions"))
-    for expr in sort_expressions:
-        sort = etree.SubElement(new_block, q("SortExpression"))
-        value = etree.SubElement(sort, q("Value"))
-        value.text = encode_text(expr)
-    _insert_member_child(member, new_block)
+    resolved = []
+    for expr, direction in entries:
+        text = encode_text(expr)
+        prior = existing.get(text)
+        if prior is not None and direction in (None, _sort_direction(prior)):
+            sort = copy.deepcopy(prior)
+            sort.tail = None
+            new_block.append(sort)
+            direction = _sort_direction(prior)
+        else:
+            direction = direction or "Ascending"
+            sort = etree.SubElement(new_block, q("SortExpression"))
+            etree.SubElement(sort, q("Value")).text = text
+            if direction == "Descending":
+                etree.SubElement(sort, q("Direction")).text = direction
+        resolved.append({"value": text, "direction": direction})
+
+    if existing_block is None or fingerprint(existing_block) != fingerprint(new_block):
+        _insert_member_child(member, new_block)
+    return resolved
 
 
 def set_group_sort(
     path: str,
     tablix_name: str,
     group_name: str,
-    sort_expressions: list[str],
+    sort_expressions: list[Any],
 ) -> dict[str, Any]:
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
@@ -662,15 +992,28 @@ def set_group_sort(
             f"row-axis group {group_name!r} not found in tablix {tablix_name!r}; "
             "for a column-axis group use set_column_group_sort."
         )
+    return _set_member_sort(doc, member, tablix_name, group_name, sort_expressions)
 
-    changed = changed_by(member, _apply_sort_to_member, member, sort_expressions)
-    if changed:
+
+def _set_member_sort(
+    doc: RDLDocument,
+    member: etree._Element,
+    tablix_name: str,
+    group_name: str,
+    sort_expressions: Any,
+) -> dict[str, Any]:
+    """Shared body of set_group_sort / set_column_group_sort."""
+    entries = sort_entries(sort_expressions)
+    with ChangeTracker(member) as tracker:
+        sort = _apply_sort_to_member(member, entries)
+    if tracker.changed:
         doc.save()
     return {
         "tablix": tablix_name,
         "group": group_name,
-        "sort_expressions": list(sort_expressions),
-        "changed": changed,
+        "sort_expressions": [s["value"] for s in sort],
+        "sort": sort,
+        "changed": tracker.changed,
     }
 
 

@@ -17,12 +17,15 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import chart_shape
 from pbirb_mcp.core.columns import describe_columns
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.geometry import PAGE_DEFAULTS, REPORT_ITEM_TAGS, size_unit
-from pbirb_mcp.core.tablix_shape import is_dynamic_group
+from pbirb_mcp.core.tablix_shape import is_detail_group, is_dynamic_group
 from pbirb_mcp.core.units import format_size, to_inches
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q, qrd
+from pbirb_mcp.ops.styling import _resolve_row_index
+from pbirb_mcp.ops.tablix import read_sort
 
 
 def _text(node: Optional[etree._Element]) -> Optional[str]:
@@ -474,12 +477,113 @@ def _hierarchy_groups(tablix: etree._Element, hierarchy_local: str) -> list[dict
 
 
 def _sort_expressions(tablix: etree._Element) -> list[str]:
-    sorts: list[str] = []
-    for s in tablix.iter(f"{{{RDL_NS}}}SortExpression"):
-        v = find_child(s, "Value")
-        if v is not None and v.text:
-            sorts.append(v.text)
-    return sorts
+    """The tablix's own ``<SortExpressions>`` values (group sorts are on
+    their members in ``row_members`` / ``column_members``)."""
+    return [s["value"] for s in read_sort(tablix) if s["value"]]
+
+
+def _member_kind(member: etree._Element) -> str:
+    group = find_child(member, "Group")
+    if group is None:
+        return "static"
+    return "details" if is_detail_group(group) else "group"
+
+
+def _page_break(group: Optional[etree._Element]) -> Optional[str]:
+    node = find_child(group, "PageBreak") if group is not None else None
+    return _text(find_child(node, "BreakLocation")) if node is not None else None
+
+
+def _header_cell(header: etree._Element) -> dict[str, Any]:
+    tb = header.find(f"{q('CellContents')}/{q('Textbox')}")
+    return {
+        "textbox_name": tb.get("Name") if tb is not None else None,
+        "size": _text(find_child(header, "Size")),
+    }
+
+
+def _member_tree(tablix: etree._Element, axis: str) -> tuple[list, list, list]:
+    """``(members, leaves, header_cells)`` for one hierarchy axis.
+
+    ``members`` is the nested member tree; ``leaves`` one entry per body
+    row/column ``{index, path, kind, groups}`` (``path``: child positions
+    from the top level); ``header_cells`` the ``TablixHeader`` textboxes
+    ``{axis, level, group, textbox_name, size, leaves: [first, last]}``,
+    ``level`` counting header-carrying ancestors (0 = outermost).
+    """
+    hierarchy = find_child(tablix, f"Tablix{axis.capitalize()}Hierarchy")
+    top = find_child(hierarchy, "TablixMembers") if hierarchy is not None else None
+    leaves: list[dict[str, Any]] = []
+    headers: list[dict[str, Any]] = []
+
+    def walk(member: etree._Element, path: list[int], groups: list[str], level: int) -> dict:
+        group = find_child(member, "Group")
+        name = group.get("Name") if group is not None else None
+        groups_here = groups + [name] if name else groups
+        repeat = (_text(find_child(member, "RepeatOnNewPage")) or "").strip().lower()
+        node: dict[str, Any] = {
+            "group": name,
+            "kind": _member_kind(member),
+            "expressions": _group_dict(group)["expressions"] if group is not None else [],
+            "keep_with_group": _text(find_child(member, "KeepWithGroup")),
+            "repeat_on_new_page": repeat == "true",
+            "visibility": _visibility(member),
+            "sort": read_sort(member),
+            "page_break": _page_break(group),
+        }
+        first_leaf = len(leaves)
+        header = find_child(member, "TablixHeader")
+        header_entry = None
+        if header is not None:
+            node["header"] = _header_cell(header)
+            header_entry = {"axis": axis, "level": level, "group": name, **node["header"]}
+            headers.append(header_entry)
+        members_root = find_child(member, "TablixMembers")
+        children = find_children(members_root, "TablixMember") if members_root is not None else []
+        next_level = level + (1 if header is not None else 0)
+        node["children"] = [
+            walk(child, path + [i], groups_here, next_level) for i, child in enumerate(children)
+        ]
+        if not children:
+            node["leaf_index"] = len(leaves)
+            leaves.append(
+                {"index": len(leaves), "path": path, "kind": node["kind"], "groups": groups_here}
+            )
+        if header_entry is not None:
+            header_entry["leaves"] = [first_leaf, len(leaves) - 1]
+        return node
+
+    members = []
+    if top is not None:
+        members = [walk(m, [i], [], 0) for i, m in enumerate(find_children(top, "TablixMember"))]
+    return members, leaves, headers
+
+
+def _row_roles(tablix: etree._Element, row_groups: list[str]) -> dict[int, list[str]]:
+    """Body row index → the ``style_tablix_row`` role names resolving to it."""
+    candidates = ["header", "details"]
+    for name in row_groups:
+        candidates += [f"{name}_header", f"{name}_footer"]
+    roles: dict[int, list[str]] = {}
+    for role in candidates:
+        try:
+            idx = _resolve_row_index(tablix, role)
+        except (LookupError, ValueError, TypeError):
+            continue
+        roles.setdefault(idx, []).append(role)
+    return roles
+
+
+def _corner_cells(tablix: etree._Element) -> list[dict[str, Any]]:
+    corner = find_child(tablix, "TablixCorner")
+    rows_root = find_child(corner, "TablixCornerRows") if corner is not None else None
+    if rows_root is None:
+        return []
+    grid = [
+        find_children(row, "TablixCornerCell")
+        for row in find_children(rows_root, "TablixCornerRow")
+    ]
+    return _grid_cells(grid)
 
 
 def _visibility(node: etree._Element) -> Optional[dict[str, Any]]:
@@ -494,32 +598,71 @@ def _visibility(node: etree._Element) -> Optional[dict[str, Any]]:
     }
 
 
-def _tablix_cells(tablix: etree._Element) -> list[dict[str, Any]]:
-    """Enumerate every body cell as (row, col, textbox_name, row_span, col_span).
-    textbox_name is None for cells with no Textbox child (rare but possible)."""
+def _cell_span(cell: etree._Element, local: str) -> int:
+    """``ColSpan`` / ``RowSpan`` of a cell: on ``<CellContents>`` (RDL
+    2010+), else on the cell itself (pre-2010 layout); 1 when absent or
+    unparsable."""
+    contents = find_child(cell, "CellContents")
+    node = find_child(contents, local) if contents is not None else None
+    if node is None:
+        node = find_child(cell, local)
+    try:
+        value = int((_text(node) or "").strip())
+    except ValueError:
+        return 1
+    return max(value, 1)
+
+
+def _grid_cells(grid: list[list[etree._Element]]) -> list[dict[str, Any]]:
+    """``{row, col, textbox_name, row_span, col_span}`` per cell of a body
+    or corner grid; a cell inside another cell's span also gets
+    ``covered_by: [row, col]`` (the span's owner). ``textbox_name`` is
+    None for a placeholder or a cell holding another report item."""
+    covered: dict[tuple[int, int], list[int]] = {}
+    spans: dict[tuple[int, int], tuple[int, int]] = {}
+    for r, cells in enumerate(grid):
+        for c, cell in enumerate(cells):
+            if find_child(cell, "CellContents") is None:
+                continue
+            rs, cs = _cell_span(cell, "RowSpan"), _cell_span(cell, "ColSpan")
+            spans[(r, c)] = (rs, cs)
+            if (r, c) in covered:
+                continue
+            for dr in range(rs):
+                for dc in range(cs):
+                    if dr or dc:
+                        covered.setdefault((r + dr, c + dc), [r, c])
+    out: list[dict[str, Any]] = []
+    for r, cells in enumerate(grid):
+        for c, cell in enumerate(cells):
+            tb = cell.find(f"{q('CellContents')}/{q('Textbox')}")
+            rs, cs = spans.get((r, c), (1, 1))
+            entry: dict[str, Any] = {
+                "row": r,
+                "col": c,
+                "textbox_name": tb.get("Name") if tb is not None else None,
+                "row_span": rs,
+                "col_span": cs,
+            }
+            if (r, c) in covered:
+                entry["covered_by"] = covered[(r, c)]
+            out.append(entry)
+    return out
+
+
+def _body_rows(tablix: etree._Element) -> list[etree._Element]:
     body = find_child(tablix, "TablixBody")
     rows_root = find_child(body, "TablixRows") if body is not None else None
-    if rows_root is None:
-        return []
-    out: list[dict[str, Any]] = []
-    for row_idx, row in enumerate(find_children(rows_root, "TablixRow")):
+    return find_children(rows_root, "TablixRow") if rows_root is not None else []
+
+
+def _tablix_cells(tablix: etree._Element) -> list[dict[str, Any]]:
+    """Every body cell (see :func:`_grid_cells`)."""
+    grid = []
+    for row in _body_rows(tablix):
         cells_root = find_child(row, "TablixCells")
-        if cells_root is None:
-            continue
-        for col_idx, cell in enumerate(find_children(cells_root, "TablixCell")):
-            tb = cell.find(f"{{{RDL_NS}}}CellContents/{{{RDL_NS}}}Textbox")
-            row_span = _text(find_child(cell, "RowSpan"))
-            col_span = _text(find_child(cell, "ColSpan"))
-            out.append(
-                {
-                    "row": row_idx,
-                    "col": col_idx,
-                    "textbox_name": tb.get("Name") if tb is not None else None,
-                    "row_span": int(row_span) if row_span else 1,
-                    "col_span": int(col_span) if col_span else 1,
-                }
-            )
-    return out
+        grid.append(find_children(cells_root, "TablixCell") if cells_root is not None else [])
+    return _grid_cells(grid)
 
 
 def get_tablixes(path: str) -> list[dict[str, Any]]:
@@ -539,6 +682,14 @@ def get_tablixes(path: str) -> list[dict[str, Any]]:
         if filters_root is not None:
             filters = [_filter_dict(f) for f in find_children(filters_root, "Filter")]
 
+        row_members, row_leaf_list, row_headers = _member_tree(t, "row")
+        column_members, column_leaf_list, column_headers = _member_tree(t, "column")
+        row_groups = _hierarchy_groups(t, "TablixRowHierarchy")
+        roles = _row_roles(t, [g["name"] for g in row_groups if g.get("name")])
+        for leaf in row_leaf_list:
+            leaf["roles"] = roles.get(leaf["index"], [])
+            leaf["role"] = leaf["roles"][0] if leaf["roles"] else None
+
         out.append(
             {
                 "name": t.get("Name"),
@@ -548,14 +699,24 @@ def get_tablixes(path: str) -> list[dict[str, Any]]:
                 "width": _text(find_child(t, "Width")),
                 "height": _text(find_child(t, "Height")),
                 "columns": columns,
-                "row_groups": _hierarchy_groups(t, "TablixRowHierarchy"),
+                "rows": [{"height": _text(find_child(r, "Height"))} for r in _body_rows(t)],
+                "row_groups": row_groups,
                 "column_groups": _hierarchy_groups(t, "TablixColumnHierarchy"),
+                # The tablix's own sort; group sorts are under row_members /
+                # column_members (#69).
                 "sort_expressions": _sort_expressions(t),
+                "sort": read_sort(t),
                 "filters": filters,
                 "visibility": _visibility(t),
                 # v0.2: cell-level inventory so LLMs can discover which
                 # textbox names live where without parsing raw XML.
                 "cells": _tablix_cells(t),
+                "header_cells": row_headers + column_headers,
+                "corner_cells": _corner_cells(t),
+                "row_members": row_members,
+                "column_members": column_members,
+                "row_leaves": row_leaf_list,
+                "column_leaves": column_leaf_list,
             }
         )
     return out
@@ -954,21 +1115,30 @@ def get_rectangle(path: str, name: str) -> dict[str, Any]:
 
 
 def _chart_data_labels_dict(series: etree._Element) -> Optional[dict[str, Any]]:
-    """Read-back shape for ``<ChartDataLabel>``: visible + format,
-    symmetric with what :func:`set_chart_data_labels` writes. Returns
-    ``None`` when the element is absent so consumers can distinguish
-    "no data labels configured" from "configured with no visible/format".
-    Closes the asymmetric reader/writer gap flagged in the v0.3.0 sweep
-    (P1.3 in feedback/2026-04-30-v030-live-mcp-sweep.md).
+    """Read-back shape for the series' effective ``<ChartDataLabel>``,
+    symmetric with what :func:`set_chart_data_labels` writes: the template
+    data point's label (``source: "point"``, Report Builder's place, which
+    overrides a series-level one) else ``ChartSeries/ChartDataLabel``
+    (``source: "series"``). Returns ``None`` when neither exists so
+    consumers can distinguish "no data labels configured" from "configured
+    with no visible/format".
     """
-    label = find_child(series, "ChartDataLabel")
+    label, source = chart_shape.data_label(series)
     if label is None:
         return None
     style = find_child(label, "Style")
-    fmt = _text(find_child(style, "Format")) if style is not None else None
+
+    def style_text(local: str) -> Optional[str]:
+        return _text(find_child(style, local)) if style is not None else None
+
     return {
+        "source": source,
         "visible": _text(find_child(label, "Visible")),
-        "format": fmt,
+        "position": _text(find_child(label, "Position")),
+        "use_value_as_label": _text(find_child(label, "UseValueAsLabel")),
+        "format": style_text("Format"),
+        "font_weight": style_text("FontWeight"),
+        "color": style_text("Color"),
     }
 
 

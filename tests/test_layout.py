@@ -14,7 +14,8 @@ import pytest
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.ids import ElementNotFoundError, resolve_group
+from pbirb_mcp.core.ids import ElementNotFoundError, resolve_group, resolve_tablix
+from pbirb_mcp.core.tablix_shape import row_leaf
 from pbirb_mcp.core.xpath import find_child, q
 from pbirb_mcp.ops.layout import (
     add_line,
@@ -23,9 +24,13 @@ from pbirb_mcp.ops.layout import (
     set_group_page_break,
     set_keep_together,
     set_keep_with_group,
+    set_repeat_header_rows,
     set_repeat_on_new_page,
 )
-from pbirb_mcp.ops.tablix import add_row_group
+from pbirb_mcp.ops.tablix import add_row_group, convert_to_matrix
+from pbirb_mcp.ops.tablix_columns import add_column_group
+from pbirb_mcp.ops.tablix_static import add_static_row
+from pbirb_mcp.ops.validate import validate_report
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
 
@@ -67,6 +72,19 @@ def _read_repeat(path: Path, tablix: str, group: str) -> str | None:
     member = g.getparent()
     rep = find_child(member, "RepeatOnNewPage")
     return rep.text if rep is not None else None
+
+
+def _row_member_children(path: Path, tablix: str, row: int) -> list[str]:
+    """Local names of the children of the row-hierarchy leaf owning body ``row``."""
+    doc = RDLDocument.open(path)
+    leaf = row_leaf(resolve_tablix(doc, tablix), row)
+    return [etree.QName(c.tag).localname for c in leaf]
+
+
+def _row_member_text(path: Path, tablix: str, row: int, local: str) -> str | None:
+    doc = RDLDocument.open(path)
+    node = find_child(row_leaf(resolve_tablix(doc, tablix), row), local)
+    return node.text if node is not None else None
 
 
 # ---- set_group_page_break -----------------------------------------------
@@ -305,6 +323,77 @@ class TestSetRepeatOnNewPage:
         assert children.index("KeepWithGroup") < children.index("RepeatOnNewPage")
         assert children.index("RepeatOnNewPage") < children.index("Group")
 
+    # ---- member selector (#67) ----
+
+    def test_member_header_writes_on_the_static_header(self, rdl_path):
+        result = set_repeat_on_new_page(str(rdl_path), "MainTable", member="header", repeat=True)
+        assert result == {
+            "tablix": "MainTable",
+            "group": None,
+            "member": "header",
+            "row_index": 0,
+            "kind": "TablixMember",
+            "repeat": True,
+            "changed": True,
+        }
+        assert _row_member_children(rdl_path, "MainTable", 0) == [
+            "KeepWithGroup",
+            "RepeatOnNewPage",
+        ]
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_member_group_header_row(self, rdl_with_region_group):
+        result = set_repeat_on_new_page(
+            str(rdl_with_region_group), "MainTable", member="Region_header", repeat=True
+        )
+        assert result["row_index"] == 1 and result["group"] is None
+        assert _row_member_text(rdl_with_region_group, "MainTable", 1, "RepeatOnNewPage") == "true"
+
+    def test_member_index_idempotent(self, rdl_path):
+        set_repeat_on_new_page(str(rdl_path), "MainTable", member=0, repeat=True)
+        raw = rdl_path.read_bytes()
+        assert set_repeat_on_new_page(str(rdl_path), "MainTable", member="0")["changed"] is False
+        assert rdl_path.read_bytes() == raw
+
+    def test_member_and_group_are_exclusive(self, rdl_with_region_group):
+        with pytest.raises(ValueError, match="exactly one"):
+            set_repeat_on_new_page(
+                str(rdl_with_region_group), "MainTable", "Region", True, member="header"
+            )
+        with pytest.raises(ValueError, match="exactly one"):
+            set_repeat_on_new_page(str(rdl_with_region_group), "MainTable", repeat=True)
+
+    def test_issue_repro_header_is_reachable(self, rdl_path):
+        # #67: the header member has no <Group>, so group_name can't reach it.
+        for name in ("header", ""):
+            with pytest.raises(ElementNotFoundError):
+                set_repeat_on_new_page(str(rdl_path), "MainTable", name, True)
+        assert set_repeat_on_new_page(str(rdl_path), "MainTable", member="header")["changed"]
+
+    def test_member_selector_passes_the_server_schema(self, rdl_path):
+        server = MCPServer()
+        register_all_tools(server)
+        for i, (tool, args) in enumerate(
+            [
+                ("set_repeat_on_new_page", {"member": "header", "repeat": True}),
+                ("set_repeat_on_new_page", {"member": 0, "repeat": False}),
+                ("set_keep_with_group", {"member": "header", "value": "After"}),
+                ("set_repeat_header_rows", {"fixed": True}),
+            ]
+        ):
+            resp = server.handle_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": i,
+                    "method": "tools/call",
+                    "params": {
+                        "name": tool,
+                        "arguments": {"path": str(rdl_path), "tablix_name": "MainTable", **args},
+                    },
+                }
+            )
+            assert resp["result"].get("isError") is not True, resp
+
 
 # ---- set_keep_together --------------------------------------------------
 
@@ -415,116 +504,204 @@ class TestSetKeepTogether:
 # ---- set_keep_with_group ------------------------------------------------
 
 
-def _read_keep_with_group(path: Path, tablix: str, group: str) -> str | None:
-    doc = RDLDocument.open(path)
-    g = resolve_group(doc, tablix, group)
-    kwg = find_child(g.getparent(), "KeepWithGroup")
-    return kwg.text if kwg is not None else None
-
-
 class TestSetKeepWithGroup:
-    def test_writes_after(self, rdl_with_region_group):
+    # KeepWithGroup is a static-member property (#67): the tool targets
+    # rows via `member`; a grouped member is refused.
+    def test_description_example_header_after(self, rdl_path):
+        set_keep_with_group(str(rdl_path), "MainTable", member="header", value="None")
         result = set_keep_with_group(
-            path=str(rdl_with_region_group),
-            tablix_name="MainTable",
-            group_name="Region",
-            value="After",
+            path=str(rdl_path), tablix_name="MainTable", member="header", value="After"
         )
         assert result == {
             "tablix": "MainTable",
-            "group": "Region",
+            "group": None,
+            "member": "header",
+            "row_index": 0,
             "kind": "TablixMember",
             "value": "After",
             "changed": True,
         }
-        assert _read_keep_with_group(rdl_with_region_group, "MainTable", "Region") == "After"
+        assert _row_member_text(rdl_path, "MainTable", 0, "KeepWithGroup") == "After"
 
-    def test_writes_before(self, rdl_with_region_group):
-        set_keep_with_group(
-            path=str(rdl_with_region_group),
-            tablix_name="MainTable",
-            group_name="Region",
-            value="Before",
-        )
-        assert _read_keep_with_group(rdl_with_region_group, "MainTable", "Region") == "Before"
+    def test_header_fallback_without_keep_with_group(self, rdl_path):
+        # 'header' normally means "the row marked KeepWithGroup=After"; with
+        # no such row yet it is the first static row above the data.
+        set_keep_with_group(str(rdl_path), "MainTable", member="header", value="None")
+        assert _row_member_text(rdl_path, "MainTable", 0, "KeepWithGroup") is None
+        result = set_keep_with_group(str(rdl_path), "MainTable", member="header", value="After")
+        assert result["row_index"] == 0 and result["changed"] is True
 
-    def test_replaces_existing(self, rdl_with_region_group):
-        set_keep_with_group(
-            path=str(rdl_with_region_group),
-            tablix_name="MainTable",
-            group_name="Region",
-            value="After",
-        )
+    def test_writes_before_on_a_total_row_by_index(self, rdl_path):
+        add_static_row(str(rdl_path), "MainTable", "GrandTotal", ["Total"])
+        result = set_keep_with_group(str(rdl_path), "MainTable", member=2, value="Before")
+        assert result["row_index"] == 2
+        assert _row_member_text(rdl_path, "MainTable", 2, "KeepWithGroup") == "Before"
+        # A digit string addresses the same row (tools/list publishes strings).
+        again = set_keep_with_group(str(rdl_path), "MainTable", member="2", value="Before")
+        assert again["changed"] is False
+
+    def test_group_header_row(self, rdl_with_region_group):
         result = set_keep_with_group(
-            path=str(rdl_with_region_group),
-            tablix_name="MainTable",
-            group_name="Region",
-            value="Before",
+            str(rdl_with_region_group), "MainTable", member="Region_header", value="None"
         )
+        assert result["row_index"] == 1 and result["changed"] is True
+        assert _row_member_text(rdl_with_region_group, "MainTable", 1, "KeepWithGroup") is None
+
+    def test_replaces_existing(self, rdl_path):
+        result = set_keep_with_group(str(rdl_path), "MainTable", member="header", value="Before")
         assert result["changed"] is True
-        assert _read_keep_with_group(rdl_with_region_group, "MainTable", "Region") == "Before"
+        assert _row_member_text(rdl_path, "MainTable", 0, "KeepWithGroup") == "Before"
 
-    def test_none_removes_block(self, rdl_with_region_group):
-        set_keep_with_group(
-            path=str(rdl_with_region_group),
-            tablix_name="MainTable",
-            group_name="Region",
-            value="After",
-        )
-        result = set_keep_with_group(
-            path=str(rdl_with_region_group),
-            tablix_name="MainTable",
-            group_name="Region",
-            value="None",
-        )
-        assert result["changed"] is True
-        assert _read_keep_with_group(rdl_with_region_group, "MainTable", "Region") is None
-
-    def test_idempotent(self, rdl_with_region_group):
-        set_keep_with_group(
-            path=str(rdl_with_region_group),
-            tablix_name="MainTable",
-            group_name="Region",
-            value="After",
-        )
-        result = set_keep_with_group(
-            path=str(rdl_with_region_group),
-            tablix_name="MainTable",
-            group_name="Region",
-            value="After",
-        )
+    def test_idempotent(self, rdl_path):
+        raw = rdl_path.read_bytes()
+        result = set_keep_with_group(str(rdl_path), "MainTable", member="header", value="After")
         assert result["changed"] is False
+        assert rdl_path.read_bytes() == raw
 
-    def test_unknown_value_rejected(self, rdl_with_region_group):
-        with pytest.raises(ValueError, match="unknown KeepWithGroup"):
+    @pytest.mark.parametrize(
+        "target",
+        [{"group_name": "Details"}, {"group_name": "Region"}, {"member": "details"}],
+        ids=["details-group", "dynamic-group", "details-row"],
+    )
+    def test_grouped_member_refused(self, rdl_with_region_group, target):
+        raw = rdl_with_region_group.read_bytes()
+        with pytest.raises(ValueError, match="static member"):
+            set_keep_with_group(str(rdl_with_region_group), "MainTable", value="After", **target)
+        assert rdl_with_region_group.read_bytes() == raw
+
+    def test_none_cleans_up_a_grouped_member(self, rdl_path):
+        # The misplaced shape the old tool wrote (and RAG_Report_test.rdl
+        # carries): KeepWithGroup on the dynamic Details member.
+        doc = RDLDocument.open(rdl_path)
+        member = resolve_group(doc, "MainTable", "Details").getparent()
+        kwg = etree.Element(q("KeepWithGroup"))
+        kwg.text = "After"
+        member.insert(0, kwg)
+        doc.save()
+        result = set_keep_with_group(str(rdl_path), "MainTable", "Details", "None")
+        assert result["changed"] is True
+        assert (
+            find_child(
+                resolve_group(RDLDocument.open(rdl_path), "MainTable", "Details").getparent(),
+                "KeepWithGroup",
+            )
+            is None
+        )
+
+    def test_exactly_one_selector(self, rdl_path):
+        with pytest.raises(ValueError, match="exactly one"):
+            set_keep_with_group(str(rdl_path), "MainTable", value="After")
+        with pytest.raises(ValueError, match="exactly one"):
             set_keep_with_group(
-                path=str(rdl_with_region_group),
-                tablix_name="MainTable",
-                group_name="Region",
-                value="Sideways",
+                str(rdl_path), "MainTable", group_name="Details", member="header", value="After"
             )
 
-    def test_member_child_order_respected(self, rdl_with_region_group):
-        # KeepWithGroup must come before Group (and before
-        # RepeatOnNewPage if present, since the schema order is
+    def test_unknown_value_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="unknown KeepWithGroup"):
+            set_keep_with_group(
+                path=str(rdl_path), tablix_name="MainTable", member="header", value="Sideways"
+            )
+
+    def test_unknown_row_rejected(self, rdl_path):
+        with pytest.raises(IndexError):
+            set_keep_with_group(str(rdl_path), "MainTable", member=9, value="After")
+        with pytest.raises(ElementNotFoundError):
+            set_keep_with_group(str(rdl_path), "MainTable", member="Nope_header", value="After")
+
+    def test_member_child_order_respected(self, rdl_path):
+        # KeepWithGroup must come before RepeatOnNewPage (schema order
         # KeepWithGroup, RepeatOnNewPage, FixedData, Group, ...).
-        set_repeat_on_new_page(
-            path=str(rdl_with_region_group),
-            tablix_name="MainTable",
-            group_name="Region",
-            repeat=True,
-        )
-        set_keep_with_group(
-            path=str(rdl_with_region_group),
-            tablix_name="MainTable",
-            group_name="Region",
-            value="After",
-        )
-        doc = RDLDocument.open(rdl_with_region_group)
-        g = resolve_group(doc, "MainTable", "Region")
-        children = [etree.QName(c.tag).localname for c in g.getparent()]
-        assert children.index("KeepWithGroup") < children.index("RepeatOnNewPage")
-        assert children.index("RepeatOnNewPage") < children.index("Group")
+        set_keep_with_group(str(rdl_path), "MainTable", member="header", value="None")
+        set_repeat_on_new_page(str(rdl_path), "MainTable", member="header", repeat=True)
+        set_keep_with_group(str(rdl_path), "MainTable", member="header", value="After")
+        children = _row_member_children(rdl_path, "MainTable", 0)
+        assert children == ["KeepWithGroup", "RepeatOnNewPage"]
+        assert validate_report(str(rdl_path))["valid"]
+
+
+# ---- set_repeat_header_rows (#67) -----------------------------------------
+
+
+class TestSetRepeatHeaderRows:
+    def test_repeats_the_column_header_row(self, rdl_path):
+        result = set_repeat_header_rows(str(rdl_path), "MainTable")
+        assert result == {
+            "tablix": "MainTable",
+            "kind": "Tablix",
+            "repeat": True,
+            "fixed": None,
+            "header_rows": [0],
+            "changed": ["RepeatOnNewPage"],
+        }
+        assert _row_member_children(rdl_path, "MainTable", 0) == [
+            "KeepWithGroup",
+            "RepeatOnNewPage",
+        ]
+        assert _row_member_text(rdl_path, "MainTable", 0, "RepeatOnNewPage") == "true"
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_repeat_false_restores_the_file(self, rdl_path):
+        raw = rdl_path.read_bytes()
+        set_repeat_header_rows(str(rdl_path), "MainTable", fixed=True)
+        set_repeat_header_rows(str(rdl_path), "MainTable", repeat=False, fixed=False)
+        assert rdl_path.read_bytes() == raw
+
+    def test_idempotent(self, rdl_path):
+        set_repeat_header_rows(str(rdl_path), "MainTable")
+        raw = rdl_path.read_bytes()
+        assert set_repeat_header_rows(str(rdl_path), "MainTable")["changed"] == []
+        assert rdl_path.read_bytes() == raw
+
+    def test_title_row_and_keep_with_group_added(self, rdl_path):
+        add_static_row(str(rdl_path), "MainTable", "Title", ["Report"], position=0)
+        result = set_repeat_header_rows(str(rdl_path), "MainTable", fixed=True)
+        assert result["header_rows"] == [0, 1]
+        assert set(result["changed"]) == {"RepeatOnNewPage", "KeepWithGroup", "FixedData"}
+        for row in (0, 1):
+            assert _row_member_children(rdl_path, "MainTable", row) == [
+                "KeepWithGroup",
+                "RepeatOnNewPage",
+                "FixedData",
+            ]
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_only_rows_above_the_first_group(self, rdl_with_region_group):
+        add_static_row(str(rdl_with_region_group), "MainTable", "GrandTotal", ["Total"])
+        result = set_repeat_header_rows(str(rdl_with_region_group), "MainTable")
+        assert result["header_rows"] == [0]
+        assert _row_member_text(rdl_with_region_group, "MainTable", 3, "RepeatOnNewPage") is None
+
+    def test_repeat_false_removes_repeat_keeps_keep_with_group(self, rdl_path):
+        set_repeat_header_rows(str(rdl_path), "MainTable", fixed=True)
+        result = set_repeat_header_rows(str(rdl_path), "MainTable", repeat=False, fixed=False)
+        assert set(result["changed"]) == {"RepeatOnNewPage", "FixedData"}
+        assert _row_member_children(rdl_path, "MainTable", 0) == ["KeepWithGroup"]
+
+    def test_matrix_sets_tablix_flags(self, rdl_path):
+        add_row_group(str(rdl_path), "MainTable", "Region", "=Fields!ProductName.Value")
+        add_column_group(str(rdl_path), "MainTable", "Date", "=Fields!ProductID.Value")
+        convert_to_matrix(str(rdl_path), "MainTable", "Region", "Date")
+        result = set_repeat_header_rows(str(rdl_path), "MainTable", fixed=True)
+        assert {"RepeatColumnHeaders", "FixedColumnHeaders"} <= set(result["changed"])
+        tablix = resolve_tablix(RDLDocument.open(rdl_path), "MainTable")
+        assert find_child(tablix, "RepeatColumnHeaders").text == "true"
+        assert find_child(tablix, "FixedColumnHeaders").text == "true"
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_no_header_rows_refused(self, rdl_path):
+        set_keep_with_group(str(rdl_path), "MainTable", member="header", value="None")
+        text = rdl_path.read_text(encoding="utf-8")
+        # Drop the static header member and its body row: Details only.
+        doc = RDLDocument.open(rdl_path)
+        tablix = resolve_tablix(doc, "MainTable")
+        leaf = row_leaf(tablix, 0)
+        leaf.getparent().remove(leaf)
+        rows = tablix.find(f"{q('TablixBody')}/{q('TablixRows')}")
+        rows.remove(rows[0])
+        doc.save()
+        assert text != rdl_path.read_text(encoding="utf-8")
+        with pytest.raises(ValueError, match="no static header rows"):
+            set_repeat_header_rows(str(rdl_path), "MainTable")
 
 
 # ---- add_rectangle ------------------------------------------------------

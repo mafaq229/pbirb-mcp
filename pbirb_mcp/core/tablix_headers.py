@@ -23,7 +23,8 @@ Public helpers:
   matches ``column depth × row depth`` (span-aware; reports the textbox
   names it created or removed).
 * :func:`pad_header_levels` — give short hierarchy paths blank headers so
-  every path has the same depth.
+  every path has the same depth; :func:`unpad_header_levels` undoes it.
+* :func:`first_header_size` — the size a new header level should match.
 * :func:`new_textbox` — the blank/static textbox Report Builder emits.
 * :func:`new_header` / :func:`header_around` — a ``<TablixHeader>`` with a
   new textbox, or around an existing report item.
@@ -190,7 +191,10 @@ def header_depth(tablix: etree._Element, axis: str) -> int:
     return max(header_levels(tablix, axis), default=0)
 
 
-def _first_header_size(tablix: etree._Element, axis: str) -> str:
+def first_header_size(tablix: etree._Element, axis: str) -> str:
+    """``Size`` of the first ``<TablixHeader>`` in the ``axis`` hierarchy
+    (the size a new header level should match), else Report Builder's
+    default for the axis."""
     hierarchy = _hierarchy(tablix, axis)
     if hierarchy is not None:
         for header in hierarchy.iter(q("TablixHeader")):
@@ -221,7 +225,7 @@ def pad_header_levels(
         return created
     base = name_base or f"{tablix.get('Name')}_Header"
     tag = _level_tag(axis)
-    size = _first_header_size(tablix, axis)
+    size = first_header_size(tablix, axis)
     for leaf, level in zip(_leaves(tablix, axis), levels):
         missing = depth - level
         if missing <= 0:
@@ -237,6 +241,49 @@ def pad_header_levels(
         insert_member_header(leaf, header)
         created.append(name)
     return created
+
+
+def unpad_header_levels(tablix: etree._Element, axis: str) -> list[str]:
+    """Inverse of :func:`pad_header_levels`: bring every ``axis`` leaf
+    whose path is deeper than the shallowest one back to that depth.
+
+    The surplus must sit on the leaf's own ``<TablixHeader>``: a header
+    spanning more levels than the surplus shrinks (its contents stay);
+    one spanning exactly the surplus is removed when it is blank (a
+    placeholder or an empty textbox — what padding creates). Anything
+    else raises ``ValueError`` before any change, since dropping it
+    would lose content. Returns the textbox names removed.
+    """
+    levels = header_levels(tablix, axis)
+    depth = min(levels, default=0)
+    tag = _level_tag(axis)
+    plan: list[tuple[etree._Element, int]] = []  # (header, new span; 0 = drop)
+    for leaf, level in zip(_leaves(tablix, axis), levels):
+        surplus = level - depth
+        if surplus <= 0:
+            continue
+        header = find_child(leaf, "TablixHeader")
+        own = spans.span(header, tag) if header is not None else 0
+        if header is not None and own > surplus:
+            plan.append((header, own - surplus))
+        elif header is not None and own == surplus and spans.is_blank(header):
+            plan.append((header, 0))
+        else:
+            raise ValueError(
+                f"{axis} header levels would become unequal and the surplus level of "
+                "a leaf is not a blank padding header; refusing to drop header content"
+            )
+    removed: list[str] = []
+    for header, new_span in plan:
+        if new_span > 1:
+            spans.set_span(header, tag, new_span)
+        elif new_span == 1:
+            # A single level is the default: drop the span element.
+            spans.detach(find_child(find_child(header, "CellContents"), tag))
+        else:
+            removed.extend(spans.report_item_names(header))
+            spans.detach(header)
+    return removed
 
 
 # ---- TablixCorner ----------------------------------------------------------
@@ -591,6 +638,7 @@ __all__ = [
     "ShapeProblem",
     "corner_shape",
     "ensure_corner",
+    "first_header_size",
     "header_around",
     "header_depth",
     "header_levels",
@@ -601,4 +649,5 @@ __all__ = [
     "pad_header_levels",
     "shape_findings",
     "shape_problems",
+    "unpad_header_levels",
 ]

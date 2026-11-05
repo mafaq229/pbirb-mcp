@@ -141,6 +141,18 @@ BODY_BOX = (
         "height": "0.25in",
     },
 )
+# A rectangle holding the BODY_BOX textbox (#83).
+PANEL = (
+    "add_rectangle",
+    {
+        "name": "Panel",
+        "top": "3in",
+        "left": "0in",
+        "width": "2.5in",
+        "height": "0.5in",
+        "contained_items": ["Note"],
+    },
+)
 TB = "HeaderAmount"
 CH = "SalesByProduct"
 
@@ -385,10 +397,11 @@ CASES: dict[str, Case] = {
         setup=[ROW_GROUP],
     ),
     "set_keep_together": Case({"name": "MainTable", "keep": True}),
+    # KeepWithGroup targets static rows (#67); the fixture's header has After.
     "set_keep_with_group": Case(
-        {"tablix_name": "MainTable", "group_name": "ProductGroup", "value": "After"},
-        setup=[ROW_GROUP],
+        {"tablix_name": "MainTable", "member": "header", "value": "Before"}
     ),
+    "set_repeat_header_rows": Case({"tablix_name": "MainTable"}),
     "add_rectangle": Case(
         {"name": "Box", "top": "3in", "left": "0in", "width": "1in", "height": "1in"},
         second="refuses",
@@ -408,6 +421,8 @@ CASES: dict[str, Case] = {
         {"name": "Rule", "top": "3in", "left": "0in", "width": "2in", "height": "0in"},
         second="refuses",
     ),
+    "move_report_item": Case({"name": "Note", "to": "header"}, setup=[BODY_BOX]),
+    "ungroup_rectangle": Case({"name": "Panel"}, second="refuses", setup=[BODY_BOX, PANEL]),
     "raw_xml_replace": Case(
         {
             "xpath": "r:ReportSections/r:ReportSection/r:Body/r:Height",
@@ -630,6 +645,181 @@ CASES: dict[str, Case] = {
 # Further argument sets for branches the main case doesn't reach
 # (clearing, alternative sources, …). Same contract.
 VARIANTS: list[tuple[str, Case]] = [
+    # Row selectors for the static header row (#67).
+    (
+        "set_repeat_on_new_page",
+        Case({"tablix_name": "MainTable", "member": "header", "repeat": True}),
+    ),
+    ("set_repeat_on_new_page", Case({"tablix_name": "MainTable", "member": 0, "repeat": True})),
+    ("set_repeat_header_rows", Case({"tablix_name": "MainTable", "fixed": True})),
+    (
+        "insert_tablix_from_template",
+        Case(
+            {
+                "name": "Second",
+                "dataset_name": "MainDataset",
+                "columns": ["ProductName"],
+                "top": "3in",
+                "left": "0in",
+                "width": "1in",
+                "height": "0.5in",
+                "repeat_header": False,
+            },
+            second="refuses",
+        ),
+    ),
+    (
+        "set_repeat_header_rows",
+        Case(
+            {"tablix_name": "MainTable", "repeat": False, "fixed": False},
+            setup=[("set_repeat_header_rows", {"tablix_name": "MainTable", "fixed": True})],
+        ),
+    ),
+    # add_row_group's wrap / parent_group / header (#65): a repeat refuses
+    # the duplicate group name before touching the file.
+    ("add_row_group", Case({**ROW_GROUP[1], "header": "column"}, second="refuses")),
+    ("add_row_group", Case({**ROW_GROUP[1], "wrap": "all", "header": "none"}, second="refuses")),
+    (
+        "add_row_group",
+        Case(
+            {
+                "tablix_name": "MainTable",
+                "group_name": "SubGroup",
+                "group_expression": "=Fields!ProductID.Value",
+                "parent_group": "ProductGroup",
+            },
+            second="refuses",
+            setup=[ROW_GROUP],
+        ),
+    ),
+    (
+        "set_datasource_connection",
+        Case(
+            {
+                "name": "PowerBIDataset",
+                "workspace_url": "Sales WS",
+                "dataset_name": "Sales; Model",
+                "provider": "pbidataset",
+                "catalog_id": "sobe_wowvirtualserver-1",
+                "identity_provider": "https://login.microsoftonline.com/organizations, x",
+            }
+        ),
+    ),
+    (
+        # A PBIDATASET source repointed without catalog_id: the second call
+        # keeps the (display-name) catalog and changes nothing.
+        "set_datasource_connection",
+        Case(
+            {"name": "Pbi", "workspace_url": "Other WS", "dataset_name": "Model 2"},
+            setup=[
+                (
+                    "add_data_source",
+                    {
+                        "name": "Pbi",
+                        "workspace_url": "WS",
+                        "dataset_name": "Model",
+                        "provider": "pbidataset",
+                    },
+                )
+            ],
+        ),
+    ),
+    (
+        "add_data_source",
+        Case(
+            {
+                "name": "Pbi",
+                "workspace_url": "powerbi://api.powerbi.com/v1.0/myorg/WS",
+                "dataset_name": "Model",
+                "provider": "pbidataset",
+                "catalog_id": "sobe-1",
+                "identity_provider": "idp",
+            },
+            second="refuses",
+        ),
+    ),
+    (
+        "set_group_sort",
+        Case(
+            {
+                "tablix_name": "MainTable",
+                "group_name": "ProductGroup",
+                "sort_expressions": [
+                    {"value": "=Fields!ProductName.Value", "direction": "Descending"},
+                    "=Fields!ProductID.Value",
+                ],
+            },
+            setup=[ROW_GROUP],
+        ),
+    ),
+    (
+        "set_group_sort",
+        Case(
+            {"tablix_name": "MainTable", "group_name": "ProductGroup", "sort_expressions": []},
+            setup=[
+                ROW_GROUP,
+                (
+                    "set_group_sort",
+                    {
+                        "tablix_name": "MainTable",
+                        "group_name": "ProductGroup",
+                        "sort_expressions": ["=Fields!ProductName.Value"],
+                    },
+                ),
+            ],
+        ),
+    ),
+    (
+        "add_tablix_column",
+        Case(
+            {
+                "tablix_name": "MainTable",
+                "column_name": "Qty",
+                "expression": "=Fields!ProductID.Value",
+                "header_name": "QtyHeader",
+                "copy_style_from": "right",
+                "format": "#,0",
+            },
+            second="refuses",
+        ),
+    ),
+    # ---- #83: nested items, container argument, moves ----
+    (
+        "set_body_item_position",
+        Case({"name": "Note", "top": "0.1in", "left": "0.1in"}, setup=[BODY_BOX, PANEL]),
+    ),
+    ("set_body_item_size", Case({"name": "Note", "width": "1in"}, setup=[BODY_BOX, PANEL])),
+    ("remove_body_item", Case({"name": "Note"}, second="refuses", setup=[BODY_BOX, PANEL])),
+    (
+        "add_body_textbox",
+        Case(
+            {**BODY_BOX[1], "name": "Inner", "top": "0in", "container": "Panel"},
+            second="refuses",
+            setup=[BODY_BOX, PANEL],
+        ),
+    ),
+    (
+        "add_line",
+        Case(
+            {
+                "name": "Rule",
+                "top": "0in",
+                "left": "0in",
+                "width": "1in",
+                "height": "0in",
+                "container": "Panel",
+            },
+            second="refuses",
+            setup=[BODY_BOX, PANEL],
+        ),
+    ),
+    ("move_report_item", Case({"name": "Note", "to": "body"}, setup=[BODY_BOX, PANEL])),
+    (
+        "move_report_item",
+        Case(
+            {"name": "Note", "to": "Panel", "top": "0in", "left": "0.5in"}, setup=[BODY_BOX, PANEL]
+        ),
+    ),
     ("set_page_setup", Case({"columns": 2, "margin_left": "0.5in"})),
     ("set_page_setup", Case({"columns": 1}, setup=[("set_page_setup", {"columns": 2})])),
     (
@@ -638,7 +828,72 @@ VARIANTS: list[tuple[str, Case]] = [
             {"textbox_name": TB, "border_color": "Red", "border_width": "1pt", "can_shrink": True}
         ),
     ),
+    (
+        "set_textbox_style",
+        Case({"textbox_name": TB, "font_style": "Italic", "text_decoration": "underline"}),
+    ),
+    (
+        "set_textbox_style_bulk",
+        Case({"textbox_names": ["HeaderProductID"], "font_weight": "700", "font_style": "Italic"}),
+    ),
+    ("style_tablix_row", Case({"tablix_name": "MainTable", "row": 0, "text_decoration": "None"})),
+    (
+        "set_image_source",
+        Case(
+            {
+                "image_name": "Logo",
+                "source": "Database",
+                "value": "=First(Fields!ProductName.Value)",
+                "mime_type": "image/png",
+            },
+            setup=[BODY_IMAGE],
+        ),
+    ),
+    (
+        "set_image_source",
+        Case(
+            {"image_name": "Logo", "source": "External", "value": "http://example.com/b.png"},
+            setup=[BODY_IMAGE],
+        ),
+    ),
+    (
+        "add_body_image",
+        Case(
+            {
+                **BODY_IMAGE[1],
+                "image_source": "Database",
+                "value": "=First(Fields!ProductName.Value)",
+                "mime_type": "image/jpeg",
+            },
+            second="refuses",
+        ),
+    ),
     ("set_parameter_prompt", Case({"name": "DateFrom", "prompt": ""})),
+    (
+        "reorder_parameters",
+        Case(
+            {"names": ["DateTo", "DateFrom"], "reflow_layout": True},
+            setup=[
+                (
+                    "set_parameter_layout",
+                    {"rows": 1, "columns": 2, "parameter_order": ["DateFrom", "DateTo"]},
+                )
+            ],
+        ),
+    ),
+    (
+        "remove_parameter",
+        Case(
+            {"name": "DateFrom", "compact_layout": True},
+            second="refuses",
+            setup=[
+                (
+                    "set_parameter_layout",
+                    {"rows": 1, "columns": 2, "parameter_order": ["DateFrom", "DateTo"]},
+                )
+            ],
+        ),
+    ),
     (
         "set_parameter_available_values",
         Case(
@@ -688,6 +943,45 @@ VARIANTS: list[tuple[str, Case]] = [
                 "dataset_name": "SampleDataset",
                 "integrated_security": False,
             }
+        ),
+    ),
+    (
+        "remove_calculated_field",
+        Case(
+            {"dataset_name": "MainDataset", "field_name": "Double", "force": True},
+            second="refuses",
+            setup=[
+                (
+                    "add_calculated_field",
+                    {
+                        "dataset_name": "MainDataset",
+                        "field_name": "Double",
+                        "expression": "=Fields!Amount.Value * 2",
+                    },
+                ),
+                ("set_textbox_value", {"textbox_name": "Amount", "value": "=Fields!Double.Value"}),
+            ],
+        ),
+    ),
+    (
+        "update_dataset_query",
+        Case(
+            {"dataset_name": "MainDataset", "dax_body": "EVALUATE 'X'", "designer_state": "drop"},
+            setup=[
+                (
+                    "raw_xml_replace",
+                    {
+                        "xpath": ".//r:DataSet[@Name='MainDataset']/r:Query/rd:UseGenericDesigner",
+                        "content": (
+                            '<rd:DesignerState xmlns:rd="http://schemas.microsoft.com/'
+                            'SQLServer/reporting/reportdesigner"><QueryDefinition xmlns='
+                            '"http://schemas.microsoft.com/AnalysisServices/QueryDefinition">'
+                            "<Query><Statement>EVALUATE 'Sales'</Statement></Query>"
+                            "</QueryDefinition></rd:DesignerState>"
+                        ),
+                    },
+                )
+            ],
         ),
     ),
     (

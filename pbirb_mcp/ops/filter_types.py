@@ -1,6 +1,6 @@
 """Filter expression helpers (Phase 8 commit 36).
 
-Two helpers shared between :func:`pbirb_mcp.ops.tablix.add_tablix_filter`
+Helpers shared between :func:`pbirb_mcp.ops.tablix.add_tablix_filter`
 and :func:`pbirb_mcp.ops.dataset.add_dataset_filter`:
 
 * :func:`wrap_with_format` — wrap the body of a filter expression in
@@ -12,6 +12,9 @@ and :func:`pbirb_mcp.ops.dataset.add_dataset_filter`:
   block) and a parameter's ``<DataType>`` (read from
   ``<ReportParameters>``). Emits a structured warning string per
   detected mismatch. Skips silently when either side isn't readable.
+* :func:`encode_filter_texts` — the text actually written to
+  ``<FilterExpression>``/``<FilterValue>``: literals verbatim,
+  ``=``-expressions entity-decoded with a warning (issue #75).
 
 The helpers are intentionally small: regex-based detection (no DAX
 parser), one-pass scan, and only the type pairings that recur in real
@@ -25,6 +28,7 @@ from typing import Optional
 
 from lxml import etree
 
+from pbirb_mcp.core.encoding import encode_value_text
 from pbirb_mcp.core.xpath import RD_NS, find_child, find_children
 
 # Maps RDL parameter <DataType> to the canonical "shape group". An
@@ -173,7 +177,30 @@ def type_mismatch_warnings(
     return warnings
 
 
+def encode_filter_texts(expression: str, values: list[str]) -> tuple[str, list[str], list[str]]:
+    """Return ``(expression, values, warnings)`` as they should be written to
+    ``<FilterExpression>`` / ``<FilterValue>`` (issue #75).
+
+    Literals (no leading ``=``) are kept verbatim — ``R&amp;D`` is a valid
+    filter value. ``=``-expressions are entity-decoded (the LLM
+    double-encoding guard) with a warning whenever that changed the text.
+    Callers echo the returned texts, i.e. what was actually written.
+    """
+    warnings: list[str] = []
+    written_expression, w = encode_value_text(expression, "filter expression")
+    if w:
+        warnings.append(w)
+    written_values: list[str] = []
+    for v in values:
+        text, w = encode_value_text(v, "filter value")
+        written_values.append(text)
+        if w:
+            warnings.append(w)
+    return written_expression, written_values, warnings
+
+
 __all__ = [
+    "encode_filter_texts",
     "wrap_with_format",
     "type_mismatch_warnings",
 ]

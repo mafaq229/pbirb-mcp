@@ -12,6 +12,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
@@ -191,6 +192,34 @@ class TestInsertTablixTemplate:
         )
         doc = RDLDocument.open(rdl_path)
         doc.validate()
+
+    @pytest.mark.parametrize("repeat_header", [True, False])
+    def test_header_member_repeats_on_new_page_by_default(self, rdl_path, repeat_header):
+        # #67: the header row's static member repeats on every page.
+        kwargs = {} if repeat_header else {"repeat_header": False}
+        insert_tablix_from_template(
+            path=str(rdl_path),
+            name="DetailTable",
+            dataset_name="MainDataset",
+            columns=["ProductID", "Amount"],
+            top="3in",
+            left="0.5in",
+            width="3in",
+            height="0.5in",
+            **kwargs,
+        )
+        doc = RDLDocument.open(rdl_path)
+        header = doc.root.xpath(
+            ".//r:Tablix[@Name='DetailTable']/r:TablixRowHierarchy/r:TablixMembers/r:TablixMember",
+            namespaces=XPATH_NS,
+        )[0]
+        children = [etree.QName(c).localname for c in header]
+        if repeat_header:
+            assert children == ["KeepWithGroup", "RepeatOnNewPage"]
+            assert find_child(header, "RepeatOnNewPage").text == "true"
+        else:
+            assert children == ["KeepWithGroup"]
+        assert validate_report(str(rdl_path))["valid"]
 
 
 # ---- registration ---------------------------------------------------------

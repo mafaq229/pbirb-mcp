@@ -31,12 +31,10 @@ from lxml import etree
 from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
-from pbirb_mcp.core.ids import ElementNotFoundError
+from pbirb_mcp.core.ids import resolve_report_item
 from pbirb_mcp.core.xpath import find_child, q, qrd
+from pbirb_mcp.ops.images import check_image_source
 from pbirb_mcp.ops.page import _resolve_page, printable_width_in  # type: ignore[attr-defined]
-
-_VALID_IMAGE_SOURCES = ("External", "Embedded", "Database")
-
 
 _PAGE_SECTION_CHILD_ORDER = (
     "Height",
@@ -282,10 +280,14 @@ def _build_image(
     left: str,
     width: str,
     height: str,
+    mime_type: Optional[str] = None,
 ) -> etree._Element:
     img = etree.Element(q("Image"), Name=name)
     etree.SubElement(img, q("Source")).text = image_source
     etree.SubElement(img, q("Value")).text = encode_text(value)
+    if mime_type is not None:
+        # Required for Source=Database (#79); sits right after Value.
+        etree.SubElement(img, q("MIMEType")).text = encode_text(mime_type)
     etree.SubElement(img, q("Sizing")).text = "FitProportional"
     etree.SubElement(img, q("Top")).text = top
     etree.SubElement(img, q("Left")).text = left
@@ -401,37 +403,52 @@ def _add_image(
     left: str,
     width: str,
     height: str,
+    mime_type: Optional[str] = None,
 ) -> dict[str, Any]:
-    if image_source not in _VALID_IMAGE_SOURCES:
-        raise ValueError(
-            f"image_source must be one of {_VALID_IMAGE_SOURCES!r}; got {image_source!r}"
-        )
+    # Source / Value / MIMEType rules shared with set_image_source (#79).
+    mime_type = check_image_source(image_source, value, mime_type)
     names.validate_identifier(name, "image")
     top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
     names.ensure_unique(doc, name)
-    img = _build_image(name, image_source, value, top, left, width, height)
+    img = _build_image(name, image_source, value, top, left, width, height, mime_type)
     return _place_item(doc, region, img, name)
+
+
+def resolve_removable_item(doc: RDLDocument, region: str, name: str) -> etree._Element:
+    """The item called ``name`` in ``region`` — at its top level or nested in
+    a Rectangle / List cell (#83) — for the ``remove_*_item`` tools. A
+    tablix cell's own content is refused: a cell must hold one item."""
+    item, container, _region = resolve_report_item(doc, name, region=region)
+    if etree.QName(container).localname == "CellContents":
+        raise ValueError(
+            f"{etree.QName(item).localname} {name!r} fills a tablix cell, which must hold "
+            "an item; remove or rebuild the tablix (or its column) instead"
+        )
+    return item
+
+
+def detach_item(item: etree._Element) -> etree._Element:
+    """Remove ``item`` from its ``<ReportItems>``, dropping that element when
+    it is left empty. Returns the element that held it (Body, PageHeader,
+    PageFooter or Rectangle)."""
+    items = item.getparent()
+    holder = items.getparent()
+    items.remove(item)
+    if len(list(items)) == 0:
+        holder.remove(items)
+    return holder
 
 
 def _remove_item(path: str, region: _Region, name: str) -> dict[str, Any]:
     doc = RDLDocument.open(path)
-    page = _resolve_page(doc)
-    section = find_child(page, region.section_local)
-    items = find_child(section, "ReportItems") if section is not None else None
-    target = None
-    if items is not None:
-        for el in list(items):
-            if el.get("Name") == name:
-                target = el
-                break
-    if target is None:
-        raise ElementNotFoundError(f"no item named {name!r} in {region.section_local}")
-    items.remove(target)
-    if len(list(items)) == 0:
-        section.remove(items)
+    target = resolve_removable_item(doc, region.name, name)
+    holder = detach_item(target)
     doc.save()
-    return {"region": region.name, "removed": name}
+    result: dict[str, Any] = {"region": region.name, "removed": name}
+    if etree.QName(holder).localname == "Rectangle":
+        result["parent"] = holder.get("Name")
+    return result
 
 
 # ---- public per-region wrappers (the actual tools) ------------------------
@@ -488,8 +505,9 @@ def add_header_image(
     left: str,
     width: str,
     height: str,
+    mime_type: Optional[str] = None,
 ) -> dict[str, Any]:
-    return _add_image(path, HEADER, name, image_source, value, top, left, width, height)
+    return _add_image(path, HEADER, name, image_source, value, top, left, width, height, mime_type)
 
 
 def add_footer_image(
@@ -501,8 +519,9 @@ def add_footer_image(
     left: str,
     width: str,
     height: str,
+    mime_type: Optional[str] = None,
 ) -> dict[str, Any]:
-    return _add_image(path, FOOTER, name, image_source, value, top, left, width, height)
+    return _add_image(path, FOOTER, name, image_source, value, top, left, width, height, mime_type)
 
 
 def remove_header_item(path: str, name: str) -> dict[str, Any]:

@@ -99,9 +99,12 @@ def _parameter(d: dict) -> dict:
 def _tablix(d: dict) -> dict:
     out = _pick(d, ("name", "dataset", *_POSITION))
     out["column_count"] = len(d.get("columns") or [])
+    out["row_count"] = len(d.get("rows") or [])
     out["row_groups"] = _names(d.get("row_groups"))
     out["column_groups"] = _names(d.get("column_groups"))
     out["cell_count"] = len(d.get("cells") or [])
+    out["header_cell_count"] = len(d.get("header_cells") or [])
+    out["corner_cell_count"] = len(d.get("corner_cells") or [])
     return out
 
 

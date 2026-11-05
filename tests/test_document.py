@@ -77,7 +77,7 @@ class TestSave:
         # Original file untouched.
         assert tmp_rdl.read_bytes() == original
         # No temp file left lying around.
-        assert not (tmp_rdl.parent / (tmp_rdl.name + ".tmp")).exists()
+        assert not list(tmp_rdl.parent.glob("*.tmp"))
 
 
 class TestRoundTrip:

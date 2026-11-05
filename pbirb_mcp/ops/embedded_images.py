@@ -19,8 +19,9 @@ letting Report Builder load a file it can't render.
 from __future__ import annotations
 
 import base64
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from lxml import etree
 
@@ -28,6 +29,7 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.names import validate_identifier
 from pbirb_mcp.core.xpath import find_child, find_children, q
+from pbirb_mcp.ops import expr_walk, vbexpr
 
 # Per the RDL spec, embedded images only support these MIME types.
 _VALID_MIME_TYPES = frozenset(
@@ -39,6 +41,8 @@ _VALID_MIME_TYPES = frozenset(
         "image/x-png",
     }
 )
+# Public name: Database images (``Image/MIMEType``) use the same set (#79).
+VALID_MIME_TYPES = _VALID_MIME_TYPES
 
 
 # Magic-byte prefixes for the supported formats. We sniff the file to refuse
@@ -192,25 +196,80 @@ def list_embedded_images(path: str) -> list[dict[str, str]]:
 # ---- remove_embedded_image ------------------------------------------------
 
 
-def _scan_embedded_image_references(doc: RDLDocument, name: str) -> list[str]:
-    """Walk every ``<Image>`` looking for ``Source=Embedded`` + ``Value=<name>``.
+class EmbeddedImageRef(NamedTuple):
+    """One reference to an embedded image (see :func:`iter_embedded_image_refs`)."""
 
-    Returns a list of human-readable locator strings (the Image's Name and,
-    when nameless, an ancestor anchor). Mirrors the pattern used by
-    ``parameters._scan_parameter_references`` so callers get the same
-    experience: the message lists where the offending references live, and
-    they can decide to fix them or pass ``force=True``.
+    element: etree._Element  # the <Image> or <BackgroundImage>
+    kind: str  # "Image" | "BackgroundImage"
+    ref: str  # the embedded image name referenced
+    is_expression: bool  # True: a string literal inside an =expression Value
+
+
+def iter_embedded_image_refs(root: etree._Element) -> Iterator[EmbeddedImageRef]:
+    """Yield every reference to an embedded image in the report (#81).
+
+    Covers each ``<Image>`` report item and each ``Style/<BackgroundImage>``
+    (Body, Rectangle, Textbox, Tablix, Chart, ... — the two share the
+    ``Source`` / ``Value`` shape) whose ``Source`` is ``Embedded``:
+
+    - a literal ``Value`` yields one ref with ``is_expression=False``;
+    - an ``=`` expression ``Value`` (``=IIf(..., "LogoA", "LogoB")``)
+      yields one ref per distinct double-quoted string literal in it, with
+      ``is_expression=True`` — the expression *may* pick that image at
+      run time. Literals are found with the VB tokenizer, so text in
+      comments never counts.
     """
+    for elem in root.iter(q("Image"), q("BackgroundImage")):
+        source = find_child(elem, "Source")
+        if source is None or (source.text or "").strip() != "Embedded":
+            continue
+        value = find_child(elem, "Value")
+        text = (value.text or "").strip() if value is not None else ""
+        if not text:
+            continue
+        kind = etree.QName(elem).localname
+        if not text.startswith("="):
+            yield EmbeddedImageRef(elem, kind, text, False)
+            continue
+        seen: set[str] = set()
+        for token in expr_walk.expression_tokens(text) or []:
+            if token.kind != vbexpr.STRING:
+                continue
+            literal = vbexpr.string_value(token)
+            if literal and literal not in seen:
+                seen.add(literal)
+                yield EmbeddedImageRef(elem, kind, literal, True)
+
+
+def ref_locator(ref: EmbeddedImageRef) -> str:
+    """Human-readable location of a reference: ``Image[Name='Logo']``, or
+    the owner of a background image — ``Body/Style/BackgroundImage``,
+    ``Textbox[Name='Amount']/Style/BackgroundImage``."""
+    if ref.kind == "Image":
+        return f"Image[Name={ref.element.get('Name')!r}]" if ref.element.get("Name") else "Image"
+    style = ref.element.getparent()
+    owner = style.getparent() if style is not None else None
+    if owner is None:
+        return "BackgroundImage"
+    owner_local = etree.QName(owner).localname
+    label = f"{owner_local}[Name={owner.get('Name')!r}]" if owner.get("Name") else owner_local
+    return f"{label}/Style/BackgroundImage"
+
+
+def _scan_embedded_image_references(doc: RDLDocument, name: str) -> list[str]:
+    """Locators of every reference to embedded image ``name``: literal
+    ones as-is, expression ones marked "possible reference". Mirrors
+    ``parameters._scan_parameter_references`` so callers get the same
+    experience: the message lists where the references live, and they
+    can fix them or pass ``force=True``."""
     locators: list[str] = []
-    for img in doc.root.iter(q("Image")):
-        source = find_child(img, "Source")
-        if source is None or source.text != "Embedded":
+    for ref in iter_embedded_image_refs(doc.root):
+        if ref.ref != name:
             continue
-        value = find_child(img, "Value")
-        if value is None or value.text != name:
-            continue
-        img_name = img.get("Name") or "<unnamed>"
-        locators.append(f"Image[Name={img_name!r}]")
+        where = ref_locator(ref)
+        if ref.is_expression:
+            where += " (possible reference: string literal in its =expression Value)"
+        locators.append(where)
     return locators
 
 
@@ -221,11 +280,14 @@ def remove_embedded_image(
 ) -> dict[str, Any]:
     """Remove a named embedded image.
 
-    By default refuses if any ``<Image Source="Embedded"><Value>=<name>``
-    still references it — the report would render with a broken image at
-    every reference site. Pass ``force=True`` to remove anyway and accept
-    the dangling references; this matches the safety story in
-    ``remove_parameter``.
+    By default refuses while anything still references it — an
+    ``<Image>`` or a ``Style/BackgroundImage`` (Body, Rectangle, Textbox,
+    Tablix, Chart, ...) with ``Source=Embedded`` whose ``Value`` is the
+    name, or whose ``=`` expression ``Value`` contains it as a string
+    literal (reported as a "possible reference"); the report would render
+    with a missing image there. The file is untouched. Pass ``force=True``
+    to remove anyway and accept the dangling references; this matches
+    the safety story in ``remove_parameter``.
 
     Drops the empty ``<EmbeddedImages/>`` block when removing the last entry.
     """
@@ -303,6 +365,10 @@ def get_embedded_image_data(path: str, name: str) -> dict[str, Any]:
 
 
 __all__ = [
+    "VALID_MIME_TYPES",
+    "EmbeddedImageRef",
+    "iter_embedded_image_refs",
+    "ref_locator",
     "add_embedded_image",
     "get_embedded_image_data",
     "list_embedded_images",

@@ -1,9 +1,9 @@
 """Report-cloning utility (Phase 6 commit 29).
 
 ``duplicate_report(src, dst, regenerate_ids=True)`` clones an ``.rdl``
-file to a new path. The atomic-write convention from
-``RDLDocument.save_as`` applies (write to ``<dst>.tmp``, rename on
-success).
+file to a new path. The atomic writer behind ``RDLDocument.save_as``
+applies (:func:`~pbirb_mcp.core.document.write_atomic`: temp file next to
+the destination, rename on success).
 
 When ``regenerate_ids=True`` (default), the helper rewrites every
 ``<rd:DataSourceID>`` and any ``<rd:ReportID>`` to a freshly-generated
@@ -20,14 +20,11 @@ overwrite (mirrors the safety story in ``add_data_source``,
 
 from __future__ import annotations
 
-import contextlib
-import os
-import shutil
 import uuid
 from pathlib import Path
 from typing import Any
 
-from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.document import RDLDocument, write_atomic
 from pbirb_mcp.core.xpath import RD_NS
 
 
@@ -41,9 +38,9 @@ def duplicate_report(
     Atomic write convention: when ``regenerate_ids=True`` the helper
     opens the source, regenerates every ``<rd:DataSourceID>`` and
     optional ``<rd:ReportID>`` into a fresh ``uuid4()``, and saves to
-    ``dst_path`` via the standard atomic ``save_as`` (write to
-    ``<dst>.tmp``, rename). When ``regenerate_ids=False`` the file is
-    copied byte-for-byte to ``<dst>.tmp`` and renamed the same way.
+    ``dst_path`` via the standard atomic ``save_as`` (temp file, rename).
+    When ``regenerate_ids=False`` the file is copied byte-for-byte with
+    the same atomic writer.
 
     Refuses if ``dst_path`` already exists. Refuses if ``src_path``
     isn't a regular file (or doesn't exist).
@@ -64,16 +61,10 @@ def duplicate_report(
         )
 
     if not regenerate_ids:
-        # Same atomic convention as save_as: copy to <dst>.tmp, then rename,
-        # so a failed copy never leaves a half-written dst (issue #62).
-        tmp = dst.with_name(dst.name + ".tmp")
-        try:
-            shutil.copy(str(src), str(tmp))
-            os.replace(tmp, dst)
-        except Exception:
-            with contextlib.suppress(OSError):
-                tmp.unlink()
-            raise
+        # Same atomic writer as save_as (temp file + rename, through a
+        # symlink), so a failed copy never leaves a half-written dst
+        # (issues #62, #64).
+        write_atomic(dst, src.read_bytes())
         return {"src": str(src), "dst": str(dst), "regenerated_ids": []}
 
     # Open the source and work on a private copy: inside a transaction

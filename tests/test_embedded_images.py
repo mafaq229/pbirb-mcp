@@ -14,10 +14,11 @@ import shutil
 from pathlib import Path
 
 import pytest
+from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.xpath import find_child, find_children
+from pbirb_mcp.core.xpath import find_child, find_children, q
 from pbirb_mcp.ops.embedded_images import (
     add_embedded_image,
     get_embedded_image_data,
@@ -324,6 +325,98 @@ class TestRemoveEmbeddedImage:
         assert out["force"] is True
         assert out["removed"] == "Logo"
         assert _embedded_block(rdl_path) is None
+
+
+# ---- #81: BackgroundImage and expression references ---------------------
+
+
+_BODY_STYLE = "<Height>2in</Height>\n        <Style />"
+_LOGO_EXPR = '=IIf(Parameters!DateFrom.Value Is Nothing, "LogoA", "LogoA")'
+
+
+def _issue_81_report(rdl_path: Path, png_path: Path) -> None:
+    """The #81 repro: Watermark used only as the Body's background image,
+    LogoA only through a string literal in an Image's =expression."""
+    from pbirb_mcp.ops.body import add_body_image
+
+    for name in ("Watermark", "LogoA"):
+        add_embedded_image(str(rdl_path), name, "image/png", str(png_path))
+    text = rdl_path.read_text(encoding="utf-8")
+    assert _BODY_STYLE in text
+    rdl_path.write_text(
+        text.replace(
+            _BODY_STYLE,
+            "<Height>2in</Height>\n        <Style><BackgroundImage><Source>Embedded</Source>"
+            "<Value>Watermark</Value></BackgroundImage></Style>",
+        ),
+        encoding="utf-8",
+    )
+    add_body_image(str(rdl_path), "Logo", "Embedded", _LOGO_EXPR, "1.2in", "0.5in", "1in", "0.5in")
+
+
+class TestRemoveEmbeddedImageReferences:
+    def test_body_background_image_blocks_removal(self, rdl_path, png_path):
+        _issue_81_report(rdl_path, png_path)
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match=r"Body/Style/BackgroundImage") as exc:
+            remove_embedded_image(str(rdl_path), "Watermark")
+        assert "force=True" in str(exc.value)
+        assert rdl_path.read_bytes() == before
+
+    def test_expression_literal_blocks_removal_as_possible_reference(self, rdl_path, png_path):
+        _issue_81_report(rdl_path, png_path)
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match=r"Image\[Name='Logo'\] \(possible reference") as exc:
+            remove_embedded_image(str(rdl_path), "LogoA")
+        assert "1 location(s)" in str(exc.value)  # duplicate literal counted once
+        assert rdl_path.read_bytes() == before
+
+    def test_force_overrides_both_and_lint_reports_them(self, rdl_path, png_path):
+        from pbirb_mcp.ops.lint import lint_report
+
+        _issue_81_report(rdl_path, png_path)
+        assert remove_embedded_image(str(rdl_path), "Watermark", force=True)["force"] is True
+        assert remove_embedded_image(str(rdl_path), "LogoA", force=True)["removed"] == "LogoA"
+        issues = lint_report(str(rdl_path), rules=["dangling-embedded-image"])["issues"]
+        assert sorted((i["severity"], i["location"]) for i in issues) == [
+            ("error", "Body/Style/BackgroundImage"),
+            ("warning", "Image[Name='Logo']"),
+        ]
+
+    def test_background_image_on_a_textbox_is_found(self, rdl_path, png_path):
+        add_embedded_image(str(rdl_path), "Wm", "image/png", str(png_path))
+        doc = RDLDocument.open(rdl_path)
+        tb = doc.root.find(f".//{q('Textbox')}[@Name='ProductID']")
+        style = find_child(tb, "Style")
+        if style is None:
+            style = etree.SubElement(tb, q("Style"))
+        bg = etree.SubElement(style, q("BackgroundImage"))
+        etree.SubElement(bg, q("Source")).text = "Embedded"
+        etree.SubElement(bg, q("Value")).text = "Wm"
+        doc.save()
+        with pytest.raises(ValueError, match=r"Textbox\[Name='ProductID'\]/Style/BackgroundImage"):
+            remove_embedded_image(str(rdl_path), "Wm")
+
+    def test_unrelated_expression_literals_do_not_block(self, rdl_path, png_path):
+        from pbirb_mcp.ops.body import add_body_image
+
+        add_embedded_image(str(rdl_path), "LogoA", "image/png", str(png_path))
+        add_embedded_image(str(rdl_path), "LogoB", "image/png", str(png_path))
+        add_body_image(
+            str(rdl_path), "Pick", "Embedded", '=IIf(True, "LogoB", "LogoB")',
+            "1.2in", "0.5in", "1in", "0.5in",
+        )  # fmt: skip
+        assert remove_embedded_image(str(rdl_path), "LogoA")["removed"] == "LogoA"
+
+    def test_iter_embedded_image_refs(self, rdl_path, png_path):
+        from pbirb_mcp.ops.embedded_images import iter_embedded_image_refs
+
+        _issue_81_report(rdl_path, png_path)
+        refs = iter_embedded_image_refs(RDLDocument.open(rdl_path).root)
+        assert sorted((r.kind, r.ref, r.is_expression) for r in refs) == [
+            ("BackgroundImage", "Watermark", False),
+            ("Image", "LogoA", True),
+        ]
 
 
 # ---- v0.3 Phase 6: get_embedded_image_data ------------------------------

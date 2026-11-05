@@ -148,11 +148,12 @@ def is_preview_path(path: Any) -> bool:
 
 
 def path_arguments(arguments: dict[str, Any]) -> list[tuple[str, str]]:
-    """``(name, value)`` for every file-path argument: ``path`` and ``*_path``."""
+    """``(name, value)`` for every file-path argument: ``path``, ``*_path``
+    and ``*_dir`` (backup_report's ``dest_dir``)."""
     return [
         (k, v)
         for k, v in arguments.items()
-        if (k == "path" or k.endswith("_path")) and isinstance(v, str) and v
+        if (k == "path" or k.endswith(("_path", "_dir"))) and isinstance(v, str) and v
     ]
 
 

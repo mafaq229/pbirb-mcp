@@ -102,26 +102,25 @@ the structural gate and the cases below.
 
 | Path | Case | Fixture | Oracle |
 |---|---|---|---|
-| nested row groups | t08 | fleet | `add_row_group` ×2 (inner first; each wraps the whole hierarchy) |
+| nested row groups | t08 | fleet | `add_row_group` Site, then `add_row_group` Type with `parent_group` |
 | spans | t09 | fleet | `add_static_row` → `set_cell_span` |
 | subtotals on a Report Builder–shaped tablix | t10 | fleet_rb | `add_subtotal_row` on the header-less `Site` group, grand total kept last |
 | `add_column_group` | t11 | fleet | `add_column_group` |
 | chart series add/remove | c07, c08 | fleet, fleet_rb | `add_chart_series` → `remove_chart_series`; `remove_chart_series` |
 | `set_textbox_runs` on a styled cell | s10 | fleet_rb | `set_textbox_runs` keeping the header's run, box and paragraph style |
-| repeating header row | t12 | fleet_rb | **known gap #67** |
-| descending sort | t13 | fleet | **known gap #66** |
+| repeating header row | t12 | fleet_rb | `set_repeat_header_rows` (or `set_repeat_on_new_page` with `member='header'`) (#67) |
+| descending sort | t13 | fleet | `set_group_sort` with `{value, direction: "Descending"}` (#66) |
 | rename | p09 | fleet_rb | `rename_parameter` (title, table filter, query parameter, prompt layout) |
 
-- **Known gaps.** `Case.known_gap` marks a request no tool can do correctly yet: t12 (no tool sets
-  `RepeatOnNewPage` on the static header member) and t13 (`set_group_sort` has no direction; negation can't
-  reverse a text sort). They have no oracle, which `selftest` skips, but it still checks that doing nothing
-  fails them. Both checks are reachable today only through `raw_xml_replace`. In real runs they count as
-  failures, and `summarize()` prints `known-gap cases passed k/n`. When #66 / #67 land, add an oracle and
-  drop `known_gap`.
-- **t08 is lenient on purpose.** `add_row_group` also wraps the column-header row, so the header repeats per
-  group (#65, M5). t08 checks only the nesting. Tighten it when #65 lands.
-- **Comparing with the baseline.** New runs have 65 cases, and two of them are known gaps (so the ceiling is
-  96.9% until #66/#67 land). Compare against `baseline` / `v1` / `v2` on the original 55 ids (pass them with
+- **Known gaps.** `Case.known_gap` marks a request no tool can do correctly yet. There are none at the
+  moment: t12 (no tool set `RepeatOnNewPage` on the static header member) and t13 (`set_group_sort` had no
+  direction) were known gaps until #67 / #66 and now have oracles. A known gap has no oracle, which
+  `selftest` skips, but it still checks that doing nothing fails it; in real runs it counts as a failure, and
+  `summarize()` prints `known-gap cases passed k/n`.
+- **t08 checks the column-heading row too** (since #65): it must stay the first row, outside both groups.
+  Before #65 `add_row_group` also wrapped that row, so it repeated per group and t08 checked only the nesting.
+- **Comparing with the baseline.** New runs have 65 cases and no known gaps since #66 and #67 (the ceiling
+  was 96.9% while t12 and t13 were gaps). Compare against `baseline` / `v1` / `v2` on the original 55 ids (pass them with
   `--cases`, or filter `results.jsonl`), and report the new ten separately.
 
 ## Re-running
@@ -154,7 +153,9 @@ uv run --with anthropic==2.3.0 python -m evals.tool_selection.harness run \
   once. The hash was refreshed on 2026-11-03 after pre-commit's ruff-format pass, which was whitespace
   only, and again on 2026-11-05 for #60 (structural gate, 10 cases, `build_fleet_rb`), after reviewing that
   diff. That refresh ran `check_harness(approve=True)` directly, because `run --approve-harness` starts a
-  paid run straight after storing the hash. `selftest` and `cases` never check the hash.
+  paid run straight after storing the hash. `selftest` and `cases` never check the hash. Later refreshes,
+  the same way: #65 (t08 tightened, oracle nests with `parent_group`), #67 (t12 oracle, `known_gap`
+  dropped).
 - **`ANTHROPIC_BASE_URL`.** Inside a Claude Code session this is set to the session's own proxy. Unset it
   (and `ANTHROPIC_AUTH_TOKEN`) before running, or requests go to the wrong endpoint. The harness also
   raises `ServedModelMismatch` if the served model differs from `--model`.
@@ -171,7 +172,13 @@ uv run --with anthropic==2.3.0 python -m evals.tool_selection.harness run \
    - `search` should close most of its 10-point gap after #56/#62 (descriptions, toolsets).
    - t04/s09/i01/i02 should pass after #59.
    - t05 should pass after #66.
-   - d06 should pass after #71.
+   - d06 should pass after #71. Its check changed with #71 (2026-11-05): it now requires the
+     Report Builder PBIDATASET shape — provider kept as `PBIDATASET`, `rd:PowerBIWorkspaceName`
+     = `FleetAnalytics-Prod`, `FleetOps` as the catalog or model label — instead of the workspace in
+     the ConnectString (the legacy shape #71 fixed). d06 results before and after that date are not
+     like-for-like.
+   - t05's oracle now uses `{value, direction: "Descending"}` (#66); its check still also accepts a
+     negated expression.
    - t12 / t13 become passable after #67 / #66 (then give them oracles and drop `known_gap`).
 3. Report the `corrupted` count alongside success. A run that edits correctly but breaks structure already
    counts as a failure. The committed baseline predates the gate, so re-run it once the critical fixes

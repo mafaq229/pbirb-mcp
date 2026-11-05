@@ -14,13 +14,15 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from typing import Optional
 
 import pytest
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child
+from pbirb_mcp.core.xpath import QD_NS, RD_NS, RDL_NS, find_child
+from pbirb_mcp.ops import expr_walk
 from pbirb_mcp.ops.dataset import (
     add_calculated_field,
     add_dataset_field,
@@ -36,10 +38,17 @@ from pbirb_mcp.ops.dataset import (
     update_dataset_query,
     update_query_parameter,
 )
+from pbirb_mcp.ops.lint import lint_report
+from pbirb_mcp.ops.parameters import (
+    set_parameter_available_values,
+    set_parameter_default_values,
+)
 from pbirb_mcp.ops.reader import get_datasets
+from pbirb_mcp.ops.styling import set_textbox_value
 from pbirb_mcp.ops.validate import validate_report
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
+from tests._designer_state import build_designer_state_report
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pbi_paginated_minimal.rdl"
 
@@ -118,11 +127,48 @@ class TestUpdateDatasetQuery:
         doc = RDLDocument.open(rdl_path)
         doc.validate()  # no raise
 
+    def test_entity_shaped_dax_stored_verbatim(self, rdl_path):
+        # #75: SUBSTITUTE(col, "&amp;", "&") cleans HTML-escaped data; the
+        # "&amp;" literal must survive the write (it used to be decoded to
+        # "&", silently changing the query).
+        dax = (
+            "EVALUATE SELECTCOLUMNS('Sales', \"Clean\", "
+            'SUBSTITUTE(\'Sales\'[ProductName], "&amp;", "&"))'
+        )
+        result = update_dataset_query(str(rdl_path), "MainDataset", dax)
+        assert result["command_text"] == dax
+        assert get_dataset(str(rdl_path), "MainDataset")["command_text"] == dax
+        assert b'"&amp;amp;", "&amp;"' in rdl_path.read_bytes()
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_entity_shaped_dax_resubmit_is_noop(self, rdl_path):
+        dax = "EVALUATE FILTER('Sales', 'Sales'[ProductName] = \"R&amp;D\")"
+        update_dataset_query(str(rdl_path), "MainDataset", dax)
+        before = rdl_path.read_bytes()
+        again = update_dataset_query(str(rdl_path), "MainDataset", dax)
+        assert not again["changed"]
+        assert rdl_path.read_bytes() == before
+
 
 def _inject_designer_state(rdl_path: Path, dataset_name: str, statement_text: str):
-    """Add a <rd:DesignerState>/<Statement> block to the named DataSet's
-    <Query>, mimicking what Power BI Report Builder writes for PBIDATASET
-    queries authored via the Query Designer GUI."""
+    """Add the <rd:DesignerState> block Report Builder's Query Designer
+    writes (#70): rd:DesignerState/QueryDefinition/Query/Statement in the
+    AnalysisServices QueryDefinition namespace."""
+    doc = RDLDocument.open(rdl_path)
+    ds = next(d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == dataset_name)
+    query = find_child(ds, "Query")
+    designer_state = etree.SubElement(query, f"{{{RD_NS}}}DesignerState")
+    qdef = etree.SubElement(designer_state, f"{{{QD_NS}}}QueryDefinition", nsmap={None: QD_NS})
+    etree.SubElement(qdef, f"{{{QD_NS}}}CommandType").text = "DAX"
+    qd_query = etree.SubElement(qdef, f"{{{QD_NS}}}Query")
+    etree.SubElement(qd_query, f"{{{QD_NS}}}Statement").text = statement_text
+    etree.SubElement(qd_query, f"{{{QD_NS}}}ParameterDefinitions")
+    doc.save()
+
+
+def _inject_legacy_designer_state(rdl_path: Path, dataset_name: str, statement_text: str):
+    """The pre-#70 assumed shape: <rd:DesignerState>/<rd:Statement>. Still
+    accepted as a fallback by find_designer_statement."""
     doc = RDLDocument.open(rdl_path)
     ds = next(d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == dataset_name)
     query = find_child(ds, "Query")
@@ -130,6 +176,11 @@ def _inject_designer_state(rdl_path: Path, dataset_name: str, statement_text: st
     statement = etree.SubElement(designer_state, f"{{{RD_NS}}}Statement")
     statement.text = statement_text
     doc.save()
+
+
+def _designer_statement_text(rdl_path: Path) -> Optional[str]:
+    st = next(etree.parse(str(rdl_path)).iter(f"{{{QD_NS}}}Statement"), None)
+    return None if st is None else st.text
 
 
 _SALES_DAX = "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[ProductName], 'Sales'[Amount])"
@@ -424,11 +475,35 @@ class TestUpdateDatasetQueryAliasStrategy:
 
 
 class TestUpdateDatasetQueryDesignerStateSync:
-    """update_dataset_query must rewrite <rd:DesignerState>/<Statement>
-    in lockstep with <CommandText>. Without this, the Query Designer GUI
-    in Report Builder shows stale DAX while the runtime executes the new
-    DAX — invisibly confusing.
+    """update_dataset_query must rewrite Report Builder's Query Designer
+    Statement (rd:DesignerState/QueryDefinition/Query/Statement, #70) in
+    lockstep with <CommandText>. Without this the designer shows stale DAX
+    and can regenerate the old query over the new one.
     """
+
+    def test_report_builder_shape_synced(self, tmp_path):
+        # Issue #70 repro, against the real Report Builder shape.
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        st = next(etree.parse(str(path)).iter(f"{{{QD_NS}}}Statement"))
+        assert [etree.QName(a).localname for a in st.iterancestors()][:3] == [
+            "Query",
+            "QueryDefinition",
+            "DesignerState",
+        ]
+        result = update_dataset_query(str(path), "MainDataset", 'EVALUATE ROW("x", 1)')
+        assert result["designer_state_synced"] is True
+        assert _designer_statement_text(path) == 'EVALUATE ROW("x", 1)'
+        # The QuerySpecification graph is left alone (it can't describe the DAX).
+        assert b"MDXQuerySpecification" in path.read_bytes()
+
+    def test_report_builder_shape_resubmit_is_noop(self, tmp_path):
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        update_dataset_query(str(path), "MainDataset", 'EVALUATE ROW("x", 1)')
+        before = path.read_bytes()
+        again = update_dataset_query(str(path), "MainDataset", 'EVALUATE ROW("x", 1)')
+        assert again["designer_state_synced"] is False
+        assert not again["changed"]
+        assert path.read_bytes() == before
 
     def test_designer_state_statement_synced(self, rdl_path):
         _inject_designer_state(rdl_path, "MainDataset", "OLD: EVALUATE 'OldTable'")
@@ -438,14 +513,54 @@ class TestUpdateDatasetQueryDesignerStateSync:
             dax_body="NEW: EVALUATE 'NewTable'",
         )
         assert result["designer_state_synced"] is True
+        assert _designer_statement_text(rdl_path) == "NEW: EVALUATE 'NewTable'"
 
+    def test_legacy_rd_statement_still_synced(self, rdl_path):
+        _inject_legacy_designer_state(rdl_path, "MainDataset", "OLD")
+        result = update_dataset_query(str(rdl_path), "MainDataset", "EVALUATE 'New'")
+        assert result["designer_state_synced"] is True
         doc = RDLDocument.open(rdl_path)
-        ds = next(
-            d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == "MainDataset"
+        statement = next(doc.root.iter(f"{{{RD_NS}}}Statement"))
+        assert statement.text == "EVALUATE 'New'"
+
+    def test_drop_removes_designer_state(self, tmp_path):
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        result = update_dataset_query(
+            str(path), "MainDataset", 'EVALUATE ROW("x", 1)', designer_state="drop"
         )
-        statement = ds.find(f"{{{RDL_NS}}}Query/{{{RD_NS}}}DesignerState/{{{RD_NS}}}Statement")
-        assert statement is not None
-        assert statement.text == "NEW: EVALUATE 'NewTable'"
+        assert result["designer_state_dropped"] is True
+        assert result["designer_state_synced"] is False
+        assert b"DesignerState" not in path.read_bytes()
+        assert get_dataset(str(path), "MainDataset")["designer_state_present"] is False
+        assert get_dataset(str(path), "MainDataset")["command_text"] == 'EVALUATE ROW("x", 1)'
+        # Dropping the foreign QueryDefinition payload leaves a valid report.
+        assert validate_report(str(path))["valid"]
+
+    def test_drop_again_is_noop(self, tmp_path):
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        update_dataset_query(str(path), "MainDataset", "EVALUATE 'X'", designer_state="drop")
+        before = path.read_bytes()
+        again = update_dataset_query(
+            str(path), "MainDataset", "EVALUATE 'X'", designer_state="drop"
+        )
+        assert again["designer_state_dropped"] is False
+        assert not again["changed"]
+        assert path.read_bytes() == before
+
+    def test_drop_with_dry_run_does_not_write(self, tmp_path):
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        before = path.read_bytes()
+        result = update_dataset_query(
+            str(path), "MainDataset", "EVALUATE 'X'", designer_state="drop", dry_run=True
+        )
+        assert result["designer_state_dropped"] is True
+        assert path.read_bytes() == before
+
+    def test_unknown_designer_state_mode_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="designer_state"):
+            update_dataset_query(
+                str(rdl_path), "MainDataset", "EVALUATE 'X'", designer_state="keep"
+            )
 
     def test_no_designer_state_returns_false(self, rdl_path):
         # Fixture has no DesignerState — the sync flag is False.
@@ -484,17 +599,15 @@ class TestUpdateDatasetQueryDesignerStateSync:
         )
         assert result["designer_state_synced"] is False
 
-    def test_sync_routes_through_encode_text(self, rdl_path):
-        """The DesignerState rewrite must use encode_text — same idempotent
-        encoding as CommandText. Otherwise a pre-encoded DAX double-encodes."""
+    def test_sync_writes_dax_verbatim(self, rdl_path):
+        """#75: the DesignerState rewrite stores the DAX verbatim, exactly
+        like CommandText — entity-shaped text in DAX is meaningful."""
         _inject_designer_state(rdl_path, "MainDataset", "old")
-        update_dataset_query(
-            path=str(rdl_path),
-            dataset_name="MainDataset",
-            dax_body="EVALUATE FILTER('X', 'X'[c] = \"A &amp; B\")",
-        )
-        # Disk should not contain &amp;amp;
-        assert b"&amp;amp;" not in rdl_path.read_bytes()
+        dax = "EVALUATE FILTER('X', 'X'[c] = \"A &amp; B\")"
+        update_dataset_query(path=str(rdl_path), dataset_name="MainDataset", dax_body=dax)
+        # Escaped exactly once on disk; reads back as the input.
+        assert b"&amp;amp;" in rdl_path.read_bytes()
+        assert get_dataset(str(rdl_path), "MainDataset")["command_text"] == dax
 
 
 # ---- add_query_parameter ---------------------------------------------------
@@ -707,17 +820,48 @@ class TestAddDatasetFilter:
                 values=["x"],
             )
 
-    def test_pre_encoded_value_no_double_encode(self, rdl_path):
-        # Bug class regression: pre-encoded entity must end up as
-        # &amp; on disk, not &amp;amp;.
-        add_dataset_filter(
+    def test_literal_value_stored_verbatim(self, rdl_path):
+        # #75: a literal (no leading '=') is not entity-decoded — 'R&amp;D'
+        # is a legitimate value and must read back unchanged.
+        result = add_dataset_filter(
             path=str(rdl_path),
             dataset_name="MainDataset",
             expression="=Fields!ProductName.Value",
             operator="Equal",
-            values=["A &amp; B"],
+            values=["R&amp;D"],
         )
-        assert b"&amp;amp;" not in (rdl_path).read_bytes()
+        assert result["values"] == ["R&amp;D"]
+        assert result["warnings"] == []
+        assert list_dataset_filters(str(rdl_path), "MainDataset")[0]["values"] == ["R&amp;D"]
+
+    def test_pre_encoded_expression_normalised_with_warning(self, rdl_path):
+        # #75: '='-expressions keep the double-encoding guard, but the
+        # rewrite is surfaced as a warning and the response echoes what
+        # was written.
+        result = add_dataset_filter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            expression='=Fields!ProductName.Value = "A &amp; B"',
+            operator="Equal",
+            values=["=True"],
+        )
+        assert result["expression"] == '=Fields!ProductName.Value = "A & B"'
+        assert any("decoded" in w for w in result["warnings"])
+        assert b"&amp;amp;" not in rdl_path.read_bytes()
+        stored = list_dataset_filters(str(rdl_path), "MainDataset")[0]
+        assert stored["expression"] == result["expression"]
+
+    def test_pre_encoded_expression_value_normalised(self, rdl_path):
+        result = add_dataset_filter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            expression="=Fields!ProductName.Value",
+            operator="Equal",
+            values=['="A &amp; B"'],
+        )
+        assert result["values"] == ['="A & B"']
+        assert len(result["warnings"]) == 1
+        assert list_dataset_filters(str(rdl_path), "MainDataset")[0]["values"] == ['="A & B"']
 
     def test_round_trip_safe(self, rdl_path):
         add_dataset_filter(
@@ -1086,6 +1230,198 @@ class TestRemoveDatasetField:
         doc = RDLDocument.open(rdl_path)
         ds = doc.root.find(f".//{{{RDL_NS}}}DataSet[@Name='MainDataset']")
         assert find_child(ds, "Fields") is None
+
+
+# ---- scope-aware field-reference guards (#72) -----------------------------
+
+MULTI_FIXTURE = Path(__file__).parent / "fixtures" / "pbi_multi_datasource.rdl"
+
+
+@pytest.fixture
+def multi_path(tmp_path: Path) -> Path:
+    dest = tmp_path / "multi.rdl"
+    shutil.copy(MULTI_FIXTURE, dest)
+    return dest
+
+
+def _refusal(fn, *args, **kw) -> str:
+    with pytest.raises(ValueError) as excinfo:
+        fn(*args, **kw)
+    msg = str(excinfo.value)
+    assert "(unnamed)" not in msg
+    assert "force=True" in msg
+    return msg
+
+
+class TestFieldReferenceGuards:
+    """Issue #72 acceptance (a)-(d) on pbi_multi_datasource.rdl, plus the
+    other consumer shapes find_field_references covers."""
+
+    def test_a_parameter_valid_values_blocks_removal(self, multi_path):
+        set_parameter_available_values(
+            str(multi_path),
+            "DateFrom",
+            "query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+        )
+        msg = _refusal(remove_dataset_field, str(multi_path), "LookupSet", "LookupKey")
+        assert "ReportParameter[Name='DateFrom']/ValidValues" in msg
+        assert "ValueField" in msg
+
+    def test_a_label_field_and_default_value_block_removal(self, multi_path):
+        add_dataset_field(str(multi_path), "LookupSet", "LookupLabel", "Lookup[Label]")
+        set_parameter_available_values(
+            str(multi_path),
+            "DateFrom",
+            "query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+            query_label_field="LookupLabel",
+        )
+        msg = _refusal(remove_dataset_field, str(multi_path), "LookupSet", "LookupLabel")
+        assert "ValidValues/DataSetReference/LabelField" in msg
+        set_parameter_default_values(
+            str(multi_path),
+            "DateTo",
+            "query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+        )
+        msg = _refusal(remove_dataset_field, str(multi_path), "LookupSet", "LookupKey")
+        assert "ReportParameter[Name='DateTo']/DefaultValue" in msg
+
+    def test_b_same_name_in_other_dataset_does_not_block(self, multi_path):
+        # MainTable (bound to MainDataset) uses Fields!ProductID.Value; that
+        # is not a consumer of LookupSet.ProductID.
+        add_dataset_field(str(multi_path), "LookupSet", "ProductID", "Lookup[ProductID]")
+        result = remove_dataset_field(str(multi_path), "LookupSet", "ProductID")
+        assert result["removed"] == "ProductID"
+        # ...while MainDataset.ProductID is still guarded.
+        msg = _refusal(remove_dataset_field, str(multi_path), "MainDataset", "ProductID")
+        assert "Textbox[Name='ProductID']" in msg
+        assert validate_report(str(multi_path))["valid"]
+
+    def test_c_fields_string_form_blocks_removal(self, multi_path):
+        add_dataset_field(str(multi_path), "MainDataset", "Extra", "Sales[Extra]")
+        set_textbox_value(str(multi_path), "Amount", '=Fields("Extra").Value')
+        msg = _refusal(remove_dataset_field, str(multi_path), "MainDataset", "Extra")
+        assert "Textbox[Name='Amount']" in msg
+
+    def test_d_calculated_field_guarded(self, multi_path):
+        add_calculated_field(str(multi_path), "MainDataset", "Calc", "=1")
+        set_textbox_value(str(multi_path), "ProductName", "=Sum(Fields!Calc.Value)")
+        msg = _refusal(remove_calculated_field, str(multi_path), "MainDataset", "Calc")
+        assert "Textbox[Name='ProductName']" in msg
+
+    def test_d_calculated_field_force(self, multi_path):
+        add_calculated_field(str(multi_path), "MainDataset", "Calc", "=1")
+        set_textbox_value(str(multi_path), "ProductName", "=Sum(Fields!Calc.Value)")
+        result = remove_calculated_field(str(multi_path), "MainDataset", "Calc", force=True)
+        assert result["removed"] == "Calc"
+
+    def test_unreferenced_calculated_field_still_removable(self, multi_path):
+        add_calculated_field(str(multi_path), "MainDataset", "Calc", "=1")
+        assert remove_calculated_field(str(multi_path), "MainDataset", "Calc")["removed"] == "Calc"
+
+    def test_other_calculated_field_is_a_consumer(self, multi_path):
+        add_calculated_field(str(multi_path), "MainDataset", "Base", "=1")
+        add_calculated_field(str(multi_path), "MainDataset", "Twice", "=Fields!Base.Value * 2")
+        msg = _refusal(remove_calculated_field, str(multi_path), "MainDataset", "Base")
+        assert "Field[Name='Twice']" in msg
+        # A same-named reference in another dataset's calculated field is
+        # evaluated against that dataset, so it doesn't block.
+        add_calculated_field(str(multi_path), "LookupSet", "Base", "=2")
+        add_calculated_field(str(multi_path), "LookupSet", "Other", "=Fields!Base.Value")
+        assert remove_calculated_field(str(multi_path), "MainDataset", "Twice")["removed"]
+        assert remove_calculated_field(str(multi_path), "MainDataset", "Base")["removed"]
+
+    def test_dataset_filter_is_a_consumer(self, multi_path):
+        add_dataset_field(str(multi_path), "LookupSet", "Region", "Lookup[Region]")
+        add_dataset_filter(str(multi_path), "LookupSet", "=Fields!Region.Value", "Equal", ["North"])
+        msg = _refusal(remove_dataset_field, str(multi_path), "LookupSet", "Region")
+        assert "DataSet[Name='LookupSet']" in msg
+
+    def test_explicit_aggregate_scope_resolves_dataset(self, multi_path):
+        # Inside MainTable, but aggregated over LookupSet explicitly.
+        add_dataset_field(str(multi_path), "LookupSet", "Weight", "Lookup[Weight]")
+        set_textbox_value(str(multi_path), "Amount", '=Sum(Fields!Weight.Value, "LookupSet")')
+        msg = _refusal(remove_dataset_field, str(multi_path), "LookupSet", "Weight")
+        assert "Textbox[Name='Amount']" in msg
+
+    def test_lookup_destination_resolves_dataset(self, multi_path):
+        set_textbox_value(
+            str(multi_path),
+            "Amount",
+            "=Lookup(Fields!ProductID.Value, Fields!LookupKey.Value, "
+            'Fields!LookupKey.Value, "LookupSet")',
+        )
+        msg = _refusal(remove_dataset_field, str(multi_path), "LookupSet", "LookupKey")
+        assert "Textbox[Name='Amount']" in msg
+
+    def test_reference_inside_string_literal_does_not_block(self, multi_path):
+        add_dataset_field(str(multi_path), "MainDataset", "Extra", "Sales[Extra]")
+        set_textbox_value(str(multi_path), "Amount", '="Fields!Extra.Value"')
+        assert remove_dataset_field(str(multi_path), "MainDataset", "Extra")["removed"]
+
+    def test_find_field_references_is_public(self, multi_path):
+        doc = RDLDocument.open(multi_path)
+        refs = expr_walk.find_field_references(doc.root, "MainDataset", "Amount")
+        assert [r.kind for r in refs] == ["expression"]
+        assert refs[0].text == "Fields!Amount.Value"
+        assert refs[0].scope == "MainDataset"
+        assert refs[0].locator.startswith("Tablix[Name='MainTable']>Textbox[Name='Amount']")
+        assert expr_walk.find_field_references(doc.root, "LookupSet", "Amount") == []
+
+
+class TestDanglingDatasetReferenceFieldLint:
+    """#72: lint rule for parameter DataSetReference fields that don't exist."""
+
+    def test_clean_when_field_exists(self, multi_path):
+        set_parameter_available_values(
+            str(multi_path),
+            "DateFrom",
+            "query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+        )
+        result = lint_report(str(multi_path), rules=["dangling-dataset-reference-field"])
+        assert result["issues"] == []
+
+    def test_fires_after_forced_removal(self, multi_path):
+        set_parameter_available_values(
+            str(multi_path),
+            "DateFrom",
+            "query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+            query_label_field="Missing",
+        )
+        remove_dataset_field(str(multi_path), "LookupSet", "LookupKey", force=True)
+        issues = lint_report(str(multi_path), rules=["dangling-dataset-reference-field"])["issues"]
+        assert sorted(i["message"] for i in issues) == [
+            "DataSetReference LabelField 'Missing' is not a field of dataset 'LookupSet'",
+            "DataSetReference ValueField 'LookupKey' is not a field of dataset 'LookupSet'",
+        ]
+        assert all(i["severity"] == "error" for i in issues)
+        assert all("ReportParameter[Name='DateFrom']" in i["location"] for i in issues)
+
+    def test_silent_on_unknown_dataset(self, multi_path):
+        # A DataSetName naming no dataset is dangling-dataset-reference's job.
+        set_parameter_available_values(
+            str(multi_path),
+            "DateFrom",
+            "query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+        )
+        text = multi_path.read_text(encoding="utf-8")
+        multi_path.write_text(
+            text.replace("<DataSetName>LookupSet</DataSetName>", "<DataSetName>Nope</DataSetName>"),
+            encoding="utf-8",
+        )
+        result = lint_report(str(multi_path), rules=["dangling-dataset-reference-field"])
+        assert result["issues"] == []
 
 
 # ---- registration ---------------------------------------------------------

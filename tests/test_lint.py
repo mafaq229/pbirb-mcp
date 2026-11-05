@@ -19,9 +19,12 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.xpath import RDL_NS, q, qrd
+from pbirb_mcp.ops.dataset import update_dataset_query
+from pbirb_mcp.ops.escape import raw_xml_replace
 from pbirb_mcp.ops.lint import ALL_RULES, lint_report
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
+from tests._designer_state import build_designer_state_report
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pbi_paginated_minimal.rdl"
 FIXTURE_MULTI_DS = Path(__file__).parent / "fixtures" / "pbi_multi_datasource.rdl"
@@ -299,6 +302,56 @@ class TestDanglingEmbeddedImage:
         assert _rule_count(result, "dangling-embedded-image") == 1
         assert "NoSuchImage" in result["issues"][0]["message"]
 
+    def _body_image(self, rdl_path, value: str, source: str = "Embedded") -> None:
+        doc = RDLDocument.open(rdl_path)
+        body = doc.root.find(
+            f"{{{RDL_NS}}}ReportSections/{{{RDL_NS}}}ReportSection/{{{RDL_NS}}}Body"
+        )
+        items = body.find(q("ReportItems"))
+        img = etree.SubElement(items, q("Image"), Name="Pick")
+        etree.SubElement(img, q("Source")).text = source
+        etree.SubElement(img, q("Value")).text = value
+        _save(doc)
+
+    def test_expression_string_literal_naming_no_image_warns(self, rdl_path):
+        # #81: the Value expression may pick "LogoA", which isn't declared.
+        self._body_image(rdl_path, '=IIf(Parameters!DateFrom.Value Is Nothing, "LogoA", "LogoA")')
+        issues = lint_report(str(rdl_path), rules=["dangling-embedded-image"])["issues"]
+        assert [(i["severity"], i["location"]) for i in issues] == [
+            ("warning", "Image[Name='Pick']")
+        ]
+        assert "LogoA" in issues[0]["message"]
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "=Fields!ProductName.Value",  # no literal at all
+            '="http://x/" & Fields!ProductID.Value',  # not an image name
+            '=IIf(True, "Logo A", "")',  # not identifiers
+            '=Code.Pick() \' "Ghost" in a comment',
+        ],
+    )
+    def test_expression_without_image_name_literals_is_silent(self, rdl_path, value):
+        self._body_image(rdl_path, value)
+        assert lint_report(str(rdl_path), rules=["dangling-embedded-image"])["issues"] == []
+
+    def test_body_background_image_located_by_owner(self, rdl_path):
+        text = rdl_path.read_text(encoding="utf-8")
+        old = "<Height>2in</Height>\n        <Style />"
+        assert old in text
+        rdl_path.write_text(
+            text.replace(
+                old,
+                "<Height>2in</Height>\n        <Style><BackgroundImage><Source>Embedded</Source>"
+                "<Value>Watermark</Value></BackgroundImage></Style>",
+            ),
+            encoding="utf-8",
+        )
+        issues = lint_report(str(rdl_path), rules=["dangling-embedded-image"])["issues"]
+        assert [(i["severity"], i["location"]) for i in issues] == [
+            ("error", "Body/Style/BackgroundImage")
+        ]
+
 
 # ---- rule 9: dangling-data-source-reference ----------------------------
 
@@ -419,6 +472,52 @@ class TestParameterLayoutOutOfSync:
         result = lint_report(str(rdl_path), rules=["parameter-layout-out-of-sync"])
         assert _rule_count(result, "parameter-layout-out-of-sync") == 1
 
+    def test_fires_on_duplicate_slot_and_out_of_range_column(self, rdl_path):
+        """#74: equal counts but a broken grid."""
+        doc = RDLDocument.open(rdl_path)
+        _inject_parameter_layout(doc, len(doc.root.find(q("ReportParameters"))))
+        cells = list(doc.root.iter(q("CellDefinition")))
+        cells[1].find(q("ColumnIndex")).text = "0"  # same slot as cells[0]
+        _save(doc)
+        result = lint_report(str(rdl_path), rules=["parameter-layout-out-of-sync"])
+        [issue] = result["issues"]
+        assert "duplicate-slot" in issue["message"]
+
+        cells = list(doc.root.iter(q("CellDefinition")))
+        cells[1].find(q("ColumnIndex")).text = "9"  # NumberOfColumns is 4
+        _save(doc)
+        result = lint_report(str(rdl_path), rules=["parameter-layout-out-of-sync"])
+        [issue] = result["issues"]
+        assert "column-out-of-range" in issue["message"]
+
+
+# ---- dangling parameter references (#73) --------------------------------
+
+
+class TestDanglingParameterReference:
+    """#73's 'no lint safety net' claim: ``undefined-parameter`` (#47) is
+    the rule the issue asked for as ``missing-parameter-reference``; it
+    flags every reference form a hand edit (or an old rename) leaves."""
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "=Parameters!Gone.Count",
+            "=Parameters!Gone.IsMultiValue",
+            '=Parameters("Gone").Value',
+            "=Parameters!Gone",
+        ],
+    )
+    def test_flags_hand_made_dangling_reference(self, rdl_path, expr):
+        text = rdl_path.read_text(encoding="utf-8").replace(
+            "<Value>=Fields!Amount.Value</Value>", f"<Value>{expr}</Value>", 1
+        )
+        rdl_path.write_text(text, encoding="utf-8")
+        result = lint_report(str(rdl_path))
+        [issue] = [i for i in result["issues"] if i["rule"] == "undefined-parameter"]
+        assert "'Gone'" in issue["message"]
+        assert issue["severity"] == "error"
+
 
 # ---- rule 13: double-encoded-entities ----------------------------------
 
@@ -477,6 +576,39 @@ class TestStaleDesignerState:
         _save(doc)
         result = lint_report(str(rdl_path), rules=["stale-designer-state"])
         assert _rule_count(result, "stale-designer-state") == 1
+
+    # ---- #70: Report Builder's real DesignerState shape ----------------
+
+    def test_report_builder_shape_in_sync_is_clean(self, tmp_path):
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        result = lint_report(str(path), rules=["stale-designer-state"])
+        assert result["issues"] == []
+
+    def test_fires_after_command_text_only_raw_edit(self, tmp_path):
+        # A CommandText-only edit (raw_xml_replace) leaves the designer's
+        # QueryDefinition/Query/Statement stale; the rule must notice.
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        raw_xml_replace(
+            str(path),
+            ".//r:DataSet[@Name='MainDataset']/r:Query/r:CommandText",
+            '<CommandText>EVALUATE ROW("x", 1)</CommandText>',
+        )
+        result = lint_report(str(path), rules=["stale-designer-state"])
+        assert _rule_count(result, "stale-designer-state") == 1
+        issue = result["issues"][0]
+        assert "MainDataset" in issue["location"]
+        assert "QueryDefinition/Query/Statement" in issue["location"]
+
+    def test_clean_again_after_update_dataset_query(self, tmp_path):
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        raw_xml_replace(
+            str(path),
+            ".//r:DataSet[@Name='MainDataset']/r:Query/r:CommandText",
+            '<CommandText>EVALUATE ROW("x", 1)</CommandText>',
+        )
+        update_dataset_query(str(path), "MainDataset", 'EVALUATE ROW("x", 1)')
+        result = lint_report(str(path), rules=["stale-designer-state"])
+        assert result["issues"] == []
 
 
 # ---- rule 15: tablix-span-misplaced ------------------------------------

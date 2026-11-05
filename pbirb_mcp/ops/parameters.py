@@ -29,9 +29,10 @@ from pbirb_mcp.core.ids import (
     resolve_dataset,
     resolve_parameter,
 )
-from pbirb_mcp.core.mutation import put_child, remove_child_if_present
+from pbirb_mcp.core.mutation import put_child, remove_child_if_present, set_text_if_different
 from pbirb_mcp.core.names import validate_identifier
 from pbirb_mcp.core.xpath import find_child, find_children, q
+from pbirb_mcp.ops import expr_walk
 
 _VALID_SOURCES = ("static", "query")
 
@@ -407,28 +408,6 @@ def _cell_parameter_name(cell: etree._Element) -> Optional[str]:
     return pn.text if pn is not None and pn.text else None
 
 
-def _max_row_col_in_grid(grid: etree._Element) -> tuple[int, int]:
-    """Return (max_row, max_col) of any cell in the grid; (-1, -1) if empty."""
-    cells = _cell_definitions(grid)
-    if cells is None:
-        return -1, -1
-    max_row = -1
-    max_col = -1
-    for cell in find_children(cells, "CellDefinition"):
-        ri = find_child(cell, "RowIndex")
-        ci = find_child(cell, "ColumnIndex")
-        try:
-            row = int(ri.text) if ri is not None and ri.text else -1
-            col = int(ci.text) if ci is not None and ci.text else -1
-        except ValueError:
-            continue
-        if row > max_row:
-            max_row = row
-        if col > max_col:
-            max_col = col
-    return max_row, max_col
-
-
 def _build_cell_definition(
     parameter_name: str, row_index: int, column_index: int
 ) -> etree._Element:
@@ -456,188 +435,292 @@ def _set_grid_dimension(grid: etree._Element, local: str, value: int) -> None:
         grid.append(new)
 
 
-def sync_parameter_layout(path: str) -> dict[str, Any]:
-    """Bring ``<ReportParametersLayout>/<GridLayoutDefinition>/<CellDefinitions>``
-    into sync with ``<ReportParameters>``.
+def _int_text(node: Optional[etree._Element]) -> Optional[int]:
+    if node is None or not node.text:
+        return None
+    try:
+        return int(node.text.strip())
+    except ValueError:
+        return None
 
-    Drops cells whose ``<ParameterName>`` no longer exists, and appends
-    cells for parameters that have no entry. New cells are placed at the
-    next free ``(row, col)`` slot — first scan for an empty column on the
-    last row, falling back to a new row if the existing rows are full.
-    Updates ``<NumberOfRows>`` and ``<NumberOfColumns>`` to fit.
 
-    Returns ``{added: [name...], removed: [name...], changed: bool}``. A
-    no-op call with nothing to sync returns the empty lists and doesn't
-    touch the file bytes — safe to call defensively.
+def _cell_slot(cell: etree._Element) -> tuple[Optional[int], Optional[int]]:
+    """``(row, col)`` of a ``<CellDefinition>``; ``None`` for a missing or
+    non-integer index."""
+    return _int_text(find_child(cell, "RowIndex")), _int_text(find_child(cell, "ColumnIndex"))
 
-    No-op for reports that don't carry a layout block at all.
-    """
-    doc = RDLDocument.open(path)
+
+def _layout_grid(doc: RDLDocument) -> Optional[etree._Element]:
     layout_root = find_child(doc.root, "ReportParametersLayout")
     if layout_root is None:
-        return {"added": [], "removed": [], "changed": False}
-    grid = _grid_layout_definition(layout_root)
-    if grid is None:
-        # Older form without GridLayoutDefinition wrapper — ignore.
-        return {"added": [], "removed": [], "changed": False}
-    cells_root = _cell_definitions(grid)
+        return None
+    return _grid_layout_definition(layout_root)
 
+
+_CELL_CHILD_ORDER = ("ColumnIndex", "RowIndex", "ParameterName")
+
+
+def layout_grid_problems(grid: etree._Element) -> list[dict[str, Any]]:
+    """Integrity problems of a ``<GridLayoutDefinition>`` (#74), in cell order.
+
+    Each is ``{problem, parameter, row, column, message}`` with ``problem``
+    one of ``invalid-index`` (a missing, non-integer or negative
+    RowIndex/ColumnIndex), ``column-out-of-range`` (ColumnIndex ≥
+    NumberOfColumns), ``row-out-of-range`` (RowIndex ≥ NumberOfRows) and
+    ``duplicate-slot`` (two cells in one (row, column)). Shared by
+    :func:`sync_parameter_layout` and lint's ``parameter-layout-out-of-sync``.
+    """
+    ncols = _int_text(find_child(grid, "NumberOfColumns"))
+    nrows = _int_text(find_child(grid, "NumberOfRows"))
+    cells_root = _cell_definitions(grid)
+    if cells_root is None:
+        return []
+    problems: list[dict[str, Any]] = []
+    seen: dict[tuple[int, int], Optional[str]] = {}
+
+    def add(problem: str, name, row, col, message: str) -> None:
+        problems.append(
+            {"problem": problem, "parameter": name, "row": row, "column": col, "message": message}
+        )
+
+    for cell in find_children(cells_root, "CellDefinition"):
+        name = _cell_parameter_name(cell)
+        row, col = _cell_slot(cell)
+        if row is None or col is None or row < 0 or col < 0:
+            add(
+                "invalid-index",
+                name,
+                row,
+                col,
+                f"the cell for {name!r} has no valid RowIndex / ColumnIndex",
+            )
+            continue
+        if ncols is not None and col >= ncols:
+            add(
+                "column-out-of-range",
+                name,
+                row,
+                col,
+                f"the cell for {name!r} is in column {col}, but NumberOfColumns is {ncols}",
+            )
+        if nrows is not None and row >= nrows:
+            add(
+                "row-out-of-range",
+                name,
+                row,
+                col,
+                f"the cell for {name!r} is in row {row}, but NumberOfRows is {nrows}",
+            )
+        if (row, col) in seen:
+            add(
+                "duplicate-slot",
+                name,
+                row,
+                col,
+                f"the cells for {seen[(row, col)]!r} and {name!r} share row {row}, column {col}",
+            )
+        else:
+            seen[(row, col)] = name
+    return problems
+
+
+def _sync_layout(doc: RDLDocument) -> dict[str, Any]:
+    """Bring the parameter-pane grid in line with ``<ReportParameters>``
+    in ``doc`` (no save); see :func:`sync_parameter_layout`."""
+    result: dict[str, Any] = {"added": [], "removed": [], "relocated": [], "changed": False}
+    grid = _layout_grid(doc)
+    if grid is None:
+        return result
+    cells_root = _cell_definitions(grid)
     declared = _all_parameter_names(doc)
     declared_set = set(declared)
+    changed = False
 
-    cell_names: list[Optional[str]] = []
+    # Drop cells for undeclared parameters, and second cells for one parameter.
+    present: set[str] = set()
     if cells_root is not None:
-        for cell in find_children(cells_root, "CellDefinition"):
-            cell_names.append(_cell_parameter_name(cell))
-
-    removed: list[str] = []
-    if cells_root is not None:
-        for cell in list(cells_root):
+        for cell in list(find_children(cells_root, "CellDefinition")):
             pname = _cell_parameter_name(cell)
-            if pname is not None and pname not in declared_set:
+            if pname is None:
+                continue
+            if pname not in declared_set or pname in present:
                 cells_root.remove(cell)
-                removed.append(pname)
+                result["removed"].append(pname)
+                changed = True
+            else:
+                present.add(pname)
 
-    added: list[str] = []
-    if cells_root is None:
-        cells_root = etree.SubElement(grid, q("CellDefinitions"))
-    existing_in_cells = {n for n in cell_names if n is not None and n in declared_set}
     cols_node = find_child(grid, "NumberOfColumns")
-    try:
-        ncols = int(cols_node.text) if cols_node is not None and cols_node.text else 0
-    except ValueError:
-        ncols = 0
+    ncols = _int_text(cols_node) or 0
     if ncols <= 0:
         ncols = 4  # Report Builder default
 
-    max_row, _max_col = _max_row_col_in_grid(grid)
-    next_row = max_row if max_row >= 0 else 0
-    # Track the highest column actually occupied on the row we'll append to.
-    cells_on_next_row: list[int] = []
-    if cells_root is not None:
-        for cell in find_children(cells_root, "CellDefinition"):
-            ri = find_child(cell, "RowIndex")
-            ci = find_child(cell, "ColumnIndex")
-            try:
-                row = int(ri.text) if ri is not None and ri.text else -1
-                col = int(ci.text) if ci is not None and ci.text else -1
-            except ValueError:
-                continue
-            if row == next_row and col >= 0:
-                cells_on_next_row.append(col)
+    # Keep every cell in a valid, free slot; collect the rest for relocation.
+    cells = find_children(cells_root, "CellDefinition") if cells_root is not None else []
+    occupied: set[tuple[int, int]] = set()
+    misplaced: list[tuple[etree._Element, str]] = []
+    for cell in cells:
+        row, col = _cell_slot(cell)
+        if row is None or col is None or row < 0 or col < 0:
+            misplaced.append((cell, "invalid index"))
+        elif col >= ncols:
+            misplaced.append((cell, f"column {col} is outside NumberOfColumns={ncols}"))
+        elif (row, col) in occupied:
+            misplaced.append((cell, f"row {row}, column {col} is taken"))
+        else:
+            occupied.add((row, col))
 
-    next_col = (max(cells_on_next_row) + 1) if cells_on_next_row else 0
+    # New positions continue after the last occupied slot, row-major.
+    if occupied:
+        next_row = max(r for r, _c in occupied)
+        next_col = max(c for r, c in occupied if r == next_row) + 1
+    else:
+        next_row, next_col = 0, 0
 
-    for pname in declared:
-        if pname in existing_in_cells:
-            continue
-        # Wrap to a new row when this row is full.
+    def take_slot() -> tuple[int, int]:
+        nonlocal next_row, next_col
         if next_col >= ncols:
             next_row += 1
             next_col = 0
-            cells_on_next_row = []
-        cells_root.append(_build_cell_definition(pname, next_row, next_col))
-        added.append(pname)
+        slot = (next_row, next_col)
         next_col += 1
+        return slot
 
-    # Update NumberOfRows / NumberOfColumns to fit.
-    final_rows = next_row + 1 if (added or cells_on_next_row) else max(0, max_row + 1)
-    rows_node = find_child(grid, "NumberOfRows")
-    try:
-        existing_rows = int(rows_node.text) if rows_node is not None and rows_node.text else 0
-    except ValueError:
-        existing_rows = 0
-    if final_rows > existing_rows:
-        _set_grid_dimension(grid, "NumberOfRows", final_rows)
-    if cols_node is None:
+    for cell, reason in misplaced:
+        old = list(_cell_slot(cell))
+        row, col = take_slot()
+        set_text_if_different(cell, "ColumnIndex", str(col), order=_CELL_CHILD_ORDER)
+        set_text_if_different(cell, "RowIndex", str(row), order=_CELL_CHILD_ORDER)
+        result["relocated"].append(
+            {
+                "parameter": _cell_parameter_name(cell),
+                "from": old,
+                "to": [row, col],
+                "reason": reason,
+            }
+        )
+        occupied.add((row, col))
+        changed = True
+
+    for pname in declared:
+        if pname in present:
+            continue
+        if cells_root is None:
+            cells_root = etree.SubElement(grid, q("CellDefinitions"))
+        row, col = take_slot()
+        cells_root.append(_build_cell_definition(pname, row, col))
+        result["added"].append(pname)
+        occupied.add((row, col))
+        changed = True
+
+    # Grow NumberOfRows to fit (never shrink here); write NumberOfColumns if absent.
+    needed_rows = max((r for r, _c in occupied), default=-1) + 1
+    if needed_rows > (_int_text(find_child(grid, "NumberOfRows")) or 0):
+        _set_grid_dimension(grid, "NumberOfRows", needed_rows)
+        changed = True
+    if cols_node is None and occupied:
         _set_grid_dimension(grid, "NumberOfColumns", ncols)
+        changed = True
 
-    if added or removed:
+    result["changed"] = changed
+    return result
+
+
+def sync_parameter_layout(path: str) -> dict[str, Any]:
+    """Repair ``<ReportParametersLayout>/<GridLayoutDefinition>`` against
+    ``<ReportParameters>``.
+
+    * Drops cells whose ``<ParameterName>`` no longer exists (and a second
+      cell for the same parameter).
+    * Moves cells that sit outside the grid (ColumnIndex ≥
+      NumberOfColumns, a missing / negative index) or share a slot with an
+      earlier cell (#74) to free slots.
+    * Appends cells for parameters that have none.
+
+    Moved and new cells go to the next free ``(row, col)`` after the last
+    occupied slot, wrapping at NumberOfColumns. NumberOfRows grows to fit;
+    NumberOfColumns is written when absent.
+
+    Returns ``{added, removed, relocated: [{parameter, from, to, reason}],
+    grid_problems, changed}`` — ``grid_problems`` are the
+    :func:`layout_grid_problems` found before the repair. A call with
+    nothing to do changes nothing and doesn't touch the file. No-op for
+    reports without a layout block.
+    """
+    doc = RDLDocument.open(path)
+    grid = _layout_grid(doc)
+    problems = layout_grid_problems(grid) if grid is not None else []
+    result = _sync_layout(doc)
+    if result["changed"]:
         doc.save()
-    return {"added": added, "removed": removed, "changed": bool(added or removed)}
+    return {**result, "grid_problems": problems}
 
 
 def _sync_parameter_layout_in_doc(doc: RDLDocument) -> tuple[list[str], list[str]]:
-    """In-process variant: applies the same logic to ``doc`` without saving.
-    Used by add/remove/rename helpers that already have an open RDLDocument
-    and will save themselves once.
+    """In-process variant used by add/remove helpers that save themselves.
+    Returns ``(added, removed)``."""
+    result = _sync_layout(doc)
+    return result["added"], result["removed"]
 
-    Returns ``(added, removed)``.
-    """
-    layout_root = find_child(doc.root, "ReportParametersLayout")
-    if layout_root is None:
-        return [], []
-    grid = _grid_layout_definition(layout_root)
+
+def _reflow_layout_in_doc(doc: RDLDocument, order: list[str]) -> bool:
+    """Rewrite every cell's position row-major (wrapping at NumberOfColumns)
+    in ``order`` — parameters not in ``order`` follow in their current slot
+    order — and set NumberOfRows to the rows used. ``True`` iff changed."""
+    grid = _layout_grid(doc)
     if grid is None:
-        return [], []
+        return False
     cells_root = _cell_definitions(grid)
-
-    declared = _all_parameter_names(doc)
-    declared_set = set(declared)
-
-    removed: list[str] = []
-    if cells_root is not None:
-        for cell in list(cells_root):
-            pname = _cell_parameter_name(cell)
-            if pname is not None and pname not in declared_set:
-                cells_root.remove(cell)
-                removed.append(pname)
-
-    added: list[str] = []
     if cells_root is None:
-        cells_root = etree.SubElement(grid, q("CellDefinitions"))
-    existing_in_cells = {
-        _cell_parameter_name(c)
-        for c in find_children(cells_root, "CellDefinition")
-        if _cell_parameter_name(c) is not None and _cell_parameter_name(c) in declared_set
-    }
-
-    cols_node = find_child(grid, "NumberOfColumns")
-    try:
-        ncols = int(cols_node.text) if cols_node is not None and cols_node.text else 0
-    except ValueError:
-        ncols = 0
+        return False
+    cells = find_children(cells_root, "CellDefinition")
+    if not cells:
+        return False
+    ncols = _int_text(find_child(grid, "NumberOfColumns")) or 0
+    changed = False
     if ncols <= 0:
         ncols = 4
-
-    max_row, _ = _max_row_col_in_grid(grid)
-    next_row = max_row if max_row >= 0 else 0
-    cells_on_next_row: list[int] = []
-    for cell in find_children(cells_root, "CellDefinition"):
-        ri = find_child(cell, "RowIndex")
-        ci = find_child(cell, "ColumnIndex")
-        try:
-            row = int(ri.text) if ri is not None and ri.text else -1
-            col = int(ci.text) if ci is not None and ci.text else -1
-        except ValueError:
-            continue
-        if row == next_row and col >= 0:
-            cells_on_next_row.append(col)
-    next_col = (max(cells_on_next_row) + 1) if cells_on_next_row else 0
-
-    for pname in declared:
-        if pname in existing_in_cells:
-            continue
-        if next_col >= ncols:
-            next_row += 1
-            next_col = 0
-            cells_on_next_row = []
-        cells_root.append(_build_cell_definition(pname, next_row, next_col))
-        added.append(pname)
-        next_col += 1
-
-    final_rows = next_row + 1 if (added or cells_on_next_row) else max(0, max_row + 1)
-    rows_node = find_child(grid, "NumberOfRows")
-    try:
-        existing_rows = int(rows_node.text) if rows_node is not None and rows_node.text else 0
-    except ValueError:
-        existing_rows = 0
-    if final_rows > existing_rows:
-        _set_grid_dimension(grid, "NumberOfRows", final_rows)
-    if cols_node is None:
         _set_grid_dimension(grid, "NumberOfColumns", ncols)
+        changed = True
+    rank = {n: i for i, n in enumerate(order)}
 
-    return added, removed
+    def key(item: tuple[int, etree._Element]) -> tuple:
+        i, cell = item
+        row, col = _cell_slot(cell)
+        name = _cell_parameter_name(cell)
+        slot = (row if row is not None else 1 << 30, col if col is not None else 1 << 30)
+        return (rank.get(name, len(rank)), slot, i)
+
+    for k, (_i, cell) in enumerate(sorted(enumerate(cells), key=key)):
+        changed |= set_text_if_different(
+            cell, "ColumnIndex", str(k % ncols), order=_CELL_CHILD_ORDER
+        )
+        changed |= set_text_if_different(cell, "RowIndex", str(k // ncols), order=_CELL_CHILD_ORDER)
+    rows = (len(cells) + ncols - 1) // ncols
+    if _int_text(find_child(grid, "NumberOfRows")) != rows:
+        _set_grid_dimension(grid, "NumberOfRows", rows)
+        changed = True
+    return changed
+
+
+def _slot_order(doc: RDLDocument) -> list[str]:
+    """Parameter names of the layout cells in row-major slot order."""
+    grid = _layout_grid(doc)
+    cells_root = _cell_definitions(grid) if grid is not None else None
+    if cells_root is None:
+        return []
+    cells = find_children(cells_root, "CellDefinition")
+
+    def key(item: tuple[int, etree._Element]) -> tuple:
+        i, cell = item
+        row, col = _cell_slot(cell)
+        return (row if row is not None else 1 << 30, col if col is not None else 1 << 30, i)
+
+    return [
+        n
+        for _i, cell in sorted(enumerate(cells), key=key)
+        if (n := _cell_parameter_name(cell)) is not None
+    ]
 
 
 def _rename_parameter_in_layout(doc: RDLDocument, old_name: str, new_name: str) -> int:
@@ -737,33 +820,35 @@ def add_parameter(
     }
 
 
-def _scan_parameter_references(doc: RDLDocument, name: str) -> list[str]:
-    """Walk every text-bearing element looking for `Parameters!<name>.Value`.
+def _reference_locator(el: etree._Element) -> str:
+    tag = etree.QName(el).localname
+    ancestor = el
+    while ancestor is not None:
+        aname = ancestor.get("Name")
+        if aname:
+            return f"{etree.QName(ancestor).localname}[Name={aname!r}]/.../<{tag}>"
+        ancestor = ancestor.getparent()
+    return tag
 
-    Returns a list of human-readable locator strings describing where the
-    references live. Used by ``remove_parameter`` to refuse a destructive
-    delete and by ``rename_parameter`` to drive the rewrite.
+
+def _scan_parameter_references(
+    doc: RDLDocument, name: str, exclude: Optional[etree._Element] = None
+) -> list[str]:
+    """Locators of every element referencing parameter ``name``, in any
+    form :func:`expr_walk.parameter_references` knows:
+    ``Parameters!<name>`` with any member (``.Value``, ``.Label``,
+    ``.Count``, ``.IsMultiValue`` …), ``Parameters("<name>")``, and
+    ``Report.Parameters…`` in the ``<Code>`` block — wherever an
+    expression can live (textboxes, query-parameter values, filters,
+    defaults / valid values, subreport and drillthrough parameters …).
+    Names inside string literals and comments don't count. References
+    inside ``exclude`` (the parameter being removed) are skipped.
     """
-    needle_value = f"Parameters!{name}.Value"
-    needle_label = f"Parameters!{name}.Label"
     locators: list[str] = []
-    for el in doc.root.iter():
-        if not isinstance(el.tag, str):
+    for el, _text, _tokens, _refs in expr_walk.iter_parameter_references(doc.root, name):
+        if exclude is not None and (el is exclude or exclude in el.iterancestors()):
             continue
-        # Check the element's text and tail for matches.
-        text = el.text
-        if text and (needle_value in text or needle_label in text):
-            tag = etree.QName(el).localname
-            # Walk up to find a stable ancestor identifier.
-            ancestor = el
-            label = tag
-            while ancestor is not None:
-                aname = ancestor.get("Name")
-                if aname:
-                    label = f"{etree.QName(ancestor).localname}[Name={aname!r}]/.../<{tag}>"
-                    break
-                ancestor = ancestor.getparent()
-            locators.append(label)
+        locators.append(_reference_locator(el))
     return locators
 
 
@@ -771,19 +856,26 @@ def remove_parameter(
     path: str,
     name: str,
     force: bool = False,
+    compact_layout: bool = False,
 ) -> dict[str, Any]:
     """Remove a ``<ReportParameter>`` by name.
 
     By default refuses if the parameter is still referenced anywhere in
-    the report (any element text containing ``Parameters!<name>.Value``
-    or ``.Label``) — returns the offending locators in the error message.
-    Pass ``force=True`` to remove anyway.
+    the report — any reference form :func:`_scan_parameter_references`
+    finds (``Parameters!<name>.Value`` / ``.Label`` / ``.Count`` /
+    ``.IsMultiValue``, ``Parameters("<name>")`` …) outside the parameter's
+    own declaration — and lists the offending locators in the error
+    message. Pass ``force=True`` to remove anyway.
+
+    Its parameter-pane cell is dropped, leaving a hole; with
+    ``compact_layout=True`` the remaining cells are re-packed row-major in
+    their current slot order and NumberOfRows shrinks to fit.
     """
     doc = RDLDocument.open(path)
     parameter = resolve_parameter(doc, name)
 
     if not force:
-        locators = _scan_parameter_references(doc, name)
+        locators = _scan_parameter_references(doc, name, exclude=parameter)
         if locators:
             raise ValueError(
                 f"parameter {name!r} is still referenced from "
@@ -801,6 +893,7 @@ def remove_parameter(
             gp.remove(parent)
 
     _added, layout_removed = _sync_parameter_layout_in_doc(doc)
+    compacted = _reflow_layout_in_doc(doc, _slot_order(doc)) if compact_layout else False
 
     doc.save()
     return {
@@ -808,6 +901,7 @@ def remove_parameter(
         "removed": True,
         "force": force,
         "layout_synced": name in layout_removed,
+        "layout_compacted": compacted,
     }
 
 
@@ -818,20 +912,25 @@ def rename_parameter(
 ) -> dict[str, Any]:
     """Rename a ``<ReportParameter>`` and rewrite every reference.
 
-    Rewrites every textual occurrence of ``Parameters!<old_name>.Value``
-    and ``Parameters!<old_name>.Label`` (case-sensitive) across:
-
-    * Textbox values, visibility expressions, group / sort / filter
-      expressions
-    * Dataset query parameters' ``<Value>`` text
-    * ``<DataSetReference>`` available/default-values lookups (covered
-      because they live in textual expression form)
+    Rewrites every reference to ``old_name`` (case-sensitive) in every
+    form :func:`_scan_parameter_references` finds —
+    ``Parameters!<old_name>`` with any member (``.Value``, ``.Label``,
+    ``.Count``, ``.IsMultiValue`` …), ``Parameters("<old_name>")``, and
+    ``Report.Parameters…`` in the ``<Code>`` block — in every expression:
+    textbox values, visibility, group / sort / filter expressions, chart
+    and style properties, dataset query-parameter values (including the
+    lookup datasets behind available / default values), other
+    parameters' defaults, subreport / drillthrough parameters. Only the
+    name token changes; names inside string literals and comments are
+    left alone. Parameter-pane layout cells are renamed too.
+    ``<DataSetReference>`` holds dataset and field names, not parameter
+    references, so it is not touched. ``<QueryParameter Name=…>`` is the
+    query-side name and is not renamed either.
 
     Errors if ``new_name`` already exists, or if ``new_name == old_name``.
 
-    Atomic: collects every match first, then commits the rewrite. If any
-    match fails to rewrite (e.g. malformed mid-rewrite), no changes are
-    saved.
+    Atomic: collects every match first, then commits the rewrite.
+    ``references_rewritten`` counts the elements rewritten.
     """
     if new_name == old_name:
         raise ValueError("new_name and old_name are identical; nothing to rename.")
@@ -852,29 +951,11 @@ def rename_parameter(
     # Locate the original (raises if absent).
     parameter = resolve_parameter(doc, old_name)
 
-    # Stage rewrites: walk every element, build a list of (element, attr_or_text, new_value).
-    needles = (
-        f"Parameters!{old_name}.Value",
-        f"Parameters!{old_name}.Label",
-    )
-    replacements = (
-        f"Parameters!{new_name}.Value",
-        f"Parameters!{new_name}.Label",
-    )
-
-    rewrites: list[tuple[etree._Element, str]] = []  # (element, new_text)
-    for el in doc.root.iter():
-        if not isinstance(el.tag, str):
-            continue
-        text = el.text
-        if not text:
-            continue
-        new_text = text
-        for old, new in zip(needles, replacements):
-            if old in new_text:
-                new_text = new_text.replace(old, new)
-        if new_text != text:
-            rewrites.append((el, new_text))
+    # Stage rewrites: (element, new_text) for every element with a reference.
+    rewrites: list[tuple[etree._Element, str]] = [
+        (el, expr_walk.rename_parameter_references(text, tokens, refs, new_name))
+        for el, text, tokens, refs in expr_walk.iter_parameter_references(doc.root, old_name)
+    ]
 
     # Commit: rename the parameter declaration, apply all text rewrites.
     parameter.set("Name", new_name)
@@ -895,9 +976,25 @@ def rename_parameter(
 # ---- reorder_parameters --------------------------------------------------
 
 
+def _forward_dependency_error(order: list[str], doc: RDLDocument) -> Optional[str]:
+    """The refusal message when ``order`` puts a parameter before one it
+    depends on (:func:`expr_walk.parameter_dependency_edges`), else ``None``.
+    Self-dependencies don't depend on order and are left to lint."""
+    edges = expr_walk.parameter_dependency_edges(doc.root)
+    bad = [v for v in expr_walk.forward_dependencies(order, edges) if v[0] != v[1]]
+    if not bad:
+        return None
+    pairs = "; ".join(f"{p} -> {d} (via its {via})" for p, d, via in bad)
+    return (
+        "this order puts parameters before ones they depend on, which Report Builder "
+        f"rejects (forward dependency): {pairs}. Move each dependency earlier."
+    )
+
+
 def reorder_parameters(
     path: str,
     names: list[str],
+    reflow_layout: bool = False,
 ) -> dict[str, Any]:
     """Reorder ``<ReportParameter>`` children inside ``<ReportParameters>``
     to match the supplied ``names`` list.
@@ -907,18 +1004,22 @@ def reorder_parameters(
     permutation check prevents accidental partial reorders that would
     silently lose a parameter from the report.
 
-    Layout sync: when a populated ``<ReportParametersLayout>`` block
-    exists, its ``<CellDefinition>`` entries are reordered in lockstep
-    so the parameter pane keeps showing the same fields in the new
-    declaration order. (RowIndex / ColumnIndex are NOT recomputed —
-    Report Builder's layout grid is independent of declaration order.)
+    Refuses (ValueError naming each ``dependant -> dependency`` pair) an
+    order that declares a parameter before one its default value,
+    available values, or their lookup dataset's query parameters /
+    filters reference (#74) — Report Builder evaluates parameters in
+    declaration order and rejects forward dependencies.
 
-    Returns ``{order: list[str], kind: 'ReportParameters', changed: bool}``.
-    ``changed`` is False when ``names`` already matches the current
-    declaration order (no save).
+    Layout: the parameter pane's positions come from each cell's
+    RowIndex / ColumnIndex, not from declaration order, so by default the
+    pane looks the same afterwards (the ``<CellDefinition>`` elements are
+    reordered in lockstep, but keep their slots). ``reflow_layout=True``
+    rewrites the slots row-major in the new order (wrapping at
+    NumberOfColumns, NumberOfRows set to fit), so the pane shows the new
+    order.
 
-    Was deferred from v0.2 with the note "v0.3+ if needed". Lands here
-    in v0.3.0.
+    Returns ``{order, kind: 'ReportParameters', changed, layout_reflowed}``.
+    ``changed`` is False (no save) when nothing changes.
     """
     if not isinstance(names, list):
         raise ValueError("names must be a list of parameter names")
@@ -955,31 +1056,30 @@ def reorder_parameters(
             "names must be a permutation of every existing parameter. "
             f"Unknown names: {extras!r}. Missing names: {missing!r}."
         )
+    error = _forward_dependency_error(names, doc)
+    if error:
+        raise ValueError(error)
 
-    if names == existing:
-        return {
-            "order": list(existing),
-            "kind": "ReportParameters",
-            "changed": False,
-        }
+    changed = False
+    if names != existing:
+        # Reorder the <ReportParameter> children.
+        by_name = {p.get("Name"): p for p in find_children(params_root, "ReportParameter")}
+        for p in list(by_name.values()):
+            params_root.remove(p)
+        for name in names:
+            params_root.append(by_name[name])
+        # Keep the <CellDefinition> elements in declaration order too.
+        _reorder_layout_cells_in_doc(doc, names)
+        changed = True
+    reflowed = _reflow_layout_in_doc(doc, names) if reflow_layout else False
 
-    # Reorder the <ReportParameter> children.
-    by_name = {p.get("Name"): p for p in find_children(params_root, "ReportParameter")}
-    for p in list(by_name.values()):
-        params_root.remove(p)
-    for name in names:
-        params_root.append(by_name[name])
-
-    # Layout sync: reorder <CellDefinition> entries in lockstep.
-    from pbirb_mcp.core.encoding import encode_text  # noqa: F401  (silence)
-
-    _reorder_layout_cells_in_doc(doc, names)
-
-    doc.save()
+    if changed or reflowed:
+        doc.save()
     return {
         "order": list(names),
         "kind": "ReportParameters",
-        "changed": True,
+        "changed": changed or reflowed,
+        "layout_reflowed": reflowed,
     }
 
 
@@ -1185,6 +1285,7 @@ def set_parameter_layout(
 
 __all__ = [
     "add_parameter",
+    "layout_grid_problems",
     "remove_parameter",
     "rename_parameter",
     "reorder_parameters",

@@ -25,11 +25,18 @@ Usage::
 
 The helper is a no-op for any text without numeric or named entities; it
 preserves leading/trailing whitespace and never strips empty strings.
+
+Not every slot gets it (issue #75): DAX ``<CommandText>`` and the
+DesignerState ``Statement`` are written verbatim (DAX string literals like
+``"&amp;"`` are meaningful), and slots that hold either a literal or an
+``=``-expression (filter expressions/values) use :func:`encode_value_text`,
+which decodes ``=``-expressions only and reports when it did.
 """
 
 from __future__ import annotations
 
 import re
+from typing import Optional
 
 # Five core XML named entities. ``&apos;`` is technically only required
 # inside single-quoted attribute values, but lxml emits it sometimes;
@@ -93,4 +100,31 @@ def encode_text(value: str) -> str:
     return out
 
 
-__all__ = ["encode_text"]
+def encode_value_text(value: str, what: str = "value") -> tuple[str, Optional[str]]:
+    """Normalise text bound for an RDL slot that holds *either* a literal or
+    an ``=``-expression (``FilterExpression``, ``FilterValue``) — issue #75.
+
+    * A literal (anything not starting with ``=``) is returned verbatim.
+      ``R&amp;D`` is a legitimate filter literal; decoding it would
+      silently change the comparison. lxml escapes it once on save.
+    * An ``=``-expression goes through :func:`encode_text`, because that
+      is where the LLM double-encoding failure mode (``&amp;amp;`` →
+      ``'amp' is not declared``) actually happens. When decoding changed
+      the text, a warning string is returned so the rewrite is visible.
+
+    Returns ``(text_to_write, warning_or_None)``. ``what`` names the slot
+    in the warning (e.g. ``"filter expression"``).
+    """
+    if not isinstance(value, str) or not value.startswith("="):
+        return value, None
+    decoded = encode_text(value)
+    if decoded == value:
+        return value, None
+    return decoded, (
+        f"{what} {value!r} contained XML entities; decoded to {decoded!r} "
+        "(the file stores the text escaped once). Pass the literal characters "
+        "to avoid this rewrite."
+    )
+
+
+__all__ = ["encode_text", "encode_value_text"]

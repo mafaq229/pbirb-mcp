@@ -51,6 +51,7 @@ controls, and decoration tools.
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Optional
 
 from lxml import etree
@@ -59,9 +60,10 @@ from pbirb_mcp.core import chart_shape, chart_types, names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError, resolve_dataset
-from pbirb_mcp.core.mutation import changed_by, fingerprint
+from pbirb_mcp.core.mutation import changed_by
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, find_children, q
-from pbirb_mcp.ops.body import _ensure_body_report_items, _resolve_body
+from pbirb_mcp.ops.actions import _insert_in_chart_data_point_order
+from pbirb_mcp.ops.containers import place
 
 # inputSchema descriptions for the series_type / series_subtype args of the
 # series tools, generated from the enum tables so they cannot drift.
@@ -132,12 +134,15 @@ def insert_chart_from_template(
     left: str,
     width: str,
     height: str,
+    container: Optional[str] = None,
 ) -> dict[str, Any]:
     """Insert a basic Column chart bound to ``dataset_name``.
 
     The chart has one category axis (grouped by ``category_field``) and
     one Y series (``=Sum(Fields!<value_field>.Value)``). Type defaults to
     Column; callers can change it post-insert via :func:`set_chart_series_type`.
+    With ``container`` it goes inside that body Rectangle (#83; a List's
+    only when the list is bound to ``dataset_name``).
     """
     names.validate_identifier(name, "chart")
     top, left, width, height = units.box(top, left, width, height)
@@ -210,12 +215,7 @@ def insert_chart_from_template(
     etree.SubElement(chart, q("Width")).text = width
     etree.SubElement(chart, q("Style"))
 
-    body = _resolve_body(doc)
-    items = _ensure_body_report_items(body)
-    items.append(chart)
-
-    doc.save()
-    return {
+    result = {
         "name": name,
         "kind": "Chart",
         "type": "Column",
@@ -223,6 +223,7 @@ def insert_chart_from_template(
         "value_field": value_field,
         "category_group": category_group,
     }
+    return place(doc, chart, container, result, dataset_name=dataset_name)
 
 
 _VALID_AXIS_KINDS = ("Category", "Value")
@@ -964,7 +965,9 @@ def set_chart_legend(
 
 
 def _ensure_series_data_label(series: etree._Element) -> etree._Element:
-    """Locate or create ``<ChartSeries>/<ChartDataLabel>``.
+    """Locate or create ``<ChartSeries>/<ChartDataLabel>`` — only used for a
+    series without any ``<ChartDataPoint>`` (labels normally live on the
+    data points, see :func:`set_chart_data_labels`).
 
     Per RDL XSD, ChartSeries child order: ChartDataPoints, Type, Subtype,
     EmptyPoints, Style, ChartItemInLegend, ChartDataLabel, ChartMarker,
@@ -1005,23 +1008,137 @@ def _insert_data_label_child_in_order(label: etree._Element, new_child: etree._E
     label.append(new_child)
 
 
-_VALID_DATA_LABEL_POSITIONS = frozenset(
-    {
-        "Auto",
-        "Top",
-        "TopLeft",
-        "TopCenter",
-        "TopRight",
-        "Left",
-        "Center",
-        "Right",
-        "BottomLeft",
-        "BottomCenter",
-        "BottomRight",
-        "Bottom",
-        "Outside",
-    }
+# RDL ChartDataLabel Position values. (TopCenter / BottomCenter are
+# ChartLegend positions, not data-label ones.)
+DATA_LABEL_POSITIONS: tuple[str, ...] = (
+    "Auto",
+    "Top",
+    "TopLeft",
+    "TopRight",
+    "Left",
+    "Center",
+    "Right",
+    "BottomRight",
+    "Bottom",
+    "BottomLeft",
+    "Outside",
 )
+_VALID_DATA_LABEL_POSITIONS = frozenset(DATA_LABEL_POSITIONS)
+
+
+def _data_label_hosts(
+    series: etree._Element,
+) -> tuple[list[tuple[etree._Element, Optional[etree._Element]]], bool]:
+    """``(label, host)`` pairs to edit for one series, and whether a
+    series-level label was moved onto the data points.
+
+    Report Builder keeps data labels on the data points
+    (``ChartDataPoint/ChartDataLabel``), and a point's label overrides
+    ``ChartSeries/ChartDataLabel`` at render time, so edits go to every
+    data point (a chart with one category member has one: the template
+    point). A point without a label gets a copy of the series-level label
+    when there is one (which is then removed — the render is unchanged,
+    and the edit cannot be shadowed), else a new label. ``host`` is the
+    data point a new label still has to be attached to (None when the
+    label is already in the tree), so a call that leaves it empty never
+    adds an empty element. A series without data points keeps the
+    series-level label.
+    """
+    points = chart_shape.data_points(series)
+    if not points:
+        return [(_ensure_series_data_label(series), None)], False
+    series_label = find_child(series, "ChartDataLabel")
+    hosts: list[tuple[etree._Element, Optional[etree._Element]]] = []
+    for point in points:
+        label = find_child(point, "ChartDataLabel")
+        if label is not None:
+            hosts.append((label, None))
+        elif series_label is not None:
+            moved = copy.deepcopy(series_label)
+            moved.tail = None
+            _insert_in_chart_data_point_order(point, moved)
+            hosts.append((moved, None))
+        else:
+            hosts.append((etree.Element(q("ChartDataLabel")), point))
+    if series_label is not None:
+        series.remove(series_label)
+    return hosts, series_label is not None
+
+
+def _edit_data_label(
+    label: etree._Element,
+    *,
+    visible: Optional[bool],
+    visible_expression: Optional[str],
+    format: Optional[str],  # noqa: A002
+    position: Optional[str],
+    use_value_as_label: Optional[bool],
+    font_weight: Optional[str],
+    color: Optional[str],
+) -> set[str]:
+    """Apply the requested values to one ``ChartDataLabel``; return the
+    names of the sub-elements that changed."""
+    changed: set[str] = set()
+
+    # ----- Visible (boolean OR expression) ----------------------
+    if visible is not None or visible_expression is not None:
+        new_text = (
+            "true"
+            if visible is True
+            else "false"
+            if visible is False
+            else encode_text(visible_expression)
+        )
+        existing = find_child(label, "Visible")
+        if existing is None or existing.text != new_text:
+            new = etree.Element(q("Visible"))
+            new.text = new_text
+            _insert_data_label_child_in_order(label, new)
+            changed.add("Visible")
+
+    # ----- UseValueAsLabel (boolean) ----------------------------
+    if use_value_as_label is not None:
+        text = "true" if use_value_as_label else "false"
+        existing = find_child(label, "UseValueAsLabel")
+        if existing is None or existing.text != text:
+            uval = etree.Element(q("UseValueAsLabel"))
+            uval.text = text
+            _insert_data_label_child_in_order(label, uval)
+            changed.add("UseValueAsLabel")
+
+    # ----- Position (enum) --------------------------------------
+    if position is not None:
+        existing = find_child(label, "Position")
+        if existing is None or existing.text != position:
+            pos = etree.Element(q("Position"))
+            pos.text = position
+            _insert_data_label_child_in_order(label, pos)
+            changed.add("Position")
+
+    # ----- Style.{Format, FontWeight, Color} --------------------
+    style_values = [
+        (local, value)
+        for local, value in (("Format", format), ("FontWeight", font_weight), ("Color", color))
+        if value is not None
+    ]
+    style = find_child(label, "Style")
+    if style is None and any(value != "" for _, value in style_values):
+        style = etree.Element(q("Style"))
+        _insert_data_label_child_in_order(label, style)
+    if style is not None:
+        for child_local, value in style_values:
+            existing = find_child(style, child_local)
+            if value == "":
+                if existing is not None:
+                    style.remove(existing)
+                    changed.add(f"Style.{child_local}")
+            else:
+                if existing is None:
+                    existing = etree.SubElement(style, q(child_local))
+                if existing.text != encode_text(value):
+                    existing.text = encode_text(value)
+                    changed.add(f"Style.{child_local}")
+    return changed
 
 
 def set_chart_data_labels(
@@ -1036,40 +1153,43 @@ def set_chart_data_labels(
     font_weight: Optional[str] = None,
     color: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Configure ``<ChartDataLabel>`` for one series or all series in
-    a chart.
+    """Configure the data labels of one series or all series in a chart.
+
+    Labels are written where Report Builder keeps them and where they
+    render: ``ChartSeries/ChartDataPoints/ChartDataPoint/ChartDataLabel``
+    (every data point of the series — one, the template point, unless the
+    category hierarchy has several static members). A series-level
+    ``ChartSeries/ChartDataLabel`` (written by earlier versions) is moved
+    onto the points that have none, since a point's label overrides it.
 
     When ``series_name`` is None, the change applies to every series.
-    Otherwise only the named series is touched.
 
     ``visible=True`` writes ``<Visible>true</Visible>``; False writes
     false; None leaves the element unchanged. ``visible_expression``
     writes the same element with a VB.NET ``=IIf(...)``-style
     expression — mutually exclusive with ``visible``.
 
-    ``format`` writes a numeric/date format into the per-label
-    ``<Style>/<Format>`` sub-element. Pass ``''`` to clear it.
+    ``format`` / ``font_weight`` / ``color`` write ``<Style>/<Format>``,
+    ``<Style>/<FontWeight>`` and ``<Style>/<Color>``; pass ``''`` to clear.
+    ``position`` ∈ :data:`DATA_LABEL_POSITIONS` (``Outside`` is meant for
+    Shape series — pie, doughnut, funnel, pyramid — and draws a warning on
+    other types). ``use_value_as_label`` writes ``<UseValueAsLabel>``.
 
-    v0.4 commit 22 — per-point kwargs:
-
-    * ``position`` ∈ Auto / Top / TopLeft / TopCenter / TopRight /
-      Left / Center / Right / BottomLeft / BottomCenter /
-      BottomRight / Bottom / Outside. Writes ``<Position>``.
-    * ``use_value_as_label=True`` / False. Writes
-      ``<UseValueAsLabel>true/false</UseValueAsLabel>``.
-    * ``font_weight`` / ``color`` — write to ``<Style>/<FontWeight>``
-      and ``<Style>/<Color>`` respectively. Pass ``''`` to clear.
-
-    Returns ``{chart, series: list[str], kind, changed: list[str]}`` —
-    ``series`` lists the affected series names (one or many);
-    ``changed`` is the union of sub-element names touched.
+    Returns ``{chart, series: list[str], kind, changed: list[str],
+    warnings}`` — ``changed`` is the union of sub-element names touched
+    (``ChartDataLabel`` when a series-level label was moved to the data
+    points); empty when everything already matched (file untouched).
     """
     if visible is not None and visible_expression is not None:
         raise ValueError("visible and visible_expression are mutually exclusive — pass only one")
     if position is not None and position not in _VALID_DATA_LABEL_POSITIONS:
         raise ValueError(
-            f"position {position!r} not valid; expected one of "
-            f"{sorted(_VALID_DATA_LABEL_POSITIONS)}"
+            f"position {position!r} not valid; expected one of {list(DATA_LABEL_POSITIONS)}"
+            + (
+                " (TopCenter/BottomCenter are legend positions; use Top/Bottom)"
+                if position in ("TopCenter", "BottomCenter")
+                else ""
+            )
         )
 
     no_op = all(
@@ -1090,6 +1210,7 @@ def set_chart_data_labels(
             "series": [series_name] if series_name else [],
             "kind": "ChartDataLabel",
             "changed": [],
+            "warnings": [],
         }
 
     doc = RDLDocument.open(path)
@@ -1102,70 +1223,34 @@ def set_chart_data_labels(
 
     changed: set[str] = set()
     affected: list[str] = []
+    warnings: list[str] = []
 
     for series in targets:
-        label = _ensure_series_data_label(series)
-
-        # ----- Visible (boolean OR expression) ----------------------
-        if visible is not None or visible_expression is not None:
-            new_text = (
-                "true"
-                if visible is True
-                else "false"
-                if visible is False
-                else encode_text(visible_expression)
+        hosts, migrated = _data_label_hosts(series)
+        if migrated:
+            changed.add("ChartDataLabel")
+        for label, host in hosts:
+            touched = _edit_data_label(
+                label,
+                visible=visible,
+                visible_expression=visible_expression,
+                format=format,
+                position=position,
+                use_value_as_label=use_value_as_label,
+                font_weight=font_weight,
+                color=color,
             )
-            new = etree.Element(q("Visible"))
-            new.text = new_text
-            existing = find_child(label, "Visible")
-            if existing is None or existing.text != new.text:
-                _insert_data_label_child_in_order(label, new)
-                changed.add("Visible")
-
-        # ----- UseValueAsLabel (boolean) ----------------------------
-        if use_value_as_label is not None:
-            uval = etree.Element(q("UseValueAsLabel"))
-            uval.text = "true" if use_value_as_label else "false"
-            existing = find_child(label, "UseValueAsLabel")
-            if existing is None or existing.text != uval.text:
-                _insert_data_label_child_in_order(label, uval)
-                changed.add("UseValueAsLabel")
-
-        # ----- Position (enum) --------------------------------------
-        if position is not None:
-            pos = etree.Element(q("Position"))
-            pos.text = position
-            existing = find_child(label, "Position")
-            if existing is None or existing.text != pos.text:
-                _insert_data_label_child_in_order(label, pos)
-                changed.add("Position")
-
-        # ----- Style.{Format, FontWeight, Color} --------------------
-        if format is not None or font_weight is not None or color is not None:
-            style = find_child(label, "Style")
-            if style is None:
-                style = etree.Element(q("Style"))
-                _insert_data_label_child_in_order(label, style)
-
-            for child_local, value in (
-                ("Format", format),
-                ("FontWeight", font_weight),
-                ("Color", color),
-            ):
-                if value is None:
-                    continue
-                existing = find_child(style, child_local)
-                if value == "":
-                    if existing is not None:
-                        style.remove(existing)
-                        changed.add(f"Style.{child_local}")
-                else:
-                    if existing is None:
-                        existing = etree.SubElement(style, q(child_local))
-                    if existing.text != encode_text(value):
-                        existing.text = encode_text(value)
-                        changed.add(f"Style.{child_local}")
-
+            if host is not None and len(label):
+                _insert_in_chart_data_point_order(host, label)
+            changed |= touched
+        type_node = find_child(series, "Type")
+        series_type = (type_node.text or "").strip() if type_node is not None else "Column"
+        if position == "Outside" and series_type != "Shape":
+            warnings.append(
+                f"series {series.get('Name')!r} is a {series_type} series: Position "
+                "'Outside' is meant for Shape series (pie, doughnut, funnel, pyramid); "
+                "Report Builder may ignore it here"
+            )
         affected.append(series.get("Name"))
 
     if changed:
@@ -1175,6 +1260,7 @@ def set_chart_data_labels(
         "series": affected,
         "kind": "ChartDataLabel",
         "changed": sorted(changed),
+        "warnings": warnings,
     }
 
 
@@ -1420,24 +1506,79 @@ def set_chart_title(
     }
 
 
-# ---- set_chart_series_grouping (v0.4 commit 21) ---------------------------
+# ---- set_chart_series_grouping (#77) --------------------------------------
 
 
-def _resolve_first_series_chartmember(chart: etree._Element) -> Optional[etree._Element]:
-    """Find the first ``<ChartMember>`` inside ``<ChartSeriesHierarchy>``.
+# Report Builder's child order inside a <ChartMember> (the XSD is a choice).
+_CHART_MEMBER_CHILD_ORDER = (
+    "Group",
+    "SortExpressions",
+    "ChartMembers",
+    "Label",
+    "CustomProperties",
+    "DataElementName",
+    "DataElementOutput",
+)
 
-    The template-inserted chart has exactly one static ChartMember;
-    this is the natural attach point for the dynamic ``<Group>``.
-    Returns ``None`` when the hierarchy is absent — refuses upstream.
-    """
-    hierarchy = find_child(chart, "ChartSeriesHierarchy")
-    if hierarchy is None:
-        return None
-    members = find_child(hierarchy, "ChartMembers")
-    if members is None:
-        return None
-    children = find_children(members, "ChartMember")
-    return children[0] if children else None
+_SERIES_SORT_DIRECTIONS = ("Ascending", "Descending", "None")
+
+
+def _insert_member_child(member: etree._Element, node: etree._Element) -> None:
+    """Insert ``node`` into a ChartMember in Report Builder's child order."""
+    local = etree.QName(node).localname
+    idx = _CHART_MEMBER_CHILD_ORDER.index(local)
+    for i, child in enumerate(member):
+        if not isinstance(child.tag, str):
+            continue
+        child_local = etree.QName(child).localname
+        if (
+            child_local in _CHART_MEMBER_CHILD_ORDER
+            and _CHART_MEMBER_CHILD_ORDER.index(child_local) > idx
+        ):
+            member.insert(i, node)
+            return
+    member.append(node)
+
+
+def _group_expression_texts(group: etree._Element) -> list[Optional[str]]:
+    exprs = find_child(group, "GroupExpressions")
+    if exprs is None:
+        return []
+    return [e.text for e in find_children(exprs, "GroupExpression")]
+
+
+def _sort_state(member: etree._Element) -> list[tuple[Optional[str], str]]:
+    """``(Value, Direction)`` per SortExpression of a ChartMember (a missing
+    Direction is Ascending, the RDL default)."""
+    sorts = find_child(member, "SortExpressions")
+    if sorts is None:
+        return []
+    out: list[tuple[Optional[str], str]] = []
+    for s in find_children(sorts, "SortExpression"):
+        value = find_child(s, "Value")
+        direction = find_child(s, "Direction")
+        text = (direction.text or "").strip() if direction is not None else ""
+        out.append((value.text if value is not None else None, text or "Ascending"))
+    return out
+
+
+def _write_sort(member: etree._Element, expression: str, direction: str) -> bool:
+    """Make the member's SortExpressions exactly one SortExpression on
+    ``expression`` (``direction`` 'None' removes them). True iff changed."""
+    wanted = [] if direction == "None" else [(expression, direction)]
+    if _sort_state(member) == wanted:
+        return False
+    existing = find_child(member, "SortExpressions")
+    if existing is not None:
+        member.remove(existing)
+    if wanted:
+        sorts = etree.Element(q("SortExpressions"))
+        sort = etree.SubElement(sorts, q("SortExpression"))
+        etree.SubElement(sort, q("Value")).text = expression
+        if direction == "Descending":
+            etree.SubElement(sort, q("Direction")).text = "Descending"
+        _insert_member_child(member, sorts)
+    return True
 
 
 def set_chart_series_grouping(
@@ -1447,33 +1588,40 @@ def set_chart_series_grouping(
     group_field: Optional[str] = None,
     group_expression: Optional[str] = None,
     replace: bool = False,
+    label_expression: Optional[str] = None,
+    sort: Optional[str] = None,
+    group_name: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Promote a chart's static ChartMember to a dynamic-fanout series.
+    """Make a chart series dynamic: one rendered series per distinct value
+    of the group expression (``<ChartMember>/<Group>/<GroupExpressions>``).
 
-    Writes ``<Group Name="<series>_Group">/<GroupExpressions>/<GroupExpression>``
-    on the first ``<ChartMember>`` in the chart's ``<ChartSeriesHierarchy>``.
-    At render time, one rendered series is produced per distinct value of
-    the group expression — the canonical "13 violation types, list
-    unknown at design time" fan-out.
+    The member is the series' own leaf in ``ChartSeriesHierarchy`` (series
+    and leaves match by position, :mod:`pbirb_mcp.core.chart_shape`), or
+    the dynamic member it already sits under. Trailing series without a
+    member (older files) get one first (``repaired_members``).
 
     ``group_field`` is a shorthand: ``"Type"`` becomes
-    ``=Fields!Type.Value``. Pass ``group_expression`` directly for any
-    other VB.NET form. Mutually exclusive.
+    ``=Fields!Type.Value``; ``group_expression`` takes any VB.NET.
+    Mutually exclusive.
 
-    ``series_name`` must match an existing ``<ChartSeries Name=...>`` in
-    ``<ChartSeriesCollection>`` — the value-template the fanned-out
-    series share. Refused otherwise (catches typos against the chart
-    schema before the dynamic chart silently renders empty).
+    Promoting a static member writes the Report Builder shape: the
+    ``<Label>`` (legend text of each fanned-out series) becomes the group
+    expression, or ``label_expression``; ``<SortExpressions>`` sorts by the
+    group expression (``sort``: Ascending (default) / Descending / None);
+    the group is named ``group_name`` or ``<series>_Group``.
 
-    ``replace=False`` (default) refuses when the ChartMember already
-    has a ``<Group>`` child; pass ``replace=True`` to overwrite it.
+    An existing group is refused unless ``replace=True``, which rewrites
+    only its ``GroupExpressions`` and keeps ``Group/@Name`` (scope
+    references such as ``Sum(..., "SeriesGroup1")`` keep working) and the
+    group's other children unless ``group_name`` renames it. The label is
+    updated when ``label_expression`` is given, or when it was a constant
+    or the old group expression; a sort on the old group expression
+    follows the new one (``sort`` sets it explicitly). A call that matches
+    the current state changes nothing (``changed: []``, file untouched),
+    with or without ``replace``.
 
-    Note (v0.4 commit 21 scope): operates on the FIRST ChartMember
-    only. Multi-member dynamic-fanout chains aren't reachable from
-    any other v0.4 tool, so they're out of scope here.
-
-    Returns the canonical mutator shape
-    ``{chart, series, kind: 'ChartGroup', group_name, expression, changed}``.
+    Returns ``{chart, series, kind: 'ChartGroup', group_name, expression,
+    label, sort, repaired_members, changed}``.
     """
     if group_field is None and group_expression is None:
         raise ValueError(
@@ -1484,74 +1632,153 @@ def set_chart_series_grouping(
             "set_chart_series_grouping: group_field and group_expression "
             "are mutually exclusive — pass only one"
         )
+    if sort is not None and sort not in _SERIES_SORT_DIRECTIONS:
+        raise ValueError(
+            f"sort {sort!r} not valid; expected one of {list(_SERIES_SORT_DIRECTIONS)}"
+        )
+    if group_name is not None:
+        names.validate_identifier(group_name, "group")
 
-    effective_expression = (
+    effective_expression = encode_text(
         f"=Fields!{group_field}.Value" if group_field is not None else group_expression
     )
+    label_text = encode_text(label_expression) if label_expression is not None else None
 
     doc = RDLDocument.open(path)
     chart = _resolve_chart(doc, chart_name)
-
-    # Validate the series template exists (the ChartSeries in
-    # ChartSeriesCollection that gets cloned per group value at render
-    # time). Without this, a typo would silently produce an empty chart.
-    series_collection = _series_collection(chart)
-    if series_name not in _series_names(series_collection):
+    if chart_shape.series_index(chart, series_name) is None:
         raise ElementNotFoundError(
             f"chart {chart_name!r} has no series named {series_name!r}; "
-            f"existing series: {_series_names(series_collection)!r}"
+            f"existing series: {chart_shape.series_names(chart, include_derived=False)!r}"
         )
 
-    member = _resolve_first_series_chartmember(chart)
-    if member is None:
-        raise ValueError(
-            f"chart {chart_name!r} has no <ChartSeriesHierarchy>/<ChartMembers>/"
-            "<ChartMember> — cannot attach a Group element. Use "
-            "insert_chart_from_template first."
-        )
+    # Series match hierarchy leaves by position: give trailing series of
+    # an older file their member first (raises when there are extra
+    # leaves, where the mapping is ambiguous).
+    repaired = _sync_series_members(chart)
+    member = chart_shape.series_group_member(chart, series_name)
+    if member is None:  # pragma: no cover - _sync_series_members guarantees one
+        raise ValueError(f"chart {chart_name!r}: series {series_name!r} has no ChartMember")
 
-    existing_group = find_child(member, "Group")
-    changed: list[str] = []
-    if existing_group is not None:
+    changed: list[str] = ["ChartSeriesHierarchy"] if repaired else []
+    group = find_child(member, "Group")
+    label = find_child(member, "Label")
+    old_label = label.text if label is not None else None
+
+    if group is None:
+        new_label = label_text if label_text is not None else effective_expression
+        name = group_name or names.unique_name(doc, f"{series_name}_Group")
+        if group_name is not None:
+            names.ensure_unique(doc, group_name)
+        group = etree.Element(q("Group"), Name=name)
+        expressions = etree.SubElement(group, q("GroupExpressions"))
+        etree.SubElement(expressions, q("GroupExpression")).text = effective_expression
+        _insert_member_child(member, group)
+        changed.append("Group")
+        if _write_sort(member, effective_expression, sort or "Ascending"):
+            changed.append("SortExpressions")
+    else:
+        old_exprs = _group_expression_texts(group)
+        old_expr = old_exprs[0] if len(old_exprs) == 1 else None
+        name = group.get("Name")
+        rename = group_name is not None and group_name != name
+        exprs_differ = old_exprs != [effective_expression]
+
+        if label_text is not None:
+            new_label = label_text
+        elif (
+            old_label is None
+            or not old_label.lstrip().startswith("=")
+            or (old_expr is not None and old_label == old_expr)
+        ):
+            # A constant label gives every fanned-out series the same
+            # legend text; one that mirrors the group expression follows it.
+            new_label = effective_expression
+        else:
+            new_label = old_label  # a hand-written label expression
+
+        old_sort = _sort_state(member)
+        direction: Optional[str]
+        if sort is not None:
+            direction = sort
+        elif (
+            old_expr is not None
+            and len(old_sort) == 1
+            and old_sort[0][0] == old_expr
+            and exprs_differ
+        ):
+            direction = old_sort[0][1]  # the sort followed the group expression
+        else:
+            direction = None  # leave SortExpressions alone
+
+        wanted_sort = (
+            old_sort
+            if direction is None
+            else ([] if direction == "None" else [(effective_expression, direction)])
+        )
+        if not (rename or exprs_differ or new_label != old_label or wanted_sort != old_sort):
+            if repaired:
+                doc.save()
+            return _grouping_result(
+                chart_name, series_name, name, effective_expression, member, repaired, changed
+            )
         if not replace:
             raise ValueError(
-                f"chart {chart_name!r} series ChartMember already has a "
-                "<Group> child; pass replace=True to overwrite it."
+                f"chart {chart_name!r}: the ChartMember of series {series_name!r} already "
+                f"has a <Group> ({name!r} on {old_exprs!r}); pass replace=True to "
+                "rewrite its expression (the group name is kept)."
             )
-        old_fingerprint = fingerprint(existing_group)
-        member.remove(existing_group)
-        changed.append("replaced_existing_group")
+        if rename:
+            names.ensure_unique(doc, group_name)
+            group.set("Name", group_name)
+            name = group_name
+            changed.append("Group.Name")
+        if exprs_differ:
+            expressions = find_child(group, "GroupExpressions")
+            if expressions is None:
+                expressions = etree.Element(q("GroupExpressions"))
+                group.insert(0, expressions)
+            for old in list(expressions):
+                expressions.remove(old)
+            etree.SubElement(expressions, q("GroupExpression")).text = effective_expression
+            changed.append("GroupExpressions")
+        if direction is not None and _write_sort(member, effective_expression, direction):
+            changed.append("SortExpressions")
 
-    # The replaced group (if any) was removed above, so its name is free
-    # again and an idempotent re-run keeps "<series>_Group".
-    group_name = names.unique_name(doc, f"{series_name}_Group")
-    group = etree.Element(q("Group"), Name=group_name)
-    expressions = etree.SubElement(group, q("GroupExpressions"))
-    etree.SubElement(expressions, q("GroupExpression")).text = encode_text(effective_expression)
+    if label is None:
+        label = etree.Element(q("Label"))
+        _insert_member_child(member, label)
+    if label.text != new_label:
+        label.text = new_label
+        changed.append("Label")
 
-    # Per RDL XSD, inside a ChartMember the Group child comes BEFORE
-    # Label. The template-inserted ChartMember has just a Label, so we
-    # insert before it.
+    doc.save()
+    return _grouping_result(
+        chart_name, series_name, name, effective_expression, member, repaired, changed
+    )
+
+
+def _grouping_result(
+    chart_name: str,
+    series_name: str,
+    group_name: Optional[str],
+    expression: str,
+    member: etree._Element,
+    repaired: list[str],
+    changed: list[str],
+) -> dict[str, Any]:
     label = find_child(member, "Label")
-    if label is not None:
-        label.addprevious(group)
-    else:
-        member.insert(0, group)
-
-    if existing_group is not None and fingerprint(group) == old_fingerprint:
-        # Re-run with the same expression: keep the original element.
-        member.replace(group, existing_group)
-        changed = []
-    else:
-        changed.append("group_written")
-        doc.save()
+    sorts = _sort_state(member)
     return {
         "chart": chart_name,
         "series": series_name,
         "kind": "ChartGroup",
         "group_name": group_name,
-        "expression": effective_expression,
-        "changed": changed,
+        "expression": expression,
+        "label": label.text if label is not None else None,
+        "sort": [{"value": v, "direction": d} for v, d in sorts],
+        "repaired_members": repaired,
+        "changed": sorted(changed),
     }
 
 

@@ -36,6 +36,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import connection as conn_shape
 from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.names import validate_identifier
@@ -53,25 +54,38 @@ _DEFAULT_PAGE_SETUP: dict[str, str] = {
 }
 
 _DATASOURCE_KEYS = frozenset(
-    {"name", "workspace_url", "dataset_name", "provider", "integrated_security"}
+    {
+        "name",
+        "workspace_url",
+        "dataset_name",
+        "provider",
+        "integrated_security",
+        "catalog_id",
+        "identity_provider",
+    }
 )
-_VALID_PROVIDERS = ("sql", "pbidataset")
+_VALID_PROVIDERS = conn_shape.PROVIDERS
 
 
-def _emit_datasource_block(parent: etree._Element, datasource: Optional[dict[str, Any]]) -> str:
+def _emit_datasource_block(
+    parent: etree._Element,
+    datasource: Optional[dict[str, Any]],
+    warnings: Optional[list[str]] = None,
+) -> str:
     """Append a ``<DataSource>`` element to ``parent`` based on the
     optional ``datasource`` payload. Returns the ``Name`` of the
     emitted source so the DataSet can wire its ``<DataSourceName>``.
 
-    Mirrors the v0.4 commit 1 ``add_data_source`` shape for both
-    provider variants so a scratch-built source round-trips through
-    ``_is_pbidataset_dataset``, ``list_data_sources``, and the rest of
-    the existing tools without surprise.
+    A real connection is built by :func:`pbirb_mcp.core.connection.build_connection`
+    — the same shape ``add_data_source`` writes — and its warnings are
+    appended to ``warnings``.
 
-    When ``datasource`` is None or has only a ``name`` field, emits a
-    minimal placeholder (DataProvider=SQL, empty ConnectString) — the
-    commit-13 behaviour.
+    When ``datasource`` is None or lacks ``workspace_url`` /
+    ``dataset_name``, emits a minimal placeholder (the provider's
+    DataProvider, empty ConnectString).
     """
+    if warnings is None:
+        warnings = []
     payload = datasource or {}
     unknown = set(payload) - _DATASOURCE_KEYS
     if unknown:
@@ -92,48 +106,36 @@ def _emit_datasource_block(parent: etree._Element, datasource: Optional[dict[str
     integrated_security = payload.get("integrated_security", True)
 
     ds_elem = etree.SubElement(parent, q("DataSource"), Name=name)
-    cp = etree.SubElement(ds_elem, q("ConnectionProperties"))
 
-    # Decide whether to emit a real connection (when workspace_url +
-    # dataset_name are present) or the placeholder shape. Either path
+    # A real connection (workspace_url + dataset_name present) uses the
+    # same builder as add_data_source / set_datasource_connection (#71);
+    # otherwise a placeholder with an empty ConnectString. Either path
     # produces an XSD-valid file.
-    has_real_connection = workspace_url and dataset_name
-
-    if provider == "pbidataset":
-        etree.SubElement(cp, q("DataProvider")).text = "PBIDATASET"
-        if has_real_connection:
-            cs = "Data Source=pbiazure://api.powerbi.com/;Initial Catalog=" + dataset_name
-            if integrated_security:
-                cs += ";Integrated Security=ClaimsToken"
-            etree.SubElement(cp, q("ConnectString")).text = cs
-        else:
-            etree.SubElement(cp, q("ConnectString"))
+    if workspace_url and dataset_name:
         etree.SubElement(ds_elem, qrd("DataSourceID")).text = str(uuid.uuid4())
-        if has_real_connection:
-            etree.SubElement(ds_elem, qrd("PowerBIWorkspaceName")).text = workspace_url
-            etree.SubElement(ds_elem, qrd("PowerBIDatasetName")).text = dataset_name
-    else:  # "sql"
-        etree.SubElement(cp, q("DataProvider")).text = "SQL"
-        if has_real_connection:
-            etree.SubElement(cp, q("ConnectString")).text = (
-                f"Data Source=powerbi://api.powerbi.com/v1.0/myorg/{workspace_url}"
-                f";Initial Catalog={dataset_name}"
-            )
-            if integrated_security:
-                etree.SubElement(cp, q("IntegratedSecurity")).text = "true"
-            etree.SubElement(ds_elem, qrd("SecurityType")).text = (
-                "Integrated" if integrated_security else "None"
-            )
-        else:
-            etree.SubElement(cp, q("ConnectString"))
-        etree.SubElement(ds_elem, qrd("DataSourceID")).text = str(uuid.uuid4())
+        shape = conn_shape.build_connection(
+            provider,
+            workspace_url,
+            dataset_name,
+            catalog_id=payload.get("catalog_id"),
+            identity_provider=payload.get("identity_provider"),
+            integrated=integrated_security,
+        )
+        conn_shape.apply_connection(ds_elem, shape)
+        warnings.extend(shape.warnings)
+        return name
 
+    cp = etree.SubElement(ds_elem, q("ConnectionProperties"))
+    etree.SubElement(cp, q("DataProvider")).text = conn_shape.DATA_PROVIDER[provider]
+    etree.SubElement(cp, q("ConnectString"))
+    etree.SubElement(ds_elem, qrd("DataSourceID")).text = str(uuid.uuid4())
     return name
 
 
 def _build_minimal_rdl(
     page_setup: Optional[dict[str, str]],
     datasource: Optional[dict[str, Any]],
+    warnings: Optional[list[str]] = None,
 ) -> etree._ElementTree:
     """Construct the in-memory minimal RDL tree.
 
@@ -159,7 +161,7 @@ def _build_minimal_rdl(
     # `datasource` is None/sparse, or a real PBI XMLA connection
     # when {workspace_url, dataset_name} are present.
     ds_root = etree.SubElement(root, q("DataSources"))
-    ds_name = _emit_datasource_block(ds_root, datasource)
+    ds_name = _emit_datasource_block(ds_root, datasource, warnings)
 
     datasets_root = etree.SubElement(root, q("DataSets"))
     dataset_name = "DataSet1"
@@ -209,11 +211,13 @@ def create_report(
     ``margin_left``, ``margin_right``, ``body_width``, ``body_height``.
     All values are RDL size strings (e.g. ``"8.5in"``, ``"297mm"``).
 
-    ``datasource`` is a forward-compat hook — commit 13 only honours
-    the optional ``name`` key for the placeholder DataSource's
-    ``Name`` attribute. Commit 14 wires the full ``add_data_source``
-    contract (``name``, ``workspace_url``, ``dataset_name``,
-    ``provider``, ``integrated_security``).
+    ``datasource`` takes the ``add_data_source`` contract (``name``,
+    ``workspace_url``, ``dataset_name``, ``provider``,
+    ``integrated_security``, ``catalog_id``, ``identity_provider``) and
+    writes the identical shape; without ``workspace_url`` /
+    ``dataset_name`` a placeholder source is written. Builder warnings
+    (e.g. a PBIDATASET catalog taken from the display name) come back as
+    ``warnings``.
     """
     dst = Path(path)
     if dst.exists():
@@ -221,7 +225,8 @@ def create_report(
             f"{path!r} already exists; refusing to clobber. Delete it first or pick a new path."
         )
 
-    tree = _build_minimal_rdl(page_setup, datasource)
+    warnings: list[str] = []
+    tree = _build_minimal_rdl(page_setup, datasource, warnings)
 
     # Write to a temporary RDLDocument so we can reuse the canonical
     # save_as flow (atomic .tmp + os.replace, exact byte shape Report
@@ -231,11 +236,14 @@ def create_report(
     doc.validate()
     doc.save_as(dst)
 
-    return {
+    out: dict[str, Any] = {
         "path": str(dst),
         "validated": True,
         "size_bytes": dst.stat().st_size,
     }
+    if warnings:
+        out["warnings"] = warnings
+    return out
 
 
 __all__ = ["create_report"]

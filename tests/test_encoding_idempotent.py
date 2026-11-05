@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.encoding import encode_text
+from pbirb_mcp.core.encoding import encode_text, encode_value_text
 from pbirb_mcp.core.xpath import RDL_NS
 from pbirb_mcp.ops.body import add_body_textbox
 from pbirb_mcp.ops.dataset import update_dataset_query
@@ -88,6 +88,26 @@ class TestEncodeText:
         # to ``<`` (that would be double-decoding).
         assert encode_text("&amp;lt;") == "&lt;"
         assert encode_text("&amp;amp;") == "&amp;"
+
+
+class TestEncodeValueText:
+    """#75: literal-or-expression slots (FilterExpression / FilterValue)."""
+
+    def test_literal_is_verbatim(self):
+        assert encode_value_text("R&amp;D") == ("R&amp;D", None)
+        assert encode_value_text("&lt;none&gt;") == ("&lt;none&gt;", None)
+
+    def test_expression_is_decoded_with_warning(self):
+        text, warning = encode_value_text('="A &amp; B"', "filter value")
+        assert text == '="A & B"'
+        assert warning is not None and "filter value" in warning
+
+    def test_clean_expression_has_no_warning(self):
+        assert encode_value_text('="A & B"') == ('="A & B"', None)
+
+    def test_non_string_passthrough(self):
+        assert encode_value_text("") == ("", None)
+        assert encode_value_text(None) == (None, None)  # type: ignore[arg-type]
 
 
 # ---- regression tests: write user-supplied text via tools ---------------
@@ -170,17 +190,25 @@ class TestRegressionParameterPrompt:
 
 
 class TestRegressionDatasetQuery:
-    def test_pre_encoded_command_text(self, rdl_path):
-        # DAX queries CAN contain ampersands in string literals (e.g.
-        # FILTER('Sales', 'Sales'[Region] = "A&B")). If the LLM sends
-        # &amp; in the DAX, we must not double-encode it.
+    def test_raw_ampersand_command_text_encoded_once(self, rdl_path):
+        update_dataset_query(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            dax_body="EVALUATE FILTER('Sales', 'Sales'[Region] = \"A & B\")",
+        )
+        assert b'"A &amp; B"' in _saved_disk_bytes(rdl_path)
+
+    def test_entity_shaped_command_text_is_verbatim(self, rdl_path):
+        # #75: CommandText is DAX, not a VB expression. Entity-shaped text
+        # in a DAX string literal is meaningful (SUBSTITUTE(x, "&amp;",
+        # "&") cleans HTML-escaped data), so it is written verbatim and
+        # escaped exactly once by lxml.
         update_dataset_query(
             path=str(rdl_path),
             dataset_name="MainDataset",
             dax_body="EVALUATE FILTER('Sales', 'Sales'[Region] = \"A &amp; B\")",
         )
-        assert b"&amp;amp;" not in _saved_disk_bytes(rdl_path)
-        assert b'"A &amp; B"' in _saved_disk_bytes(rdl_path)
+        assert b'"A &amp;amp; B"' in _saved_disk_bytes(rdl_path)
 
 
 class TestRegressionVisibilityExpression:
@@ -197,14 +225,29 @@ class TestRegressionVisibilityExpression:
 
 
 class TestRegressionTablixFilter:
-    def test_pre_encoded_filter_value(self, rdl_path):
-        add_tablix_filter(
+    def test_literal_filter_value_is_verbatim(self, rdl_path):
+        # #75: a literal (no leading '=') is stored as given.
+        result = add_tablix_filter(
             path=str(rdl_path),
             tablix_name="MainTable",
             expression="=Fields!ProductName.Value",
             operator="Equal",
-            values=["A &amp; B"],
+            values=["R&amp;D"],
         )
+        assert result["values"] == ["R&amp;D"]
+        assert b"R&amp;amp;D" in _saved_disk_bytes(rdl_path)
+
+    def test_pre_encoded_expression_value_normalised(self, rdl_path):
+        # '='-expressions keep the double-encoding guard, with a warning.
+        result = add_tablix_filter(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            expression="=Fields!ProductName.Value",
+            operator="Equal",
+            values=['="A &amp; B"'],
+        )
+        assert result["values"] == ['="A & B"']
+        assert any("decoded" in w for w in result["warnings"])
         assert b"&amp;amp;" not in _saved_disk_bytes(rdl_path)
 
 

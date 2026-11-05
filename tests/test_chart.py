@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from lxml import etree
 
+from pbirb_mcp.core import chart_shape
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
@@ -50,6 +51,12 @@ def rich_path(tmp_path: Path) -> Path:
     dest = tmp_path / "report.rdl"
     shutil.copy(FIXTURE_RICH, dest)
     return dest
+
+
+def _point_label(series):
+    """The series' data label: Report Builder keeps it on the template
+    ChartDataPoint, which is where set_chart_data_labels writes (#78)."""
+    return find_child(chart_shape.template_data_point(series), "ChartDataLabel")
 
 
 def _body_items(rdl_path: Path):
@@ -732,7 +739,7 @@ class TestSetChartDataLabels:
         amount_series = next(
             s for s in chart.iter(f"{{{RDL_NS}}}ChartSeries") if s.get("Name") == "Amount"
         )
-        label = find_child(amount_series, "ChartDataLabel")
+        label = _point_label(amount_series)
         assert label is not None
         assert find_child(label, "Visible").text == "true"
 
@@ -747,7 +754,7 @@ class TestSetChartDataLabels:
         doc = RDLDocument.open(rich_path)
         chart = doc.root.find(f".//{{{RDL_NS}}}Chart[@Name='SalesByProduct']")
         for series in chart.iter(f"{{{RDL_NS}}}ChartSeries"):
-            label = find_child(series, "ChartDataLabel")
+            label = _point_label(series)
             assert label is not None
             assert find_child(label, "Visible").text == "true"
 
@@ -763,7 +770,7 @@ class TestSetChartDataLabels:
         amount_series = next(
             s for s in chart.iter(f"{{{RDL_NS}}}ChartSeries") if s.get("Name") == "Amount"
         )
-        label = find_child(amount_series, "ChartDataLabel")
+        label = _point_label(amount_series)
         style = find_child(label, "Style")
         assert find_child(style, "Format").text == "$#,0"
 
@@ -786,7 +793,7 @@ class TestSetChartDataLabels:
         amount_series = next(
             s for s in chart.iter(f"{{{RDL_NS}}}ChartSeries") if s.get("Name") == "Amount"
         )
-        label = find_child(amount_series, "ChartDataLabel")
+        label = _point_label(amount_series)
         style = find_child(label, "Style")
         assert find_child(style, "Format") is None
 
@@ -823,7 +830,7 @@ class TestSetChartDataLabelsPerPoint:
             q("ChartSeries")
         ):
             if s.get("Name") == series_name:
-                return find_child(s, "ChartDataLabel")
+                return _point_label(s)
         return None
 
     def test_visible_expression_writes_iif_form(self, rich_path):
@@ -1204,7 +1211,7 @@ class TestSetChartSeriesGrouping:
         assert result["kind"] == "ChartGroup"
         assert result["group_name"] == "Amount_Group"
         assert result["expression"] == "=Fields!Type.Value"
-        assert "group_written" in result["changed"]
+        assert "Group" in result["changed"]
 
         member = self._series_chartmember(rich_path, "SalesByProduct")
         group = find_child(member, "Group")
@@ -1302,7 +1309,7 @@ class TestSetChartSeriesGrouping:
             group_field="Region",
             replace=True,
         )
-        assert "replaced_existing_group" in result["changed"]
+        assert result["changed"] == ["GroupExpressions", "Label", "SortExpressions"]
         member = self._series_chartmember(rich_path, "SalesByProduct")
         expr = member.find(f"{q('Group')}/{q('GroupExpressions')}/{q('GroupExpression')}")
         assert expr.text == "=Fields!Region.Value"

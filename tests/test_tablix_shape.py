@@ -83,21 +83,22 @@ def _row_textbox_names(row):
     return [tb.get("Name") for tb in row.iter(q("Textbox"))]
 
 
-def _matrix(path: Path) -> Path:
+def _matrix(path: Path, wrap: str = "details") -> Path:
     """add_row_group + add_column_group + convert_to_matrix: a tablix
     with no detail group whose innermost dynamic row group is Region —
     itself the leaf owning the (aggregated) data row."""
-    add_row_group(str(path), "MainTable", "Region", "=Fields!ProductName.Value")
+    add_row_group(str(path), "MainTable", "Region", "=Fields!ProductName.Value", wrap=wrap)
     add_column_group(str(path), "MainTable", "Date", "=Fields!ProductID.Value")
     convert_to_matrix(str(path), "MainTable", "Region", "Date")
     return path
 
 
 def _footer_matrix(path: Path) -> Path:
-    """:func:`_matrix` with a static footer row added first, so Region
-    wraps static members: its data row and the footer."""
+    """:func:`_matrix` with a static footer row added first and wrapped
+    too (``wrap="all"``), so Region wraps static members: its data row
+    and the footer."""
     add_static_row(str(path), "MainTable", "TotalRow", ["Total"])
-    return _matrix(path)
+    return _matrix(path, wrap="all")
 
 
 # ---- core helpers ---------------------------------------------------------

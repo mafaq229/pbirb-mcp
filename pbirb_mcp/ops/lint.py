@@ -39,7 +39,9 @@ Core rules (19):
   :mod:`pbirb_mcp.ops.vbexpr`, so literals and comments don't count).
 * ``dangling-embedded-image`` (error) — ``Image`` or (#47)
   ``Style/BackgroundImage`` with ``Source=Embedded`` whose ``Value``
-  doesn't name an ``<EmbeddedImage>``.
+  doesn't name an ``<EmbeddedImage>``; (warning, #81) an ``=`` expression
+  ``Value`` with an identifier-shaped string literal that names none
+  (:func:`pbirb_mcp.ops.embedded_images.iter_embedded_image_refs`).
 * ``dangling-data-source-reference`` (error) —
   ``<DataSet>/<Query>/<DataSourceName>`` doesn't match a real
   ``<DataSource>``.
@@ -49,13 +51,16 @@ Core rules (19):
   ``<QueryParameter Name="@…">`` (the bare ``Name`` is what works; the
   ``@`` belongs only in the DAX text).
 * ``parameter-layout-out-of-sync`` (error) — ``<ReportParameters>`` /
-  ``<CellDefinitions>`` count mismatch.
+  ``<CellDefinitions>`` count mismatch, or a broken grid: two cells in one
+  slot, a RowIndex / ColumnIndex outside NumberOfRows / NumberOfColumns,
+  a missing or negative index.
 * ``double-encoded-entities`` (error) — element text contains
   ``&amp;``/``&lt;``/``&gt;``/``&quot;`` (the post-decode signature of a
   double-encoding regression). Skips ``<Code>``, ``<CommandText>``,
   ``<ImageData>``, ``rd:*`` and HTML-markup text runs.
-* ``stale-designer-state`` (warn) — ``<rd:DesignerState>/<Statement>``
-  diverges from ``<CommandText>``.
+* ``stale-designer-state`` (warn) — the Query Designer's Statement
+  (``rd:DesignerState/QueryDefinition/Query/Statement``, or a legacy
+  ``rd:Statement``) diverges from ``<CommandText>``.
 * ``tablix-span-misplaced`` (error) — ``<ColSpan>``/``<RowSpan>``
   outside ``<CellContents>``.
 * ``dataset-fields-out-of-sync`` (warn, v0.3.1; both directions #51) —
@@ -87,8 +92,8 @@ from lxml import etree
 
 from pbirb_mcp.core import names
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q
-from pbirb_mcp.ops import expr_walk, vbexpr
+from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, find_designer_statement, q
+from pbirb_mcp.ops import embedded_images, expr_walk, vbexpr
 from pbirb_mcp.ops.dataset import _is_pbidataset_dataset
 from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
 
@@ -498,37 +503,47 @@ def _rule_dangling_embedded_image(doc: RDLDocument) -> list[Issue]:
                 declared.add(entry.get("Name"))
     issues: list[Issue] = []
     # <Image> report items and Style/<BackgroundImage> (#47) share the
-    # Source/Value shape.
-    for img in doc.root.iter(q("Image"), q("BackgroundImage")):
-        source = find_child(img, "Source")
-        if source is None or (source.text or "").strip() != "Embedded":
+    # Source/Value shape; iter_embedded_image_refs (#81) is the same walk
+    # remove_embedded_image refuses on. A literal Value is a definite
+    # reference (error); a string literal inside an =expression Value
+    # (=IIf(..., "LogoA", "LogoB")) is a possible one (warning). Only
+    # literals that are valid image names count, so URLs, captions and
+    # other strings in such expressions don't.
+    for ref in embedded_images.iter_embedded_image_refs(doc.root):
+        if ref.ref in declared:
             continue
-        value = find_child(img, "Value")
-        ref = (value.text or "").strip() if value is not None else ""
-        # The Value element holds either a literal name (e.g. "Logo") or an
-        # expression (e.g. "=Fields!X.Value"). Skip expressions — we can't
-        # statically resolve them.
-        if not ref or ref.startswith("="):
+        if ref.is_expression and not names.is_identifier(ref.ref):
             continue
-        if ref in declared:
-            continue
-        if etree.QName(img).localname == "BackgroundImage":
-            location = _ancestor_chain(img)
-            what = "BackgroundImage"
+        if ref.kind == "BackgroundImage":
+            location = _ancestor_chain(ref.element)
+            if location == "(unnamed)":  # e.g. the Body's own background
+                location = embedded_images.ref_locator(ref)
         else:
+            img = ref.element
             location = f"Image[Name={img.get('Name')!r}]" if img.get("Name") else "Image"
-            what = "Image"
-        issues.append(
-            {
+        if ref.is_expression:
+            issue: Issue = {
+                "severity": "warning",
+                "rule": "dangling-embedded-image",
+                "location": location,
+                "message": (
+                    f"{ref.kind} Source=Embedded expression may pick {ref.ref!r}, which "
+                    "isn't in <EmbeddedImages>"
+                ),
+                "suggestion": "add the image via add_embedded_image or fix the expression",
+            }
+        else:
+            issue = {
                 "severity": "error",
                 "rule": "dangling-embedded-image",
                 "location": location,
                 "message": (
-                    f"{what} Source=Embedded references {ref!r}, which isn't in <EmbeddedImages>"
+                    f"{ref.kind} Source=Embedded references {ref.ref!r}, which isn't in "
+                    "<EmbeddedImages>"
                 ),
                 "suggestion": "add the image via add_embedded_image or fix the Value reference",
             }
-        )
+        issues.append(issue)
     return issues
 
 
@@ -646,25 +661,45 @@ def _rule_parameter_layout_out_of_sync(doc: RDLDocument) -> list[Issue]:
     cells = find_child(grid, "CellDefinitions")
     if cells is None:
         return []
+    from pbirb_mcp.ops.parameters import layout_grid_problems
+
+    issues: list[Issue] = []
     param_count = len(find_children(params_block, "ReportParameter"))
     cell_count = len(find_children(cells, "CellDefinition"))
-    if param_count == cell_count:
-        return []
-    return [
-        {
-            "severity": "error",
-            "rule": "parameter-layout-out-of-sync",
-            "location": "ReportParametersLayout/GridLayoutDefinition/CellDefinitions",
-            "message": (
-                f"<ReportParameters> declares {param_count} parameter(s) but "
-                f"<CellDefinitions> has {cell_count} cell(s)"
-            ),
-            "suggestion": (
-                "call sync_parameter_layout(path) to fill gaps, or "
-                "set_parameter_layout(...) to author the grid explicitly"
-            ),
-        }
-    ]
+    if param_count != cell_count:
+        issues.append(
+            {
+                "severity": "error",
+                "rule": "parameter-layout-out-of-sync",
+                "location": "ReportParametersLayout/GridLayoutDefinition/CellDefinitions",
+                "message": (
+                    f"<ReportParameters> declares {param_count} parameter(s) but "
+                    f"<CellDefinitions> has {cell_count} cell(s)"
+                ),
+                "suggestion": (
+                    "call sync_parameter_layout(path) to fill gaps, or "
+                    "set_parameter_layout(...) to author the grid explicitly"
+                ),
+            }
+        )
+    # Grid integrity (#74): duplicate slots, indices outside the grid.
+    for problem in layout_grid_problems(grid):
+        issues.append(
+            {
+                "severity": "error",
+                "rule": "parameter-layout-out-of-sync",
+                "location": (
+                    "ReportParametersLayout/GridLayoutDefinition/CellDefinitions/"
+                    f"CellDefinition[ParameterName={problem['parameter']!r}]"
+                ),
+                "message": f"parameter pane grid: {problem['message']} ({problem['problem']})",
+                "suggestion": (
+                    "call sync_parameter_layout(path) to move it to a free slot, or "
+                    "set_parameter_layout(...) to author the grid explicitly"
+                ),
+            }
+        )
+    return issues
 
 
 # ---- rule 13: double-encoded-entities ----------------------------------
@@ -744,25 +779,32 @@ def _rule_stale_designer_state(doc: RDLDocument) -> list[Issue]:
         cmd = find_child(query, "CommandText")
         if cmd is None or cmd.text is None:
             continue
-        # find_child takes a local name only, so reach into rd: directly.
-        designer = query.find(f"{{{RD_NS}}}DesignerState")
-        if designer is None:
-            continue
-        statement = designer.find(f"{{{RD_NS}}}Statement")
+        # Report Builder's QueryDefinition/Query/Statement (issue #70), or
+        # the legacy rd:Statement direct child.
+        statement = find_designer_statement(query)
         if statement is None or statement.text is None:
             continue
         if statement.text.strip() == cmd.text.strip():
             continue
+        path = (
+            "rd:DesignerState/rd:Statement"
+            if statement.tag == f"{{{RD_NS}}}Statement"
+            else "rd:DesignerState/QueryDefinition/Query/Statement"
+        )
         issues.append(
             {
                 "severity": "warning",
                 "rule": "stale-designer-state",
-                "location": f"DataSet[Name={ds.get('Name')!r}]/Query/rd:DesignerState/Statement",
+                "location": f"DataSet[Name={ds.get('Name')!r}]/Query/{path}",
                 "message": (
-                    "<rd:DesignerState>/<Statement> diverges from <CommandText>; "
-                    "the Query Designer GUI will display stale DAX"
+                    "the Query Designer's Statement (rd:DesignerState) diverges from "
+                    "<CommandText>; Report Builder's designer shows stale DAX and can "
+                    "regenerate the old query over the new one"
                 ),
-                "suggestion": "call update_dataset_query() to sync both at once",
+                "suggestion": (
+                    "call update_dataset_query() with the current DAX to sync both, "
+                    "or designer_state='drop' to remove the designer state"
+                ),
             }
         )
     return issues

@@ -130,8 +130,9 @@ class TestAddSubtotalRow:
         assert _textrun_value(textboxes[2]) == "=Sum(Fields!Amount.Value)"
 
     def test_header_position_inserts_after_group_header(self, rdl_with_region_group):
-        # Body before footer/header: [group header (row 0), header (1), data (2)].
-        # header position: new subtotal row goes at index 1.
+        # Body before footer/header: [header (row 0), group header (1), data (2)]
+        # (#65: the column-header row stays outside the group).
+        # header position: new subtotal row goes at index 2.
         add_subtotal_row(
             path=str(rdl_with_region_group),
             tablix_name="MainTable",
@@ -141,8 +142,8 @@ class TestAddSubtotalRow:
         )
         tablix = _tablix(RDLDocument.open(rdl_with_region_group), "MainTable")
         rows = _body_rows(tablix)
-        # Find the new (all-blank) row — it should be at index 1.
-        textboxes = _row_cell_textboxes(rows[1])
+        # Find the new (all-blank) row — it should be at index 2.
+        textboxes = _row_cell_textboxes(rows[2])
         for tb in textboxes:
             assert _textrun_value(tb) == ""
 
@@ -456,8 +457,8 @@ class TestSubtotalPlacement:
         result = add_subtotal_row(
             str(rdl_with_region_group), "MainTable", "Region", [], position="header"
         )
-        assert result["row_index"] == 1
-        assert _row_map(rdl_with_region_group)[1] == ("Region", "Region_SubtotalHeader_0")
+        assert result["row_index"] == 2
+        assert _row_map(rdl_with_region_group)[2] == ("Region", "Region_SubtotalHeader_0")
 
     def test_header_without_group_header_row_goes_first(self, rb_shape):
         result = add_subtotal_row(str(rb_shape), "MainTable", "Product", [], position="header")
@@ -487,9 +488,9 @@ class TestSubtotalPlacement:
         result = add_subtotal_row(
             str(rdl_with_region_group), "MainTable", "Region", [], position="header", scope="total"
         )
-        assert result["row_index"] == 0
+        assert result["row_index"] == 1  # after the table header, before Region (#65)
         tablix = _tablix(RDLDocument.open(rdl_with_region_group), "MainTable")
-        member = row_leaves(tablix)[0]
+        member = row_leaves(tablix)[1]
         assert _group_path(member) == "static"
         assert find_child(member, "KeepWithGroup").text == "After"
 

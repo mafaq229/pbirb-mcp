@@ -610,7 +610,7 @@ class TestSetTextboxStyleBulk:
         result = set_textbox_style_bulk(
             path=str(rdl_path),
             textbox_names=[],
-            background_color="#000",
+            background_color="#000000",
         )
         assert result == {"textboxes": [], "skipped": [], "changed": []}
         assert (rdl_path).read_bytes() == before
@@ -720,7 +720,7 @@ class TestErrors:
             set_textbox_style(
                 path=str(rdl_path),
                 textbox_name="NoSuchBox",
-                background_color="#000",
+                background_color="#000000",
             )
 
     def test_round_trip_safe(self, rdl_path):
@@ -775,3 +775,194 @@ class TestToolRegistration:
         ]
         names = {t["name"] for t in listing}
         assert {"set_textbox_style_bulk", "find_textboxes_by_style"} <= names
+
+
+# ---- #82: every run / paragraph, literal validation, font_style ---------------
+
+
+def _two_run_textbox(rdl_path: Path) -> str:
+    from pbirb_mcp.ops.body import add_body_textbox
+
+    add_body_textbox(str(rdl_path), "Period", "x", "0.1in", "0.5in", "4in", "0.25in")
+    set_textbox_runs(
+        str(rdl_path),
+        "Period",
+        [
+            {"text": "Period: ", "font_weight": "Bold"},
+            {"text": "=Parameters!DateFrom.Value"},
+            {"text": "second paragraph", "paragraph_index": 1},
+        ],
+    )
+    return "Period"
+
+
+def _run_styles(rdl_path: Path, name: str) -> list[dict]:
+    from pbirb_mcp.ops.reader import get_textbox
+
+    return [r.get("style") or {} for r in get_textbox(str(rdl_path), name)["runs"]]
+
+
+_BAD_VALUES = [
+    ("color", "notacolor", "named color"),
+    ("background_color", "#GGGGGG", "#RRGGBB"),
+    ("border_color", "#12345", "#AARRGGBB"),
+    ("text_align", "Middle", "General, Left, Center, Right, Justify"),
+    ("vertical_align", "Center", "Top, Middle, Bottom"),
+    ("writing_mode", "Vertical90", "Horizontal, Vertical, Rotate270"),
+    ("font_weight", "bolder", "Thin, ExtraLight"),
+    ("font_weight", "750", "100 to 900"),
+    ("font_style", "Oblique", "Normal, Italic"),
+    ("text_decoration", "Strike", "None, Underline, Overline, LineThrough"),
+    ("border_style", "Wavy", "Solid"),
+]
+
+
+class TestEveryRunAndParagraph:
+    def test_run_props_reach_every_run_in_every_paragraph(self, rdl_path):
+        name = _two_run_textbox(rdl_path)
+        out = set_textbox_style(str(rdl_path), name, color="#FF0000", font_size="14pt")
+        assert out["changed"] == ["run.FontSize", "run.Color"]
+        styles = _run_styles(rdl_path, name)
+        assert len(styles) == 3
+        for style in styles:
+            assert style["Color"] == "#FF0000" and style["FontSize"] == "14pt"
+        assert styles[0]["FontWeight"] == "Bold"  # untouched run style kept
+        assert "FontWeight" not in styles[1]
+
+    def test_text_align_reaches_every_paragraph(self, rdl_path):
+        name = _two_run_textbox(rdl_path)
+        set_textbox_style(str(rdl_path), name, text_align="Right")
+        tb = _textbox(rdl_path, name)
+        paragraphs = tb.findall(f"{q('Paragraphs')}/{q('Paragraph')}")
+        assert len(paragraphs) == 2
+        for p in paragraphs:
+            assert p.find(f"{q('Style')}/{q('TextAlign')}").text == "Right"
+
+    def test_repeat_is_a_no_op(self, rdl_path):
+        name = _two_run_textbox(rdl_path)
+        set_textbox_style(str(rdl_path), name, color="Red", text_align="Center")
+        before = rdl_path.read_bytes()
+        out = set_textbox_style(str(rdl_path), name, color="Red", text_align="Center")
+        assert out["changed"] == [] and rdl_path.read_bytes() == before
+
+    def test_bulk_and_row_style_every_run(self, rdl_path):
+        from pbirb_mcp.ops.styling import style_tablix_row
+
+        name = _two_run_textbox(rdl_path)
+        out = set_textbox_style_bulk(str(rdl_path), [name, "Missing"], font_style="Italic")
+        assert out == {"textboxes": [name], "skipped": ["Missing"], "changed": ["run.FontStyle"]}
+        assert all(s["FontStyle"] == "Italic" for s in _run_styles(rdl_path, name))
+        row = style_tablix_row(str(rdl_path), "MainTable", 0, text_decoration="Underline")
+        assert row["changed"] == ["run.TextDecoration"]
+        assert _run_styles(rdl_path, "HeaderProductID")[0]["TextDecoration"] == "Underline"
+
+    def test_still_xsd_valid(self, rdl_path):
+        from pbirb_mcp.ops.validate import validate_report
+
+        name = _two_run_textbox(rdl_path)
+        set_textbox_style(
+            str(rdl_path), name, color="Blue", text_align="Center", font_style="Italic"
+        )
+        assert validate_report(str(rdl_path))["valid"]
+
+
+class TestLiteralValidation:
+    @pytest.mark.parametrize("field,value,hint", _BAD_VALUES)
+    def test_bad_literal_refused_file_unchanged(self, rdl_path, field, value, hint):
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match=f"^{field}: ") as exc:
+            set_textbox_style(str(rdl_path), "ProductID", **{field: value})
+        assert hint in str(exc.value)
+        assert rdl_path.read_bytes() == before
+
+    @pytest.mark.parametrize("field,value,hint", _BAD_VALUES)
+    def test_bulk_and_row_refuse_the_same(self, rdl_path, field, value, hint):
+        from pbirb_mcp.ops.styling import style_tablix_row
+
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match=f"^{field}: "):
+            set_textbox_style_bulk(str(rdl_path), ["ProductID"], **{field: value})
+        with pytest.raises(ValueError, match=f"^{field}: "):
+            style_tablix_row(str(rdl_path), "MainTable", 0, **{field: value})
+        assert rdl_path.read_bytes() == before
+
+    @pytest.mark.parametrize(
+        "field",
+        sorted({f for f, _v, _h in _BAD_VALUES} | {"font_size", "padding_top", "border_width"}),
+    )
+    def test_expression_accepted_for_every_field(self, rdl_path, field):
+        expr = '=IIf(Fields!Amount.Value > 0, "a", "b")'
+        out = set_textbox_style(str(rdl_path), "ProductID", **{field: expr})
+        assert out["changed"]
+
+    @pytest.mark.parametrize(
+        "field,value,written",
+        [
+            ("color", "steelblue", "steelblue"),
+            ("color", "#80FF0000", "#80FF0000"),
+            ("background_color", "Transparent", "Transparent"),
+            ("text_align", "center", "Center"),
+            ("font_weight", "700", "Bold"),
+            ("font_weight", "semibold", "SemiBold"),
+            ("border_style", "dashdot", "DashDot"),
+            ("writing_mode", "Rotate270", "Rotate270"),
+        ],
+    )
+    def test_valid_literals_and_canonical_spelling(self, rdl_path, field, value, written):
+        from pbirb_mcp.ops.reader import get_textbox
+
+        set_textbox_style(str(rdl_path), "ProductID", **{field: value})
+        flat: dict = {}
+        for branch in get_textbox(str(rdl_path), "ProductID")["style"].values():
+            flat.update(branch)
+        assert written in flat.values()
+
+    def test_runs_validate_style_literals(self, rdl_path):
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match=r"^runs\[0\]\.color: "):
+            set_textbox_runs(str(rdl_path), "ProductID", [{"text": "x", "color": "nope"}])
+        with pytest.raises(ValueError, match=r"^runs\[1\]\.font_style: "):
+            set_textbox_runs(
+                str(rdl_path),
+                "ProductID",
+                [{"text": "x"}, {"text": "y", "style": {"FontStyle": "Slanted"}}],
+            )
+        assert rdl_path.read_bytes() == before
+        set_textbox_runs(str(rdl_path), "ProductID", [{"text": "x", "font_weight": "bold"}])
+        assert _run_styles(rdl_path, "ProductID")[0]["FontWeight"] == "Bold"
+
+
+class TestFontStyleAndDecoration:
+    def test_font_style_writes_textrun_style(self, rdl_path):
+        out = set_textbox_style(str(rdl_path), "ProductID", font_style="Italic")
+        assert out["changed"] == ["run.FontStyle"]
+        tb = _textbox(rdl_path, "ProductID")
+        run_style = tb.find(f".//{q('TextRun')}/{q('Style')}")
+        assert find_child(run_style, "FontStyle").text == "Italic"
+
+    def test_text_decoration_in_xsd_order(self, rdl_path):
+        from pbirb_mcp.ops.validate import validate_report
+
+        set_textbox_style(
+            str(rdl_path), "ProductID", text_decoration="Underline", font_family="Arial"
+        )
+        tb = _textbox(rdl_path, "ProductID")
+        run_style = tb.find(f".//{q('TextRun')}/{q('Style')}")
+        locals_ = [c.tag.split("}")[1] for c in run_style]
+        assert locals_.index("FontFamily") < locals_.index("TextDecoration")
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_schemas_publish_the_new_kwargs(self):
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"][
+            "tools"
+        ]
+        by_name = {t["name"]: t for t in listing}
+        for tool in ("set_textbox_style", "set_textbox_style_bulk", "style_tablix_row"):
+            props = by_name[tool]["inputSchema"]["properties"]
+            assert {"font_style", "text_decoration"} <= set(props), tool
+
+    def test_bulk_rejects_unknown_kwarg(self, rdl_path):
+        with pytest.raises(TypeError, match="font_colour"):
+            set_textbox_style_bulk(str(rdl_path), ["ProductID"], font_colour="Red")

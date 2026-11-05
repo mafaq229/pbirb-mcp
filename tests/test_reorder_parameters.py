@@ -181,6 +181,132 @@ class TestReorderLayoutSync:
         assert _parameter_names(rdl_path) == ["DateTo", "DateFrom"]
 
 
+# ---- forward dependencies and layout reflow (#74) ---------------------------
+
+MULTI = Path(__file__).parent / "fixtures" / "pbi_multi_datasource.rdl"
+
+
+@pytest.fixture
+def cascading(tmp_path: Path) -> Path:
+    """The issue's repro: Region's available values come from LookupSet,
+    whose query parameter reads DateFrom; DateTo defaults from DateFrom."""
+    from pbirb_mcp.ops import parameters as P
+    from pbirb_mcp.ops.dataset import add_query_parameter
+
+    p = tmp_path / "cascade.rdl"
+    shutil.copy(MULTI, p)
+    P.add_parameter(str(p), "Region", "String", prompt="Region")
+    P.set_parameter_available_values(
+        str(p), "Region", "query", query_dataset="LookupSet", query_value_field="LookupKey"
+    )
+    add_query_parameter(str(p), "LookupSet", "From", "=Parameters!DateFrom.Value")
+    P.set_parameter_default_values(str(p), "DateTo", "static", ["=Parameters!DateFrom.Value"])
+    P.set_parameter_layout(str(p), 1, 3, ["DateFrom", "DateTo", "Region"])
+    return p
+
+
+def _slots(path: Path) -> dict:
+    doc = RDLDocument.open(path)
+    return {
+        find_child(c, "ParameterName").text: (
+            int(find_child(c, "RowIndex").text),
+            int(find_child(c, "ColumnIndex").text),
+        )
+        for c in doc.root.iter(q("CellDefinition"))
+    }
+
+
+class TestForwardDependencyGuard:
+    def test_refuses_order_with_forward_dependency(self, cascading):
+        before = cascading.read_bytes()
+        with pytest.raises(ValueError, match="Region -> DateFrom") as exc:
+            reorder_parameters(str(cascading), ["Region", "DateTo", "DateFrom"])
+        assert "DateTo -> DateFrom" in str(exc.value)
+        assert "LookupSet" in str(exc.value)
+        assert cascading.read_bytes() == before
+
+    def test_dependency_through_dataset_filter(self, cascading):
+        from pbirb_mcp.ops.dataset import add_dataset_filter
+
+        add_dataset_filter(
+            str(cascading),
+            "LookupSet",
+            "=Fields!LookupKey.Value",
+            "Equal",
+            ["=Parameters!DateTo.Value"],
+        )
+        with pytest.raises(ValueError, match="Region -> DateTo"):
+            reorder_parameters(str(cascading), ["DateFrom", "Region", "DateTo"])
+
+    def test_allows_an_order_that_keeps_dependencies_first(self, cascading):
+        result = reorder_parameters(str(cascading), ["DateFrom", "Region", "DateTo"])
+        assert result["changed"] is True
+        assert _parameter_names(cascading) == ["DateFrom", "Region", "DateTo"]
+
+    def test_self_dependency_does_not_block(self, rdl_path):
+        from pbirb_mcp.ops.parameters import set_parameter_default_values
+
+        set_parameter_default_values(
+            str(rdl_path), "DateTo", "static", ["=Parameters!DateTo.Value"]
+        )
+        reorder_parameters(str(rdl_path), ["DateTo", "DateFrom"])
+        assert _parameter_names(rdl_path) == ["DateTo", "DateFrom"]
+
+    def test_lint_and_guard_share_the_graph(self, cascading):
+        from pbirb_mcp.ops import expr_walk
+
+        doc = RDLDocument.open(cascading)
+        assert expr_walk.parameter_dependencies(doc.root) == {
+            "DateFrom": set(),
+            "DateTo": {"DateFrom"},
+            "Region": {"DateFrom"},
+        }
+
+
+class TestReflowLayout:
+    def test_default_keeps_the_pane_positions(self, cascading):
+        reorder_parameters(str(cascading), ["DateFrom", "Region", "DateTo"])
+        assert _slots(cascading) == {"DateFrom": (0, 0), "DateTo": (0, 1), "Region": (0, 2)}
+
+    def test_reflow_moves_cells_to_the_new_order(self, cascading):
+        from pbirb_mcp.ops.validate import validate_report
+
+        result = reorder_parameters(
+            str(cascading), ["DateFrom", "Region", "DateTo"], reflow_layout=True
+        )
+        assert result["layout_reflowed"] is True
+        assert _slots(cascading) == {"DateFrom": (0, 0), "Region": (0, 1), "DateTo": (0, 2)}
+        assert validate_report(str(cascading))["valid"]
+        # Repeat: nothing left to do, file untouched.
+        before = cascading.read_bytes()
+        again = reorder_parameters(
+            str(cascading), ["DateFrom", "Region", "DateTo"], reflow_layout=True
+        )
+        assert again["changed"] is False and cascading.read_bytes() == before
+
+    def test_reflow_wraps_rows_and_sets_number_of_rows(self, cascading):
+        from pbirb_mcp.ops.parameters import set_parameter_layout
+
+        set_parameter_layout(str(cascading), 3, 2, ["DateFrom", "DateTo", "Region"])
+        reorder_parameters(str(cascading), ["DateFrom", "Region", "DateTo"], reflow_layout=True)
+        assert _slots(cascading) == {"DateFrom": (0, 0), "Region": (0, 1), "DateTo": (1, 0)}
+        doc = RDLDocument.open(cascading)
+        assert doc.root.find(f".//{{{RDL_NS}}}NumberOfRows").text == "2"
+
+    def test_reflow_with_unchanged_order_reflows_a_scattered_pane(self, cascading):
+        doc = RDLDocument.open(cascading)  # swap DateTo and Region on the pane
+        for cell in doc.root.iter(q("CellDefinition")):
+            col = find_child(cell, "ColumnIndex")
+            col.text = {"1": "2", "2": "1"}.get(col.text, col.text)
+        doc.save()
+        assert _slots(cascading)["DateTo"] == (0, 2)
+        result = reorder_parameters(
+            str(cascading), ["DateFrom", "DateTo", "Region"], reflow_layout=True
+        )
+        assert result["changed"] is True
+        assert _slots(cascading) == {"DateFrom": (0, 0), "DateTo": (0, 1), "Region": (0, 2)}
+
+
 # ---- registration ---------------------------------------------------------
 
 

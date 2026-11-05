@@ -242,67 +242,31 @@ def _rule_missing_data_source_name(doc) -> list[Issue]:
     return issues
 
 
-def _parameter_refs(elem: etree._Element) -> list[str]:
-    out = []
-    for _e, text in expr_walk.iter_expressions(elem):
-        sig = expr_walk.expression_tokens(text)
-        if sig:
-            out.extend(r.name for r in expr_walk.references(sig, "Parameters"))
-    return out
-
-
 def _rule_parameter_forward_dependency(doc) -> list[Issue]:
-    block = find_child(doc.root, "ReportParameters")
-    if block is None:
-        return []
-    params = [p for p in find_children(block, "ReportParameter") if p.get("Name")]
-    order = {p.get("Name"): i for i, p in enumerate(params)}
-    datasets = {}
-    ds_block = find_child(doc.root, "DataSets")
-    if ds_block is not None:
-        datasets = {d.get("Name"): d for d in find_children(ds_block, "DataSet") if d.get("Name")}
+    # The dependency graph is shared with reorder_parameters' guard (#74).
+    edges = expr_walk.parameter_dependency_edges(doc.root)
     issues: list[Issue] = []
-    for i, param in enumerate(params):
-        name = param.get("Name")
-        deps: list[tuple[str, str]] = []  # (dependency, via)
-        for tag in ("DefaultValue", "ValidValues"):
-            section = find_child(param, tag)
-            if section is None:
-                continue
-            for dep in _parameter_refs(section):
-                deps.append((dep, tag))
-            for dsref in section.iter(q("DataSetReference")):
-                ds_name = (getattr(find_child(dsref, "DataSetName"), "text", None) or "").strip()
-                ds = datasets.get(ds_name)
-                if ds is None:
-                    continue
-                for dep in _parameter_refs(ds):
-                    deps.append((dep, f"{tag} dataset {ds_name!r}"))
-        seen: set = set()
-        for dep, via in deps:
-            j = order.get(dep)
-            if j is None or j < i or dep in seen:
-                continue
-            seen.add(dep)
-            message = (
-                f"parameter {name!r} depends on itself through its {via}"
-                if j == i
-                else f"parameter {name!r} ({via}) references {dep!r}, which is declared "
-                "after it; Report Builder rejects forward dependencies"
-            )
-            issues.append(
-                {
-                    "severity": "error",
-                    "rule": "parameter-forward-dependency",
-                    "location": f"ReportParameter[Name={name!r}]",
-                    "message": message,
-                    "suggestion": (
-                        f"move {dep!r} before {name!r} (reorder_parameters)"
-                        if j > i
-                        else "remove the self-reference from the default / available values"
-                    ),
-                }
-            )
+    for name, dep, via in expr_walk.forward_dependencies(list(edges), edges):
+        self_dep = dep == name
+        message = (
+            f"parameter {name!r} depends on itself through its {via}"
+            if self_dep
+            else f"parameter {name!r} ({via}) references {dep!r}, which is declared "
+            "after it; Report Builder rejects forward dependencies"
+        )
+        issues.append(
+            {
+                "severity": "error",
+                "rule": "parameter-forward-dependency",
+                "location": f"ReportParameter[Name={name!r}]",
+                "message": message,
+                "suggestion": (
+                    "remove the self-reference from the default / available values"
+                    if self_dep
+                    else f"move {dep!r} before {name!r} (reorder_parameters)"
+                ),
+            }
+        )
     return issues
 
 

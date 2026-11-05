@@ -3,28 +3,18 @@
 Covers the full DataSource CRUD surface:
 
 - ``set_datasource_connection``: repoint an existing ``<DataSource>`` at
-  a Power BI XMLA endpoint. (v0.1.0)
-- ``add_data_source``: create a new ``<DataSource>``. (v0.3.0)
+  another Power BI workspace / semantic model, in the source's own
+  provider shape (or convert it with ``provider=``).
+- ``add_data_source``: create a new ``<DataSource>``.
 - ``remove_data_source``: drop a ``<DataSource>``; refuses if any
-  ``<DataSet>/<Query>/<DataSourceName>`` references it. (v0.3.0)
+  ``<DataSet>/<Query>/<DataSourceName>`` references it.
 - ``rename_data_source``: rewrites both ``<DataSourceName>`` (in every
   DataSet's Query) and ``<DataSourceReference>`` (in any shared-source
-  links) atomically. (v0.3.0)
+  links) atomically.
 
-Power BI Report Builder uses ``DataProvider=SQL`` for Analysis
-Services-backed connections (the AS provider's wire identifier in RDL —
-yes, it says SQL), and the canonical connection string is::
-
-    Data Source=powerbi://api.powerbi.com/v1.0/myorg/<workspace>;Initial Catalog=<dataset>
-
-Callers may pass either a bare workspace name (``MyWorkspace``) or a full
-XMLA URL (``powerbi://api.powerbi.com/v1.0/myorg/MyWorkspace``). The tool
-detects the latter and avoids double-prefixing.
-
-``IntegratedSecurity`` defaults to true (the only auth mode currently
-supported by PBI XMLA from Report Builder); passing ``False`` omits the
-element entirely, matching Report Builder's convention for non-integrated
-connections.
+The two connection shapes (``pbidataset`` — what Power BI Report Builder
+writes — and the legacy ``sql`` XMLA shape) and connect-string escaping
+live in :mod:`pbirb_mcp.core.connection`, shared with ``create_report``.
 """
 
 from __future__ import annotations
@@ -34,14 +24,11 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import connection as conn_shape
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.mutation import remove_child_if_present, set_text_if_different
 from pbirb_mcp.core.names import validate_identifier
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, XPATH_NS, find_child, find_children, q, qrd
-
-_XMLA_PREFIX = "powerbi://api.powerbi.com/v1.0/myorg/"
 
 
 def _resolve_data_source(doc: RDLDocument, name: str) -> etree._Element:
@@ -59,19 +46,18 @@ def _resolve_data_source(doc: RDLDocument, name: str) -> etree._Element:
     return matches[0]
 
 
-def _xmla_data_source(workspace_url: str) -> str:
-    workspace_url = workspace_url.strip()
-    if workspace_url.startswith("powerbi://"):
-        return workspace_url
-    return _XMLA_PREFIX + workspace_url
+def _check_provider(provider: Optional[str]) -> None:
+    if provider is not None and provider not in conn_shape.PROVIDERS:
+        raise ValueError(f"unknown provider {provider!r}; valid values: {conn_shape.PROVIDERS!r}")
 
 
-def _set_or_create_text(parent: etree._Element, local: str, value: str) -> bool:
-    return set_text_if_different(parent, local, value)
-
-
-def _remove_if_present(parent: etree._Element, local: str) -> bool:
-    return remove_child_if_present(parent, local)
+def _connection_texts(ds: etree._Element) -> tuple[str, Optional[str]]:
+    """``(DataProvider text, ConnectString text)`` of an existing source."""
+    cp = find_child(ds, "ConnectionProperties")
+    dp = find_child(cp, "DataProvider") if cp is not None else None
+    cs = find_child(cp, "ConnectString") if cp is not None else None
+    wire = (dp.text or "").strip() if dp is not None else ""
+    return wire, (cs.text if cs is not None else None)
 
 
 def set_datasource_connection(
@@ -80,35 +66,81 @@ def set_datasource_connection(
     workspace_url: str,
     dataset_name: str,
     integrated_security: bool = True,
+    provider: Optional[str] = None,
+    catalog_id: Optional[str] = None,
+    identity_provider: Optional[str] = None,
 ) -> dict[str, Any]:
+    """Repoint ``<DataSource Name=name>`` at ``workspace_url`` / ``dataset_name``.
+
+    ``provider=None`` keeps the source's provider and rewrites it in that
+    provider's shape (see :mod:`pbirb_mcp.core.connection`): a
+    ``PBIDATASET`` source stays ``PBIDATASET`` with its ``pbiazure://``
+    string, its other connect-string keys (``Identity Provider`` …) and
+    updated ``rd:PowerBIWorkspaceName`` / ``rd:PowerBIDatasetName``
+    labels; a ``SQL`` source keeps the ``powerbi://`` XMLA shape. A source
+    with no ``<DataProvider>`` yet gets the ``sql`` shape; any other
+    provider is refused unless ``provider`` says what to convert it to.
+
+    PBIDATASET ``Initial Catalog`` is the model's internal id:
+    ``catalog_id`` sets it. Without it the current id is kept when the
+    workspace and model labels are unchanged; otherwise the display name
+    is written and a warning returned.
+
+    Returns ``{name, data_provider, connect_string, integrated_security,
+    changed, before, after, warnings}``.
+    """
+    _check_provider(provider)
     doc = RDLDocument.open(path)
     data_source = _resolve_data_source(doc, name)
-    cp = find_child(data_source, "ConnectionProperties")
-    changed = False
-    if cp is None:
-        # Defensive: every PBI Report Builder export has one, but if we're
-        # repointing a freshly-stubbed DataSource, create the block.
-        cp = etree.SubElement(data_source, q("ConnectionProperties"))
-        changed = True
+    before = _data_source_to_dict(data_source)
 
-    connect_string = (
-        f"Data Source={_xmla_data_source(workspace_url)};Initial Catalog={dataset_name}"
-    )
-    changed |= _set_or_create_text(cp, "DataProvider", "SQL")
-    changed |= _set_or_create_text(cp, "ConnectString", connect_string)
-    if integrated_security:
-        changed |= _set_or_create_text(cp, "IntegratedSecurity", "true")
+    wire, existing_cs = _connection_texts(data_source)
+    current = conn_shape.provider_of(wire)
+    if provider is None:
+        if current is None and wire:
+            raise ValueError(
+                f"DataSource {name!r} uses DataProvider {wire!r}, which this tool doesn't "
+                "write; pass provider='pbidataset' or provider='sql' to convert it."
+            )
+        target = current or conn_shape.SQL
     else:
-        changed |= _remove_if_present(cp, "IntegratedSecurity")
+        target = provider
+    if current != target:
+        existing_cs = None  # the other provider's keys don't carry over
 
+    catalog = catalog_id
+    if target == conn_shape.PBIDATASET and not catalog and current == target:
+        current_catalog = conn_shape.get_value(
+            conn_shape.parse_connect_string(existing_cs), "Initial Catalog"
+        )
+        same_model = conn_shape.rd_text(data_source, "PowerBIDatasetName") == dataset_name
+        same_workspace = conn_shape.rd_text(
+            data_source, "PowerBIWorkspaceName"
+        ) == conn_shape.workspace_label(workspace_url)
+        if current_catalog and same_model and same_workspace:
+            catalog = current_catalog  # same model: keep its id
+
+    shape = conn_shape.build_connection(
+        target,
+        workspace_url,
+        dataset_name,
+        catalog_id=catalog,
+        identity_provider=identity_provider,
+        integrated=integrated_security,
+        existing=existing_cs,
+    )
+    changed = conn_shape.apply_connection(data_source, shape)
     if changed:
         doc.save()
     return {
         "name": name,
-        "data_provider": "SQL",
-        "connect_string": connect_string,
+        "data_provider": shape.data_provider,
+        "connect_string": shape.connect_string,
         "integrated_security": integrated_security,
         "changed": changed,
+        "before": before,
+        "after": _data_source_to_dict(data_source),
+        "warnings": list(shape.warnings),
     }
 
 
@@ -118,8 +150,9 @@ def set_datasource_connection(
 def _data_source_to_dict(ds: etree._Element) -> dict[str, Any]:
     """Read-back shape for a ``<DataSource>``: name, data_provider,
     connect_string, integrated_security, plus the rd: metadata
-    (security_type, data_source_id) and any DataSourceReference (shared
-    source) link that supersedes ConnectionProperties.
+    (security_type, data_source_id, powerbi_workspace_name,
+    powerbi_dataset_name) and any DataSourceReference (shared source) link
+    that supersedes ConnectionProperties.
     """
     cp = find_child(ds, "ConnectionProperties")
     data_provider: Optional[str] = None
@@ -139,8 +172,9 @@ def _data_source_to_dict(ds: etree._Element) -> dict[str, Any]:
     ref_node = find_child(ds, "DataSourceReference")
     shared_reference = ref_node.text if ref_node is not None else None
 
-    security_type_node = ds.find(f"{{{RD_NS}}}SecurityType")
-    data_source_id_node = ds.find(f"{{{RD_NS}}}DataSourceID")
+    def rd(local: str) -> Optional[str]:
+        node = ds.find(f"{{{RD_NS}}}{local}")
+        return node.text if node is not None else None
 
     return {
         "name": ds.get("Name"),
@@ -148,8 +182,10 @@ def _data_source_to_dict(ds: etree._Element) -> dict[str, Any]:
         "connect_string": connect_string,
         "integrated_security": integrated_security,
         "shared_reference": shared_reference,
-        "security_type": (security_type_node.text if security_type_node is not None else None),
-        "data_source_id": (data_source_id_node.text if data_source_id_node is not None else None),
+        "security_type": rd("SecurityType"),
+        "data_source_id": rd("DataSourceID"),
+        "powerbi_workspace_name": rd("PowerBIWorkspaceName"),
+        "powerbi_dataset_name": rd("PowerBIDatasetName"),
     }
 
 
@@ -159,8 +195,8 @@ def list_data_sources(path: str) -> list[dict[str, Any]]:
     ``describe_report.data_sources`` returns names only; this tool
     returns the full shape (data_provider, connect_string,
     integrated_security, shared_reference, security_type,
-    data_source_id) so an LLM can plan repointing / repairing without
-    a second round-trip.
+    data_source_id, Power BI workspace / model labels) so an LLM can plan
+    repointing / repairing without a second round-trip.
     """
     doc = RDLDocument.open(path)
     return [_data_source_to_dict(ds) for ds in doc.root.iter(f"{{{RDL_NS}}}DataSource")]
@@ -177,9 +213,6 @@ def get_data_source(path: str, name: str) -> dict[str, Any]:
 # ---- add_data_source ----------------------------------------------------
 
 
-_VALID_PROVIDERS = ("sql", "pbidataset")
-
-
 def add_data_source(
     path: str,
     name: str,
@@ -187,36 +220,43 @@ def add_data_source(
     dataset_name: str,
     integrated_security: bool = True,
     provider: str = "sql",
+    catalog_id: Optional[str] = None,
+    identity_provider: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Create a new ``<DataSource>`` for a Power BI XMLA endpoint.
+    """Create a new ``<DataSource>`` for a Power BI semantic model.
 
-    ``provider`` controls the wire shape:
+    ``provider`` controls the shape (:mod:`pbirb_mcp.core.connection`):
 
-    * ``"sql"`` (default — back-compat with v0.3.x):
-      ``<DataProvider>SQL</DataProvider>`` + ``Data Source=powerbi://…``
-      ConnectString + ``<rd:SecurityType>Integrated</rd:SecurityType>``.
-      The historical shape ``set_datasource_connection`` emits.
-    * ``"pbidataset"`` (modern, v0.4+):
+    * ``"sql"`` (default, back-compat): ``<DataProvider>SQL</DataProvider>``
+      + ``Data Source=powerbi://…/myorg/<workspace>;Initial Catalog=<dataset>``
+      + ``<IntegratedSecurity>`` + ``<rd:SecurityType>Integrated</rd:SecurityType>``.
+    * ``"pbidataset"`` — what Power BI Report Builder writes:
       ``<DataProvider>PBIDATASET</DataProvider>`` + ``Data Source=
-      pbiazure://api.powerbi.com/;Initial Catalog=<dataset>;Integrated
-      Security=ClaimsToken``. Adds ``<rd:PowerBIWorkspaceName>`` and
-      ``<rd:PowerBIDatasetName>`` siblings so Report Builder shows the
-      human-readable workspace/dataset on the connection. Omits
-      ``<rd:SecurityType>`` — auth lives in the ConnectString. Matches
-      what current Power BI Desktop emits.
+      pbiazure://api.powerbi.com/;[Identity Provider=…;]Initial
+      Catalog=<catalog>;Integrated Security=ClaimsToken``,
+      ``<rd:SecurityType>None</rd:SecurityType>`` and the
+      ``rd:PowerBIWorkspaceName`` (bare workspace name — a ``powerbi://``
+      URL prefix is stripped) / ``rd:PowerBIDatasetName`` labels.
+      ``catalog_id`` is the model's internal id for ``Initial Catalog``;
+      without it the display name is used and a warning returned.
 
-    Both shapes round-trip through ``_is_pbidataset_dataset`` so the
-    PBIDATASET ``@``-prefix defence kicks in for datasets bound to a
-    source emitted by either path.
-
-    Generates a fresh ``<rd:DataSourceID>`` GUID. Refuses with ValueError
-    if a DataSource of the same name already exists (per RDL semantics:
-    DataSource names are report-wide unique) or if ``provider`` is
-    unknown.
+    Connect-string values are quoted when they contain ``;``, ``=`` or a
+    quote, so a name can't inject keys. Both shapes are recognised by
+    ``_is_pbidataset_dataset`` (the ``@``-prefix defence). Generates a
+    fresh ``<rd:DataSourceID>`` GUID. Refuses with ValueError if a
+    DataSource of the same name already exists (DataSource names are
+    report-wide unique) or if ``provider`` is unknown.
     """
     validate_identifier(name, "data source")
-    if provider not in _VALID_PROVIDERS:
-        raise ValueError(f"unknown provider {provider!r}; valid values: {_VALID_PROVIDERS!r}")
+    _check_provider(provider)
+    shape = conn_shape.build_connection(
+        provider,
+        workspace_url,
+        dataset_name,
+        catalog_id=catalog_id,
+        identity_provider=identity_provider,
+        integrated=integrated_security,
+    )
 
     doc = RDLDocument.open(path)
     root = doc.root
@@ -246,37 +286,11 @@ def add_data_source(
         raise ValueError(f"DataSource named {name!r} already exists")
 
     new_ds = etree.SubElement(ds_root, q("DataSource"), Name=name)
-    cp = etree.SubElement(new_ds, q("ConnectionProperties"))
-
-    if provider == "pbidataset":
-        etree.SubElement(cp, q("DataProvider")).text = "PBIDATASET"
-        # Modern PBI Desktop shape — see tests/fixtures/RAG Report.rdl for
-        # the canonical bytes. Auth is encoded inside the ConnectString
-        # via "Integrated Security=ClaimsToken"; no <IntegratedSecurity>
-        # or <rd:SecurityType> elements.
-        cs = "Data Source=pbiazure://api.powerbi.com/;Initial Catalog=" + dataset_name
-        if integrated_security:
-            cs += ";Integrated Security=ClaimsToken"
-        etree.SubElement(cp, q("ConnectString")).text = encode_text(cs)
-        etree.SubElement(new_ds, qrd("DataSourceID")).text = str(uuid.uuid4())
-        # Human-readable sibling elements RB uses to label the connection.
-        etree.SubElement(new_ds, qrd("PowerBIWorkspaceName")).text = encode_text(workspace_url)
-        etree.SubElement(new_ds, qrd("PowerBIDatasetName")).text = encode_text(dataset_name)
-    else:
-        # Legacy SQL/AS shape (v0.3.x and earlier output).
-        etree.SubElement(cp, q("DataProvider")).text = "SQL"
-        etree.SubElement(cp, q("ConnectString")).text = encode_text(
-            f"Data Source={_xmla_data_source(workspace_url)};Initial Catalog={dataset_name}"
-        )
-        if integrated_security:
-            etree.SubElement(cp, q("IntegratedSecurity")).text = "true"
-        etree.SubElement(new_ds, qrd("SecurityType")).text = (
-            "Integrated" if integrated_security else "None"
-        )
-        etree.SubElement(new_ds, qrd("DataSourceID")).text = str(uuid.uuid4())
+    etree.SubElement(new_ds, qrd("DataSourceID")).text = str(uuid.uuid4())
+    conn_shape.apply_connection(new_ds, shape)
 
     doc.save()
-    return _data_source_to_dict(new_ds) | {"kind": "DataSource"}
+    return _data_source_to_dict(new_ds) | {"kind": "DataSource", "warnings": list(shape.warnings)}
 
 
 # ---- remove_data_source -------------------------------------------------

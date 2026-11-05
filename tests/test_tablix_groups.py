@@ -4,11 +4,9 @@ Covers the gnarly Phase-3 commit: adding/removing row groups (which
 restructures both ``TablixRowHierarchy`` and ``TablixBody/TablixRows``),
 plus the simpler set_group_sort / set_group_visibility editors.
 
-Scope of ``add_row_group`` in this commit: outermost row group only.
-Wrapping the entire existing top-level row hierarchy and inserting a
-matching group-header row at body row 0. Nested ``parent_group`` is
-deliberately deferred — it's a separate kind of restructuring and the
-plan flags this commit as the heaviest already.
+``add_row_group`` (#65) wraps only the member on the path to the data
+row by default (``wrap``), nests under ``parent_group``, and shows the
+group as a header row, a row-header cell or not at all (``header``).
 """
 
 from __future__ import annotations
@@ -22,6 +20,7 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
+from pbirb_mcp.core.tablix_headers import corner_shape, header_depth, header_levels, shape_problems
 from pbirb_mcp.core.tablix_shape import row_leaves
 from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
 from pbirb_mcp.ops.reader import get_tablixes
@@ -66,7 +65,7 @@ def _body_row_count(tablix) -> int:
 
 
 class TestAddRowGroup:
-    def test_wraps_existing_hierarchy_under_new_outer_member(self, rdl_path):
+    def test_wraps_only_the_detail_member(self, rdl_path):
         add_row_group(
             path=str(rdl_path),
             tablix_name="MainTable",
@@ -76,17 +75,26 @@ class TestAddRowGroup:
         doc = RDLDocument.open(rdl_path)
         tablix = _tablix(doc, "MainTable")
         top = _row_hierarchy_top_members(tablix)
-        # Exactly one top-level member, which holds the new Region group.
-        assert len(top) == 1
-        group = top[0].find(q("Group"))
+        # The static column-header member stays at the top level; the new
+        # Region member takes the detail member's place (#65).
+        assert len(top) == 2
+        assert top[0].find(q("Group")) is None
+        group = top[1].find(q("Group"))
         assert group is not None
         assert group.get("Name") == "Region"
-        # The fixture's original two members are preserved as children of the
-        # new wrapper, plus a new header-row leaf prepended at index 0.
-        wrapped = list(top[0].find(q("TablixMembers")))
-        assert len(wrapped) == 3  # group-header leaf + 2 originals
+        # Region holds a new header-row leaf, then the detail member.
+        wrapped = list(top[1].find(q("TablixMembers")))
+        assert len(wrapped) == 2
+        assert wrapped[1].find(q("Group")).get("Name") == "Details"
 
-    def test_appends_one_body_row_at_position_zero(self, rdl_path):
+    def test_wrap_all_wraps_the_whole_top_level(self, rdl_path):
+        add_row_group(str(rdl_path), "MainTable", "Region", "=Fields!Region.Value", wrap="all")
+        top = _row_hierarchy_top_members(_tablix(RDLDocument.open(rdl_path), "MainTable"))
+        assert len(top) == 1
+        assert top[0].find(q("Group")).get("Name") == "Region"
+        assert len(list(top[0].find(q("TablixMembers")))) == 3  # header leaf + 2 originals
+
+    def test_inserts_one_body_row_at_the_first_wrapped_row(self, rdl_path):
         before = RDLDocument.open(rdl_path)
         rows_before = _body_row_count(_tablix(before, "MainTable"))
         add_row_group(
@@ -98,8 +106,9 @@ class TestAddRowGroup:
         after = RDLDocument.open(rdl_path)
         tablix = _tablix(after, "MainTable")
         assert _body_row_count(tablix) == rows_before + 1
-        # The first cell of the new row 0 must hold the group expression.
-        first_row = tablix.findall(f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}")[0]
+        # The new row sits where the detail row was (row 1, below the
+        # column headers); its first cell holds the group expression.
+        first_row = tablix.findall(f"{q('TablixBody')}/{q('TablixRows')}/{q('TablixRow')}")[1]
         first_cell = first_row.findall(f"{q('TablixCells')}/{q('TablixCell')}")[0]
         textrun_value = first_cell.find(
             f"{q('CellContents')}/{q('Textbox')}/{q('Paragraphs')}/"
@@ -145,8 +154,8 @@ class TestAddRowGroup:
                 group_expression="=Fields!Region.Value",
             )
 
-    def test_parent_group_not_yet_supported(self, rdl_path):
-        with pytest.raises(NotImplementedError):
+    def test_unknown_parent_group_raises(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
             add_row_group(
                 path=str(rdl_path),
                 tablix_name="MainTable",
@@ -164,6 +173,251 @@ class TestAddRowGroup:
         )
         doc = RDLDocument.open(rdl_path)
         doc.validate()  # structural validate still passes
+
+
+# ---- add_row_group: wrap / parent_group / header (#65) ---------------------
+
+
+def _grand_total(rdl_path: Path) -> Path:
+    """header / Details / grand total, all static at the top level."""
+    add_static_row(str(rdl_path), "MainTable", "GrandTotal", ["Total"])
+    return rdl_path
+
+
+def _matrix(rdl_path: Path) -> Path:
+    add_row_group(str(rdl_path), "MainTable", "Region", "=Fields!ProductName.Value")
+    add_column_group(str(rdl_path), "MainTable", "Date", "=Fields!ProductID.Value")
+    convert_to_matrix(str(rdl_path), "MainTable", "Region", "Date")
+    return rdl_path
+
+
+def _main(rdl_path: Path):
+    return _tablix(RDLDocument.open(rdl_path), "MainTable")
+
+
+def _row_member(tablix, group_name: str):
+    return next(
+        g.getparent()
+        for g in tablix.find(q("TablixRowHierarchy")).iter(q("Group"))
+        if g.get("Name") == group_name
+    )
+
+
+class TestAddRowGroupPlacement:
+    def test_issue_repro_header_and_grand_total_stay_static(self, rdl_path):
+        _grand_total(rdl_path)
+        result = add_row_group(str(rdl_path), "MainTable", "Region", "=Fields!ProductName.Value")
+        assert result["wrapped"] == ["Details"]
+        assert result["header_row"] == 1
+        assert _leaf_rows(rdl_path) == [
+            ("static", "HeaderProductID"),
+            ("Region", "Region_Header_0"),
+            ("Region/Details", "ProductID"),
+            ("static", "GrandTotal"),
+        ]
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_parent_group_nests_between_group_and_details(self, rdl_path):
+        _grand_total(rdl_path)
+        add_row_group(str(rdl_path), "MainTable", "Region", "=Fields!ProductName.Value")
+        result = add_row_group(
+            str(rdl_path), "MainTable", "Sub", "=Fields!ProductID.Value", parent_group="Region"
+        )
+        assert result["header_row"] == 2
+        assert _leaf_rows(rdl_path) == [
+            ("static", "HeaderProductID"),
+            ("Region", "Region_Header_0"),
+            ("Region/Sub", "Sub_Header_0"),
+            ("Region/Sub/Details", "ProductID"),
+            ("static", "GrandTotal"),
+        ]
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_second_group_without_parent_goes_outside(self, rdl_path):
+        add_row_group(str(rdl_path), "MainTable", "Inner", "=1")
+        add_row_group(str(rdl_path), "MainTable", "Outer", "=2")
+        assert _leaf_rows(rdl_path) == [
+            ("static", "HeaderProductID"),
+            ("Outer", "Outer_Header_0"),
+            ("Outer/Inner", "Inner_Header_0"),
+            ("Outer/Inner/Details", "ProductID"),
+        ]
+
+    def test_wrap_member_wraps_that_group(self, rdl_path):
+        _grand_total(rdl_path)
+        add_row_group(str(rdl_path), "MainTable", "Region", "=1")
+        result = add_row_group(str(rdl_path), "MainTable", "Country", "=2", wrap="member:Region")
+        assert result["wrapped"] == ["Region"]
+        assert [g for g, _ in _leaf_rows(rdl_path)] == [
+            "static",
+            "Country",
+            "Country/Region",
+            "Country/Region/Details",
+            "static",
+        ]
+
+    def test_wrap_member_details_is_the_innermost_parent(self, rdl_path):
+        add_row_group(str(rdl_path), "MainTable", "Region", "=1")
+        add_row_group(str(rdl_path), "MainTable", "Inner", "=2", wrap="member:Details")
+        assert [g for g, _ in _leaf_rows(rdl_path)] == [
+            "static",
+            "Region",
+            "Region/Inner",
+            "Region/Inner/Details",
+        ]
+
+    def test_wrap_member_with_other_parent_refused(self, rdl_path):
+        add_row_group(str(rdl_path), "MainTable", "Region", "=1")
+        add_row_group(str(rdl_path), "MainTable", "Sub", "=2", parent_group="Region")
+        raw = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="not a direct child"):
+            add_row_group(
+                str(rdl_path), "MainTable", "X", "=3", parent_group="Sub", wrap="member:Region"
+            )
+        assert rdl_path.read_bytes() == raw
+
+    def test_wrap_all_keeps_old_shape(self, rdl_path):
+        _grand_total(rdl_path)
+        add_row_group(str(rdl_path), "MainTable", "Region", "=1", wrap="all")
+        assert [g for g, _ in _leaf_rows(rdl_path)] == [
+            "Region",
+            "Region",
+            "Region/Details",
+            "Region",
+        ]
+
+    @pytest.mark.parametrize(
+        "kwargs, error",
+        [
+            ({"wrap": "detail"}, ValueError),
+            ({"wrap": "member:"}, ValueError),
+            ({"wrap": "member:NoSuch"}, ElementNotFoundError),
+            ({"header": "top"}, ValueError),
+            ({"parent_group": "NoSuch"}, ElementNotFoundError),
+        ],
+    )
+    def test_bad_arguments_leave_file_untouched(self, rdl_path, kwargs, error):
+        raw = rdl_path.read_bytes()
+        with pytest.raises(error):
+            add_row_group(str(rdl_path), "MainTable", "G", "=1", **kwargs)
+        assert rdl_path.read_bytes() == raw
+
+    def test_parent_group_that_is_a_leaf_refused(self, rdl_path):
+        _matrix(rdl_path)  # Region is now the leaf owning the data row
+        with pytest.raises(ValueError, match="no nested members"):
+            add_row_group(str(rdl_path), "MainTable", "Sub", "=1", parent_group="Region")
+
+    def test_header_none_adds_no_row(self, rdl_path):
+        result = add_row_group(str(rdl_path), "MainTable", "G", "=1", header="none")
+        assert result["header_row"] is None and result["header_textboxes"] == []
+        assert _leaf_rows(rdl_path) == [("static", "HeaderProductID"), ("G/Details", "ProductID")]
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_header_column_on_a_table(self, rdl_path):
+        _grand_total(rdl_path)
+        result = add_row_group(
+            str(rdl_path), "MainTable", "Region", "=Fields!ProductName.Value", header="column"
+        )
+        assert result["header"] == "column" and result["header_row"] is None
+        assert result["header_textboxes"][0] == "Region_Header"
+        tablix = _main(rdl_path)
+        # Region's caption cell plus a blank header on each static row.
+        assert header_levels(tablix, "row") == [1, 1, 1]
+        caption = _row_member(tablix, "Region").find(
+            f"{q('TablixHeader')}/{q('CellContents')}/{q('Textbox')}"
+        )
+        assert caption.get("Name") == "Region_Header"
+        assert [v.text for v in caption.iter(q("Value"))] == ["=Fields!ProductName.Value"]
+        assert corner_shape(tablix) is None  # a plain table has no column headers
+        assert shape_problems(tablix) == []
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_matrix_auto_uses_column_header_and_resizes_corner(self, rdl_path):
+        _matrix(rdl_path)
+        before = corner_shape(_main(rdl_path))
+        result = add_row_group(str(rdl_path), "MainTable", "Country", "=Fields!ProductID.Value")
+        assert result["header"] == "column"
+        assert result["wrapped"] == ["Region"]
+        tablix = _main(rdl_path)
+        assert header_depth(tablix, "row") == 2
+        rows, cells = corner_shape(tablix)
+        assert rows == before[0] and cells == [2] * rows
+        assert result["corner_textboxes"]
+        assert shape_problems(tablix) == []
+        assert validate_report(str(rdl_path))["valid"]
+
+    @pytest.mark.parametrize("header", ["row", "none"])
+    def test_matrix_refuses_header_without_cell(self, rdl_path, header):
+        _matrix(rdl_path)
+        raw = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="header='column'"):
+            add_row_group(str(rdl_path), "MainTable", "Country", "=1", header=header)
+        assert rdl_path.read_bytes() == raw
+
+    def test_column_header_group_then_matrix(self, rdl_path):
+        add_row_group(
+            str(rdl_path), "MainTable", "Region", "=Fields!ProductName.Value", header="column"
+        )
+        add_column_group(str(rdl_path), "MainTable", "Date", "=Fields!ProductID.Value")
+        convert_to_matrix(str(rdl_path), "MainTable", "Region", "Date")
+        assert shape_problems(_main(rdl_path)) == []
+        assert validate_report(str(rdl_path))["valid"]
+
+
+_VARIANTS = [
+    {},
+    {"header": "none"},
+    {"header": "column"},
+    {"wrap": "all"},
+    {"wrap": "all", "header": "none"},
+    {"wrap": "all", "header": "column"},
+]
+
+
+class TestAddRemoveRoundTrip:
+    @pytest.mark.parametrize("kwargs", _VARIANTS, ids=lambda k: repr(k) if k else "default")
+    def test_add_then_remove_is_byte_identical(self, rdl_path, kwargs):
+        _grand_total(rdl_path)
+        raw = rdl_path.read_bytes()
+        add_row_group(str(rdl_path), "MainTable", "G", "=Fields!ProductName.Value", **kwargs)
+        assert validate_report(str(rdl_path))["valid"]
+        remove_row_group(str(rdl_path), "MainTable", "G")
+        assert rdl_path.read_bytes() == raw
+
+    @pytest.mark.parametrize("header", ["row", "none", "column"])
+    def test_nested_add_then_remove_is_byte_identical(self, rdl_path, header):
+        add_row_group(str(rdl_path), "MainTable", "Region", "=1", header=header)
+        raw = rdl_path.read_bytes()
+        add_row_group(str(rdl_path), "MainTable", "Sub", "=2", parent_group="Region")
+        remove_row_group(str(rdl_path), "MainTable", "Sub")
+        assert rdl_path.read_bytes() == raw
+
+    def test_wrap_member_add_then_remove_is_byte_identical(self, rdl_path):
+        add_row_group(str(rdl_path), "MainTable", "Region", "=1")
+        raw = rdl_path.read_bytes()
+        add_row_group(str(rdl_path), "MainTable", "Country", "=2", wrap="member:Region")
+        remove_row_group(str(rdl_path), "MainTable", "Country")
+        assert rdl_path.read_bytes() == raw
+
+    def test_matrix_add_then_remove_is_byte_identical(self, rdl_path):
+        _matrix(rdl_path)
+        raw = rdl_path.read_bytes()
+        add_row_group(str(rdl_path), "MainTable", "Country", "=Fields!ProductID.Value")
+        result = remove_row_group(str(rdl_path), "MainTable", "Country")
+        assert "Country_Header" in result["removed_textboxes"]
+        assert rdl_path.read_bytes() == raw
+
+    def test_remove_refuses_when_other_header_cells_hold_content(self, rdl_path):
+        add_row_group(str(rdl_path), "MainTable", "G", "=1", header="column")
+        # Give the column-header row's padding header cell a caption.
+        doc = RDLDocument.open(rdl_path)
+        leaf = row_leaves(_tablix(doc, "MainTable"))[0]
+        next(leaf.find(q("TablixHeader")).iter(q("Value"))).text = "Group"
+        doc.save()
+        raw = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="not blank padding"):
+            remove_row_group(str(rdl_path), "MainTable", "G")
+        assert rdl_path.read_bytes() == raw
 
 
 # ---- remove_row_group ------------------------------------------------------
@@ -270,10 +524,10 @@ class TestRemoveRowGroupLocatesOwnRows:
         add_row_group(str(rdl_path), "MainTable", "A", "=1")
         add_row_group(str(rdl_path), "MainTable", "B", "=2")
         result = remove_row_group(str(rdl_path), "MainTable", "A")
-        assert result["removed_rows"] == [1]
+        assert result["removed_rows"] == [2]
         assert _leaf_rows(rdl_path) == [
+            ("static", "HeaderProductID"),
             ("B", "B_Header_0"),
-            ("B", "HeaderProductID"),
             ("B/Details", "ProductID"),
         ]
         assert validate_report(str(rdl_path))["valid"]
@@ -283,8 +537,8 @@ class TestRemoveRowGroupLocatesOwnRows:
         add_row_group(str(rdl_path), "MainTable", "B", "=2")
         remove_row_group(str(rdl_path), "MainTable", "B")
         assert _leaf_rows(rdl_path) == [
+            ("static", "HeaderProductID"),
             ("A", "A_Header_0"),
-            ("A", "HeaderProductID"),
             ("A/Details", "ProductID"),
         ]
 
@@ -356,7 +610,7 @@ class TestRemoveRowGroupLocatesOwnRows:
     def test_wrapped_table_footer_is_kept(self, rdl_path):
         # A plain static footer the group wrapped is not a subtotal.
         add_static_row(str(rdl_path), "MainTable", "TableFooter", ["end"])
-        add_row_group(str(rdl_path), "MainTable", "G", "=1")
+        add_row_group(str(rdl_path), "MainTable", "G", "=1", wrap="all")
         result = remove_row_group(str(rdl_path), "MainTable", "G")
         assert result["removed_rows"] == [0]
         assert _leaf_rows(rdl_path)[-1] == ("static", "TableFooter")
@@ -451,11 +705,15 @@ class TestSetGroupSort:
             sort_expressions=["=Fields!Amount.Value", "=Fields!ProductName.Value"],
         )
         out = get_tablixes(path=str(rdl_path))[0]
-        # sort_expressions are returned as a flat list across the tablix.
-        assert "=Fields!Amount.Value" in out["sort_expressions"]
-        assert "=Fields!ProductName.Value" in out["sort_expressions"]
+        # Group sorts are reported on their member (#69); the tablix-level
+        # sort_expressions stay empty.
+        assert out["sort_expressions"] == []
+        region = next(m for m in out["row_members"] if m["group"] == "Region")
         # The old "Region" sort must be gone.
-        assert "=Fields!Region.Value" not in out["sort_expressions"]
+        assert [s["value"] for s in region["sort"]] == [
+            "=Fields!Amount.Value",
+            "=Fields!ProductName.Value",
+        ]
 
     def test_unknown_group_raises(self, rdl_path):
         with pytest.raises(ElementNotFoundError):
@@ -465,6 +723,178 @@ class TestSetGroupSort:
                 group_name="Ghost",
                 sort_expressions=["=1"],
             )
+
+
+_DESC_SORT = (
+    '<Group Name="Details" /><SortExpressions><SortExpression>'
+    "<Value>=Fields!Amount.Value</Value><Direction>Descending</Direction>"
+    "</SortExpression></SortExpressions>"
+)
+
+
+def _details_sorts(path):
+    doc = RDLDocument.open(path)
+    member = next(
+        m
+        for m in _tablix(doc, "MainTable").find(q("TablixRowHierarchy")).iter(q("TablixMember"))
+        if find_child(m, "Group") is not None and find_child(m, "Group").get("Name") == "Details"
+    )
+    block = find_child(member, "SortExpressions")
+    if block is None:
+        return None
+    return [
+        (
+            find_child(s, "Value").text,
+            find_child(s, "Direction").text if find_child(s, "Direction") is not None else None,
+        )
+        for s in find_children(block, "SortExpression")
+    ]
+
+
+class TestSetGroupSortDirection:
+    """#66: Direction is preserved, settable, and [] is XSD-valid."""
+
+    @pytest.fixture
+    def desc_path(self, rdl_path):
+        text = rdl_path.read_text(encoding="utf-8")
+        assert '<Group Name="Details" />' in text
+        rdl_path.write_text(text.replace('<Group Name="Details" />', _DESC_SORT), encoding="utf-8")
+        return rdl_path
+
+    def test_plain_string_keeps_existing_descending(self, desc_path):
+        out = set_group_sort(
+            str(desc_path),
+            "MainTable",
+            "Details",
+            ["=Fields!Amount.Value", "=Fields!ProductName.Value"],
+        )
+        assert out["changed"] is True
+        assert _details_sorts(desc_path) == [
+            ("=Fields!Amount.Value", "Descending"),
+            ("=Fields!ProductName.Value", None),
+        ]
+        assert out["sort"] == [
+            {"value": "=Fields!Amount.Value", "direction": "Descending"},
+            {"value": "=Fields!ProductName.Value", "direction": "Ascending"},
+        ]
+        assert out["sort_expressions"] == ["=Fields!Amount.Value", "=Fields!ProductName.Value"]
+        assert validate_report(str(desc_path))["valid"]
+
+    def test_dict_entry_writes_direction(self, rdl_path):
+        out = set_group_sort(
+            str(rdl_path),
+            "MainTable",
+            "Details",
+            [
+                {"value": "=Fields!Amount.Value", "direction": "Descending"},
+                "=Fields!ProductID.Value",
+            ],
+        )
+        assert out["changed"] is True
+        assert _details_sorts(rdl_path) == [
+            ("=Fields!Amount.Value", "Descending"),
+            ("=Fields!ProductID.Value", None),
+        ]
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_dict_ascending_overrides_existing_descending(self, desc_path):
+        set_group_sort(
+            str(desc_path),
+            "MainTable",
+            "Details",
+            [{"value": "=Fields!Amount.Value", "direction": "Ascending"}],
+        )
+        # Ascending is the default: no <Direction> element is written.
+        assert _details_sorts(desc_path) == [("=Fields!Amount.Value", None)]
+
+    def test_dict_without_direction_behaves_like_string(self, desc_path):
+        set_group_sort(str(desc_path), "MainTable", "Details", [{"value": "=Fields!Amount.Value"}])
+        assert _details_sorts(desc_path) == [("=Fields!Amount.Value", "Descending")]
+
+    def test_empty_list_removes_block_and_is_xsd_valid(self, desc_path):
+        out = set_group_sort(str(desc_path), "MainTable", "Details", [])
+        assert out["changed"] is True
+        assert out["sort"] == [] and out["sort_expressions"] == []
+        assert _details_sorts(desc_path) is None
+        assert "SortExpressions" not in desc_path.read_text(encoding="utf-8")
+        assert validate_report(str(desc_path))["valid"]
+        # Nothing left to remove: a no-op.
+        raw = desc_path.read_bytes()
+        assert set_group_sort(str(desc_path), "MainTable", "Details", [])["changed"] is False
+        assert desc_path.read_bytes() == raw
+
+    def test_identical_recall_is_noop(self, desc_path):
+        keys = ["=Fields!Amount.Value", "=Fields!ProductName.Value"]
+        set_group_sort(str(desc_path), "MainTable", "Details", keys)
+        raw = desc_path.read_bytes()
+        out = set_group_sort(str(desc_path), "MainTable", "Details", keys)
+        assert out["changed"] is False
+        assert desc_path.read_bytes() == raw
+        # The original file's block (written compact, unindented) is also a
+        # no-op when re-sent as-is, in either spelling.
+        for same in (
+            ["=Fields!Amount.Value", "=Fields!ProductName.Value"],
+            [
+                {"value": "=Fields!Amount.Value", "direction": "Descending"},
+                {"value": "=Fields!ProductName.Value", "direction": "Ascending"},
+            ],
+        ):
+            assert set_group_sort(str(desc_path), "MainTable", "Details", same)["changed"] is False
+            assert desc_path.read_bytes() == raw
+
+    def test_reorder_keeps_directions(self, desc_path):
+        set_group_sort(
+            str(desc_path),
+            "MainTable",
+            "Details",
+            ["=Fields!ProductName.Value", "=Fields!Amount.Value"],
+        )
+        assert _details_sorts(desc_path) == [
+            ("=Fields!ProductName.Value", None),
+            ("=Fields!Amount.Value", "Descending"),
+        ]
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            ["=Fields!Amount.Value DESC"],
+            ["=Fields!Amount.Value asc"],
+            [{"value": "=Fields!Amount.Value", "direction": "Down"}],
+            [{"value": "=Fields!Amount.Value", "dir": "Descending"}],
+            [{"direction": "Descending"}],
+            [""],
+            [3],
+        ],
+    )
+    def test_rejects_bad_entries(self, rdl_path, bad):
+        raw = rdl_path.read_bytes()
+        with pytest.raises(ValueError):
+            set_group_sort(str(rdl_path), "MainTable", "Details", bad)
+        assert rdl_path.read_bytes() == raw
+
+    def test_server_accepts_dict_entries(self, rdl_path):
+        server = MCPServer()
+        register_all_tools(server)
+        resp = server.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "set_group_sort",
+                    "arguments": {
+                        "path": str(rdl_path),
+                        "tablix_name": "MainTable",
+                        "group_name": "Details",
+                        "sort_expressions": [
+                            {"value": "=Fields!Amount.Value", "direction": "Descending"}
+                        ],
+                    },
+                },
+            }
+        )
+        assert not resp["result"].get("isError"), resp
+        assert _details_sorts(rdl_path) == [("=Fields!Amount.Value", "Descending")]
 
 
 # ---- set_group_visibility -------------------------------------------------
@@ -866,3 +1296,32 @@ class TestToolRegistration:
             "convert_to_matrix",
             "set_tablix_corner",
         } <= names
+
+    def test_add_row_group_new_arguments_pass_the_server_schema(self, rdl_path):
+        srv = MCPServer()
+        register_all_tools(srv)
+        calls = [
+            {"group_name": "Region", "group_expression": "=1", "header": "column"},
+            {
+                "group_name": "Sub",
+                "group_expression": "=2",
+                "parent_group": "Region",
+                "wrap": "details",
+                "header": "auto",
+            },
+            {"group_name": "Outer", "group_expression": "=3", "wrap": "member:Region"},
+        ]
+        for i, args in enumerate(calls):
+            resp = srv.handle_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": i,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "add_row_group",
+                        "arguments": {"path": str(rdl_path), "tablix_name": "MainTable", **args},
+                    },
+                }
+            )
+            assert resp["result"].get("isError") is not True, resp
+        assert validate_report(str(rdl_path))["valid"]

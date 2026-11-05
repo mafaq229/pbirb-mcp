@@ -8,8 +8,14 @@ serialises with the same encoding and declaration style as the source.
 
 Key behaviours:
 
-* **Atomic save** — write to ``<path>.tmp`` then rename. A failure mid-write
-  never leaves a half-written report or scrubs the original.
+* **Atomic save** — write a temp file next to the report, then rename it
+  over the report. A failure mid-write never leaves a half-written report
+  or scrubs the original.
+* **Safe save** (#64) — :func:`write_atomic` replaces the file a symlink
+  points to (the link stays a link), keeps the report's permission bits
+  (and owner, where allowed) and refuses a read-only report
+  (:class:`PermissionError`). Every writer that replaces a report file
+  goes through it.
 * **Structural validation** — runs on demand via :meth:`RDLDocument.validate`.
   XSD validation is opt-in: drop the Microsoft RDL 2016 XSD into
   ``pbirb_mcp/schemas/reportdefinition.xsd`` and it picks up automatically.
@@ -32,6 +38,8 @@ import copy
 import io
 import os
 import re
+import stat
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union
@@ -215,6 +223,99 @@ def _stat_signature(path: Path) -> Optional[tuple]:
     except OSError:
         return None
     return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def _is_read_only(path: Path, st: os.stat_result) -> bool:
+    """No write bit set at all, or the process may not write it. The
+    first check matters when running as root, where ``os.access``
+    reports every file writable."""
+    return not (st.st_mode & 0o222) or not os.access(path, os.W_OK)
+
+
+def refuse_read_only(path: PathLike) -> None:
+    """Raise :class:`PermissionError` when ``path`` (through symlinks) is
+    an existing read-only file — the check :func:`write_atomic` makes."""
+    real = Path(os.path.realpath(path))
+    try:
+        st = os.stat(real)
+    except FileNotFoundError:
+        return
+    if _is_read_only(real, st):
+        raise _read_only_error(path)
+
+
+def _read_only_error(path: PathLike) -> PermissionError:
+    return PermissionError(
+        f"{str(path)!r} is read-only; make it writable (or save to another path) first"
+    )
+
+
+def write_atomic(path: PathLike, data: bytes, *, mode: Optional[int] = None) -> Path:
+    """Atomically replace (or create) the file at ``path`` with ``data``.
+
+    Returns the real path written. Safe-save rules (#64):
+
+    * **Symlinks are followed** — the link's final target is replaced and
+      the link stays a link.
+    * **Permissions are kept** — an existing file's mode bits (and its
+      owner / group, where the process may set them) carry over; a new
+      file gets ``mode`` when given, else the default (umask) mode.
+    * **Read-only files are refused** — :class:`PermissionError`, nothing
+      written. (``os.replace`` needs only directory write access, so
+      without this check a 0444 report would be silently overwritten.)
+    * **Hard links** — the rename installs a new inode, so other hard
+      links to the old file keep the old content. That is the price of an
+      atomic write; it isn't worked around.
+
+    The temp file (``.<name>.<random>.tmp``, next to the real file) is
+    removed on any failure; the original is untouched.
+    """
+    real = Path(os.path.realpath(path))
+    try:
+        st: Optional[os.stat_result] = os.stat(real)
+    except FileNotFoundError:
+        st = None
+    if st is not None and _is_read_only(real, st):
+        raise _read_only_error(path)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    while True:
+        tmp = real.with_name(f".{real.name}.{uuid.uuid4().hex[:12]}.tmp")
+        try:
+            # Starts private and gets its final mode below — unless it's a
+            # new file with no explicit mode: then the umask default.
+            fd = os.open(tmp, flags, 0o666 if st is None and mode is None else 0o600)
+            break
+        except FileExistsError:  # pragma: no cover — 48-bit name collision
+            continue
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        if st is not None:
+            _copy_ownership(st, tmp)
+            os.chmod(tmp, stat.S_IMODE(st.st_mode))
+        elif mode is not None:
+            os.chmod(tmp, mode)
+        os.replace(tmp, real)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    return real
+
+
+def _copy_ownership(st: os.stat_result, tmp: Path) -> None:
+    """Give ``tmp`` the owner / group of ``st`` where permitted (best effort)."""
+    chown = getattr(os, "chown", None)
+    if chown is None:  # Windows
+        return
+    mine = os.stat(tmp)
+    if (mine.st_uid, mine.st_gid) == (st.st_uid, st.st_gid):
+        return
+    try:
+        chown(tmp, st.st_uid, st.st_gid)
+    except OSError:
+        with contextlib.suppress(OSError):
+            chown(tmp, -1, st.st_gid)  # an owner may still set a group it's in
 
 
 @dataclass
@@ -429,6 +530,9 @@ class RDLDocument:
     def save_as(self, path: PathLike) -> bool:
         """Atomically write the document to ``path``; ``True`` when written.
 
+        Written with :func:`write_atomic`: through symlinks, keeping the
+        file's mode, and refusing a read-only file (:class:`PermissionError`).
+
         Saving back to the file the document was read from (or last
         written to) is skipped — returning ``False`` — when that file is
         untouched since (same stat signature) and the document would
@@ -453,18 +557,10 @@ class RDLDocument:
         if self._unchanged_on_disk(target, data):
             self.path = path
             return False
-        tmp = path.with_name(path.name + ".tmp")
-        try:
-            with open(tmp, "wb") as fh:
-                fh.write(data)
-            os.replace(tmp, path)
-        except Exception:
-            if tmp.exists():
-                with contextlib.suppress(OSError):
-                    tmp.unlink()
-            raise
+        # Through symlinks, keeping the mode, refusing read-only (#64).
+        real = write_atomic(target, data)
         self.path = path
-        self._on_disk = _DiskState(target, data, _stat_signature(path))
+        self._on_disk = _DiskState(target, data, _stat_signature(real))
         if self._known is not None:
             self._remember_elements()
         return True
@@ -543,4 +639,6 @@ __all__ = [
     "RDLValidationError",
     "RDL_NS",
     "RD_NS",
+    "refuse_read_only",
+    "write_atomic",
 ]

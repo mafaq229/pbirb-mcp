@@ -246,8 +246,22 @@ def _d05(r: Rdl):
 
 
 def _d06(r: Rdl):
-    cs = r.text("//r:DataSource[@Name='FleetModel']//r:ConnectString") or ""
-    return ok("FleetAnalytics-Prod" in cs and "FleetOps" in cs, f"connect string: {cs!r}")
+    # A Report Builder PBIDATASET source names its workspace only in
+    # rd:PowerBIWorkspaceName (the ConnectString is the pbiazure:// endpoint
+    # plus the model as Initial Catalog), so the edit must keep the provider
+    # and move that label (#71). Rewriting it as a legacy SQL/XMLA source with
+    # the workspace in the ConnectString is the bug #71 fixed, not a pass.
+    ds = "//r:DataSource[@Name='FleetModel']"
+    provider = r.text(f"{ds}//r:DataProvider") or ""
+    cs = r.text(f"{ds}//r:ConnectString") or ""
+    workspace = r.text(f"{ds}/rd:PowerBIWorkspaceName") or ""
+    model = r.text(f"{ds}/rd:PowerBIDatasetName") or ""
+    return ok(
+        provider == "PBIDATASET"
+        and workspace == "FleetAnalytics-Prod"
+        and ("FleetOps" in cs or model == "FleetOps"),
+        f"provider={provider!r} workspace={workspace!r} model={model!r} connect string: {cs!r}",
+    )
 
 
 def _d07(r: Rdl):
@@ -608,8 +622,8 @@ def _t03(r: Rdl):
 
 
 def _t05(r: Rdl):
-    # set_group_sort has no Direction argument, so a negated expression is an
-    # equally valid way to sort highest-first.
+    # Either Direction=Descending (set_group_sort's {value, direction}, #66) or
+    # a negated expression sorts highest-first.
     sorts = r.x("//r:Tablix[@Name='FleetTable']//r:SortExpression")
     hit = [
         s
@@ -753,7 +767,9 @@ TABLIX = [
                 {
                     "tablix_name": "FleetTable",
                     "group_name": "Details",
-                    "sort_expressions": ["=-Fields!Utilization.Value"],
+                    "sort_expressions": [
+                        {"value": "=Fields!Utilization.Value", "direction": "Descending"}
+                    ],
                 },
             )
         ],
@@ -1659,9 +1675,11 @@ def _detail(rows: list[tuple]) -> Optional[tuple]:
 
 
 def _t08(r: Rdl):
-    # Not checked: whether the column-header row stays above the groups.
-    # add_row_group wraps it too, so it repeats per group (#65, M5).
-    d = _detail(_rows(r))
+    rows = _rows(r)
+    d = _detail(rows)
+    # The column-heading row (literal "AssetName", not the =Fields! cell)
+    # must stay the first row, outside every group, so it renders once (#65).
+    headings = [i for i, (_m, _row, vals) in enumerate(rows) if "AssetName" in vals]
     exprs = r.group_expressions(d[0]) if d else []
     site = [i for i, e in enumerate(exprs) if "Fields!Site.Value" in e]
     kind = [i for i, e in enumerate(exprs) if "Fields!EquipmentType.Value" in e]
@@ -1672,6 +1690,11 @@ def _t08(r: Rdl):
         ok(
             site and kind and site[0] < kind[0],
             f"equipment type is not nested inside site: {exprs}",
+        ),
+        ok(headings == [0], f"column-heading row is not (only) the first row: rows {headings}"),
+        ok(
+            headings == [0] and not r.member_groups(rows[0][0]),
+            "column-heading row is inside a group, so it repeats per group",
         ),
         ok(ncols == 6, f"expected the 6 columns to stay, found {ncols}"),
     )
@@ -1858,22 +1881,24 @@ REVIEW_PATHS = [
         "hard",
         "synth",
         "Group the table rows by site, and within each site by equipment type.",
-        # Each add_row_group wraps the whole row hierarchy, so the inner group goes first.
+        # Outer group first, then the inner one nested inside it (#65). The
+        # column-heading row stays outside both groups.
         [
-            (
-                "add_row_group",
-                {
-                    "tablix_name": "FleetTable",
-                    "group_name": "TypeGroup",
-                    "group_expression": "=Fields!EquipmentType.Value",
-                },
-            ),
             (
                 "add_row_group",
                 {
                     "tablix_name": "FleetTable",
                     "group_name": "SiteGroup",
                     "group_expression": "=Fields!Site.Value",
+                },
+            ),
+            (
+                "add_row_group",
+                {
+                    "tablix_name": "FleetTable",
+                    "group_name": "TypeGroup",
+                    "group_expression": "=Fields!EquipmentType.Value",
+                    "parent_group": "SiteGroup",
                 },
             ),
         ],
@@ -1950,11 +1975,10 @@ REVIEW_PATHS = [
         "synth",
         "When the table runs onto more than one page, repeat the column heading row at the top "
         "of every page.",
-        [],
+        # #67: RepeatOnNewPage + KeepWithGroup=After on the static header member.
+        [("set_repeat_header_rows", {"tablix_name": "FleetTable"})],
         _t12,
         fixture=FLEET_RB,
-        known_gap="#67: no tool sets RepeatOnNewPage on the static column-header member; "
-        "set_repeat_on_new_page only addresses members that wrap a group",
     ),
     Case(
         "t13",
@@ -1962,10 +1986,19 @@ REVIEW_PATHS = [
         "easy",
         "synth",
         "Sort the table rows by asset name in reverse alphabetical order, Z to A.",
-        [],
+        [
+            (
+                "set_group_sort",
+                {
+                    "tablix_name": "FleetTable",
+                    "group_name": "Details",
+                    "sort_expressions": [
+                        {"value": "=Fields!AssetName.Value", "direction": "Descending"}
+                    ],
+                },
+            )
+        ],
         _t13,
-        known_gap="#66: set_group_sort takes no sort direction, and negating the expression "
-        "can't reverse a text sort",
     ),
     Case(
         "s10",

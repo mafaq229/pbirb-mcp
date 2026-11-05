@@ -30,9 +30,22 @@ from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset
 from pbirb_mcp.core.mutation import ChangeTracker, set_text_if_different
 from pbirb_mcp.core.names import MAX_IDENTIFIER_LENGTH, is_identifier, validate_identifier
-from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import (
+    RD_NS,
+    RDL_NS,
+    find_child,
+    find_children,
+    find_designer_statement,
+    q,
+    qrd,
+)
+from pbirb_mcp.ops import expr_walk
 from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
-from pbirb_mcp.ops.filter_types import type_mismatch_warnings, wrap_with_format
+from pbirb_mcp.ops.filter_types import (
+    encode_filter_texts,
+    type_mismatch_warnings,
+    wrap_with_format,
+)
 
 
 def _query(dataset: etree._Element) -> etree._Element:
@@ -157,35 +170,42 @@ def _find_query_parameter(qp_root: etree._Element, name: str) -> Optional[etree.
 
 
 def _sync_designer_state_statement(query: etree._Element, dax_body: str) -> bool:
-    """Rewrite ``<rd:DesignerState>/<Statement>`` to mirror ``<CommandText>``.
+    """Rewrite the Query Designer's Statement to mirror ``<CommandText>``.
 
-    PBIDATASET datasets carry a ``<rd:DesignerState>`` block whose
-    ``<Statement>`` child is what the Report Builder Query Designer GUI
-    displays. When ``<CommandText>`` changes but ``<Statement>`` doesn't,
-    the GUI shows stale DAX, masking the actual runtime query. This sync
-    keeps the two in step.
+    Report Builder stores what its Query Designer shows in
+    ``<rd:DesignerState>/<QueryDefinition>/<Query>/<Statement>`` (the
+    ``QueryDefinition`` namespace — issue #70; located by
+    :func:`pbirb_mcp.core.xpath.find_designer_statement`, which also
+    accepts a legacy ``<rd:Statement>`` child). When ``<CommandText>``
+    changes but the Statement doesn't, the designer shows stale DAX — and
+    clicking OK in the graphical designer can regenerate the old query
+    over the new one.
 
-    Returns True iff a Statement element was rewritten (used by callers
-    that surface a ``changed`` list — none today, but the helper stays
-    truthful so future callers don't have to guess).
-
-    Non-PBIDATASET datasets typically have no DesignerState; the function
-    is a no-op for those (returns False).
+    Returns True iff a Statement element was rewritten. A missing
+    DesignerState, or one without a Statement, is left alone (False):
+    nothing is synthesised.
     """
-    designer_state = query.find(f"{{{RD_NS}}}DesignerState")
-    if designer_state is None:
-        return False
-    statement = designer_state.find(f"{{{RD_NS}}}Statement")
+    statement = find_designer_statement(query)
     if statement is None:
-        # Some PBIDATASET DesignerState blocks omit Statement entirely
-        # (rare, but valid). Don't synthesise one — Report Builder only
-        # populates it for queries authored via the Query Designer.
         return False
-    new_text = encode_text(dax_body)
-    if statement.text == new_text:
+    # Verbatim, like <CommandText> (#75): DAX legitimately contains
+    # entity-shaped text such as SUBSTITUTE(x, "&amp;", "&").
+    if statement.text == dax_body:
         return False
-    statement.text = new_text
+    statement.text = dax_body
     return True
+
+
+def _drop_designer_state(query: etree._Element) -> bool:
+    """Remove ``<rd:DesignerState>``; True iff one existed."""
+    designer = query.find(qrd("DesignerState"))
+    if designer is None:
+        return False
+    query.remove(designer)
+    return True
+
+
+_VALID_DESIGNER_STATE_MODES = ("sync", "drop")
 
 
 _VALID_ALIAS_STRATEGIES = (None, "preserve_field_names")
@@ -197,8 +217,22 @@ def update_dataset_query(
     dax_body: str,
     alias_strategy: Optional[str] = None,
     dry_run: bool = False,
+    designer_state: str = "sync",
 ) -> dict[str, Any]:
     """Rewrite a dataset's ``<CommandText>`` (and ``<rd:DesignerState>``).
+
+    ``designer_state`` (issue #70) — what to do with Report Builder's
+    Query Designer state:
+
+    * ``"sync"`` (default) — rewrite its ``Statement`` to the new DAX
+      (``designer_state_synced`` says whether it changed). Only the text is
+      updated: the ``QueryDefinition``'s Select/Items graph cannot describe
+      arbitrary DAX and is left as it was.
+    * ``"drop"`` — remove ``<rd:DesignerState>`` altogether
+      (``designer_state_dropped``). Report Builder then opens the query in
+      its text editor instead of the graphical designer, so the stale item
+      graph can never regenerate the old query. Prefer it for hand-written
+      DAX the graphical designer couldn't have produced.
 
     ``alias_strategy``:
 
@@ -236,6 +270,11 @@ def update_dataset_query(
             f"unknown alias_strategy {alias_strategy!r}; valid values: "
             f"{[s for s in _VALID_ALIAS_STRATEGIES]}"
         )
+    if designer_state not in _VALID_DESIGNER_STATE_MODES:
+        raise ValueError(
+            f"unknown designer_state {designer_state!r}; valid values: "
+            f"{list(_VALID_DESIGNER_STATE_MODES)}"
+        )
 
     doc = RDLDocument.open(path)
     dataset = resolve_dataset(doc, dataset_name)
@@ -253,21 +292,22 @@ def update_dataset_query(
             anchor.addnext(cmd)
         else:
             query.insert(0, cmd)
-    cmd.text = encode_text(dax_body)
-    designer_state_synced = _sync_designer_state_statement(query, dax_body)
-
-    result: dict[str, Any] = {
-        "dataset": dataset_name,
-        "command_text": dax_body,
-        "designer_state_synced": designer_state_synced,
-    }
+    # Verbatim (#75): no entity decoding. DAX string literals such as
+    # SUBSTITUTE(col, "&amp;", "&") are meaningful; lxml escapes once.
+    cmd.text = dax_body
+    result: dict[str, Any] = {"dataset": dataset_name, "command_text": dax_body}
+    if designer_state == "drop":
+        result["designer_state_synced"] = False
+        result["designer_state_dropped"] = _drop_designer_state(query)
+    else:
+        result["designer_state_synced"] = _sync_designer_state_statement(query, dax_body)
 
     if alias_strategy == "preserve_field_names":
         plan, warnings = _plan_preserve_field_names(dataset, old_command_text, dax_body)
         mapped: list[dict[str, str]] = []
         for field, df_node, new in plan:
             old = df_node.text or ""
-            df_node.text = encode_text(new)
+            df_node.text = new  # derived from the verbatim DAX (#75)
             mapped.append({"name": field.get("Name") or "", "old": old, "new": new})
         result["alias_strategy"] = "preserve_field_names"
         result["mapped"] = mapped
@@ -715,24 +755,29 @@ def add_dataset_filter(
     warnings = type_mismatch_warnings(doc.root, dataset, effective_expression, values)
     filters_root = _ensure_dataset_filters_block(dataset)
 
+    written_expression, written_values, entity_warnings = encode_filter_texts(
+        effective_expression, values
+    )
+    warnings.extend(entity_warnings)
+
     filter_node = etree.SubElement(filters_root, q("Filter"))
     expr_node = etree.SubElement(filter_node, q("FilterExpression"))
-    expr_node.text = encode_text(effective_expression)
+    expr_node.text = written_expression
     op_node = etree.SubElement(filter_node, q("Operator"))
     op_node.text = operator
     values_root = etree.SubElement(filter_node, q("FilterValues"))
-    for v in values:
+    for v in written_values:
         v_node = etree.SubElement(values_root, q("FilterValue"))
-        v_node.text = encode_text(v)
+        v_node.text = v
 
     new_index = len(find_children(filters_root, "Filter")) - 1
     doc.save()
     return {
         "dataset": dataset_name,
         "index": new_index,
-        "expression": effective_expression,
+        "expression": written_expression,
         "operator": operator,
-        "values": list(values),
+        "values": written_values,
         "formatted": field_format is not None,
         "warnings": warnings,
     }
@@ -903,6 +948,7 @@ def remove_calculated_field(
     path: str,
     dataset_name: str,
     field_name: str,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Remove a calculated ``<Field>`` (one with ``<Value>`` instead of
     ``<DataField>``) by name.
@@ -911,6 +957,10 @@ def remove_calculated_field(
     than ``<Value>``) — those reflect the source query's columns and
     should not be removed via this tool. Use the data-binding workflow
     (rewrite the dataset query) instead.
+
+    Refuses while the field is still referenced (#72) — same scope-aware
+    check as :func:`remove_dataset_field`. Pass ``force=True`` to remove
+    anyway.
 
     Cleans up the empty ``<Fields>`` block when removing the last field.
     """
@@ -936,6 +986,9 @@ def remove_calculated_field(
             "dataset query via update_dataset_query to drop a data-bound field."
         )
 
+    if not force:
+        _refuse_if_referenced(doc, dataset_name, field_name)
+
     fields_root.remove(target)
     if len(find_children(fields_root, "Field")) == 0:
         dataset.remove(fields_root)
@@ -948,39 +1001,24 @@ def remove_calculated_field(
     }
 
 
-def _scan_field_references(doc: RDLDocument, name: str) -> list[str]:
-    """Walk every text-bearing element looking for ``Fields!<name>.Value``
-    (or ``.IsMissing`` / ``.Count`` aggregation suffixes).
-
-    Returns a list of human-readable locator strings describing where the
-    references live. Used by :func:`remove_dataset_field` to refuse a
-    destructive delete and surface the offending sites.
-    """
-    # Match the field name as a whole word so e.g. removing 'Date' doesn't
-    # report 'Fields!DateFrom.Value' as a reference.
-    pattern = re.compile(rf"\bFields!{re.escape(name)}\.(Value|IsMissing|Count)\b")
+def _refuse_if_referenced(doc: RDLDocument, dataset_name: str, field_name: str) -> None:
+    """Raise ``ValueError`` when field ``field_name`` of ``dataset_name`` still
+    has consumers (:func:`pbirb_mcp.ops.expr_walk.find_field_references`:
+    scope-aware ``Fields!X`` / ``Fields("X")`` references and parameter
+    ``DataSetReference`` ValueField/LabelField). Lists up to 5 locators."""
+    refs = expr_walk.find_field_references(doc.root, dataset_name, field_name)
+    if not refs:
+        return
     locators: list[str] = []
-    seen: set[str] = set()
-    for el in doc.root.iter():
-        if not isinstance(el.tag, str):
-            continue
-        text = el.text
-        if not text or "Fields!" not in text or not pattern.search(text):
-            continue
-        ancestor = el
-        label_parts: list[str] = []
-        depth = 0
-        while ancestor is not None and depth < 5:
-            tag = etree.QName(ancestor.tag).localname
-            if ancestor.get("Name"):
-                label_parts.append(f"{tag}[Name={ancestor.get('Name')!r}]")
-            ancestor = ancestor.getparent()
-            depth += 1
-        loc = ">".join(reversed(label_parts)) if label_parts else "(unnamed)"
-        if loc not in seen:
-            seen.add(loc)
-            locators.append(loc)
-    return locators
+    for r in refs:
+        if r.locator not in locators:
+            locators.append(r.locator)
+    shown = locators[:5]
+    elided = f" (+{len(locators) - 5} more)" if len(locators) > 5 else ""
+    raise ValueError(
+        f"field {field_name!r} of dataset {dataset_name!r} is still referenced from "
+        f"{len(locators)} location(s): {shown}{elided}. Pass force=True to remove anyway."
+    )
 
 
 def remove_dataset_field(
@@ -1004,9 +1042,13 @@ def remove_dataset_field(
     1. **Calculated field**: target has ``<Value>`` and not
        ``<DataField>`` → ``ValueError`` pointing at
        :func:`remove_calculated_field`.
-    2. **Still referenced**: any expression in the report contains
-       ``Fields!<field_name>.Value`` (or ``.IsMissing`` / ``.Count``) →
-       ``ValueError`` carrying up to the first 5 locators. Pass
+    2. **Still referenced** (#72): an expression evaluated against this
+       dataset uses ``Fields!<field_name>.<member>`` or
+       ``Fields("<field_name>")``, or a parameter's ValidValues /
+       DefaultValue ``DataSetReference`` names it as ``ValueField`` /
+       ``LabelField`` → ``ValueError`` carrying up to the first 5 locators
+       (see :func:`pbirb_mcp.ops.expr_walk.find_field_references`). A
+       same-named field of *another* dataset doesn't count. Pass
        ``force=True`` to remove anyway.
 
     Cleans up the empty ``<Fields>`` block when removing the last field.
@@ -1036,15 +1078,7 @@ def remove_dataset_field(
         )
 
     if not force:
-        locators = _scan_field_references(doc, field_name)
-        if locators:
-            shown = locators[:5]
-            elided = " (more elided)" if len(locators) > 5 else ""
-            raise ValueError(
-                f"field {field_name!r} is still referenced from "
-                f"{len(locators)} location(s): {shown}{elided}. "
-                "Pass force=True to remove anyway."
-            )
+        _refuse_if_referenced(doc, dataset_name, field_name)
 
     fields_root.remove(target)
     if len(find_children(fields_root, "Field")) == 0:
@@ -1311,7 +1345,7 @@ def refresh_dataset_fields(
             fields_root = _ensure_fields_block(dataset)
         new_field = etree.SubElement(fields_root, q("Field"), Name=name)
         df_node = etree.SubElement(new_field, q("DataField"))
-        df_node.text = encode_text(col.data_field)
+        df_node.text = col.data_field  # derived from the verbatim DAX (#75)
         added.append({"name": name, "data_field": col.data_field})
         if name != col.name:
             warnings.append(

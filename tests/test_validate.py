@@ -180,3 +180,107 @@ class TestToolRegistration:
         names = {t["name"] for t in listing}
         assert "validate_report" in names
         assert "verify_report" in names
+
+
+# ---- issue #76: Report Builder's DesignerState QueryDefinition ---------------
+
+# What Report Builder writes into a dataset's <Query> when the query was built
+# in its MDX/DAX designer (as in the "RAG Report" sample): a QueryDefinition
+# whose QuerySpecification names a type from a schema that isn't bundled.
+_DESIGNER_STATE = """<rd:UseGenericDesigner>true</rd:UseGenericDesigner>
+        <rd:DesignerState>
+          <QueryDefinition xmlns="http://schemas.microsoft.com/AnalysisServices/QueryDefinition">
+            <CommandType>MDX</CommandType>
+            <QuerySpecification xsi:type="MDXQuerySpecification" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+              <Select>
+                <Items>
+                  <Item>
+                    <ID xsi:type="Level">
+                      <DimensionName>Sales</DimensionName>
+                      <LevelName>ProductID</LevelName>
+                    </ID>
+                    <ItemCaption>ProductID</ItemCaption>
+                  </Item>
+                </Items>
+              </Select>
+              <From>Model</From>
+              <Filter><FilterItems /></Filter>
+              <Calculations />
+              <Aggregates />
+              <QueryProperties />
+            </QuerySpecification>
+            <Query>
+              <Statement>SELECT 1 ON 0 FROM [Model]</Statement>
+              <ParameterDefinitions />
+            </Query>
+          </QueryDefinition>
+        </rd:DesignerState>"""
+
+
+@pytest.fixture
+def designer_rdl(rdl_path: Path) -> Path:
+    """The minimal fixture as Report Builder's query designer saves it."""
+    text = rdl_path.read_text(encoding="utf-8")
+    marker = "<rd:UseGenericDesigner>true</rd:UseGenericDesigner>"
+    assert marker in text
+    rdl_path.write_text(text.replace(marker, _DESIGNER_STATE, 1), encoding="utf-8")
+    return rdl_path
+
+
+class TestDesignerStateQueryDefinition:
+    def test_untouched_report_builder_file_is_valid(self, designer_rdl):
+        result = validate_report(str(designer_rdl))
+        assert result == {"valid": True, "errors": [], "xsd_used": True}
+
+    def test_verify_has_no_error(self, designer_rdl):
+        result = verify_report(str(designer_rdl))
+        assert result["valid"] is True, result["issues"]
+        assert not [i for i in result["issues"] if i["severity"] == "error"]
+
+    def test_a_real_rdl_error_in_the_same_file_is_still_reported(self, designer_rdl):
+        text = designer_rdl.read_text(encoding="utf-8")
+        designer_rdl.write_text(
+            text.replace("<AutoRefresh>0</AutoRefresh>", "<AutoRefresh>0</AutoRefresh><Bogus />"),
+            encoding="utf-8",
+        )
+        result = validate_report(str(designer_rdl))
+        assert result["valid"] is False
+        assert [e["rule"] for e in result["errors"]] == ["xsd"]
+        assert "Bogus" in result["errors"][0]["message"]
+        # Line numbers still point into the file.
+        line = int(result["errors"][0]["location"].rsplit(":", 1)[1])
+        assert "<Bogus />" in designer_rdl.read_text(encoding="utf-8").splitlines()[line - 1]
+
+    def test_an_rdl_error_inside_the_dataset_is_still_reported(self, designer_rdl):
+        text = designer_rdl.read_text(encoding="utf-8")
+        designer_rdl.write_text(
+            text.replace("<CommandText>", "<Timeout>soon</Timeout><CommandText>", 1),
+            encoding="utf-8",
+        )
+        result = validate_report(str(designer_rdl))
+        assert result["valid"] is False
+        assert any("Timeout" in e["message"] for e in result["errors"])
+
+    def test_the_document_is_left_untouched(self, designer_rdl):
+        from lxml import etree
+
+        from pbirb_mcp.core.document import RDLDocument
+        from pbirb_mcp.core.schema import XSI_NS, validate_against_xsd, xsd_view
+
+        doc = RDLDocument.open(designer_rdl)
+        validate_against_xsd(doc.tree)  # raised before #76
+        doc.validate()
+        typed = doc.root.xpath("//*[@xsi:type]", namespaces={"xsi": XSI_NS})
+        assert len(typed) == 2
+        assert xsd_view(doc.tree) is not doc.tree
+        # Nothing to strip: the tree itself is validated (no copy).
+        clean = etree.parse(str(FIXTURE))
+        assert xsd_view(clean) is clean
+        assert doc.save() is False  # still byte-identical on disk
+
+    def test_edit_and_commit_on_such_a_report(self, designer_rdl):
+        from pbirb_mcp.ops.styling import set_textbox_value
+
+        set_textbox_value(str(designer_rdl), "HeaderAmount", "Total")
+        assert validate_report(str(designer_rdl))["valid"] is True
+        assert "MDXQuerySpecification" in designer_rdl.read_text(encoding="utf-8")
