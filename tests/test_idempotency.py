@@ -630,6 +630,37 @@ CASES: dict[str, Case] = {
 # Further argument sets for branches the main case doesn't reach
 # (clearing, alternative sources, …). Same contract.
 VARIANTS: list[tuple[str, Case]] = [
+    (
+        "set_group_sort",
+        Case(
+            {
+                "tablix_name": "MainTable",
+                "group_name": "ProductGroup",
+                "sort_expressions": [
+                    {"value": "=Fields!ProductName.Value", "direction": "Descending"},
+                    "=Fields!ProductID.Value",
+                ],
+            },
+            setup=[ROW_GROUP],
+        ),
+    ),
+    (
+        "set_group_sort",
+        Case(
+            {"tablix_name": "MainTable", "group_name": "ProductGroup", "sort_expressions": []},
+            setup=[
+                ROW_GROUP,
+                (
+                    "set_group_sort",
+                    {
+                        "tablix_name": "MainTable",
+                        "group_name": "ProductGroup",
+                        "sort_expressions": ["=Fields!ProductName.Value"],
+                    },
+                ),
+            ],
+        ),
+    ),
     ("set_page_setup", Case({"columns": 2, "margin_left": "0.5in"})),
     ("set_page_setup", Case({"columns": 1}, setup=[("set_page_setup", {"columns": 2})])),
     (

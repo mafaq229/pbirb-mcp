@@ -17,6 +17,8 @@ the right anchor before placing a freshly-created ``<Filters>`` element.
 
 from __future__ import annotations
 
+import copy
+import re
 from typing import Any, Optional
 
 from lxml import etree
@@ -25,7 +27,7 @@ from pbirb_mcp.core import names, tablix_headers, tablix_spans, units
 from pbirb_mcp.core.document import RDLDocument, indent_inserted
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_tablix
-from pbirb_mcp.core.mutation import changed_by, set_node_text
+from pbirb_mcp.core.mutation import ChangeTracker, fingerprint, set_node_text
 from pbirb_mcp.core.tablix_shape import (
     NO_DETAIL_GROUP,
     column_leaves,
@@ -643,22 +645,135 @@ def remove_row_group(
 # ---- set_group_sort -------------------------------------------------------
 
 
-def _apply_sort_to_member(member: etree._Element, sort_expressions: list[str]) -> None:
+SORT_DIRECTIONS = ("Ascending", "Descending")
+
+# "=Fields!X.Value DESC" — SQL-style direction suffix, which RDL would store
+# (and Report Builder evaluate) as part of the expression.
+_TRAILING_DIRECTION_RE = re.compile(r"\s(asc|desc|ascending|descending)\s*$", re.IGNORECASE)
+
+
+def sort_entries(sort_expressions: Any) -> list[tuple[str, Optional[str]]]:
+    """Normalise a ``sort_expressions`` argument to ``[(value, direction)]``.
+
+    Each entry is an expression string or ``{"value", "direction"?}``;
+    ``direction`` is ``"Ascending"`` / ``"Descending"``, or ``None`` when the
+    entry doesn't say (a plain string, or a dict without ``direction``):
+    the existing entry with the same Value keeps its Direction, a new one
+    sorts ascending.
+    """
+    if not isinstance(sort_expressions, list):
+        raise ValueError("sort_expressions must be a list")
+    out: list[tuple[str, Optional[str]]] = []
+    for i, entry in enumerate(sort_expressions):
+        direction: Optional[str] = None
+        if isinstance(entry, str):
+            value = entry
+        elif isinstance(entry, dict):
+            unknown = sorted(set(entry) - {"value", "direction"})
+            if unknown:
+                raise ValueError(
+                    f"sort_expressions[{i}]: unknown key(s) {unknown}; use 'value' and 'direction'"
+                )
+            value = entry.get("value")
+            direction = entry.get("direction")
+            if direction is not None and direction not in SORT_DIRECTIONS:
+                raise ValueError(
+                    f"sort_expressions[{i}].direction must be 'Ascending' or "
+                    f"'Descending', got {direction!r}"
+                )
+        else:
+            raise ValueError(
+                f"sort_expressions[{i}] must be an expression string or "
+                "{'value': ..., 'direction': ...}"
+            )
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"sort_expressions[{i}]: value must be a non-empty expression")
+        if _TRAILING_DIRECTION_RE.search(value):
+            raise ValueError(
+                f"sort_expressions[{i}] {value!r} ends in a sort direction, which RDL "
+                "would store as part of the expression; pass "
+                "{'value': '<expression>', 'direction': 'Descending'} instead"
+            )
+        out.append((value, direction))
+    return out
+
+
+def _sort_direction(sort: etree._Element) -> str:
+    node = find_child(sort, "Direction")
+    text = (node.text or "").strip() if node is not None else ""
+    return text or "Ascending"
+
+
+def read_sort(owner: etree._Element) -> list[dict[str, str]]:
+    """``owner``'s ``<SortExpressions>`` as ``[{value, direction}]``."""
+    block = find_child(owner, "SortExpressions")
+    if block is None:
+        return []
+    out = []
+    for sort in find_children(block, "SortExpression"):
+        value = find_child(sort, "Value")
+        out.append(
+            {
+                "value": (value.text or "") if value is not None else "",
+                "direction": _sort_direction(sort),
+            }
+        )
+    return out
+
+
+def _apply_sort_to_member(
+    member: etree._Element, entries: list[tuple[str, Optional[str]]]
+) -> list[dict[str, str]]:
     """Hierarchy-agnostic core of set_group_sort / set_column_group_sort —
-    operates on an already-resolved TablixMember."""
+    operates on an already-resolved TablixMember.
+
+    Replaces the member's ``<SortExpressions>`` with ``entries`` (from
+    :func:`sort_entries`); an entry without a direction keeps the existing
+    entry with the same Value as it is (its Direction included).
+    ``<Direction>`` is written only for Descending. An empty list removes
+    the block (an empty ``<SortExpressions/>`` is XSD-invalid). An
+    identical block is left untouched. Returns the resulting sort keys.
+    """
+    existing_block = find_child(member, "SortExpressions")
+    if not entries:
+        if existing_block is not None:
+            detach(existing_block)
+        return []
+
+    existing: dict[Optional[str], etree._Element] = {}
+    if existing_block is not None:
+        for sort in find_children(existing_block, "SortExpression"):
+            value = find_child(sort, "Value")
+            existing.setdefault(value.text if value is not None else None, sort)
+
     new_block = etree.Element(q("SortExpressions"))
-    for expr in sort_expressions:
-        sort = etree.SubElement(new_block, q("SortExpression"))
-        value = etree.SubElement(sort, q("Value"))
-        value.text = encode_text(expr)
-    _insert_member_child(member, new_block)
+    resolved = []
+    for expr, direction in entries:
+        text = encode_text(expr)
+        prior = existing.get(text)
+        if prior is not None and direction in (None, _sort_direction(prior)):
+            sort = copy.deepcopy(prior)
+            sort.tail = None
+            new_block.append(sort)
+            direction = _sort_direction(prior)
+        else:
+            direction = direction or "Ascending"
+            sort = etree.SubElement(new_block, q("SortExpression"))
+            etree.SubElement(sort, q("Value")).text = text
+            if direction == "Descending":
+                etree.SubElement(sort, q("Direction")).text = direction
+        resolved.append({"value": text, "direction": direction})
+
+    if existing_block is None or fingerprint(existing_block) != fingerprint(new_block):
+        _insert_member_child(member, new_block)
+    return resolved
 
 
 def set_group_sort(
     path: str,
     tablix_name: str,
     group_name: str,
-    sort_expressions: list[str],
+    sort_expressions: list[Any],
 ) -> dict[str, Any]:
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
@@ -668,15 +783,28 @@ def set_group_sort(
             f"row-axis group {group_name!r} not found in tablix {tablix_name!r}; "
             "for a column-axis group use set_column_group_sort."
         )
+    return _set_member_sort(doc, member, tablix_name, group_name, sort_expressions)
 
-    changed = changed_by(member, _apply_sort_to_member, member, sort_expressions)
-    if changed:
+
+def _set_member_sort(
+    doc: RDLDocument,
+    member: etree._Element,
+    tablix_name: str,
+    group_name: str,
+    sort_expressions: Any,
+) -> dict[str, Any]:
+    """Shared body of set_group_sort / set_column_group_sort."""
+    entries = sort_entries(sort_expressions)
+    with ChangeTracker(member) as tracker:
+        sort = _apply_sort_to_member(member, entries)
+    if tracker.changed:
         doc.save()
     return {
         "tablix": tablix_name,
         "group": group_name,
-        "sort_expressions": list(sort_expressions),
-        "changed": changed,
+        "sort_expressions": [s["value"] for s in sort],
+        "sort": sort,
+        "changed": tracker.changed,
     }
 
 

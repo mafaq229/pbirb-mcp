@@ -357,7 +357,7 @@ Set the value of a `<TablixCorner>` cell — the top-left block of a matrix, col
 
 *idempotent*
 
-Replace a group's `<SortExpressions>` with a fresh list. Each entry is an RDL expression, e.g. =Fields!Region.Value.
+Replace a row group's `<SortExpressions>` with a fresh list of sort keys, in order. Each entry is an RDL expression string (e.g. `=Fields!Region.Value`) or `{value, direction}` with direction `Ascending` (default) or `Descending`. A string, or a dict without `direction`, whose value matches an existing key keeps that key's Direction, so re-sending the current keys to add a secondary one doesn't lose a Descending sort. `<Direction>` is written only for Descending. A SQL-style suffix (`=Fields!X.Value DESC`) is refused: pass the direction instead. `[]` removes `<SortExpressions>` (an empty block is XSD-invalid). Returns {tablix, group, sort_expressions (the values), sort: [{value, direction}], changed}; an identical call changes nothing and doesn't write.
 
 ### `set_group_visibility`
 
@@ -379,7 +379,7 @@ Exact inverse of add_column_group: unwraps a column-axis group's children back i
 
 *idempotent*
 
-Replace a column-axis group's `<SortExpressions>` with a fresh list. Mirrors set_group_sort but refuses up front if group_name is on the row axis (use set_group_sort instead).
+Replace a column-axis group's `<SortExpressions>` with a fresh list of sort keys: expression strings or `{value, direction}` (`Ascending`/`Descending`). Same contract as set_group_sort (an existing key's Direction is kept for a plain string, `[]` removes the sort, returns `sort` and `changed`), but refuses up front if group_name is on the row axis (use set_group_sort instead).
 
 ### `set_column_group_visibility`
 

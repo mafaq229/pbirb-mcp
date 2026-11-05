@@ -96,6 +96,31 @@ _LIST_ITEMS_SCHEMA: dict = {
 }
 
 
+# set_group_sort / set_column_group_sort (#66): an expression string, or
+# {value, direction}. A string re-sent for an existing key keeps its Direction.
+_SORT_EXPRESSIONS_SCHEMA: dict = {
+    "type": "array",
+    "items": {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "value": {"type": "string", "minLength": 1},
+                    "direction": {"type": "string", "enum": ["Ascending", "Descending"]},
+                },
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+            {"type": "string", "minLength": 1},
+        ]
+    },
+    "description": (
+        "Sort keys in order: '=expr' or {value, direction: Ascending|Descending}. "
+        "A plain string for an existing key keeps its direction; [] removes the sort."
+    ),
+}
+
+
 def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="describe_report",
@@ -1652,7 +1677,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_group_sort",
         description=(
-            "Sort a row group: replaces its sort expressions, e.g. ['=Fields!Region.Value']."
+            "Sort a row group: replaces its sort keys, e.g. ['=Fields!Region.Value'] or "
+            "[{'value': '=Fields!Amount.Value', 'direction': 'Descending'}]; [] removes the sort."
         ),
         input_schema={
             "type": "object",
@@ -1660,10 +1686,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "tablix_name": {"type": "string"},
                 "group_name": {"type": "string"},
-                "sort_expressions": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
+                "sort_expressions": _SORT_EXPRESSIONS_SCHEMA,
             },
             "required": [
                 "path",
@@ -1753,7 +1776,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_column_group_sort",
         description=(
-            "Sort a column group: replaces its sort expressions (set_group_sort is for row groups)."
+            "Sort a column group: replaces its sort keys ('=expr' or {value, direction}); "
+            "set_group_sort is for row groups."
         ),
         input_schema={
             "type": "object",
@@ -1761,10 +1785,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "tablix_name": {"type": "string"},
                 "group_name": {"type": "string"},
-                "sort_expressions": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
+                "sort_expressions": _SORT_EXPRESSIONS_SCHEMA,
             },
             "required": ["path", "tablix_name", "group_name", "sort_expressions"],
             "additionalProperties": False,

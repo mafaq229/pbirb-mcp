@@ -109,12 +109,12 @@ the structural gate and the cases below.
 | chart series add/remove | c07, c08 | fleet, fleet_rb | `add_chart_series` → `remove_chart_series`; `remove_chart_series` |
 | `set_textbox_runs` on a styled cell | s10 | fleet_rb | `set_textbox_runs` keeping the header's run, box and paragraph style |
 | repeating header row | t12 | fleet_rb | **known gap #67** |
-| descending sort | t13 | fleet | **known gap #66** |
+| descending sort | t13 | fleet | `set_group_sort` with `{value, direction: "Descending"}` (#66) |
 | rename | p09 | fleet_rb | `rename_parameter` (title, table filter, query parameter, prompt layout) |
 
 - **Known gaps.** `Case.known_gap` marks a request no tool can do correctly yet: t12 (no tool sets
-  `RepeatOnNewPage` on the static header member) and t13 (`set_group_sort` has no direction; negation can't
-  reverse a text sort). They have no oracle, which `selftest` skips, but it still checks that doing nothing
+  `RepeatOnNewPage` on the static header member); t13 was one until #66 gave `set_group_sort` a direction,
+  and now has an oracle. Known gaps have no oracle, which `selftest` skips, but it still checks that doing nothing
   fails them. Both checks are reachable today only through `raw_xml_replace`. In real runs they count as
   failures, and `summarize()` prints `known-gap cases passed k/n`. When #66 / #67 land, add an oracle and
   drop `known_gap`.

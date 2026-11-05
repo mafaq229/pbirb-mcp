@@ -37,7 +37,6 @@ from pbirb_mcp.core.columns import describe_columns, resolve_column
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
-from pbirb_mcp.core.mutation import changed_by
 from pbirb_mcp.core.tablix_shape import (
     column_leaves,
     data_row_index,
@@ -51,8 +50,8 @@ from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 from pbirb_mcp.ops import visibility as _visibility
 from pbirb_mcp.ops.tablix import (
     _UNSET,
-    _apply_sort_to_member,
     _apply_visibility_to_member,
+    _set_member_sort,
 )
 
 # ---- column-hierarchy helpers ---------------------------------------------
@@ -297,7 +296,7 @@ def set_column_group_sort(
     path: str,
     tablix_name: str,
     group_name: str,
-    sort_expressions: list[str],
+    sort_expressions: list[Any],
 ) -> dict[str, Any]:
     """Set ``<SortExpressions>`` on a column-axis group's TablixMember.
 
@@ -312,15 +311,7 @@ def set_column_group_sort(
             f"column-axis group {group_name!r} not found in tablix "
             f"{tablix_name!r}; for a row-axis group use set_group_sort."
         )
-    changed = changed_by(member, _apply_sort_to_member, member, sort_expressions)
-    if changed:
-        doc.save()
-    return {
-        "tablix": tablix_name,
-        "group": group_name,
-        "sort_expressions": list(sort_expressions),
-        "changed": changed,
-    }
+    return _set_member_sort(doc, member, tablix_name, group_name, sort_expressions)
 
 
 # ---- set_column_group_visibility ------------------------------------------

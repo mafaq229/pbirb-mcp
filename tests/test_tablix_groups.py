@@ -467,6 +467,178 @@ class TestSetGroupSort:
             )
 
 
+_DESC_SORT = (
+    '<Group Name="Details" /><SortExpressions><SortExpression>'
+    "<Value>=Fields!Amount.Value</Value><Direction>Descending</Direction>"
+    "</SortExpression></SortExpressions>"
+)
+
+
+def _details_sorts(path):
+    doc = RDLDocument.open(path)
+    member = next(
+        m
+        for m in _tablix(doc, "MainTable").find(q("TablixRowHierarchy")).iter(q("TablixMember"))
+        if find_child(m, "Group") is not None and find_child(m, "Group").get("Name") == "Details"
+    )
+    block = find_child(member, "SortExpressions")
+    if block is None:
+        return None
+    return [
+        (
+            find_child(s, "Value").text,
+            find_child(s, "Direction").text if find_child(s, "Direction") is not None else None,
+        )
+        for s in find_children(block, "SortExpression")
+    ]
+
+
+class TestSetGroupSortDirection:
+    """#66: Direction is preserved, settable, and [] is XSD-valid."""
+
+    @pytest.fixture
+    def desc_path(self, rdl_path):
+        text = rdl_path.read_text(encoding="utf-8")
+        assert '<Group Name="Details" />' in text
+        rdl_path.write_text(text.replace('<Group Name="Details" />', _DESC_SORT), encoding="utf-8")
+        return rdl_path
+
+    def test_plain_string_keeps_existing_descending(self, desc_path):
+        out = set_group_sort(
+            str(desc_path),
+            "MainTable",
+            "Details",
+            ["=Fields!Amount.Value", "=Fields!ProductName.Value"],
+        )
+        assert out["changed"] is True
+        assert _details_sorts(desc_path) == [
+            ("=Fields!Amount.Value", "Descending"),
+            ("=Fields!ProductName.Value", None),
+        ]
+        assert out["sort"] == [
+            {"value": "=Fields!Amount.Value", "direction": "Descending"},
+            {"value": "=Fields!ProductName.Value", "direction": "Ascending"},
+        ]
+        assert out["sort_expressions"] == ["=Fields!Amount.Value", "=Fields!ProductName.Value"]
+        assert validate_report(str(desc_path))["valid"]
+
+    def test_dict_entry_writes_direction(self, rdl_path):
+        out = set_group_sort(
+            str(rdl_path),
+            "MainTable",
+            "Details",
+            [
+                {"value": "=Fields!Amount.Value", "direction": "Descending"},
+                "=Fields!ProductID.Value",
+            ],
+        )
+        assert out["changed"] is True
+        assert _details_sorts(rdl_path) == [
+            ("=Fields!Amount.Value", "Descending"),
+            ("=Fields!ProductID.Value", None),
+        ]
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_dict_ascending_overrides_existing_descending(self, desc_path):
+        set_group_sort(
+            str(desc_path),
+            "MainTable",
+            "Details",
+            [{"value": "=Fields!Amount.Value", "direction": "Ascending"}],
+        )
+        # Ascending is the default: no <Direction> element is written.
+        assert _details_sorts(desc_path) == [("=Fields!Amount.Value", None)]
+
+    def test_dict_without_direction_behaves_like_string(self, desc_path):
+        set_group_sort(str(desc_path), "MainTable", "Details", [{"value": "=Fields!Amount.Value"}])
+        assert _details_sorts(desc_path) == [("=Fields!Amount.Value", "Descending")]
+
+    def test_empty_list_removes_block_and_is_xsd_valid(self, desc_path):
+        out = set_group_sort(str(desc_path), "MainTable", "Details", [])
+        assert out["changed"] is True
+        assert out["sort"] == [] and out["sort_expressions"] == []
+        assert _details_sorts(desc_path) is None
+        assert "SortExpressions" not in desc_path.read_text(encoding="utf-8")
+        assert validate_report(str(desc_path))["valid"]
+        # Nothing left to remove: a no-op.
+        raw = desc_path.read_bytes()
+        assert set_group_sort(str(desc_path), "MainTable", "Details", [])["changed"] is False
+        assert desc_path.read_bytes() == raw
+
+    def test_identical_recall_is_noop(self, desc_path):
+        keys = ["=Fields!Amount.Value", "=Fields!ProductName.Value"]
+        set_group_sort(str(desc_path), "MainTable", "Details", keys)
+        raw = desc_path.read_bytes()
+        out = set_group_sort(str(desc_path), "MainTable", "Details", keys)
+        assert out["changed"] is False
+        assert desc_path.read_bytes() == raw
+        # The original file's block (written compact, unindented) is also a
+        # no-op when re-sent as-is, in either spelling.
+        for same in (
+            ["=Fields!Amount.Value", "=Fields!ProductName.Value"],
+            [
+                {"value": "=Fields!Amount.Value", "direction": "Descending"},
+                {"value": "=Fields!ProductName.Value", "direction": "Ascending"},
+            ],
+        ):
+            assert set_group_sort(str(desc_path), "MainTable", "Details", same)["changed"] is False
+            assert desc_path.read_bytes() == raw
+
+    def test_reorder_keeps_directions(self, desc_path):
+        set_group_sort(
+            str(desc_path),
+            "MainTable",
+            "Details",
+            ["=Fields!ProductName.Value", "=Fields!Amount.Value"],
+        )
+        assert _details_sorts(desc_path) == [
+            ("=Fields!ProductName.Value", None),
+            ("=Fields!Amount.Value", "Descending"),
+        ]
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            ["=Fields!Amount.Value DESC"],
+            ["=Fields!Amount.Value asc"],
+            [{"value": "=Fields!Amount.Value", "direction": "Down"}],
+            [{"value": "=Fields!Amount.Value", "dir": "Descending"}],
+            [{"direction": "Descending"}],
+            [""],
+            [3],
+        ],
+    )
+    def test_rejects_bad_entries(self, rdl_path, bad):
+        raw = rdl_path.read_bytes()
+        with pytest.raises(ValueError):
+            set_group_sort(str(rdl_path), "MainTable", "Details", bad)
+        assert rdl_path.read_bytes() == raw
+
+    def test_server_accepts_dict_entries(self, rdl_path):
+        server = MCPServer()
+        register_all_tools(server)
+        resp = server.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "set_group_sort",
+                    "arguments": {
+                        "path": str(rdl_path),
+                        "tablix_name": "MainTable",
+                        "group_name": "Details",
+                        "sort_expressions": [
+                            {"value": "=Fields!Amount.Value", "direction": "Descending"}
+                        ],
+                    },
+                },
+            }
+        )
+        assert not resp["result"].get("isError"), resp
+        assert _details_sorts(rdl_path) == [("=Fields!Amount.Value", "Descending")]
+
+
 # ---- set_group_visibility -------------------------------------------------
 
 

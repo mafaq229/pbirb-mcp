@@ -381,6 +381,52 @@ class TestSetColumnGroupSort:
         values = [find_child(s, "Value").text for s in find_children(sort_block, "SortExpression")]
         assert values == ["=Fields!Sales.Value"]
 
+    def test_direction_set_kept_and_cleared(self, rdl_path):
+        # #66: same contract as set_group_sort.
+        add_column_group(
+            path=str(rdl_path),
+            tablix_name="MainTable",
+            group_name="Region",
+            group_expression="=Fields!Region.Value",
+        )
+
+        def sorts():
+            ch = _tablix(RDLDocument.open(rdl_path), "MainTable").find(q("TablixColumnHierarchy"))
+            member = next(
+                m
+                for m in ch.iter(q("TablixMember"))
+                if find_child(m, "Group") is not None
+                and find_child(m, "Group").get("Name") == "Region"
+            )
+            block = find_child(member, "SortExpressions")
+            if block is None:
+                return None
+            return [
+                (find_child(s, "Value").text, getattr(find_child(s, "Direction"), "text", None))
+                for s in find_children(block, "SortExpression")
+            ]
+
+        out = set_column_group_sort(
+            str(rdl_path),
+            "MainTable",
+            "Region",
+            [{"value": "=Fields!Region.Value", "direction": "Descending"}],
+        )
+        assert out["sort"] == [{"value": "=Fields!Region.Value", "direction": "Descending"}]
+        assert sorts() == [("=Fields!Region.Value", "Descending")]
+        out = set_column_group_sort(
+            str(rdl_path), "MainTable", "Region", ["=Fields!Region.Value", "=Fields!Sales.Value"]
+        )
+        assert sorts() == [("=Fields!Region.Value", "Descending"), ("=Fields!Sales.Value", None)]
+        raw = rdl_path.read_bytes()
+        again = set_column_group_sort(
+            str(rdl_path), "MainTable", "Region", ["=Fields!Region.Value", "=Fields!Sales.Value"]
+        )
+        assert again["changed"] is False and rdl_path.read_bytes() == raw
+        set_column_group_sort(str(rdl_path), "MainTable", "Region", [])
+        assert sorts() is None
+        assert validate_report(str(rdl_path))["valid"]
+
     def test_refuses_row_group(self, rdl_path):
         from pbirb_mcp.ops.tablix import add_row_group
 

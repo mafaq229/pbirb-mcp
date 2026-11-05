@@ -59,7 +59,7 @@ Every edit case is also graded by the structural gate (XSD + lint errors the edi
 | t10 | tablix | hard | synth | fleet_rb.rdl | `add_subtotal_row` | 45 |
 | t11 | tablix | medium | synth | fleet_utilization.rdl | `add_column_group` | 45 |
 | t12 | tablix | medium | synth | fleet_rb.rdl | _known gap_ (#67) | 45 |
-| t13 | tablix | easy | synth | fleet_utilization.rdl | _known gap_ (#66) | 45 |
+| t13 | tablix | easy | synth | fleet_utilization.rdl | `set_group_sort` | 45 |
 | s10 | style | hard | synth | fleet_rb.rdl | `set_textbox_runs` | 28 |
 | c07 | chart | medium | synth | fleet_utilization.rdl | `add_chart_series` → `remove_chart_series` | 27 |
 | c08 | chart | easy | synth | fleet_rb.rdl | `remove_chart_series` | 27 |
@@ -396,7 +396,6 @@ Known gap: #67: no tool sets RepeatOnNewPage on the static column-header member;
 ```text
 Sort the table rows by asset name in reverse alphabetical order, Z to A.
 ```
-Known gap: #66: set_group_sort takes no sort direction, and negating the expression can't reverse a text sort
 
 ## s10 · style · hard
 

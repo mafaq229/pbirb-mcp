@@ -1962,10 +1962,19 @@ REVIEW_PATHS = [
         "easy",
         "synth",
         "Sort the table rows by asset name in reverse alphabetical order, Z to A.",
-        [],
+        [
+            (
+                "set_group_sort",
+                {
+                    "tablix_name": "FleetTable",
+                    "group_name": "Details",
+                    "sort_expressions": [
+                        {"value": "=Fields!AssetName.Value", "direction": "Descending"}
+                    ],
+                },
+            )
+        ],
         _t13,
-        known_gap="#66: set_group_sort takes no sort direction, and negating the expression "
-        "can't reverse a text sort",
     ),
     Case(
         "s10",
