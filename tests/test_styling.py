@@ -966,3 +966,278 @@ class TestFontStyleAndDecoration:
     def test_bulk_rejects_unknown_kwarg(self, rdl_path):
         with pytest.raises(TypeError, match="font_colour"):
             set_textbox_style_bulk(str(rdl_path), ["ProductID"], font_colour="Red")
+
+
+# ---- #90: row roles, row-colour escaping and composition -----------------
+
+
+def _patched_fixture(tmp_path: Path, old: str, new: str) -> Path:
+    text = FIXTURE.read_text(encoding="utf-8")
+    assert text.count(old) == 1
+    dest = tmp_path / "patched.rdl"
+    dest.write_text(text.replace(old, new), encoding="utf-8")
+    return dest
+
+
+def _bg(rdl_path: Path, name: str):
+    style = find_child(_textbox(rdl_path, name), "Style")
+    node = find_child(style, "BackgroundColor") if style is not None else None
+    return node.text if node is not None else None
+
+
+# The usual Report Builder shape for a group without details: the group
+# member wraps a single static leaf that is its data row.
+_GROUP_ONLY_DATA = (
+    '<Group Name="Product"><GroupExpressions><GroupExpression>=1</GroupExpression>'
+    "</GroupExpressions></Group><TablixMembers><TablixMember /></TablixMembers>"
+)
+
+
+class TestRowRoles90:
+    def test_header_after_add_row_group_is_column_header(self, rdl_path):
+        from pbirb_mcp.ops.styling import style_tablix_row
+        from pbirb_mcp.ops.tablix import add_row_group
+
+        add_row_group(str(rdl_path), "MainTable", "G", "=1")
+        out = style_tablix_row(str(rdl_path), "MainTable", "header", font_weight="Bold")
+        assert out["row_index"] == 0
+        assert out["cells"] == ["HeaderProductID", "HeaderProductName", "HeaderAmount"]
+        # The group's own header row (also KeepWithGroup=After) is its own role.
+        group = style_tablix_row(str(rdl_path), "MainTable", "G_header", font_weight="Bold")
+        alias = style_tablix_row(str(rdl_path), "MainTable", "G_group_header", color="Red")
+        assert group["row_index"] == alias["row_index"] == 1
+        assert group["cells"][0].startswith("G_Header_")
+
+    def test_header_is_last_marked_static_row_above_the_groups(self, tmp_path):
+        from pbirb_mcp.ops.styling import _resolve_row_index
+
+        # A title row above the column header: both marked KeepWithGroup=After.
+        path = _patched_fixture(
+            tmp_path,
+            "<TablixMember>\n                  <KeepWithGroup>After</KeepWithGroup>",
+            "<TablixMember><KeepWithGroup>After</KeepWithGroup></TablixMember>"
+            "<TablixMember>\n                  <KeepWithGroup>After</KeepWithGroup>",
+        )
+        tablix = RDLDocument.open(path).root.find(f".//{{{RDL_NS}}}Tablix")
+        assert _resolve_row_index(tablix, "header") == 1
+
+    def test_group_footer_on_data_only_group_raises(self, tmp_path):
+        from pbirb_mcp.ops.styling import style_tablix_row
+
+        path = _patched_fixture(tmp_path, '<Group Name="Details" />', _GROUP_ONLY_DATA)
+        before = path.read_bytes()
+        with pytest.raises(ElementNotFoundError, match="no footer row for group 'Product'"):
+            style_tablix_row(str(path), "MainTable", "Product_footer", font_weight="Bold")
+        with pytest.raises(ElementNotFoundError, match="no header row for group 'Product'"):
+            style_tablix_row(str(path), "MainTable", "Product_header", font_weight="Bold")
+        assert path.read_bytes() == before
+        # 'details' still reaches the group's data row.
+        out = style_tablix_row(str(path), "MainTable", "details", font_weight="Bold")
+        assert out["cells"] == ["ProductID", "ProductName", "Amount"]
+
+    def test_footer_after_subtotal_still_resolves(self, rdl_path):
+        from pbirb_mcp.ops.styling import style_tablix_row
+        from pbirb_mcp.ops.tablix import add_row_group
+        from pbirb_mcp.ops.tablix_subtotals import add_subtotal_row
+
+        add_row_group(str(rdl_path), "MainTable", "G", "=1")
+        add_subtotal_row(str(rdl_path), "MainTable", "G", aggregates=[], position="footer")
+        out = style_tablix_row(str(rdl_path), "MainTable", "G_footer", font_weight="Bold")
+        assert out["row_index"] == 3
+
+    def test_unknown_group_says_so(self, rdl_path):
+        from pbirb_mcp.ops.styling import style_tablix_row
+
+        with pytest.raises(ElementNotFoundError, match="no row group of that name"):
+            style_tablix_row(str(rdl_path), "MainTable", "Nope_footer", font_weight="Bold")
+
+    def test_rowheader_and_corner_roles_reach_header_cells(self, rdl_path):
+        from pbirb_mcp.ops.styling import _resolve_row_index, style_tablix_row
+        from pbirb_mcp.ops.tablix import add_row_group, convert_to_matrix
+        from pbirb_mcp.ops.tablix_columns import add_column_group
+        from pbirb_mcp.ops.validate import validate_report
+
+        add_row_group(str(rdl_path), "MainTable", "Region", "=Fields!ProductName.Value")
+        add_column_group(str(rdl_path), "MainTable", "Date", "=Fields!ProductID.Value")
+        convert_to_matrix(str(rdl_path), "MainTable", "Region", "Date")
+
+        row_hdr = style_tablix_row(
+            str(rdl_path), "MainTable", "Region_rowheader", background_color="Navy"
+        )
+        assert row_hdr["row_index"] is None
+        assert row_hdr["cells"] == ["Region_Header_0"]
+        assert row_hdr["changed"] == ["box.BackgroundColor"]
+        assert _bg(rdl_path, "Region_Header_0") == "Navy"
+
+        corner = style_tablix_row(str(rdl_path), "MainTable", "corner", font_weight="Bold")
+        assert corner["cells"] == ["MainTable_Corner"]
+        col_hdr = style_tablix_row(str(rdl_path), "MainTable", "Date_rowheader", color="Red")
+        assert col_hdr["cells"] == ["Date_Header"]
+        assert validate_report(str(rdl_path))["valid"]
+
+        before = rdl_path.read_bytes()
+        again = style_tablix_row(str(rdl_path), "MainTable", "corner", font_weight="Bold")
+        assert again["changed"] == [] and rdl_path.read_bytes() == before
+
+        tablix = RDLDocument.open(rdl_path).root.find(f".//{{{RDL_NS}}}Tablix")
+        with pytest.raises(ValueError, match="not a body row"):
+            _resolve_row_index(tablix, "corner")
+        with pytest.raises(ValueError, match="not a body row"):
+            _resolve_row_index(tablix, "Region_rowheader")
+
+    def test_rowheader_missing_raises(self, rdl_path):
+        from pbirb_mcp.ops.styling import style_tablix_row
+        from pbirb_mcp.ops.tablix import add_row_group
+
+        add_row_group(str(rdl_path), "MainTable", "G", "=1")
+        with pytest.raises(ElementNotFoundError, match="no row-header textbox"):
+            style_tablix_row(str(rdl_path), "MainTable", "G_rowheader", color="Red")
+        with pytest.raises(ElementNotFoundError, match="no TablixCorner"):
+            style_tablix_row(str(rdl_path), "MainTable", "corner", color="Red")
+
+
+class TestRowColourExpressions90:
+    def test_alternating_validates_colours_before_opening(self, rdl_path):
+        from pbirb_mcp.ops.styling import set_alternating_row_color
+
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="color_a: invalid color"):
+            set_alternating_row_color(str(rdl_path), "MainTable", 'Wh"ite', "White")
+        with pytest.raises(ValueError, match="color_b: invalid color"):
+            set_alternating_row_color(str(rdl_path), "MainTable", "White", "notacolor")
+        assert rdl_path.read_bytes() == before
+
+    def test_literal_quotes_are_doubled(self):
+        from pbirb_mcp.ops.styling import _vb_string
+
+        assert _vb_string('Wh"ite') == '"Wh""ite"'
+
+    def test_expression_colour_is_embedded_not_quoted(self, rdl_path):
+        from pbirb_mcp.ops.lint import lint_report
+        from pbirb_mcp.ops.parameters import add_parameter
+        from pbirb_mcp.ops.styling import set_alternating_row_color
+
+        add_parameter(str(rdl_path), "Stripe", "String")
+        out = set_alternating_row_color(
+            str(rdl_path), "MainTable", "White", "=Parameters!Stripe.Value"
+        )
+        assert out["expression"] == (
+            '=IIf(RowNumber(Nothing) Mod 2, "White", Parameters!Stripe.Value)'
+        )
+        assert _bg(rdl_path, "Amount") == out["expression"]
+        rules = {i["rule"] for i in lint_report(str(rdl_path))["issues"]}
+        assert "expression-syntax" not in rules
+
+    def test_conditional_colours_validated_and_expressions_embedded(self, rdl_path):
+        from pbirb_mcp.ops.styling import set_conditional_row_color
+
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match=r"color_map\['A'\]: invalid color"):
+            set_conditional_row_color(str(rdl_path), "MainTable", "Fields!X.Value", {"A": "R"})
+        with pytest.raises(ValueError, match="default_color: invalid color"):
+            set_conditional_row_color(
+                str(rdl_path), "MainTable", "Fields!X.Value", {"A": "Red"}, default_color="nope"
+            )
+        assert rdl_path.read_bytes() == before
+        out = set_conditional_row_color(
+            str(rdl_path),
+            "MainTable",
+            "Fields!ProductName.Value",
+            {'A"B': "=Parameters!C.Value"},
+        )
+        assert out["expression"] == (
+            '=Switch(UCase(Fields!ProductName.Value)="A""B", Parameters!C.Value, '
+            'True, "Transparent")'
+        )
+
+    def test_zebra_composes_with_conditional_in_one_background(self, rdl_path):
+        from pbirb_mcp.ops.styling import set_conditional_row_color
+        from pbirb_mcp.ops.validate import validate_report
+
+        out = set_conditional_row_color(
+            str(rdl_path),
+            "MainTable",
+            "Fields!Amount.Value",
+            {"0": "Red"},
+            base_color="zebra:White,#EEEEEE",
+        )
+        expected = (
+            '=Switch(UCase(Fields!Amount.Value)="0", "Red", '
+            'True, IIf(RowNumber(Nothing) Mod 2, "White", "#EEEEEE"))'
+        )
+        assert out["expression"] == expected
+        for name in ("ProductID", "ProductName", "Amount"):
+            assert _bg(rdl_path, name) == expected
+        assert validate_report(str(rdl_path))["valid"]
+        before = rdl_path.read_bytes()
+        again = set_conditional_row_color(
+            str(rdl_path),
+            "MainTable",
+            "Fields!Amount.Value",
+            {"0": "Red"},
+            base_color="zebra:White,#EEEEEE",
+        )
+        assert not again["changed"] and rdl_path.read_bytes() == before
+
+    def test_base_color_accepts_existing_expression(self, rdl_path):
+        from pbirb_mcp.ops.styling import set_alternating_row_color, set_conditional_row_color
+
+        zebra = set_alternating_row_color(str(rdl_path), "MainTable", "White", "Gainsboro")
+        out = set_conditional_row_color(
+            str(rdl_path),
+            "MainTable",
+            "Fields!Amount.Value",
+            {"0": "Red"},
+            case_sensitive=True,
+            base_color=zebra["expression"],
+        )
+        assert out["expression"] == (
+            '=Switch(Fields!Amount.Value="0", "Red", '
+            'True, IIf(RowNumber(Nothing) Mod 2, "White", "Gainsboro"))'
+        )
+
+    @pytest.mark.parametrize(
+        "kwargs, match",
+        [
+            ({"base_color": "zebra:White"}, "zebra:<color_a>,<color_b>"),
+            ({"base_color": "zebra:White,bogus"}, "invalid color"),
+            ({"base_color": "bogus"}, "base_color: invalid color"),
+            ({"base_color": "White", "default_color": "Red"}, "not both"),
+        ],
+    )
+    def test_bad_base_color_refused(self, rdl_path, kwargs, match):
+        from pbirb_mcp.ops.styling import set_conditional_row_color
+
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match=match):
+            set_conditional_row_color(
+                str(rdl_path), "MainTable", "Fields!Amount.Value", {"0": "Red"}, **kwargs
+            )
+        assert rdl_path.read_bytes() == before
+
+    def test_base_color_through_the_server(self, rdl_path):
+        import json
+
+        srv = MCPServer()
+        register_all_tools(srv)
+        resp = srv.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "set_conditional_row_color",
+                    "arguments": {
+                        "path": str(rdl_path),
+                        "tablix_name": "MainTable",
+                        "value_expression": "Fields!Amount.Value",
+                        "color_map": {"0": "Red"},
+                        "base_color": "zebra:White,#EEEEEE",
+                    },
+                },
+            }
+        )
+        result = resp["result"]
+        assert not result.get("isError"), result
+        payload = json.loads(result["content"][0]["text"])
+        assert "IIf(RowNumber(Nothing) Mod 2" in payload["expression"]

@@ -608,6 +608,7 @@ CASES: dict[str, Case] = {
             "tablix_name": "MainTable",
             "value_expression": "=Fields!ProductName.Value",
             "color_map": {"A": "Red", "B": "Green"},
+            "base_color": "zebra:White,#F0F0F0",
         }
     ),
     "set_element_visibility": Case({"element_name": TB, "hidden_expression": "=False"}),

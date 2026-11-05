@@ -3455,7 +3455,7 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Format every cell of a tablix row at once (same style arguments as "
             "set_textbox_style). row: a 0-based index, 'header', 'details', "
-            "'<group>_header' or '<group>_footer'."
+            "'<group>_header', '<group>_footer', '<group>_rowheader' or 'corner'."
         ),
         input_schema={
             "type": "object",
@@ -3469,7 +3469,8 @@ def register_all_tools(server: MCPServer) -> None:
                     ],
                     "description": (
                         "Integer index, or one of: 'header', 'details', "
-                        "'<group>_header', '<group>_footer'."
+                        "'<group>_header', '<group>_footer', '<group>_rowheader', "
+                        "'corner'."
                     ),
                 },
                 "font_family": {"type": ["string", "null"]},
@@ -4239,7 +4240,8 @@ def register_all_tools(server: MCPServer) -> None:
         name="set_conditional_row_color",
         description=(
             "Colour a tablix's detail rows by a field's value: color_map {value: "
-            "colour} (first match wins, else default_color) becomes a Switch() "
+            "colour} (first match wins, else default_color, or base_color "
+            "'zebra:<a>,<b>' to keep striping) becomes a Switch() "
             "background on every detail cell. Case-insensitive unless "
             "case_sensitive=true."
         ),
@@ -4271,6 +4273,13 @@ def register_all_tools(server: MCPServer) -> None:
                 "case_sensitive": {
                     "type": "boolean",
                     "default": False,
+                },
+                "base_color": {
+                    "type": "string",
+                    "description": (
+                        "Fallback instead of default_color: 'zebra:<a>,<b>' keeps "
+                        "striping, or an =expression."
+                    ),
                 },
             },
             "required": ["path", "tablix_name", "value_expression", "color_map"],

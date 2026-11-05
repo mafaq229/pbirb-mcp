@@ -338,7 +338,9 @@ class TestErrors:
         [
             lambda p: set_detail_row_visibility(p, "MainTable", "=True"),
             lambda p: set_alternating_row_color(p, "MainTable", "White", "Gray"),
-            lambda p: set_conditional_row_color(p, "MainTable", "Fields!Amount.Value", {"0": "R"}),
+            lambda p: set_conditional_row_color(
+                p, "MainTable", "Fields!Amount.Value", {"0": "Red"}
+            ),
             lambda p: style_tablix_row(p, "MainTable", "details", font_weight="Bold"),
         ],
         ids=["visibility", "alternating", "conditional", "style_row"],
