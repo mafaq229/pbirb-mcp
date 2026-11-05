@@ -208,6 +208,7 @@ READ_ONLY_CALLS: dict[str, dict] = {
     "find_textboxes_by_style": {"font_weight": "Bold"},
     "find_textbox_by_value": {"pattern": "Note"},
     "list_embedded_images": {},
+    "list_backups": {},
 }
 
 # Path-less helpers: no file to touch; called with their own arguments.

@@ -232,7 +232,25 @@ def _is_read_only(path: Path, st: os.stat_result) -> bool:
     return not (st.st_mode & 0o222) or not os.access(path, os.W_OK)
 
 
-def write_atomic(path: PathLike, data: bytes) -> Path:
+def refuse_read_only(path: PathLike) -> None:
+    """Raise :class:`PermissionError` when ``path`` (through symlinks) is
+    an existing read-only file — the check :func:`write_atomic` makes."""
+    real = Path(os.path.realpath(path))
+    try:
+        st = os.stat(real)
+    except FileNotFoundError:
+        return
+    if _is_read_only(real, st):
+        raise _read_only_error(path)
+
+
+def _read_only_error(path: PathLike) -> PermissionError:
+    return PermissionError(
+        f"{str(path)!r} is read-only; make it writable (or save to another path) first"
+    )
+
+
+def write_atomic(path: PathLike, data: bytes, *, mode: Optional[int] = None) -> Path:
     """Atomically replace (or create) the file at ``path`` with ``data``.
 
     Returns the real path written. Safe-save rules (#64):
@@ -241,7 +259,7 @@ def write_atomic(path: PathLike, data: bytes) -> Path:
       the link stays a link.
     * **Permissions are kept** — an existing file's mode bits (and its
       owner / group, where the process may set them) carry over; a new
-      file gets the default (umask) mode.
+      file gets ``mode`` when given, else the default (umask) mode.
     * **Read-only files are refused** — :class:`PermissionError`, nothing
       written. (``os.replace`` needs only directory write access, so
       without this check a 0444 report would be silently overwritten.)
@@ -258,16 +276,14 @@ def write_atomic(path: PathLike, data: bytes) -> Path:
     except FileNotFoundError:
         st = None
     if st is not None and _is_read_only(real, st):
-        raise PermissionError(
-            f"{str(path)!r} is read-only; make it writable (or save to another path) first"
-        )
+        raise _read_only_error(path)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     while True:
         tmp = real.with_name(f".{real.name}.{uuid.uuid4().hex[:12]}.tmp")
         try:
-            # An existing report's copy starts private and gets its mode
-            # below; a new file gets the umask default.
-            fd = os.open(tmp, flags, 0o600 if st is not None else 0o666)
+            # Starts private and gets its final mode below — unless it's a
+            # new file with no explicit mode: then the umask default.
+            fd = os.open(tmp, flags, 0o666 if st is None and mode is None else 0o600)
             break
         except FileExistsError:  # pragma: no cover — 48-bit name collision
             continue
@@ -277,6 +293,8 @@ def write_atomic(path: PathLike, data: bytes) -> Path:
         if st is not None:
             _copy_ownership(st, tmp)
             os.chmod(tmp, stat.S_IMODE(st.st_mode))
+        elif mode is not None:
+            os.chmod(tmp, mode)
         os.replace(tmp, real)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -621,5 +639,6 @@ __all__ = [
     "RDLValidationError",
     "RDL_NS",
     "RD_NS",
+    "refuse_read_only",
     "write_atomic",
 ]

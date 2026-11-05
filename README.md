@@ -238,7 +238,7 @@ can auto-approve the readers and flag the destructive tools.
 | `PBIRB_MCP_TRANSACTION_TIMEOUT_S` | `600` | Seconds an editing transaction lives without a commit or cancel; an expired one is discarded (nothing saved). |
 | `PBIRB_MCP_LOG_LEVEL` | `WARNING` | `DEBUG` / `INFO` / `WARNING` / `ERROR`. |
 | `PBIRB_MCP_LOG_FILE` | stderr | Log file path (see [Logging](#logging)). |
-| `PBIRB_MCP_AUTO_BACKUP` | — | **Not implemented yet** ([#63](https://github.com/mafaq229/pbirb-mcp/issues/63)): setting it has no effect. Call `backup_report` before a risky edit. |
+| `PBIRB_MCP_AUTO_BACKUP` | off | `1` backs the report up (`<path>.bak.<UTC-timestamp>`) before every removal, rename, query rewrite, `raw_xml_replace` and `convert_to_matrix`; the result's `auto_backup` is the backup path. A backup that already holds the file's bytes is reused. |
 
 Truthy values are `1`, `true`, `yes`, `on` (case-insensitive).
 
@@ -513,7 +513,7 @@ Reference an embedded image with
 |------|--------------|
 | `create_report` | Scratch-create a minimal valid `.rdl` to start from |
 | `duplicate_report` | Copy a report to a new path |
-| `backup_report` / `restore_from_backup` | Snapshot a report and roll back to it (backups are manual: `PBIRB_MCP_AUTO_BACKUP` is not implemented yet) |
+| `backup_report` / `list_backups` / `restore_from_backup` | Snapshot a report (optional folder and label), list its backups and roll back to one (set `PBIRB_MCP_AUTO_BACKUP=1` for automatic backups before destructive edits) |
 
 ### Expression helpers
 

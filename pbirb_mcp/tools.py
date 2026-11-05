@@ -2299,18 +2299,57 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="backup_report",
         description=(
-            "Back up a report to <path>.bak.<UTC timestamp> before a risky edit; "
-            "returns the backup path. Undo with restore_from_backup."
+            "Back up a report to <path>.bak.<UTC timestamp>[.<label>] before a risky "
+            "edit; returns the backup path. dest_dir picks another folder. Inside a "
+            "transaction it saves the edited state. Undo with restore_from_backup."
         ),
-        input_schema=_PATH_ONLY_SCHEMA,
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute path to the .rdl file."},
+                "dest_dir": {
+                    "type": ["string", "null"],
+                    "default": None,
+                    "description": "Existing folder for the backup; default: the report's.",
+                },
+                "label": {
+                    "type": ["string", "null"],
+                    "default": None,
+                    "description": "Tag added to the name: 1-64 letters, digits, - or _.",
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
         handler=snapshot.backup_report,
+    )
+    server.register_tool(
+        name="list_backups",
+        description=(
+            "List a report's backups, newest first, with label, time and whether each "
+            "matches the current file. Pick one for restore_from_backup."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute path to the .rdl file."},
+                "dest_dir": {
+                    "type": ["string", "null"],
+                    "default": None,
+                    "description": "Folder the backups are in; default: the report's.",
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=snapshot.list_backups,
     )
     server.register_tool(
         name="restore_from_backup",
         description=(
-            "Restore a backup over its report (undo). target_path defaults to the "
-            "name the backup implies. Refuses when the report is newer than the "
-            "backup unless force=true."
+            "Restore a backup over its report (undo). Backs the current state up "
+            "first (safety_backup) and refuses a backup that isn't a valid report. "
+            "target_path defaults to the report the backup was taken of."
         ),
         input_schema={
             "type": "object",

@@ -244,6 +244,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "create_report",
             "duplicate_report",
             "backup_report",
+            "list_backups",
             "restore_from_backup",
             "raw_xml_view",
             "raw_xml_replace",

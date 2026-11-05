@@ -30,7 +30,7 @@ Highlights:
 * Parameter CRUD — `set_parameter_prompt`, `set_parameter_type`,
   `add_parameter`, `remove_parameter`, `rename_parameter`.
 * Snapshot — `backup_report` (the planned `PBIRB_MCP_AUTO_BACKUP=1`
-  automatic backups were never wired up; tracked in #63).
+  automatic backups were only wired up later, in #63).
 * MCP server now returns tool failures as `isError: true` result
   content with structured `{error_type, message}` payloads (per MCP
   spec) instead of opaque JSON-RPC `-32603 INTERNAL_ERROR`.

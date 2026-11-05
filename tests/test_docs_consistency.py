@@ -61,19 +61,17 @@ class TestEnvironmentVariables:
         missing = sorted(n for n in names if f"`{n}`" not in table)
         assert not missing, f"add to README § Environment variables: {missing}"
 
-    def test_auto_backup_is_documented_as_unimplemented_while_nothing_calls_it(self):
-        callers = [
-            p
-            for p in _code_files()
-            if p.name != "snapshot.py" and "maybe_auto_backup" in p.read_text(encoding="utf-8")
-        ]
+    def test_auto_backup_is_wired_up_and_documented(self):
+        # #63: the dispatcher calls the hook, so the README must not call
+        # it unimplemented any more.
+        server_py = (ROOT / "pbirb_mcp" / "server.py").read_text(encoding="utf-8")
+        assert "maybe_auto_backup(" in server_py
         row = next(
             line for line in README.splitlines() if line.startswith("| `PBIRB_MCP_AUTO_BACKUP`")
         )
-        if not callers:
-            assert "Not implemented" in row
-        else:  # pragma: no cover — #63 landed: update the README row
-            assert "Not implemented" not in row
+        assert "Not implemented" not in row
+        assert "auto_backup" in row
+        assert "not implemented" not in _section(TOOLS_MD, "### `backup_report`").lower()
 
     def test_readme_shows_allowed_roots_in_a_client_config(self):
         assert '"PBIRB_MCP_ALLOWED_ROOTS":' in README

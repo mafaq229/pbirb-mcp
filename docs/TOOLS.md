@@ -833,10 +833,18 @@ Replace the single element matched by xpath with new content. content is parsed 
 
 ### `backup_report`
 
-Copy the report to `<path>.bak.<UTC-timestamp>`. Original is untouched. Cheap explicit checkpoint to call before a destructive batch (remove_*, rename_parameter, etc.). Returns the backup path. There are no automatic backups yet (PBIRB_MCP_AUTO_BACKUP is not implemented, #63): call this yourself before a risky edit.
+Copy the report to `<dest_dir>/<name>.bak.<UTC-timestamp>[-<n>][.<label>]`; the report is untouched. `dest_dir` (an existing folder) defaults to the report's folder; `label` (1-64 letters, digits, `-`, `_`) tags the name, e.g. `report.rdl.bak.20261105-101500.before-cleanup`. A sidecar `<backup>.meta.json` records `{source, sha1, size_bytes, source_mtime_ns, label, created, reason, in_transaction}`, so restore_from_backup finds the report even from another folder. The backup keeps the report's permission bits (plus owner-write); its mtime is the time of the backup. Called with a `transaction_id`, the backup holds the transaction's edited (not yet committed) state. Returns {source, backup, size_bytes, label, created, in_transaction}. Nothing is rotated or deleted.
+
+With `PBIRB_MCP_AUTO_BACKUP` on, the server takes a backup like this by itself before every removal (`remove_*`), `rename_data_source`, `rename_parameter`, `update_dataset_query`, `refresh_dataset_fields`, `raw_xml_replace` and `convert_to_matrix`, and adds its path to the result as `auto_backup`. When the newest backup already holds the file's bytes it is reused, so a repeated call — or every op of one transaction, whose file doesn't change until commit — shares one backup: the state before the edits.
+
+### `list_backups`
+
+*read-only*
+
+The report's backups (in its folder, or `dest_dir`), newest first: {path, backups: [{backup, created, label, size_bytes, reason, same_as_report}]}. `reason` is `manual` (backup_report), `auto` (PBIRB_MCP_AUTO_BACKUP) or `pre-restore` (restore_from_backup's safety copy); `same_as_report` is true when the backup holds exactly the report's current bytes. Backups whose sidecar names a different report are left out.
 
 ### `restore_from_backup`
 
 *destructive*
 
-Restore a backup file over its original target. target_path defaults to the path implied by the backup's `<target>.bak.<UTC-timestamp>` filename; pass target_path explicitly when the backup name doesn't match that shape. Refuses if target mtime is newer than backup (staleness guard) — pass force=True to override. Returns {source, restored_to, bytes_restored}.
+Copy a backup over its report (undo). `target_path` defaults to the report recorded in the backup's sidecar, else the path its `<target>.bak.<UTC-timestamp>` name implies; pass it when neither is known. Before writing, the report's current state is backed up (`safety_backup`, reused when a backup already holds it), so a restore can be undone too. Refuses a backup that isn't well-formed XML; refuses one that isn't a structurally valid report, or that was taken of a different report than the target, unless `force=true`. Refuses a report held by an open editing transaction and a read-only report. Returns {source, restored_to, bytes_restored, safety_backup, changed}; `changed` is false (nothing written) when the report already holds the backup's bytes.

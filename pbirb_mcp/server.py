@@ -15,6 +15,11 @@ the response: ``{result, verify}``. The verified file is the tool's
 ``path``, else its ``dst_path`` (duplicate_report), else the
 ``restored_to`` it returned (restore_from_backup). Default off — v0.2
 callers see no shape change.
+
+Optional :envvar:`PBIRB_MCP_AUTO_BACKUP` (issue #63): when truthy the
+dispatcher backs the report up (:func:`pbirb_mcp.ops.snapshot.maybe_auto_backup`)
+before every tool in :data:`AUTO_BACKUP_TOOLS` and adds the backup's path
+to the result as ``auto_backup``.
 """
 
 from __future__ import annotations
@@ -105,6 +110,17 @@ DESTRUCTIVE_TOOLS = frozenset(
         "restore_from_backup",
     }
 )
+
+# Tools that PBIRB_MCP_AUTO_BACKUP backs the report up before (issue #63):
+# the destructive ones, plus edits that rewrite references or a whole query
+# and are hard to undo by hand. restore_from_backup isn't listed: it always
+# backs the target up itself (its `safety_backup`).
+AUTO_BACKUP_TOOLS = (DESTRUCTIVE_TOOLS - {"restore_from_backup"}) | {
+    "rename_data_source",
+    "rename_parameter",
+    "update_dataset_query",
+    "refresh_dataset_fields",
+}
 
 # Mutating tools whose second identical call is a no-op: it succeeds,
 # reports nothing changed and leaves the file alone (issue #61). Published
@@ -590,7 +606,21 @@ class MCPServer:
         # remove_parameter, missing-column hints in add_subtotal_row, etc.).
         depth = _CALL_DEPTH.set(_CALL_DEPTH.get() + 1)
         policy_token = _toolsets.push(policy)
+        auto_backup = None
         try:
+            # Issue #63: PBIRB_MCP_AUTO_BACKUP — back the report up before a
+            # destructive edit (not a dry-run's preview copy). Inside a
+            # transaction this is the file as it was before the
+            # transaction; repeats reuse the backup.
+            report = arguments.get("path")
+            if (
+                name in AUTO_BACKUP_TOOLS
+                and isinstance(report, str)
+                and not security.is_preview_path(report)
+            ):
+                from pbirb_mcp.ops.snapshot import maybe_auto_backup
+
+                auto_backup = maybe_auto_backup(report)
             if in_transaction:
                 from pbirb_mcp.core import transactions as _tx
 
@@ -637,6 +667,8 @@ class MCPServer:
             _toolsets.pop(policy_token)
             _CALL_DEPTH.reset(depth)
 
+        if auto_backup is not None and isinstance(result, dict):
+            result = {**result, "auto_backup": auto_backup["backup"]}
         if audited:
             security.audit(name, arguments, ok=True, result=result, in_transaction=in_transaction)
 
