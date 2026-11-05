@@ -616,6 +616,12 @@ Replace the text content of a single-run textbox. value can be raw text or an =e
 
 Apply the same style kwargs to every named textbox in one call. Same kwarg surface, routing (every run / paragraph) and validation as set_textbox_style; a bad value is refused before any textbox is written. The report is opened once, every name is resolved before anything is written (a name repeated in the input counts once), and the file is saved once, only if something changed. A name with no textbox lands in skipped and a name several textboxes share lands in ambiguous; the rest are still styled. strict=true refuses the whole call (nothing written) when any name is skipped or ambiguous. Returns {textboxes, skipped, ambiguous, changed} where changed is the union of sub-paths affected across all textboxes. Pair with find_textboxes_by_style to discover names by current style. cells (a list of {tablix, header | field | index, row}) adds tablix cells picked by column header or field.
 
+### `copy_textbox_style`
+
+*idempotent*
+
+Make target textboxes look like a source textbox, e.g. the cells add_tablix_column creates unstyled. Copies the source's elements: scope 'box' (every Textbox/Style property except borders — background, padding, vertical alignment, writing mode, ...), 'border' (Border and the per-side TopBorder / BottomBorder / LeftBorder / RightBorder), 'paragraph' (the first source paragraph's Style plus its paragraph properties — indents, ListStyle / ListLevel, SpaceBefore / SpaceAfter — onto every target paragraph) and 'run' (the first source run's Style, onto every run of every target paragraph); scope picks a subset (default all four). include_textbox_flags (default true) also copies CanGrow / CanShrink. Within a scope the target ends up with exactly the source's properties: one the source lacks is removed. Values, actions, tooltips, visibility and names are never touched. targets resolve like set_textbox_style_bulk's names — repeats count once, unknown names land in skipped, names several textboxes share in ambiguous, strict=true refuses both before any write; the source must name exactly one textbox. Opens and saves the report once; an identical repeat returns changed: [] and leaves the file byte-identical. Returns {source, targets, skipped, ambiguous, changed} where changed lists the parts that changed ('box', 'border', 'paragraph', 'run', 'textbox.CanGrow', 'textbox.CanShrink').
+
 ### `find_textboxes_by_style`
 
 *read-only*

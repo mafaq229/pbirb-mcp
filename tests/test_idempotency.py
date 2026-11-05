@@ -597,6 +597,21 @@ CASES: dict[str, Case] = {
             "color": "Blue",
         }
     ),
+    "copy_textbox_style": Case(
+        {"source": "HeaderAmount", "targets": ["HeaderProductID", "ProductID"]},
+        setup=[
+            (
+                "set_textbox_style",
+                {
+                    "textbox_name": "HeaderAmount",
+                    "background_color": "Navy",
+                    "border_style": "Solid",
+                    "text_align": "Center",
+                    "color": "White",
+                },
+            )
+        ],
+    ),
     "style_tablix_row": Case(
         {"tablix_name": "MainTable", "row": 0, "font_weight": "Bold", "background_color": "#DDDDDD"}
     ),

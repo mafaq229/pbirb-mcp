@@ -29,15 +29,15 @@ Every edit case is also graded by the structural gate (XSD + lint errors the edi
 | t05 | tablix | medium | synth | fleet_utilization.rdl | `set_group_sort` | 45 |
 | t06 | tablix | hard | feedback | fleet_utilization.rdl | `add_row_group` → `add_column_group` → `convert_to_matrix` → `set_tablix_corner` | 45 |
 | t07 | tablix | medium | synth | fleet_utilization.rdl | `add_tablix_filter` | 45 |
-| s01 | style | medium | synth | fleet_utilization.rdl | `style_tablix_row` | 28 |
-| s02 | style | medium | synth | fleet_utilization.rdl | `set_alternating_row_color` | 28 |
-| s03 | style | hard | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 28 |
-| s04 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 28 |
-| s05 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style` | 28 |
-| s06 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style` | 28 |
-| s07 | style | medium | synth | fleet_utilization.rdl | `set_textbox_runs` | 28 |
-| s08 | style | hard | feedback | fleet_utilization.rdl | `set_textbox_runs` | 28 |
-| s09 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 28 |
+| s01 | style | medium | synth | fleet_utilization.rdl | `style_tablix_row` | 29 |
+| s02 | style | medium | synth | fleet_utilization.rdl | `set_alternating_row_color` | 29 |
+| s03 | style | hard | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 29 |
+| s04 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 29 |
+| s05 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style` | 29 |
+| s06 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style` | 29 |
+| s07 | style | medium | synth | fleet_utilization.rdl | `set_textbox_runs` | 29 |
+| s08 | style | hard | feedback | fleet_utilization.rdl | `set_textbox_runs` | 29 |
+| s09 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 29 |
 | l01 | layout | easy | synth | fleet_utilization.rdl | `set_page_orientation` | 52 |
 | l02 | layout | easy | feedback | fleet_utilization.rdl | `set_body_item_position` | 52 |
 | l03 | layout | medium | feedback | fleet_utilization.rdl | `set_page_footer` → `add_footer_textbox` | 52 |
@@ -60,7 +60,7 @@ Every edit case is also graded by the structural gate (XSD + lint errors the edi
 | t11 | tablix | medium | synth | fleet_utilization.rdl | `add_column_group` | 45 |
 | t12 | tablix | medium | synth | fleet_rb.rdl | `set_repeat_header_rows` | 46 |
 | t13 | tablix | easy | synth | fleet_utilization.rdl | `set_group_sort` | 45 |
-| s10 | style | hard | synth | fleet_rb.rdl | `set_textbox_runs` | 28 |
+| s10 | style | hard | synth | fleet_rb.rdl | `set_textbox_runs` | 29 |
 | c07 | chart | medium | synth | fleet_utilization.rdl | `add_chart_series` → `remove_chart_series` | 29 |
 | c08 | chart | easy | synth | fleet_rb.rdl | `remove_chart_series` | 29 |
 | p09 | parameters | medium | synth | fleet_rb.rdl | `rename_parameter` | 29 |

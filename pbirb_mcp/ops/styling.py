@@ -35,7 +35,7 @@ from pbirb_mcp.core.ids import (
     resolve_tablix,
     resolve_textbox,
 )
-from pbirb_mcp.core.mutation import set_text_if_different
+from pbirb_mcp.core.mutation import fingerprint, set_text_if_different
 from pbirb_mcp.core.tablix_shape import (
     NO_DETAIL_GROUP,
     data_leaf,
@@ -47,7 +47,7 @@ from pbirb_mcp.core.tablix_shape import (
     owner_member,
     subtree_leaves,
 )
-from pbirb_mcp.core.xpath import find_child, find_children, q
+from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
 
 # Per RDL XSD, the order of <Style> children includes (subset relevant here):
 #   Border, TopBorder, BottomBorder, LeftBorder, RightBorder,
@@ -1532,8 +1532,234 @@ def style_tablix_row(
     }
 
 
+# ---- copy_textbox_style (#112) --------------------------------------------
+
+COPY_SCOPES = ("box", "border", "paragraph", "run")
+_BORDER_LOCALS = frozenset({"Border", "TopBorder", "BottomBorder", "LeftBorder", "RightBorder"})
+# Paragraph-level properties (every ParagraphType child but TextRuns).
+_PARAGRAPH_LOCALS = (
+    "Style",
+    "LeftIndent",
+    "RightIndent",
+    "HangingIndent",
+    "ListStyle",
+    "ListLevel",
+    "SpaceBefore",
+    "SpaceAfter",
+)
+_TEXTBOX_FLAGS = ("CanGrow", "CanShrink")
+
+
+def _rdl_children(parent: Optional[etree._Element], wanted: Callable[[str], bool]) -> list:
+    """RDL-namespace element children of ``parent`` whose local name
+    ``wanted`` accepts, in document order."""
+    if parent is None:
+        return []
+    return [
+        child
+        for child in parent
+        if isinstance(child.tag, str)
+        and child.tag.startswith(f"{{{RDL_NS}}}")
+        and wanted(etree.QName(child).localname)
+    ]
+
+
+def _replace_children(
+    parent: etree._Element,
+    wanted: Callable[[str], bool],
+    sources: list[etree._Element],
+    order: Optional[tuple[str, ...]] = None,
+    after: Optional[etree._Element] = None,
+) -> bool:
+    """Make ``parent``'s ``wanted`` children deep copies of ``sources``.
+    Nothing is touched when they already match (layout ignored), so a
+    repeat copy leaves the file byte-identical. Copies go in ``order``
+    (by local name) when given, else just after ``after`` (or appended).
+    Returns ``True`` iff the tree changed."""
+    current = _rdl_children(parent, wanted)
+    if [fingerprint(c) for c in current] == [fingerprint(s) for s in sources]:
+        return False
+    for child in current:
+        _remove_keep_layout(child)
+    anchor = after
+    for source in sources:
+        node = copy.deepcopy(source)
+        node.tail = None
+        if order is not None:
+            _insert_by_order(parent, node, order)
+        elif anchor is not None:
+            anchor.addnext(node)
+            anchor = node
+        else:
+            parent.append(node)
+    return True
+
+
+def _insert_by_order(parent: etree._Element, node: etree._Element, order: tuple[str, ...]) -> None:
+    local = etree.QName(node).localname
+    rank = order.index(local) if local in order else len(order)
+    for child in parent:
+        if not isinstance(child.tag, str):
+            continue
+        child_local = etree.QName(child).localname
+        if child_local in order and order.index(child_local) > rank:
+            child.addprevious(node)
+            return
+    parent.append(node)
+
+
+def _first_paragraph_and_run(
+    textbox: etree._Element,
+) -> tuple[Optional[etree._Element], Optional[etree._Element]]:
+    paragraphs_root = find_child(textbox, "Paragraphs")
+    paragraph = find_child(paragraphs_root, "Paragraph") if paragraphs_root is not None else None
+    runs = _textruns_of(paragraph) if paragraph is not None else []
+    return paragraph, (runs[0] if runs else None)
+
+
+def _copy_style_onto(
+    source: etree._Element, target: etree._Element, scopes: tuple[str, ...], flags: bool
+) -> list[str]:
+    """Copy ``source``'s styling onto ``target`` (in memory) and return
+    the changed parts (``"box"``, ``"border"``, ``"paragraph"``,
+    ``"run"``, ``"textbox.CanGrow"``, ...). Values, actions, visibility
+    and names are never touched."""
+    changed: list[str] = []
+    src_style = find_child(source, "Style")
+    for scope, wanted in (
+        ("box", lambda local: local not in _BORDER_LOCALS),
+        ("border", lambda local: local in _BORDER_LOCALS),
+    ):
+        if scope not in scopes:
+            continue
+        sources = _rdl_children(src_style, wanted)
+        tgt_style = find_child(target, "Style")
+        if tgt_style is None:
+            if not sources:
+                continue
+            tgt_style = _ensure_style(target)
+        if _replace_children(tgt_style, wanted, sources, order=_STYLE_CHILD_ORDER):
+            changed.append(scope)
+
+    src_paragraph, src_run = _first_paragraph_and_run(source)
+    if "paragraph" in scopes or "run" in scopes:
+        paragraphs_root = find_child(target, "Paragraphs")
+        paragraphs = (
+            find_children(paragraphs_root, "Paragraph") if paragraphs_root is not None else []
+        )
+        para_sources = _rdl_children(src_paragraph, lambda local: local in _PARAGRAPH_LOCALS)
+        run_style = find_child(src_run, "Style") if src_run is not None else None
+        run_sources = [run_style] if run_style is not None else []
+        for paragraph in paragraphs:
+            if "paragraph" in scopes and _replace_children(
+                paragraph,
+                lambda local: local in _PARAGRAPH_LOCALS,
+                para_sources,
+                after=find_child(paragraph, "TextRuns"),
+            ):
+                _note(changed, "paragraph")
+            if "run" not in scopes:
+                continue
+            for textrun in _textruns_of(paragraph):
+                last = textrun[-1] if len(textrun) else None
+                anchor = (
+                    last if last is not None and etree.QName(last).localname != "Style" else None
+                )
+                if _replace_children(
+                    textrun, lambda local: local == "Style", run_sources, after=anchor
+                ):
+                    _note(changed, "run")
+
+    if flags:
+        for local in _TEXTBOX_FLAGS:
+            src_flag = find_child(source, local)
+            if src_flag is not None:
+                if _set_or_create_textbox_direct_child(target, local, src_flag.text or ""):
+                    changed.append(f"textbox.{local}")
+            else:
+                tgt_flag = find_child(target, local)
+                if tgt_flag is not None:
+                    _remove_keep_layout(tgt_flag)
+                    changed.append(f"textbox.{local}")
+    return changed
+
+
+def copy_textbox_style(
+    path: str,
+    source: str,
+    targets: list[str],
+    scope: Optional[list[str]] = None,
+    include_textbox_flags: bool = True,
+    strict: bool = False,
+) -> dict[str, Any]:
+    """Make ``targets`` look like the textbox ``source``.
+
+    Copies, by deep-copying the source's elements:
+
+    - ``"box"`` — every ``Textbox/Style`` property except the borders
+      (background, padding, vertical alignment, writing mode, ...);
+    - ``"border"`` — ``Border`` and the per-side ``Top/Bottom/Left/
+      RightBorder``;
+    - ``"paragraph"`` — the first source paragraph's ``Style`` and
+      paragraph properties (indents, list style/level, spacing), onto
+      every target paragraph;
+    - ``"run"`` — the first source run's ``Style``, onto every run of
+      every target paragraph;
+
+    plus ``CanGrow`` / ``CanShrink`` when ``include_textbox_flags``.
+    ``scope`` picks a subset (default: all four). Within a scope the
+    target ends up with exactly the source's properties — one the source
+    lacks is removed. Values, actions, tooltips, visibility and names are
+    never touched.
+
+    Targets resolve like :func:`set_textbox_style_bulk`'s names: repeats
+    count once, unknown names go to ``skipped``, names several textboxes
+    share to ``ambiguous``; ``strict=True`` refuses both before any write.
+    The source must name exactly one textbox. The report is opened and
+    saved once (not at all when nothing changed).
+
+    Returns ``{source, targets, skipped, ambiguous, changed}`` —
+    ``changed`` is the sorted union of the parts that changed (``"box"``,
+    ``"border"``, ``"paragraph"``, ``"run"``, ``"textbox.CanGrow"``, ...).
+    """
+    if not isinstance(targets, list) or not all(isinstance(t, str) for t in targets):
+        raise ValueError("targets must be a list of textbox names")
+    if not targets:
+        raise ValueError("targets must name at least one textbox")
+    scopes = tuple(dict.fromkeys(COPY_SCOPES if scope is None else scope))
+    bad = [s for s in scopes if s not in COPY_SCOPES]
+    if bad or not scopes:
+        raise ValueError(f"scope: expected a non-empty list of {list(COPY_SCOPES)}; got {scope!r}")
+    for field, value in (("include_textbox_flags", include_textbox_flags), ("strict", strict)):
+        if not isinstance(value, bool):
+            raise ValueError(f"{field}: expected true or false; got {value!r}")
+
+    doc = RDLDocument.open(path)
+    source_el = resolve_textbox(doc, source)
+    resolved, skipped, ambiguous = _resolve_textbox_names(doc, targets)
+    if strict:
+        _refuse_unresolved("copy_textbox_style", skipped, ambiguous)
+    union: set[str] = set()
+    for _name, target in resolved:
+        if target is source_el:
+            continue
+        union.update(_copy_style_onto(source_el, target, scopes, include_textbox_flags))
+    changed = sorted(union)
+    if changed:
+        doc.save()
+    return {
+        "source": source,
+        "targets": [name for name, _target in resolved],
+        "skipped": skipped,
+        "ambiguous": ambiguous,
+        "changed": changed,
+    }
+
+
 __all__ = [
+    "COPY_SCOPES",
     "STYLE_KWARGS",
+    "copy_textbox_style",
     "set_alternating_row_color",
     "set_conditional_row_color",
     "set_textbox_runs",

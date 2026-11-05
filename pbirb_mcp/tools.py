@@ -3397,6 +3397,35 @@ def register_all_tools(server: MCPServer) -> None:
         mutating=True,
     )
     server.register_tool(
+        name="copy_textbox_style",
+        description=(
+            "Make textboxes look like another: copy the source textbox's box, "
+            "border, paragraph and run styling (and CanGrow/CanShrink) onto "
+            "every target, e.g. new cells after add_tablix_column. Text, actions "
+            "and visibility are kept."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "source": {"type": "string"},
+                "targets": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                "scope": {
+                    "type": "array",
+                    "items": {"enum": list(styling.COPY_SCOPES)},
+                    "minItems": 1,
+                    "description": "Parts to copy (default all).",
+                },
+                "include_textbox_flags": {"type": "boolean", "default": True},
+                "strict": {"type": "boolean", "default": False},
+            },
+            "required": ["path", "source", "targets"],
+            "additionalProperties": False,
+        },
+        handler=styling.copy_textbox_style,
+        mutating=True,
+    )
+    server.register_tool(
         name="find_textboxes_by_style",
         description=(
             "Find textboxes by current style (all filters must match, any run or "

@@ -131,6 +131,7 @@ AUTO_BACKUP_TOOLS = (DESTRUCTIVE_TOOLS - {"restore_from_backup"}) | {
 IDEMPOTENT_TOOLS = frozenset(
     {
         "center_item",
+        "copy_textbox_style",
         "fit_page_to_body",
         "move_report_item",
         "raw_xml_replace",

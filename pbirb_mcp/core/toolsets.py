@@ -183,6 +183,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "set_textbox_runs",
             "set_textbox_style",
             "set_textbox_style_bulk",
+            "copy_textbox_style",
             "style_tablix_row",
             "set_alternating_row_color",
             "set_conditional_row_color",
