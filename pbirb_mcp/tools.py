@@ -3399,7 +3399,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="find_textboxes_by_style",
         description=(
-            "Find textboxes by current style (all filters must match), e.g. every "
+            "Find textboxes by current style (all filters must match, any run or "
+            "paragraph; colours, sizes and enums compare normalised), e.g. every "
             "red or bold one. Returns name, location and the matched fields; pair "
             "with set_textbox_style_bulk."
         ),
@@ -3425,6 +3426,11 @@ def register_all_tools(server: MCPServer) -> None:
                 "color": {"type": "string"},
                 "format": {"type": "string"},
                 "text_decoration": {"type": "string"},
+                "effective": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Unset properties match the RDL default (10pt, Arial, Black...).",
+                },
             },
             "required": ["path"],
             "additionalProperties": False,
@@ -3436,7 +3442,8 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Find textboxes whose text or expression matches a regex, in the "
             "body, header and footer; e.g. stale =Parameters!Old.Value "
-            "references."
+            "references. Searches run values; include adds tooltips, actions, "
+            "visibility."
         ),
         input_schema={
             "type": "object",
@@ -3445,6 +3452,11 @@ def register_all_tools(server: MCPServer) -> None:
                 "pattern": {
                     "type": "string",
                     "description": "Python regex (re.search); not RDL/SQL glob.",
+                },
+                "include": {
+                    "type": "array",
+                    "items": {"enum": ["tooltip", "action", "visibility"]},
+                    "description": "Also search these expressions (default: run values only).",
                 },
             },
             "required": ["path", "pattern"],

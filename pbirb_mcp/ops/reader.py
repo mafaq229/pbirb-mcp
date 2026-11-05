@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import chart_shape, chart_types
+from pbirb_mcp.core import chart_shape, chart_types, style_values
 from pbirb_mcp.core.columns import describe_columns
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.geometry import PAGE_DEFAULTS, REPORT_ITEM_TAGS, size_unit
@@ -1708,81 +1708,133 @@ def get_chart(path: str, name: str) -> dict[str, Any]:
 
 
 # Filter kwargs accepted by find_textboxes_by_style. Each entry maps a
-# user-facing kwarg name to (style_level, RDL local name).
+# user-facing kwarg name to (style_level, RDL local name, comparison kind).
 #
-# Box-level filters route to <Textbox/Style>/X; paragraph filters to
-# <Paragraph/Style>/X; run filters to the FIRST <TextRun/Style>/X.
-_FILTER_LOCATIONS: dict[str, tuple[str, str]] = {
-    "background_color": ("box", "BackgroundColor"),
-    "vertical_align": ("box", "VerticalAlign"),
-    "writing_mode": ("box", "WritingMode"),
-    "padding_top": ("box", "PaddingTop"),
-    "padding_bottom": ("box", "PaddingBottom"),
-    "padding_left": ("box", "PaddingLeft"),
-    "padding_right": ("box", "PaddingRight"),
-    "border_style": ("border", "Style"),
-    "border_color": ("border", "Color"),
-    "border_width": ("border", "Width"),
-    "text_align": ("paragraph", "TextAlign"),
-    "font_family": ("run", "FontFamily"),
-    "font_size": ("run", "FontSize"),
-    "font_weight": ("run", "FontWeight"),
-    "font_style": ("run", "FontStyle"),
-    "color": ("run", "Color"),
-    "format": ("run", "Format"),
-    "text_decoration": ("run", "TextDecoration"),
+# Box-level filters read <Textbox/Style>/X, border filters
+# <Textbox/Style/Border>/X; paragraph filters are tried on every
+# <Paragraph/Style>, run filters on every <TextRun/Style>.
+_FILTER_LOCATIONS: dict[str, tuple[str, str, str]] = {
+    "background_color": ("box", "BackgroundColor", "color"),
+    "vertical_align": ("box", "VerticalAlign", "enum"),
+    "writing_mode": ("box", "WritingMode", "enum"),
+    "padding_top": ("box", "PaddingTop", "size"),
+    "padding_bottom": ("box", "PaddingBottom", "size"),
+    "padding_left": ("box", "PaddingLeft", "size"),
+    "padding_right": ("box", "PaddingRight", "size"),
+    "border_style": ("border", "Style", "enum"),
+    "border_color": ("border", "Color", "color"),
+    "border_width": ("border", "Width", "size"),
+    "text_align": ("paragraph", "TextAlign", "enum"),
+    "font_family": ("run", "FontFamily", "text"),
+    "font_size": ("run", "FontSize", "size"),
+    "font_weight": ("run", "FontWeight", "enum"),
+    "font_style": ("run", "FontStyle", "enum"),
+    "color": ("run", "Color", "color"),
+    "format": ("run", "Format", "exact"),
+    "text_decoration": ("run", "TextDecoration", "enum"),
 }
 
+# What Report Builder renders when a property is unset — matched by an
+# unset property under ``effective=True``.
+_STYLE_DEFAULTS: dict[str, str] = {
+    "BackgroundColor": "Transparent",
+    "VerticalAlign": "Top",
+    "WritingMode": "Horizontal",
+    "PaddingTop": "0pt",
+    "PaddingBottom": "0pt",
+    "PaddingLeft": "0pt",
+    "PaddingRight": "0pt",
+    "Style": "None",
+    "Width": "1pt",
+    "TextAlign": "General",
+    "FontFamily": "Arial",
+    "FontSize": "10pt",
+    "FontWeight": "Normal",
+    "FontStyle": "Normal",
+    "Color": "Black",
+    "TextDecoration": "None",
+}
+_BORDER_DEFAULTS = {"Style": "None", "Color": "Black", "Width": "1pt"}
 
-def _textbox_style_field_value(textbox: etree._Element, level: str, local: str) -> Optional[str]:
-    """Read the effective value of one Style field on a textbox at the
-    given level (box / border / paragraph / run). Returns ``None`` when
-    absent."""
-    if level == "box":
+
+def _style_key(kind: str, value: str) -> Any:
+    """Comparison key for a style value: colours by value (named, hex
+    of either case), sizes in points (``10pt`` == ``10.0pt`` ==
+    ``0.13889in``), enums and font families case-insensitively (font
+    weights 100-900 as their names). Expressions compare as written."""
+    text = value.strip()
+    if text.startswith("="):
+        return text
+    if kind == "color":
+        return style_values.normalize_color(text)
+    if kind == "size":
+        try:
+            return round(to_inches(text) * 72.0, 4)
+        except ValueError:
+            return text
+    if kind == "enum":
+        canonical = style_values.font_weight(text) if text.isdigit() else text
+        return (canonical or text).lower()
+    if kind == "text":
+        return text.lower()
+    return value
+
+
+def _style_text(style: Optional[etree._Element], local: str) -> Optional[str]:
+    node = find_child(style, local) if style is not None else None
+    return node.text if node is not None and node.text is not None else None
+
+
+def _style_candidates(
+    textbox: etree._Element, level: str
+) -> list[tuple[Optional[etree._Element], dict[str, int]]]:
+    """``(style element or None, position)`` pairs a filter at ``level``
+    is tried against: the box/border style once, every paragraph's style
+    (``{paragraph_index}``) or every run's (``{paragraph_index,
+    run_index}``). A textbox with no paragraph/run still yields one
+    style-less candidate, so ``effective`` can match its defaults."""
+    if level in ("box", "border"):
         style = find_child(textbox, "Style")
-        if style is None:
-            return None
-        node = find_child(style, local)
-        return node.text if node is not None and node.text is not None else None
-    if level == "border":
-        style = find_child(textbox, "Style")
-        if style is None:
-            return None
-        border = find_child(style, "Border")
-        if border is None:
-            return None
-        node = find_child(border, local)
-        return node.text if node is not None and node.text is not None else None
-    if level == "paragraph":
-        paragraphs_root = find_child(textbox, "Paragraphs")
-        if paragraphs_root is None:
-            return None
-        paragraph = find_child(paragraphs_root, "Paragraph")
-        if paragraph is None:
-            return None
-        style = find_child(paragraph, "Style")
-        if style is None:
-            return None
-        node = find_child(style, local)
-        return node.text if node is not None and node.text is not None else None
-    if level == "run":
-        paragraphs_root = find_child(textbox, "Paragraphs")
-        if paragraphs_root is None:
-            return None
-        paragraph = find_child(paragraphs_root, "Paragraph")
-        if paragraph is None:
-            return None
+        if level == "border" and style is not None:
+            style = find_child(style, "Border")
+        return [(style, {})]
+    paragraphs_root = find_child(textbox, "Paragraphs")
+    paragraphs = find_children(paragraphs_root, "Paragraph") if paragraphs_root is not None else []
+    out: list[tuple[Optional[etree._Element], dict[str, int]]] = []
+    for p_idx, paragraph in enumerate(paragraphs):
+        if level == "paragraph":
+            out.append((find_child(paragraph, "Style"), {"paragraph_index": p_idx}))
+            continue
         runs_root = find_child(paragraph, "TextRuns")
-        if runs_root is None:
-            return None
-        run = find_child(runs_root, "TextRun")
-        if run is None:
-            return None
-        style = find_child(run, "Style")
-        if style is None:
-            return None
-        node = find_child(style, local)
-        return node.text if node is not None and node.text is not None else None
+        runs = find_children(runs_root, "TextRun") if runs_root is not None else []
+        for r_idx, run in enumerate(runs):
+            out.append((find_child(run, "Style"), {"paragraph_index": p_idx, "run_index": r_idx}))
+    if not out:
+        out.append((None, {"paragraph_index": 0} if level == "paragraph" else {}))
+    return out
+
+
+def _match_level(
+    textbox: etree._Element,
+    level: str,
+    wanted: dict[str, tuple[str, str, Any]],
+    effective: bool,
+) -> Optional[tuple[dict[str, str], dict[str, int]]]:
+    """Try every candidate style at ``level``; the first one on which
+    every ``wanted`` filter (kwarg -> (local, kind, key)) matches gives
+    ``(matched values, position)``. ``None`` when none does."""
+    defaults = _BORDER_DEFAULTS if level == "border" else _STYLE_DEFAULTS
+    for style, position in _style_candidates(textbox, level):
+        matched: dict[str, str] = {}
+        for kwarg, (local, kind, key) in wanted.items():
+            actual = _style_text(style, local)
+            if actual is None and effective:
+                actual = defaults.get(local)
+            if actual is None or _style_key(kind, actual) != key:
+                break
+            matched[kwarg] = actual
+        else:
+            return matched, position
     return None
 
 
@@ -1829,6 +1881,7 @@ def find_textboxes_by_style(
     color: Optional[str] = None,
     format: Optional[str] = None,  # noqa: A002 - tool-facing
     text_decoration: Optional[str] = None,
+    effective: bool = False,
 ) -> list[dict[str, Any]]:
     """Search for textboxes matching one or more style filters.
 
@@ -1836,23 +1889,37 @@ def find_textboxes_by_style(
     must match every supplied filter to appear in the result. Useful as
     a discovery step before :func:`set_textbox_style_bulk`.
 
-    Returns a list of ``{name, location, matched_fields: dict[str,str]}``
-    where ``location`` is best-effort (``body`` / ``header`` / ``footer``
-    / ``tablix:<name>`` / ``rectangle:<name>`` / ``unknown``) and
-    ``matched_fields`` lists the filtered kwargs and their actual values
-    on that textbox (always equal to the supplied filter — included so
-    callers can confirm the match shape).
+    Values compare normalised (#107): colours by value (``White`` ==
+    ``#FFFFFF`` == ``#ffffff``), sizes in points (``10pt`` == ``10.0pt``),
+    enums and font families case-insensitively; ``format`` and
+    ``=expressions`` compare as written. Paragraph filters match when
+    any paragraph matches them all, run filters when any run (of any
+    paragraph) does. ``effective=True`` lets an unset property match the
+    RDL default (FontSize 10pt, FontFamily Arial, Color Black,
+    FontWeight Normal, TextAlign General, VerticalAlign Top, padding
+    0pt, ...).
+
+    Returns a list of ``{name, location, matched_fields, matched_at}``:
+    ``location`` is best-effort (``body`` / ``header`` / ``footer`` /
+    ``tablix:<name>`` / ``rectangle:<name>`` / ``unknown``),
+    ``matched_fields`` maps each filter to the value found on the
+    textbox (the default under ``effective`` when unset), and
+    ``matched_at`` gives ``{paragraph_index}`` / ``{paragraph_index,
+    run_index}`` for paragraph / run filters.
 
     Returns ``[]`` when no filters are supplied (refusing to match
     everything would be a footgun, since the caller almost certainly
     wants to feed the result into ``set_textbox_style_bulk``).
     """
-    filters: dict[str, str] = {}
-    for kwarg in _FILTER_LOCATIONS:
-        v = locals().get(kwarg)
+    if not isinstance(effective, bool):
+        raise ValueError(f"effective: expected true or false; got {effective!r}")
+    by_level: dict[str, dict[str, tuple[str, str, Any]]] = {}
+    supplied = locals()
+    for kwarg, (level, local, kind) in _FILTER_LOCATIONS.items():
+        v = supplied.get(kwarg)
         if v is not None:
-            filters[kwarg] = v
-    if not filters:
+            by_level.setdefault(level, {})[kwarg] = (local, kind, _style_key(kind, v))
+    if not by_level:
         return []
 
     doc = RDLDocument.open(path)
@@ -1862,20 +1929,24 @@ def find_textboxes_by_style(
         if name is None:
             continue
         matched: dict[str, str] = {}
-        all_match = True
-        for kwarg, expected in filters.items():
-            level, local = _FILTER_LOCATIONS[kwarg]
-            actual = _textbox_style_field_value(textbox, level, local)
-            if actual != expected:
-                all_match = False
+        matched_at: dict[str, dict[str, int]] = {}
+        for level, wanted in by_level.items():
+            hit = _match_level(textbox, level, wanted, effective)
+            if hit is None:
                 break
-            matched[kwarg] = actual
-        if all_match:
+            values, position = hit
+            matched.update(values)
+            if position:
+                matched_at.update({kwarg: dict(position) for kwarg in values})
+        else:
+            # Report filters in the order the tool lists them.
+            ordered = {k: matched[k] for k in _FILTER_LOCATIONS if k in matched}
             out.append(
                 {
                     "name": name,
                     "location": _textbox_location(textbox),
-                    "matched_fields": matched,
+                    "matched_fields": ordered,
+                    "matched_at": {k: matched_at[k] for k in ordered if k in matched_at},
                 }
             )
     return out
@@ -1883,18 +1954,67 @@ def find_textboxes_by_style(
 
 # ---- find_textbox_by_value (Phase 12 commit 44) -------------------------
 
+_VALUE_KINDS = ("tooltip", "action", "visibility")
 
-def find_textbox_by_value(path: str, pattern: str) -> list[dict[str, Any]]:
-    """Return every ``Textbox`` whose ``<Value>`` text matches ``pattern``
+
+def _value_hits(textbox: etree._Element, include: tuple[str, ...]) -> list[tuple[str, str]]:
+    """``(kind, text)`` for every text ``find_textbox_by_value`` searches
+    in ``textbox``: each run's ``<Value>`` (``"value"``), then — when
+    included — ``ToolTip``s, ``ActionInfo`` texts (hyperlink, drillthrough
+    report and parameter values, bookmark link) and ``Visibility/Hidden``."""
+    hits: list[tuple[str, str]] = []
+    paragraphs_root = find_child(textbox, "Paragraphs")
+    paragraphs = find_children(paragraphs_root, "Paragraph") if paragraphs_root is not None else []
+    runs = [
+        run
+        for paragraph in paragraphs
+        for runs_root in [find_child(paragraph, "TextRuns")]
+        if runs_root is not None
+        for run in find_children(runs_root, "TextRun")
+    ]
+    for run in runs:
+        value = find_child(run, "Value")
+        if value is not None:
+            hits.append(("value", value.text or ""))
+    if "tooltip" in include:
+        for owner in [textbox, *runs]:
+            tip = find_child(owner, "ToolTip")
+            if tip is not None and tip.text:
+                hits.append(("tooltip", tip.text))
+    if "action" in include:
+        for owner in [textbox, *runs]:
+            action_info = find_child(owner, "ActionInfo")
+            if action_info is None:
+                continue
+            for node in action_info.iter():
+                if isinstance(node.tag, str) and len(node) == 0 and (node.text or "").strip():
+                    hits.append(("action", node.text))
+    if "visibility" in include:
+        visibility = find_child(textbox, "Visibility")
+        hidden = find_child(visibility, "Hidden") if visibility is not None else None
+        if hidden is not None and hidden.text:
+            hits.append(("visibility", hidden.text))
+    return hits
+
+
+def find_textbox_by_value(
+    path: str, pattern: str, include: Optional[list[str]] = None
+) -> list[dict[str, Any]]:
+    """Return every ``Textbox`` whose displayed value matches ``pattern``
     (a Python regex, not RDL/SQL glob).
 
-    Searches the value text of each ``<TextRun>`` in every textbox under
-    ``<Body>`` / ``<PageHeader>`` / ``<PageFooter>``. A textbox with
-    multiple matching runs surfaces once per matching run.
+    Searches the ``<Value>`` of each ``Paragraph/TextRun`` in every
+    textbox under ``<Body>`` / ``<PageHeader>`` / ``<PageFooter>``. A
+    textbox with multiple matching runs surfaces once per matching run.
+    Other expressions on the textbox (a drillthrough parameter's
+    ``<Value>``, a tooltip) are not its value and are only searched when
+    ``include`` names them: ``"tooltip"``, ``"action"`` (hyperlink,
+    drillthrough report / parameter values, bookmark link),
+    ``"visibility"`` (``Visibility/Hidden``).
 
-    Returns ``[{textbox, value, region}]`` where ``region`` is one of
-    ``Body``, ``PageHeader``, ``PageFooter`` (the nearest top-level
-    ancestor).
+    Returns ``[{textbox, value, region, kind}]`` where ``region`` is one
+    of ``Body``, ``PageHeader``, ``PageFooter`` (the nearest top-level
+    ancestor) and ``kind`` is ``"value"`` or the ``include`` kind.
 
     Useful for finding stale ``=Parameters!Old.Value`` references after
     ``rename_parameter``, or any other cross-cutting expression edit.
@@ -1903,6 +2023,10 @@ def find_textbox_by_value(path: str, pattern: str) -> list[dict[str, Any]]:
         regex = re.compile(pattern)
     except re.error as exc:
         raise ValueError(f"invalid regex pattern {pattern!r}: {exc}") from exc
+    kinds = tuple(dict.fromkeys(include or []))
+    bad = [k for k in kinds if k not in _VALUE_KINDS]
+    if bad:
+        raise ValueError(f"include: unknown kind(s) {bad}; expected any of {list(_VALUE_KINDS)}")
 
     doc = RDLDocument.open(path)
     out: list[dict[str, Any]] = []
@@ -1911,9 +2035,7 @@ def find_textbox_by_value(path: str, pattern: str) -> list[dict[str, Any]]:
         name = tb.get("Name")
         if not name:
             continue
-        # Walk all <Value> elements under this textbox's <Paragraphs>.
-        for value in tb.iter(q("Value")):
-            text = value.text or ""
+        for kind, text in _value_hits(tb, kinds):
             if not regex.search(text):
                 continue
             out.append(
@@ -1921,6 +2043,7 @@ def find_textbox_by_value(path: str, pattern: str) -> list[dict[str, Any]]:
                     "textbox": name,
                     "value": text,
                     "region": _region_of(tb),
+                    "kind": kind,
                 }
             )
     return out

@@ -620,13 +620,13 @@ Apply the same style kwargs to every named textbox in one call. Same kwarg surfa
 
 *read-only*
 
-Search for textboxes matching one or more style filters. Filters AND together (every supplied filter must match). Returns [{name, location, matched_fields}] where location is best-effort 'body' / 'header' / 'footer' / 'tablix:`<name>'` / 'rectangle:`<name>'`. Returns [] when no filters supplied. Pair with set_textbox_style_bulk for discovery+apply patterns (e.g. 'recolor every red textbox').
+Search for textboxes matching one or more style filters. Filters AND together (every supplied filter must match). Values compare normalised: colours by value (named colours, '#RRGGBB' / '#AARRGGBB' in either case — 'White' matches '#ffffff'), sizes in points ('10pt' matches '10.0pt'), enums and font_family case-insensitively; format and =expressions compare as written. Paragraph filters (text_align) match when any paragraph matches them; run filters (font_*, color, format, text_decoration) when any run of any paragraph matches all of them. effective=true lets an unset property match the RDL default (FontSize 10pt, FontFamily Arial, Color Black, FontWeight / FontStyle Normal, TextDecoration None, TextAlign General, VerticalAlign Top, WritingMode Horizontal, padding 0pt, BackgroundColor Transparent, border Style None / Color Black / Width 1pt). Returns [{name, location, matched_fields, matched_at}] where location is best-effort 'body' / 'header' / 'footer' / 'tablix:`<name>'` / 'rectangle:`<name>'`, matched_fields maps each filter to the value found (the default when matched under effective) and matched_at gives {paragraph_index} / {paragraph_index, run_index} for paragraph / run filters. Returns [] when no filters supplied. Pair with set_textbox_style_bulk for discovery+apply patterns (e.g. 'recolor every red textbox').
 
 ### `find_textbox_by_value`
 
 *read-only*
 
-Find every Textbox whose `<Value>` text matches a Python regex pattern. Searches Body / PageHeader / PageFooter. A textbox with multiple matching runs surfaces once per match. Returns [{textbox, value, region}]. Useful for finding stale =Parameters!Old.Value references after rename_parameter, or any cross-cutting expression edit.
+Find every Textbox whose displayed value — the `<Value>` of each Paragraph/TextRun — matches a Python regex pattern. Searches Body / PageHeader / PageFooter. A textbox with multiple matching runs surfaces once per match. Other expressions on a textbox are not its value and are searched only when include names them: 'tooltip' (textbox and run ToolTip), 'action' (ActionInfo texts: hyperlink, drillthrough report name and parameter values, bookmark link), 'visibility' (Visibility/Hidden). Returns [{textbox, value, region, kind}] with kind 'value' or the include kind. Useful for finding stale =Parameters!Old.Value references after rename_parameter, or any cross-cutting expression edit.
 
 ### `style_tablix_row`
 
