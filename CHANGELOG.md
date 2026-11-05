@@ -7,6 +7,103 @@
   then `/plugin install pbirb-mcp@pbirb` (wires up the `uvx pbirb-mcp` server
   automatically). No change to the published Python package.
 
+### M6 — Medium-severity bugs and enhancements (v0.4.1 review, #113)
+
+#### Changed — breaking (pre-1.0)
+- `raw_xml_view` returns an object: `{kind: "nodes", count, matches,
+  truncated}` (typed element / attribute / text / comment matches) or
+  `{kind: "number"|"string"|"boolean", value}` for `count()` / `string()` /
+  `boolean()` XPaths, instead of a bare list of XML strings (#85).
+- `raw_xml_replace` refuses a replacement of a different element unless
+  `allow_kind_change=true`, refuses duplicate item/group names, and — outside
+  a transaction — refuses results with XSD or structural errors the report
+  didn't already have (#85).
+- `get_image` / `get_rectangle` style is nested `{box, border, *_border}`
+  instead of a flat dump (#108).
+- `dry_run_edit`'s `verify` uses `verify_report`'s checks and
+  `commit_editing_transaction`'s keys (warnings no longer make it invalid);
+  `applied[].result` is an object (`result_text` kept, deprecated) (#84).
+- `remove_body_item` / `remove_header_item` / `remove_footer_item` refuse
+  while other items still reference the item or anything inside it;
+  `force=true` removes it anyway. Results add `also_removed` and
+  `dangling_refs` (#105).
+- `remove_data_source` refuses to remove the report's last data source;
+  `rename_data_source` no longer rewrites `<DataSourceReference>` paths (#92).
+- The parameter writers refuse invalid parameter states (MultiValue +
+  Nullable, a multi-value Boolean, several defaults on a single-value
+  parameter, values that don't match the DataType) and missing query
+  fields; hidden parameters without a default come back as `warnings` (#93).
+- `set_tablix_size` refuses a width that contradicts the column widths
+  (new `distribute=true` rescales the columns instead);
+  `insert_tablix_from_template` splits `width` over the columns (#89).
+- `count_where` / `sum_where` emit `Count(IIf(c, 1, Nothing))` /
+  `Sum(IIf(c, X, Nothing))` and strip a leading `=` from their arguments
+  (#96).
+- `find_textbox_by_value` searches text-run values only (`include` opts
+  tooltips, actions and visibility back in) (#107).
+- The row-colour tools refuse invalid colours; `<group>_header` /
+  `<group>_footer` row roles raise instead of returning the data row (#90).
+- Filters: arity is checked (Between = 2, In >= 1, others = 1) (#94);
+  drillthrough parameters are refused on Hyperlink / BookmarkLink actions,
+  and a BookmarkLink to a bookmark no item carries is refused (#109).
+- `RDLDocument.open` refuses non-RDL XML with `NotAnRDLReport` (#86).
+
+#### Added
+- New tools: `diff_report` (semantic report diff, #87), `raw_xml_insert` /
+  `raw_xml_remove` (#85), `rename_report_item` (#111), `add_dataset`,
+  `remove_dataset`, `rename_dataset`, `rename_dataset_field`,
+  `set_field_type`, `set_dataset_data_source`, `set_dataset_options` (#98),
+  `set_chart_series_properties`, `set_chart_category_group` (#104),
+  `set_item_action`, `set_item_tooltip`, `set_bookmark` (#109),
+  `copy_textbox_style` (#112).
+- `dry_run_edit(diff="unified"|"summary"|"semantic"|"none")`;
+  `max_diff_bytes` bounds the whole output (#84).
+- `create_report(fields=...)`, and its scaffold matches Report Builder's
+  output (indented, `df` namespace, `DefaultFontFamily`) (#88).
+- `set_chart_axis(chart_area=..., visible="Auto")` with value validation;
+  the axis title's style survives a title change (#99).
+- `set_chart_palette` accepts all 16 RDL palettes, custom `colors` and
+  `hatch_behavior` (#100).
+- Chart builders check fields and names against the dataset and list what
+  exists; `category_expression` / `value_expression` (#101).
+- `set_chart_series_action(action_type="None")` removes the action;
+  `set_series_color(target="series"|"point")` (#103).
+- `add_dataset_filter` / `add_tablix_filter(value_data_type=...)` (#94).
+- Lint rules `parameter-state` (#93), `query-parameter-mismatch` and
+  `multi-value-query-binding` (#95); `multi-value-eq` covers every operator
+  except In (#95).
+- `count_where` / `sum_where(scope=...)`; expression reference entries for
+  IsNothing, IsMultiValue, scopes, CountRows, RowNumber, RunningValue,
+  InScope and the Lookup family (#96).
+- `clear=true` on `set_textbox_action` / `set_image_action`; per-parameter
+  `omit` on drillthrough parameters (#109).
+- `add_embedded_image` checks the image structure (PNG / JPEG / GIF / BMP),
+  returns `width` / `height`, and warns above `warn_above_bytes` (#110).
+- Row-styling roles `<group>_rowheader`, `corner`, `<group>_group_header`;
+  `set_conditional_row_color(base_color=...)` combines with zebra striping
+  (#90).
+- `set_textbox_style_bulk(strict=...)` and an `ambiguous` result list (#106).
+- `find_textboxes_by_style` compares normalised values (colours, sizes,
+  enums, font weights), any paragraph/run, `effective=true` for RDL
+  defaults, and `matched_at` (#107).
+
+#### Fixed
+- The server starts when `PBIRB_MCP_LOG_FILE` can't be opened; `~` is
+  expanded in every path argument (#86).
+- Tablix `<Width>` follows column changes in every column/group tool (#89).
+- `get_chart` returns series groups, actions, axis / area / legend bindings,
+  derived series, every chart area / legend / title, custom palette colours
+  and the implicit Column type (#102).
+- `get_parameters` returns default values, valid values and the layout
+  cell; `get_datasets` entries match `get_dataset` (#97).
+- `get_textbox` / `get_image` / `get_rectangle` return actions, tooltips,
+  document-map labels, bookmarks, paragraph properties and borders (#108).
+- `remove_query_parameter("@X")` works (#95).
+- `set_textbox_style_bulk` resolves every name before writing and styles
+  each textbox once (#106).
+- The default `tools/list` drops the repeated `transaction_id` parameter
+  description and trims tool descriptions to stay within its size budget.
+
 ### M5 — Remaining high-severity bugs (v0.4.1 review, #113)
 
 #### Changed — breaking (pre-1.0)
