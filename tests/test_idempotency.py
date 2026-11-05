@@ -661,6 +661,20 @@ VARIANTS: list[tuple[str, Case]] = [
             ],
         ),
     ),
+    (
+        "add_tablix_column",
+        Case(
+            {
+                "tablix_name": "MainTable",
+                "column_name": "Qty",
+                "expression": "=Fields!ProductID.Value",
+                "header_name": "QtyHeader",
+                "copy_style_from": "right",
+                "format": "#,0",
+            },
+            second="refuses",
+        ),
+    ),
     ("set_page_setup", Case({"columns": 2, "margin_left": "0.5in"})),
     ("set_page_setup", Case({"columns": 1}, setup=[("set_page_setup", {"columns": 2})])),
     (

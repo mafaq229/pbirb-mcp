@@ -30,7 +30,7 @@ from pbirb_mcp.core.tablix_headers import (
     shape_problems,
 )
 from pbirb_mcp.core.tablix_shape import column_leaves, row_leaves
-from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q, qrd
 from pbirb_mcp.ops.reader import get_tablixes
 from pbirb_mcp.ops.tablix_cells import set_cell_span
 from pbirb_mcp.ops.tablix_columns import (
@@ -886,3 +886,182 @@ class TestColumnSpanBookkeeping:
         with pytest.raises(ValueError, match="inside the merged data-row cell Data0"):
             add_tablix_column(str(path), "MainTable", "NewCol", "=1", position=1)
         assert path.read_bytes() == before
+
+
+# ---- add_tablix_column: names, header_name, inherited style (#68) ---------
+
+
+def _textbox(path: Path, name: str):
+    doc = RDLDocument.open(path)
+    hits = doc.root.findall(f".//{{{RDL_NS}}}Textbox[@Name='{name}']")
+    assert len(hits) == 1, f"{name}: {len(hits)} textboxes"
+    return hits[0]
+
+
+_RUN_STYLE = "/".join(q(x) for x in ("Paragraphs", "Paragraph", "TextRuns", "TextRun", "Style"))
+
+
+def _look(path: Path, name: str) -> dict:
+    tb = _textbox(path, name)
+    run_style = tb.find(_RUN_STYLE)
+    box_style = find_child(tb, "Style")
+
+    def text(style, local):
+        node = find_child(style, local) if style is not None else None
+        return node.text if node is not None else None
+
+    return {
+        "background": text(box_style, "BackgroundColor"),
+        "weight": text(run_style, "FontWeight"),
+        "format": text(run_style, "Format"),
+    }
+
+
+@pytest.fixture
+def styled_path(rdl_path):
+    from pbirb_mcp.ops.styling import style_tablix_row
+
+    style_tablix_row(str(rdl_path), "MainTable", 0, font_weight="Bold", background_color="#1F3864")
+    style_tablix_row(str(rdl_path), "MainTable", 1, format="#,0.00")
+    return rdl_path
+
+
+class TestAddTablixColumnNamesAndStyle:
+    def test_issue_repro_no_duplicates_and_inherited_look(self, styled_path):
+        from collections import Counter
+
+        from pbirb_mcp.ops.body import add_body_textbox
+
+        add_body_textbox(str(styled_path), "bar_0", "x", "3in", "0in", "1in", "0.25in")
+        result = add_tablix_column(
+            str(styled_path), "MainTable", "bar", "=Fields!Amount.Value", header_text="Bar"
+        )
+        doc = RDLDocument.open(styled_path)
+        all_names = [tb.get("Name") for tb in doc.root.iter(q("Textbox"))]
+        assert [n for n, c in Counter(all_names).items() if c > 1] == []
+        header = result["header_textbox"]
+        assert header == "bar_0_1" and result["data_textbox"] == "bar"
+        assert result["row_textboxes"] == [header, "bar"]
+        assert result["style_copied_from_column"] == 2
+        assert _look(styled_path, header) == {
+            "background": "#1F3864",
+            "weight": "Bold",
+            "format": None,
+        }
+        assert _look(styled_path, "bar")["format"] == "#,0.00"
+        assert validate_report(str(styled_path))["valid"]
+
+    def test_copy_style_from_none_keeps_bare_cells(self, styled_path):
+        result = add_tablix_column(str(styled_path), "MainTable", "Qty", "=1", copy_style_from=None)
+        assert result["style_copied_from_column"] is None
+        for name in result["textboxes"]:
+            assert _look(styled_path, name) == {"background": None, "weight": None, "format": None}
+            assert len(find_child(_textbox(styled_path, name), "Style")) == 0
+
+    def test_copy_style_from_right_and_from_textbox(self, rdl_path):
+        from pbirb_mcp.ops.styling import set_textbox_style
+
+        set_textbox_style(str(rdl_path), "ProductID", background_color="Yellow")
+        set_textbox_style(str(rdl_path), "ProductName", background_color="Green")
+        r = add_tablix_column(
+            str(rdl_path), "MainTable", "A", "=1", position=0, copy_style_from="right"
+        )
+        assert r["style_copied_from_column"] == 1
+        assert _look(rdl_path, "A")["background"] == "Yellow"
+        # 'left' at position 0 falls back to the right neighbour.
+        add_tablix_column(str(rdl_path), "MainTable", "B", "=1", position=0)
+        assert _look(rdl_path, "B")["background"] == "Yellow"
+        # A textbox name picks that textbox's column, in every row.
+        add_tablix_column(
+            str(rdl_path), "MainTable", "C", "=1", copy_style_from="HeaderProductName"
+        )
+        assert _look(rdl_path, "C")["background"] == "Green"
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_copy_style_from_unknown_textbox_refused(self, rdl_path):
+        before = rdl_path.read_bytes()
+        with pytest.raises(ElementNotFoundError):
+            add_tablix_column(str(rdl_path), "MainTable", "A", "=1", copy_style_from="Ghost")
+        assert rdl_path.read_bytes() == before
+
+    def test_copies_style_only(self, rdl_path):
+        from pbirb_mcp.ops.styling import set_textbox_style
+
+        set_textbox_style(str(rdl_path), "Amount", text_align="Right", font_size="9pt")
+        add_tablix_column(str(rdl_path), "MainTable", "Qty", "=Fields!ProductID.Value")
+        new = _textbox(rdl_path, "Qty")
+        assert new.find(f".//{q('Value')}").text == "=Fields!ProductID.Value"
+        assert new.find(qrd("DefaultName")).text == "Qty"
+        par_style = new.find(f"{q('Paragraphs')}/{q('Paragraph')}/{q('Style')}")
+        run_style = new.find(_RUN_STYLE)
+        styles = {etree.QName(c).localname: c.text for s in (par_style, run_style) for c in s}
+        assert styles.get("TextAlign") == "Right" and styles.get("FontSize") == "9pt"
+        assert _textbox(rdl_path, "Amount").find(f".//{q('Value')}").text == "=Fields!Amount.Value"
+
+    def test_format_sets_and_clears_data_cell_format(self, styled_path):
+        add_tablix_column(str(styled_path), "MainTable", "Pct", "=1", format="0.0%")
+        assert _look(styled_path, "Pct")["format"] == "0.0%"
+        add_tablix_column(str(styled_path), "MainTable", "Txt", "=1", format="")
+        assert _look(styled_path, "Txt")["format"] is None
+        # format applies to the data cell only.
+        assert _look(styled_path, "Pct_0")["format"] is None
+        assert validate_report(str(styled_path))["valid"]
+
+    def test_header_name(self, rdl_path):
+        r = add_tablix_column(str(rdl_path), "MainTable", "Qty", "=1", header_name="QtyHeader")
+        assert r["header_textbox"] == "QtyHeader"
+        assert r["textboxes"] == ["QtyHeader", "Qty"]
+        assert _textbox(rdl_path, "QtyHeader").find(f".//{q('Value')}").text == "Qty"
+
+    @pytest.mark.parametrize("bad", ["HeaderAmount", "Qty", "bad name"])
+    def test_header_name_taken_or_invalid_refused(self, rdl_path, bad):
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError):
+            add_tablix_column(str(rdl_path), "MainTable", "Qty", "=1", header_name=bad)
+        assert rdl_path.read_bytes() == before
+
+    def test_header_name_without_header_cell_refused(self, tmp_path):
+        path = build_band_report(tmp_path / "bands.rdl")
+        before = path.read_bytes()
+        # Row 0 is a band: inside IVMSBand the span grows over the column.
+        with pytest.raises(ValueError, match="no cell to name"):
+            add_tablix_column(str(path), "MainTable", "NewCol", "=1", position=1, header_name="H")
+        assert path.read_bytes() == before
+
+    def test_band_neighbour_style_comes_from_span_owner(self, tmp_path):
+        from pbirb_mcp.ops.styling import set_textbox_style
+
+        path = build_band_report(tmp_path / "bands.rdl")
+        set_textbox_style(str(path), "IVMSBand", background_color="Navy")
+        r = add_tablix_column(str(path), "MainTable", "NewCol", "=1", position=3)
+        # The left neighbour of column 3 is the last column IVMSBand covers.
+        assert _look(path, r["row_textboxes"][0])["background"] == "Navy"
+        r = add_tablix_column(str(path), "MainTable", "Inside", "=1", position=1)
+        assert r["row_textboxes"][0] is None and r["widened_span_rows"] == [0]
+        assert validate_report(str(path))["valid"]
+
+    def test_server_accepts_new_params(self, styled_path):
+        server = MCPServer()
+        register_all_tools(server)
+        resp = server.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "add_tablix_column",
+                    "arguments": {
+                        "path": str(styled_path),
+                        "tablix_name": "MainTable",
+                        "column_name": "Qty",
+                        "expression": "=1",
+                        "header_name": "QtyHead",
+                        "copy_style_from": None,
+                        "format": "0",
+                    },
+                },
+            }
+        )
+        assert not resp["result"].get("isError"), resp
+        assert _look(styled_path, "QtyHead") == {"background": None, "weight": None, "format": None}
+        assert _look(styled_path, "Qty")["format"] == "0"

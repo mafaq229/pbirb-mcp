@@ -1827,7 +1827,8 @@ def register_all_tools(server: MCPServer) -> None:
             "column_name), `expression` (e.g. =Fields!X.Value) in the data row, "
             "in a textbox named column_name. position is the 0-based body column "
             "(default: end); a position inside a column group moves outside it "
-            "unless inside_group names it."
+            "unless inside_group names it. New cells copy the left neighbour's style "
+            "(copy_style_from)."
         ),
         input_schema={
             "type": "object",
@@ -1844,6 +1845,24 @@ def register_all_tools(server: MCPServer) -> None:
                     "description": "Column group to insert inside on purpose (the column "
                     "then repeats per group instance); position must lie within that group's "
                     "columns or just past them. Default: the column stays outside every group.",
+                },
+                "header_name": {
+                    "type": ["string", "null"],
+                    "description": "Name of the header-row cell's textbox (must be unused). "
+                    "Default: <column_name>_0, suffixed if taken.",
+                },
+                "copy_style_from": {
+                    "type": ["string", "null"],
+                    "default": "left",
+                    "description": "Each new cell copies the style (fill, border, font, "
+                    "alignment, number format) of the cell in the same row: 'left' "
+                    "(default), 'right', or the column of the named textbox; null for "
+                    "unstyled cells.",
+                },
+                "format": {
+                    "type": ["string", "null"],
+                    "description": "Number/date format for the data cell, e.g. '#,0.00' "
+                    "('' clears an inherited one).",
                 },
             },
             "required": ["path", "tablix_name", "column_name", "expression"],

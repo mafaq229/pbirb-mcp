@@ -28,6 +28,7 @@ generic versions when an LLM calls the wrong tool for the wrong axis.
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Optional
 
 from lxml import etree
@@ -37,6 +38,7 @@ from pbirb_mcp.core.columns import describe_columns, resolve_column
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
+from pbirb_mcp.core.mutation import remove_child_if_present, set_text_if_different
 from pbirb_mcp.core.tablix_shape import (
     column_leaves,
     data_row_index,
@@ -48,6 +50,7 @@ from pbirb_mcp.core.tablix_shape import (
 )
 from pbirb_mcp.core.xpath import find_child, find_children, q, qrd
 from pbirb_mcp.ops import visibility as _visibility
+from pbirb_mcp.ops.styling import _STYLE_CHILD_ORDER
 from pbirb_mcp.ops.tablix import (
     _UNSET,
     _apply_visibility_to_member,
@@ -382,6 +385,82 @@ def _build_tablix_column_cell(
     return cell
 
 
+COPY_STYLE_SIDES = ("left", "right")
+
+
+def _first_descendant(el: etree._Element, *path: str) -> Optional[etree._Element]:
+    for local in path:
+        if el is None:
+            return None
+        el = find_child(el, local)
+    return el
+
+
+def _cell_style_source(row: etree._Element, col: int) -> Optional[etree._Element]:
+    """The Textbox whose look a new cell at body column ``col`` of ``row``
+    copies: the textbox of the cell covering ``col`` (a span's owner for a
+    placeholder), or ``None`` (no cell, or not a textbox)."""
+    cells_root = find_child(row, "TablixCells")
+    cells = find_children(cells_root, "TablixCell") if cells_root is not None else []
+    if not 0 <= col < len(cells):
+        return None
+    owner = cells[tablix_spans.owner_map(cells)[col]]
+    return _first_descendant(owner, "CellContents", "Textbox")
+
+
+def _replace_style(target_parent: etree._Element, source_parent: Optional[etree._Element]) -> None:
+    """Make ``target_parent``'s ``<Style>`` a copy of ``source_parent``'s."""
+    if source_parent is None:
+        return
+    source = find_child(source_parent, "Style")
+    target = find_child(target_parent, "Style")
+    if source is None or target is None:
+        return
+    clone = copy.deepcopy(source)
+    clone.tail = target.tail
+    target_parent.replace(target, clone)
+
+
+def _copy_cell_style(new_tb: etree._Element, source_tb: etree._Element) -> None:
+    """Copy the box, first paragraph and first run ``<Style>`` of
+    ``source_tb`` onto the freshly built ``new_tb`` (its Name and Value
+    stay; nothing else — actions, visibility, sorts — is copied)."""
+    _replace_style(new_tb, source_tb)
+    new_par = _first_descendant(new_tb, "Paragraphs", "Paragraph")
+    src_par = _first_descendant(source_tb, "Paragraphs", "Paragraph")
+    _replace_style(new_par, src_par)
+    _replace_style(
+        _first_descendant(new_par, "TextRuns", "TextRun"),
+        _first_descendant(src_par, "TextRuns", "TextRun") if src_par is not None else None,
+    )
+
+
+def _set_run_format(textbox: etree._Element, fmt: str) -> None:
+    """Set (``""``: remove) the first run's ``<Format>``."""
+    run = _first_descendant(textbox, "Paragraphs", "Paragraph", "TextRuns", "TextRun")
+    style = find_child(run, "Style")
+    if style is None:
+        style = etree.SubElement(run, q("Style"))
+    if fmt == "":
+        remove_child_if_present(style, "Format")
+    else:
+        set_text_if_different(style, "Format", encode_text(fmt), order=_STYLE_CHILD_ORDER)
+
+
+def _style_source_column(tablix: etree._Element, copy_style_from: Optional[str]) -> Optional[Any]:
+    """Validate ``copy_style_from``; resolve a textbox name to its body
+    column now, before the body changes ("left"/"right" are resolved
+    against the insert point later)."""
+    if copy_style_from is None or copy_style_from in COPY_STYLE_SIDES:
+        return copy_style_from
+    if not isinstance(copy_style_from, str) or not copy_style_from:
+        raise ValueError(
+            "copy_style_from must be 'left', 'right', the name of a textbox in the "
+            f"tablix, or null; got {copy_style_from!r}"
+        )
+    return resolve_column(tablix, copy_style_from)
+
+
 def _refuse_data_row_span(
     tablix: etree._Element, body: etree._Element, insert_at: int, column_name: str
 ) -> None:
@@ -414,6 +493,9 @@ def add_tablix_column(
     width: Optional[str] = None,
     header_text: Optional[str] = None,
     inside_group: Optional[str] = None,
+    header_name: Optional[str] = None,
+    copy_style_from: Optional[str] = "left",
+    format: Optional[str] = None,  # noqa: A002 — the tool's public parameter name
 ) -> dict[str, Any]:
     """Append (or insert) a new column into a tablix.
 
@@ -431,10 +513,23 @@ def add_tablix_column(
     the data row, subtotal/footer rows after it) gets a blank cell.
     Tablixes with neither a detail group nor a dynamic row group fall
     back to "last row = data row".
-    Cell textbox names follow ``<column_name>`` for the data-row cell
-    and ``<column_name>_<row_index>`` for non-data cells (suffixed when
-    taken report-wide; the payload's ``textboxes`` lists the names
-    emitted, top to bottom).
+    Cell textbox names follow ``<column_name>`` for the data-row cell,
+    ``header_name`` (default ``<column_name>_0``) for the header cell and
+    ``<column_name>_<row_index>`` for other cells; generated names are
+    suffixed when taken report-wide, while ``column_name`` and an explicit
+    ``header_name`` must be free. The payload's ``textboxes`` lists the
+    names emitted, top to bottom; ``row_textboxes`` has one entry per body
+    row (``None`` where a merged cell grew over the column), plus
+    ``header_textbox`` / ``data_textbox``.
+
+    ``copy_style_from`` gives each new cell the look of the cell beside it
+    in the same row: ``"left"`` (default; the right neighbour at position
+    0), ``"right"`` (the left neighbour at the end), the name of a textbox
+    in the tablix (that textbox's column), or ``None`` for bare cells.
+    The textbox, first-paragraph and first-run ``<Style>`` are copied
+    (background, border, font, alignment, number format); Name and Value
+    stay the new cell's own and nothing else is copied. ``format`` then
+    sets the data cell's number format (``""`` clears an inherited one).
 
     ``position`` is a 0-indexed body-column position; default = append.
     ``width`` defaults to ``"1in"``. The new static column-hierarchy leaf
@@ -459,6 +554,13 @@ def add_tablix_column(
     registry = names.NameRegistry(doc)
     registry.ensure_unique(column_name)
     registry.claim(column_name)
+    if header_name is not None:
+        names.validate_identifier(header_name, "textbox")
+        registry.ensure_unique(header_name)
+        registry.claim(header_name)
+    if format is not None and not isinstance(format, str):
+        raise ValueError(f"format must be a string, got {format!r}")
+    style_from = _style_source_column(tablix, copy_style_from)
 
     body = find_child(tablix, "TablixBody")
     if body is None:
@@ -483,6 +585,18 @@ def add_tablix_column(
     # column_name textbox (the span grows over it) — refuse up front (#34).
     _refuse_data_row_span(tablix, body, insert_at, column_name)
 
+    # Body column whose cells the new ones copy their look from (indices
+    # before the insertion).
+    n_cols = len(find_children(cols_root, "TablixColumn"))
+    if style_from == "left":
+        source_col: Optional[int] = insert_at - 1 if insert_at > 0 else 0
+    elif style_from == "right":
+        source_col = insert_at if insert_at < n_cols else n_cols - 1
+    else:
+        source_col = style_from
+    if source_col is not None and not 0 <= source_col < n_cols:
+        source_col = None
+
     # ---- body: insert <TablixColumn> at insert_at ------------------------
     new_column = etree.Element(q("TablixColumn"))
     etree.SubElement(new_column, q("Width")).text = width
@@ -503,8 +617,15 @@ def add_tablix_column(
     data_idx = data_row_index(tablix)
     data_row_idx = data_idx if data_idx is not None and data_idx < n_rows else n_rows - 1
 
+    sources = [
+        _cell_style_source(row, source_col) if source_col is not None else None for row in rows
+    ]
+
     emitted: list[str] = []
+    row_textboxes: list[Optional[str]] = []
     widened: list[int] = []
+    header_tb: Optional[str] = None
+    data_tb: Optional[str] = None
     for i, row in enumerate(rows):
         cells_root = find_child(row, "TablixCells")
         if cells_root is None:
@@ -514,28 +635,41 @@ def add_tablix_column(
         # the new column and a placeholder goes in, not a textbox (#34).
         if tablix_spans.widen_span(cells_root, insert_at):
             widened.append(i)
+            row_textboxes.append(None)
             continue
 
-        if n_rows == 1:
-            # Single-row tablix: that row is the data row.
+        is_data = n_rows == 1 or i == data_row_idx
+        if is_data:
+            # The data row (a single-row tablix's only row).
             cell_text = expression
-            tb_name = column_name
-        elif i == data_row_idx:
-            cell_text = expression
-            tb_name = column_name
+            tb_name = data_tb = column_name
         elif i == 0:
             # First row of multi-row tablix: header row.
             cell_text = header_text_value
-            tb_name = registry.unique(f"{column_name}_{i}")
+            tb_name = header_name or registry.unique(f"{column_name}_{i}")
+            header_tb = tb_name
         else:
             # Middle rows (between header and the data row) and footer
             # rows (subtotals after it): blank cells.
             cell_text = ""
             tb_name = registry.unique(f"{column_name}_{i}")
         emitted.append(tb_name)
+        row_textboxes.append(tb_name)
 
         new_cell = _build_tablix_column_cell(tb_name, cell_text)
+        new_tb = _first_descendant(new_cell, "CellContents", "Textbox")
+        if sources[i] is not None:
+            _copy_cell_style(new_tb, sources[i])
+        if is_data and format is not None:
+            _set_run_format(new_tb, format)
         insert_nth_child(cells_root, "TablixCell", insert_at, new_cell)
+
+    if header_name is not None and header_tb is None:
+        raise ValueError(
+            f"header_name {header_name!r} has no cell to name: tablix {tablix_name!r} "
+            "has no header row above the data row, or a merged cell covers the new "
+            "column there"
+        )
 
     # A column beside a column group (whose caption is a TablixHeader)
     # needs a header of its own so every column keeps the same header
@@ -551,6 +685,12 @@ def add_tablix_column(
         "position": insert_at,
         "width": width,
         "textboxes": emitted,
+        "row_textboxes": row_textboxes,
+        "header_textbox": header_tb,
+        "data_textbox": data_tb,
+        "style_copied_from_column": (
+            None if source_col is None else source_col + (source_col >= insert_at)
+        ),
     }
     if header_names:
         result["header_textboxes"] = header_names
