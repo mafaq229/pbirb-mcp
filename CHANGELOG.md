@@ -7,6 +7,71 @@
   then `/plugin install pbirb-mcp@pbirb` (wires up the `uvx pbirb-mcp` server
   automatically). No change to the published Python package.
 
+### M4 — Protocol, agent ergonomics and eval (v0.4.1 review, #113)
+
+#### Changed — breaking (pre-1.0)
+- **Python 3.10+ is required** (3.9 dropped) and the server now depends on
+  the official MCP Python SDK (`mcp>=2.3,<3`) (#53).
+- **The `pbirb-mcp` stdio server restricts file access and asks before
+  destructive edits by default** (#57): report paths must be inside its
+  working directory (set `PBIRB_MCP_ALLOWED_ROOTS`, `os.pathsep`-separated,
+  or `*` for unrestricted — Claude Desktop may start servers with cwd `/` or
+  its app folder, see README "Security defaults"), and `remove_*`,
+  `raw_xml_replace`, `restore_from_backup` and `convert_to_matrix` (and an
+  `apply_edits` batch containing one) need `confirm=true` (or
+  `PBIRB_MCP_REQUIRE_CONFIRM=0`). In-process use (`MCPServer` in Python)
+  stays unrestricted unless those variables are set.
+- An unknown tool returns JSON-RPC `-32602` (was `-32601`); notifications
+  never get a reply; a malformed `initialize` returns `-32602` (#53).
+
+#### Added
+- MCP spec 2026-07-28 (stateless `_meta` envelope, `server/discover`,
+  `resultType`, `ttlMs`/`cacheScope` on `tools/list`) plus version
+  negotiation and `ping` for 2024-11-05 – 2025-11-25 clients (#53).
+- `outputSchema` on every tool and `structuredContent` on every result;
+  `response_format="concise"|"detailed"` on `describe_report` and the
+  `get_*` readers; `raw_xml_view(max_bytes=40000)` and
+  `dry_run_edit(max_diff_bytes=40000, summary=...)` cap large outputs with
+  explicit truncation markers (`diff_stats`, `diff_truncated`) (#55).
+- `PBIRB_MCP_ALLOWED_ROOTS`, `PBIRB_MCP_REQUIRE_CONFIRM` and
+  `PBIRB_MCP_AUDIT_LOG` (append-only JSONL of mutating calls); `confirm`
+  on destructive tools and `apply_edits`; on 2026-07-28 clients that
+  support elicitation, confirmation is an interactive round trip (#57).
+- `title` and annotations (`readOnlyHint`, `destructiveHint`,
+  `idempotentHint`, `openWorldHint`) on every tool (#54).
+- Toolsets and read-only mode: `--toolsets data,parameters,tablix,chart,
+  style,layout,interactivity,admin` (`core` is always on),
+  `--read-only`, `--list-toolsets`, or `PBIRB_MCP_TOOLSETS` /
+  `PBIRB_MCP_READ_ONLY`. Tools outside the enabled toolsets, and edits in
+  read-only mode, are refused at call time, not just hidden. The default
+  is unchanged: every tool (#56).
+- Column and cell addressing by header text or bound field:
+  `describe_report` lists `tablixes[].column_details` (`index`,
+  `header_text`, `header_cell`, `data_cell`, `bound_fields`); optional
+  `column_ref` on `set_column_width`, `remove_tablix_column`,
+  `set_cell_span` and `add_subtotal_row` aggregates, `cell` on the
+  `set_textbox_*` tools, `cells` on `set_textbox_style_bulk`. Ambiguous or
+  unmatched references list the candidates (#59).
+- Eval: a structural gate (any new XSD/lint error fails a run; `corrupted`
+  is reported separately), 10 cases for the paths the review broke (two
+  are known gaps, #66/#67), and the offline selftest in CI (#60).
+- `docs/TOOLS.md`: the per-tool detail that used to live in descriptions
+  (#62).
+
+#### Changed
+- `changed` is accurate on every mutating tool and an identical repeat
+  call no longer rewrites the file (bytes, inode and mtime kept); about 15
+  tools gained a `changed` field; an editing transaction with no net
+  change commits without rewriting the file (#61).
+- Tool descriptions rewritten purpose-first, ≤ 400 characters, without
+  version history (description bytes 57 KB → 24 KB). With every tool
+  enabled `tools/list` is ~167 KB, because of `outputSchema`, annotations
+  and `transaction_id`; a single toolset is 30–50 KB (#62).
+- `duplicate_report(regenerate_ids=false)` now writes atomically (#62).
+- README: an environment-variable table covering every `PBIRB_MCP_*`
+  setting, security defaults, toolsets; `PBIRB_MCP_AUTO_BACKUP` is
+  documented as not implemented yet (#63) (#62).
+
 ### M3 — Safety net: lint/verify rules that would have caught M2 (v0.4.1 review, #113)
 
 New lint rules run automatically in `lint_report`, `verify_report`,
