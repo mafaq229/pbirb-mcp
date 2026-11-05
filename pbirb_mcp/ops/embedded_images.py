@@ -19,6 +19,7 @@ letting Report Builder load a file it can't render.
 from __future__ import annotations
 
 import base64
+import struct
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
@@ -67,6 +68,110 @@ def _sniff_mime(prefix: bytes) -> Optional[str]:
                 # x-png is an alias for png; collapse for comparison purposes.
                 return "image/png" if mime == "image/x-png" else mime
     return None
+
+
+# Above this many bytes add_embedded_image returns a warning: base64 grows
+# the .rdl by about 4/3 of the image size (#110).
+LARGE_IMAGE_BYTES = 1_000_000
+
+
+def _png_info(data: bytes) -> tuple[Optional[int], Optional[int]]:
+    """PNG: an ``IHDR`` chunk right after the signature with width and
+    height > 0, and an ``IEND`` chunk at the end."""
+    if len(data) < 8 + 25 + 12 or data[8:16] != b"\x00\x00\x00\x0dIHDR":
+        raise ValueError("no IHDR chunk after the PNG signature (truncated or not a PNG)")
+    width, height = struct.unpack(">II", data[16:24])
+    if not width or not height:
+        raise ValueError(f"PNG IHDR gives a {width}x{height} image")
+    if data[-12:-4] != b"\x00\x00\x00\x00IEND":
+        raise ValueError("no IEND chunk at the end of the PNG (truncated?)")
+    return width, height
+
+
+# JPEG start-of-frame markers (C4 = DHT, C8 = JPG, CC = DAC are not frames).
+_JPEG_SOF = frozenset(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC}
+
+
+def _jpeg_info(data: bytes) -> tuple[Optional[int], Optional[int]]:
+    """JPEG: starts with SOI ``FFD8`` and contains EOI ``FFD9``; width and
+    height from the first start-of-frame segment, when the segment walk
+    reaches one (None otherwise)."""
+    if not data.startswith(b"\xff\xd8") or data.rfind(b"\xff\xd9") < 2:
+        raise ValueError("no JPEG end-of-image marker FFD9 (truncated?)")
+    i = 2
+    while i + 4 <= len(data) and data[i] == 0xFF:
+        marker = data[i + 1]
+        if marker == 0xFF:  # fill byte
+            i += 1
+            continue
+        if marker == 0xDA:  # start of scan: entropy-coded data follows
+            break
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:  # standalone, no length
+            i += 2
+            continue
+        (length,) = struct.unpack(">H", data[i + 2 : i + 4])
+        if marker in _JPEG_SOF and i + 9 <= len(data):
+            height, width = struct.unpack(">HH", data[i + 5 : i + 9])
+            return (width or None), (height or None)
+        i += 2 + length
+    return None, None
+
+
+def _gif_info(data: bytes) -> tuple[Optional[int], Optional[int]]:
+    """GIF: a logical screen descriptor after the header and a ``;``
+    trailer at the end."""
+    if len(data) < 6 + 7 + 1:
+        raise ValueError("no GIF logical screen descriptor (truncated)")
+    if not data.rstrip(b"\x00").endswith(b";"):
+        raise ValueError("no GIF trailer ';' at the end (truncated?)")
+    width, height = struct.unpack("<HH", data[6:10])
+    return (width or None), (height or None)
+
+
+def _bmp_info(data: bytes) -> tuple[Optional[int], Optional[int]]:
+    """BMP: the file-size field in the header must not exceed the file
+    length, the pixel offset must lie inside it, and the DIB header size
+    must be a known one."""
+    if len(data) < 14 + 12:
+        raise ValueError("BMP header is truncated")
+    file_size, _reserved, offset, dib_size = struct.unpack("<IIII", data[2:18])
+    if file_size > len(data):
+        raise ValueError(
+            f"BMP header says {file_size} bytes but the file has {len(data)} (truncated?)"
+        )
+    if dib_size not in (12, 16, 40, 52, 56, 64, 108, 124) or 14 + dib_size > len(data):
+        raise ValueError(f"BMP DIB header size {dib_size} is not valid")
+    if not 14 + dib_size <= offset < len(data):
+        raise ValueError(f"BMP pixel-data offset {offset} is outside the file")
+    if dib_size == 12:
+        width, height = struct.unpack("<HH", data[18:22])
+    else:
+        width, height = struct.unpack("<ii", data[18:26])
+    return (abs(width) or None), (abs(height) or None)
+
+
+_FORMAT_CHECKS = {
+    "image/png": _png_info,
+    "image/jpeg": _jpeg_info,
+    "image/gif": _gif_info,
+    "image/bmp": _bmp_info,
+}
+
+
+def inspect_image(data: bytes, mime_type: str) -> tuple[Optional[int], Optional[int]]:
+    """Check that ``data`` is structurally a complete ``mime_type`` image
+    (no decoding, no dependency) and return its ``(width, height)`` in
+    pixels where the header gives it cheaply (else None). Raises
+    ``ValueError`` naming what is wrong — a bare signature, a truncated
+    file, or random bytes behind a valid signature."""
+    canonical = "image/png" if mime_type == "image/x-png" else mime_type
+    check = _FORMAT_CHECKS.get(canonical)
+    if check is None:
+        return None, None
+    try:
+        return check(data)
+    except struct.error:
+        raise ValueError(f"{canonical} header is truncated") from None
 
 
 # Top-level <Report> child order we care about for placement. The fixture
@@ -124,7 +229,15 @@ def add_embedded_image(
     name: str,
     mime_type: str,
     image_path: str,
+    warn_above_bytes: int = LARGE_IMAGE_BYTES,
 ) -> dict[str, Any]:
+    """Embed the image file at ``image_path`` as ``<EmbeddedImage
+    Name=name>``. The name must be an RDL identifier; the bytes must match
+    ``mime_type`` and be a structurally complete image (:func:`inspect_image`
+    — a bare signature or a truncated file is refused). Returns ``{name,
+    mime_type, bytes, width, height}`` (width / height None when not
+    cheaply known), plus ``warnings`` when the file is larger than
+    ``warn_above_bytes``. Nothing is written on refusal."""
     # Report Builder names embedded images with the same identifier rule
     # as every other RDL name (its import dialog strips "logo 2.png" to
     # "logo2"); the XSD only says normalizedString.
@@ -154,6 +267,13 @@ def add_embedded_image(
             f"(detected {detected!r} from magic bytes). Pass the matching "
             "mime_type or supply the right file."
         )
+    # The signature alone doesn't make an image (#110).
+    try:
+        width, height = inspect_image(image_bytes, mime_type)
+    except ValueError as exc:
+        raise ValueError(f"file {image_path!r} is not a complete {detected} image: {exc}") from None
+    if isinstance(warn_above_bytes, bool) or not isinstance(warn_above_bytes, int):
+        raise ValueError("warn_above_bytes must be an integer")
 
     encoded = base64.b64encode(image_bytes).decode("ascii")
 
@@ -167,11 +287,20 @@ def add_embedded_image(
     etree.SubElement(entry, q("ImageData")).text = encoded
 
     doc.save()
-    return {
+    result: dict[str, Any] = {
         "name": name,
         "mime_type": mime_type,
-        "bytes": src.stat().st_size,
+        "bytes": len(image_bytes),
+        "width": width,
+        "height": height,
     }
+    if len(image_bytes) > warn_above_bytes:
+        result["warnings"] = [
+            f"{name!r} is {len(image_bytes):,} bytes; embedding adds about "
+            f"{len(encoded):,} bytes of base64 to the report. Consider a smaller "
+            "image or an External image (a URL / report-server path)."
+        ]
+    return result
 
 
 # ---- list_embedded_images -------------------------------------------------

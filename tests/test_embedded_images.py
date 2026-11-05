@@ -34,8 +34,15 @@ FIXTURE = Path(__file__).parent / "fixtures" / "pbi_paginated_minimal.rdl"
 # base64-decoded round-trip equals the bytes we wrote.
 _TINY_PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
-    "0000000d49444154789c63faffff3f000005fe02fea3796300000000049454e4ae"
+    "0000000b49444154789c6360000200000500017a5eab3f0000000049454e44ae"
     "426082"
+)
+# SOI, JFIF APP0, a 3x2 baseline SOF0, EOI: structurally a complete JPEG.
+_TINY_JPEG = (
+    b"\xff\xd8"
+    b"\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    b"\xff\xc0\x00\x0b\x08\x00\x02\x00\x03\x01\x01\x11\x00"
+    b"\xff\xd9"
 )
 
 
@@ -208,7 +215,7 @@ class TestListEmbeddedImages:
     def test_returns_name_and_mime_per_image(self, rdl_path, png_path, tmp_path):
         # A second tiny image — same bytes, different name + MIME.
         jpg_path = tmp_path / "logo.jpg"
-        jpg_path.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00")
+        jpg_path.write_bytes(_TINY_JPEG)
         add_embedded_image(
             path=str(rdl_path),
             name="Logo",
@@ -464,6 +471,152 @@ class TestGetEmbeddedImageData:
         # Fixture has no <EmbeddedImages> block at all.
         with pytest.raises(ElementNotFoundError, match="not found"):
             get_embedded_image_data(path=str(rdl_path), name="Anything")
+
+
+# ---- #110: structure checks, size warning, names ------------------------
+
+
+def _png(width: int = 1, height: int = 1, payload: bytes = b"") -> bytes:
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    raw = b"".join(b"\x00" + b"\x00\x00\x00\x00" * width for _ in range(height))
+    out = b"\x89PNG\r\n\x1a\n" + chunk(
+        b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    )
+    out += chunk(b"IDAT", zlib.compress(raw))
+    if payload:  # an ancillary chunk to make the file big
+        out += chunk(b"zTXt", payload)
+    return out + chunk(b"IEND", b"")
+
+
+def _gif(width: int = 2, height: int = 3) -> bytes:
+    import struct
+
+    return (
+        b"GIF89a"
+        + struct.pack("<HHBBB", width, height, 0, 0, 0)
+        + b",\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00"
+        + b";"
+    )
+
+
+def _bmp(width: int = 1, height: int = 1) -> bytes:
+    import struct
+
+    pixels = b"\x00\x00\xff\x00" * width * abs(height)
+    dib = struct.pack("<IiiHHIIiiII", 40, width, height, 1, 32, 0, len(pixels), 0, 0, 0, 0)
+    size = 14 + len(dib) + len(pixels)
+    return b"BM" + struct.pack("<IHHI", size, 0, 0, 14 + len(dib)) + dib + pixels
+
+
+def _write(tmp_path: Path, name: str, data: bytes) -> Path:
+    p = tmp_path / name
+    p.write_bytes(data)
+    return p
+
+
+class TestImageStructure:
+    def test_issue_repro_all_refused_file_unchanged(self, rdl_path, tmp_path):
+        import os
+
+        trunc = _write(tmp_path, "trunc.png", b"\x89PNG\r\n\x1a\n")
+        big = _write(tmp_path, "big.png", b"\x89PNG\r\n\x1a\n" + os.urandom(200_000))
+        good = _write(tmp_path, "good.png", _TINY_PNG)
+        before = rdl_path.read_bytes()
+        cases = [
+            ("Trunc", trunc, "IHDR"),
+            ("Big", big, "IHDR"),
+            ("", good, "empty"),
+            ("Logo With Space", good, "invalid"),
+            ('Logo&<>"', good, "invalid"),
+        ]
+        for name, src, match in cases:
+            with pytest.raises(ValueError, match=match):
+                add_embedded_image(str(rdl_path), name, "image/png", str(src))
+        assert rdl_path.read_bytes() == before
+
+    def test_real_png_embeds_round_trips_and_reports_size(self, rdl_path, tmp_path):
+        data = _png(3, 2)
+        src = _write(tmp_path, "real.png", data)
+        result = add_embedded_image(str(rdl_path), "Real", "image/png", str(src))
+        assert result == {
+            "name": "Real",
+            "mime_type": "image/png",
+            "bytes": len(data),
+            "width": 3,
+            "height": 2,
+        }
+        assert base64.b64decode(get_embedded_image_data(str(rdl_path), "Real")["base64"]) == data
+        doc = RDLDocument.open(rdl_path)
+        doc.validate()
+
+    def test_eval_fixture_logo_embeds(self, rdl_path):
+        logo = Path(__file__).parent.parent / "evals" / "tool_selection" / "fixtures" / "logo.png"
+        result = add_embedded_image(str(rdl_path), "Logo", "image/png", str(logo))
+        assert result["width"] and result["height"]
+        assert base64.b64decode(get_embedded_image_data(str(rdl_path), "Logo")["base64"]) == (
+            logo.read_bytes()
+        )
+
+    @pytest.mark.parametrize(
+        "mime, data, size",
+        [
+            ("image/gif", _gif(2, 3), (2, 3)),
+            ("image/bmp", _bmp(4, -5), (4, 5)),
+            ("image/jpeg", _TINY_JPEG, (3, 2)),
+            ("image/x-png", _png(1, 1), (1, 1)),
+        ],
+    )
+    def test_other_formats_embed(self, rdl_path, tmp_path, mime, data, size):
+        src = _write(tmp_path, "img.bin", data)
+        result = add_embedded_image(str(rdl_path), "Img", mime, str(src))
+        assert (result["width"], result["height"]) == size
+        assert "warnings" not in result
+
+    @pytest.mark.parametrize(
+        "mime, data, match",
+        [
+            ("image/png", _png()[:-12], "IEND"),
+            ("image/png", _png()[:30], "IHDR"),
+            ("image/png", _png(0, 0), "0x0"),
+            ("image/jpeg", _TINY_JPEG[:-2], "FFD9"),
+            ("image/jpeg", b"\xff\xd8\xff", "FFD9"),
+            ("image/gif", _gif()[:-1], "trailer"),
+            ("image/gif", b"GIF89a\x01\x00", "screen descriptor"),
+            ("image/bmp", _bmp(4, 4)[:-8], "truncated"),
+            ("image/bmp", b"BM" + b"\x00" * 10, "truncated"),
+        ],
+    )
+    def test_broken_images_refused(self, rdl_path, tmp_path, mime, data, match):
+        src = _write(tmp_path, "broken.bin", data)
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match=match):
+            add_embedded_image(str(rdl_path), "Broken", mime, str(src))
+        assert rdl_path.read_bytes() == before
+
+    def test_large_image_warns(self, rdl_path, tmp_path):
+        import os
+
+        data = _png(1, 1, payload=b"k\x00\x00" + os.urandom(1_100_000))
+        src = _write(tmp_path, "large.png", data)
+        result = add_embedded_image(str(rdl_path), "Large", "image/png", str(src))
+        assert len(result["warnings"]) == 1 and "base64" in result["warnings"][0]
+        assert list_embedded_images(str(rdl_path))[0]["name"] == "Large"
+
+    def test_warning_threshold_is_configurable(self, rdl_path, tmp_path):
+        src = _write(tmp_path, "small.png", _TINY_PNG)
+        result = add_embedded_image(str(rdl_path), "Small", "image/png", str(src), 10)
+        assert "warnings" in result
+        result = add_embedded_image(
+            str(rdl_path), "Small2", "image/png", str(src), warn_above_bytes=10_000
+        )
+        assert "warnings" not in result
 
 
 # ---- registration ---------------------------------------------------------

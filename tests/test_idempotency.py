@@ -33,7 +33,7 @@ MULTI_DS = "pbi_multi_datasource.rdl"
 # A 1x1 transparent PNG.
 _TINY_PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
-    "0000000d49444154789c63faffff3f000005fe02fea3796300000000049454e4ae"
+    "0000000b49444154789c6360000200000500017a5eab3f0000000049454e44ae"
     "426082"
 )
 PNG = "{png}"  # placeholder replaced with a real PNG path per test
@@ -1096,6 +1096,19 @@ VARIANTS: list[tuple[str, Case]] = [
         Case(
             {"textbox_name": TB, "text_or_expression": ""},
             setup=[("set_textbox_tooltip", {"textbox_name": TB, "text_or_expression": "Tip"})],
+        ),
+    ),
+    # warn_above_bytes (#110): the first call warns, the repeat refuses the name.
+    (
+        "add_embedded_image",
+        Case(
+            {
+                "name": "LogoData",
+                "mime_type": "image/png",
+                "image_path": PNG,
+                "warn_above_bytes": 1,
+            },
+            second="refuses",
         ),
     ),
     # clear=true (#109): the second clear finds nothing to remove.

@@ -4147,7 +4147,7 @@ def register_all_tools(server: MCPServer) -> None:
         name="add_embedded_image",
         description=(
             "Embed an image file (logo) in the report from disk (bmp, gif, jpeg, "
-            "png; the bytes must match mime_type). Then use it with "
+            "png; must be a complete image of mime_type). Then use it with "
             "image_source='Embedded', value=name."
         ),
         input_schema={
@@ -4169,6 +4169,7 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": "string",
                     "description": "Filesystem path to the source image.",
                 },
+                "warn_above_bytes": {"type": "integer", "minimum": 0},
             },
             "required": ["path", "name", "mime_type", "image_path"],
             "additionalProperties": False,
