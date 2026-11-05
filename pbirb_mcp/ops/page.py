@@ -10,9 +10,12 @@ when = 1, matching Report Builder's convention (single-column is the
 implicit default and Report Builder strips the element on save).
 
 ``set_page_orientation`` is a thin helper: it parses ``PageHeight`` and
-``PageWidth`` into a common unit (inches), compares, and swaps when the
-current orientation doesn't match the requested one. Idempotent when it
-already matches.
+``PageWidth`` into a common unit (inches; an absent element is the RDL
+default, 11in x 8.5in), compares, and swaps when the current orientation
+doesn't match the requested one. Idempotent when it already matches.
+
+Both tools report ``warnings`` (``body-wider-than-page``) when the body
+no longer fits the page width after the change (#80).
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from lxml import etree
 
 from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.geometry import PAGE_DEFAULTS, TOLERANCE_IN, section_geometry
 from pbirb_mcp.core.mutation import remove_child_if_present, set_text_if_different
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
 
@@ -138,26 +142,93 @@ def set_page_setup(
 
     if changed:
         doc.save()
-    return {"path": str(doc.path), "changed": changed}
+    result: dict[str, Any] = {"path": str(doc.path), "changed": changed}
+    # A narrower page, wider margins or more columns can push the body
+    # past the page edge (#80); say so instead of a bare `changed`.
+    if set(changed) & {"PageWidth", "LeftMargin", "RightMargin", "Columns"}:
+        warnings = body_overflow_warnings(page)
+        if warnings:
+            result["warnings"] = warnings
+    return result
+
+
+# ---- body-overflow warnings (#80) ------------------------------------------
+
+
+def body_overflow_warnings(page: etree._Element) -> list[dict[str, Any]]:
+    """``[{"rule": "body-wider-than-page", ...}]`` when the body of
+    ``page``'s ReportSection no longer fits the page width, else ``[]``.
+
+    Same arithmetic as the ``body-wider-than-page`` lint rule (#49, via
+    :func:`pbirb_mcp.core.geometry.section_geometry`, absent page
+    elements at their RDL defaults): the body needs ``columns x body +
+    spacing x (columns - 1) + margins``. The entry carries
+    ``body_width``, ``printable_width`` (the widest body that fits one
+    page column), ``overflow`` (how much wider than the page that is)
+    and a ``suggestion``; sizes are inch strings. A body that overflows
+    renders a mostly blank extra page after every page.
+    """
+    section = page.getparent()
+    if section is None:
+        return []
+    geom = section_geometry(section)
+    required = geom.required_page_width
+    if required is None or required <= geom.page_width + TOLERANCE_IN:
+        return []
+    assert geom.body_width is not None
+    entry: dict[str, Any] = {
+        "rule": "body-wider-than-page",
+        "body_width": units.format_size(geom.body_width),
+        "printable_width": units.format_size(geom.available_body_width),
+        "overflow": units.format_size(required - geom.page_width),
+        "suggestion": (
+            "fit_page_to_body(mode='body') shrinks the body to its content; "
+            "fit_page_to_body(mode='page') widens the page; or set_body_size / "
+            "set_page_setup."
+        ),
+    }
+    if geom.columns > 1:
+        entry["columns"] = geom.columns
+    return [entry]
 
 
 # ---- set_page_orientation -------------------------------------------------
 
 
 def set_page_orientation(path: str, orientation: str) -> dict[str, Any]:
+    """Swap ``PageHeight`` / ``PageWidth`` when the page's orientation
+    isn't ``orientation`` (idempotent when it already is).
+
+    A missing ``PageHeight`` / ``PageWidth`` is the RDL default (11in x
+    8.5in, US Letter portrait — Report Builder omits elements equal to
+    their default); when swapping, both are written explicitly.
+    ``InteractiveHeight`` / ``InteractiveWidth`` are swapped too when
+    both are present.
+
+    Returns ``{path, orientation, changed, page_height, page_width}``,
+    plus ``warnings`` (see :func:`body_overflow_warnings`) when the body
+    is wider than the re-oriented page.
+    """
     if orientation not in _VALID_ORIENTATIONS:
         raise ValueError(f"orientation must be one of {_VALID_ORIENTATIONS!r}; got {orientation!r}")
 
     doc = RDLDocument.open(path)
     page = _resolve_page(doc)
-    h_node = find_child(page, "PageHeight")
-    w_node = find_child(page, "PageWidth")
-    if h_node is None or w_node is None:
-        raise ValueError("page has no PageHeight/PageWidth to orient")
-
-    h_in = units.to_inches(h_node.text or "")
-    w_in = units.to_inches(w_node.text or "")
-    is_currently_landscape = w_in > h_in
+    sizes: dict[str, str] = {}
+    for local in ("PageHeight", "PageWidth"):
+        node = find_child(page, local)
+        text = (node.text or "").strip() if node is not None else ""
+        sizes[local] = node.text if text else PAGE_DEFAULTS[local]  # type: ignore[assignment]
+        try:
+            units.to_inches(sizes[local])
+        except ValueError:
+            raise ValueError(
+                f"<{local}> is {sizes[local]!r}, not an RDL size; set it with set_page_setup "
+                "before changing the orientation"
+            ) from None
+    is_currently_landscape = units.to_inches(sizes["PageWidth"]) > units.to_inches(
+        sizes["PageHeight"]
+    )
     wants_landscape = orientation == "Landscape"
 
     if is_currently_landscape == wants_landscape:
@@ -165,17 +236,28 @@ def set_page_orientation(path: str, orientation: str) -> dict[str, Any]:
             "path": str(doc.path),
             "orientation": orientation,
             "changed": False,
+            "page_height": sizes["PageHeight"],
+            "page_width": sizes["PageWidth"],
         }
 
-    h_node.text, w_node.text = w_node.text, h_node.text
+    new_height, new_width = sizes["PageWidth"], sizes["PageHeight"]
+    _set_or_create_text_in_order(page, "PageHeight", new_height)
+    _set_or_create_text_in_order(page, "PageWidth", new_width)
+    ih, iw = find_child(page, "InteractiveHeight"), find_child(page, "InteractiveWidth")
+    if ih is not None and iw is not None:
+        ih.text, iw.text = iw.text, ih.text
     doc.save()
-    return {
+    result: dict[str, Any] = {
         "path": str(doc.path),
         "orientation": orientation,
         "changed": True,
-        "page_height": h_node.text,
-        "page_width": w_node.text,
+        "page_height": new_height,
+        "page_width": new_width,
     }
+    warnings = body_overflow_warnings(page)
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 # ---- set_body_size (v0.4 commit 20) --------------------------------------
@@ -287,4 +369,10 @@ def set_body_size(
     return {"kind": "Body", "changed": changed}
 
 
-__all__ = ["printable_width_in", "set_body_size", "set_page_orientation", "set_page_setup"]
+__all__ = [
+    "body_overflow_warnings",
+    "printable_width_in",
+    "set_body_size",
+    "set_page_orientation",
+    "set_page_setup",
+]

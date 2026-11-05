@@ -701,13 +701,13 @@ Return effective state of a named Rectangle: position, size, names of contained 
 
 *idempotent*
 
-Update `<Page>` dimensions, margins, and column count on the first ReportSection. All fields are optional — only what's passed gets written. columns=1 strips the `<Columns/>` element.
+Update `<Page>` dimensions, margins, and column count on the first ReportSection. All fields are optional — only what's passed gets written. columns=1 strips the `<Columns/>` element. When a change to the page width, a side margin or the column count leaves the body wider than the page (columns x body + column spacing + margins > page width; absent page elements at their RDL defaults), the result carries `warnings: [{rule: 'body-wider-than-page', body_width, printable_width, overflow, suggestion}]` (plus `columns` when > 1) — the overflow renders a mostly blank extra page after every page; fit_page_to_body fixes it.
 
 ### `set_page_orientation`
 
 *idempotent*
 
-Set page orientation by swapping PageHeight and PageWidth when the current orientation doesn't match the requested one. Idempotent. Accepts 'Portrait' or 'Landscape'.
+Set page orientation by swapping PageHeight and PageWidth when the current orientation doesn't match the requested one. Idempotent. Accepts 'Portrait' or 'Landscape'. A missing `<PageHeight>` / `<PageWidth>` is the RDL default (11in x 8.5in — Report Builder omits values equal to it); a swap writes both explicitly. InteractiveHeight / InteractiveWidth are swapped too when both are present. Returns {path, orientation, changed, page_height, page_width}, plus the same `warnings` (body-wider-than-page, with body_width, printable_width, overflow) as set_page_setup when the body no longer fits the re-oriented page — e.g. Landscape -> Portrait with a wide body.
 
 ### `set_body_size`
 

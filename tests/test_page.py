@@ -149,6 +149,112 @@ class TestSetPageOrientation:
         assert page["width"] == "29.7cm"
 
 
+# ---- #80: RDL default page sizes, body-overflow warnings ---------------------
+
+
+def _drop(rdl_path: Path, *locals_: str) -> None:
+    import re
+
+    text = rdl_path.read_text(encoding="utf-8")
+    for local in locals_:
+        text, n = re.subn(rf"\s*<{local}>[^<]*</{local}>", "", text)
+        assert n == 1, local
+    rdl_path.write_text(text, encoding="utf-8")
+
+
+def _wide_landscape(rdl_path: Path) -> None:
+    """Case (b): an 11in x 8.5in page with 0.5in side margins and a 10in
+    body that fills the 10in printable width exactly."""
+    set_page_setup(
+        str(rdl_path),
+        page_width="11in",
+        page_height="8.5in",
+        margin_left="0.5in",
+        margin_right="0.5in",
+    )
+    set_body_size(str(rdl_path), width="10in")
+
+
+class TestOrientationDefaultsAndOverflow:
+    @pytest.mark.parametrize(
+        "missing", [("PageWidth",), ("PageHeight",), ("PageHeight", "PageWidth")]
+    )
+    def test_missing_size_is_the_rdl_default(self, rdl_path, missing):
+        from pbirb_mcp.ops.validate import validate_report
+
+        _drop(rdl_path, *missing)
+        out = set_page_orientation(str(rdl_path), "Landscape")
+        assert out["changed"] is True
+        assert (out["page_height"], out["page_width"]) == ("8.5in", "11in")
+        text = rdl_path.read_text(encoding="utf-8")
+        assert "<PageHeight>8.5in</PageHeight>" in text
+        assert "<PageWidth>11in</PageWidth>" in text
+        assert text.index("<PageHeight>") < text.index("<PageWidth>") < text.index("<LeftMargin>")
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_default_size_already_portrait_is_a_no_op(self, rdl_path):
+        _drop(rdl_path, "PageWidth")
+        before = rdl_path.read_bytes()
+        out = set_page_orientation(str(rdl_path), "Portrait")
+        assert out["changed"] is False and out["page_width"] == "8.5in"
+        assert rdl_path.read_bytes() == before
+
+    def test_fixture_round_trip_restores_bytes(self, rdl_path):
+        before = rdl_path.read_bytes()
+        assert "warnings" not in set_page_orientation(str(rdl_path), "Landscape")
+        assert "warnings" not in set_page_orientation(str(rdl_path), "Portrait")
+        assert rdl_path.read_bytes() == before
+
+    def test_interactive_size_swapped_when_present(self, rdl_path):
+        text = rdl_path.read_text(encoding="utf-8")
+        text = text.replace(
+            "<PageWidth>8.5in</PageWidth>",
+            "<PageWidth>8.5in</PageWidth>\n        <InteractiveHeight>11in</InteractiveHeight>"
+            "\n        <InteractiveWidth>8.5in</InteractiveWidth>",
+        )
+        rdl_path.write_text(text, encoding="utf-8")
+        set_page_orientation(str(rdl_path), "Landscape")
+        page = _page(rdl_path)
+        assert find_child(page, "InteractiveHeight").text == "8.5in"
+        assert find_child(page, "InteractiveWidth").text == "11in"
+
+    def test_landscape_to_portrait_warns_on_body_overflow(self, rdl_path):
+        _wide_landscape(rdl_path)
+        out = set_page_orientation(str(rdl_path), "Portrait")
+        assert out["changed"] is True
+        assert out["warnings"] == [
+            {
+                "rule": "body-wider-than-page",
+                "body_width": "10in",
+                "printable_width": "7.5in",
+                "overflow": "2.5in",
+                "suggestion": out["warnings"][0]["suggestion"],
+            }
+        ]
+        assert "fit_page_to_body" in out["warnings"][0]["suggestion"]
+
+    def test_set_page_setup_margin_change_warns(self, rdl_path):
+        _wide_landscape(rdl_path)
+        out = set_page_setup(str(rdl_path), margin_left="3in")
+        assert out["changed"] == ["LeftMargin"]
+        [warning] = out["warnings"]
+        assert warning["rule"] == "body-wider-than-page"
+        assert (warning["printable_width"], warning["overflow"]) == ("7.5in", "2.5in")
+
+    def test_set_page_setup_columns_warn_with_count(self, rdl_path):
+        # 5in body, 1in margins, 8.5in page: two columns need 2 x 5 + 0.5 + 2 = 12.5in.
+        out = set_page_setup(str(rdl_path), columns=2)
+        [warning] = out["warnings"]
+        assert warning["columns"] == 2 and warning["overflow"] == "4in"
+
+    def test_no_warning_when_body_fits_or_nothing_relevant_changed(self, rdl_path):
+        assert "warnings" not in set_page_setup(str(rdl_path), margin_left="0.5in")
+        _wide_landscape(rdl_path)
+        set_page_orientation(str(rdl_path), "Portrait")  # now overflowing
+        # A height-only change doesn't re-report the existing overflow.
+        assert "warnings" not in set_page_setup(str(rdl_path), margin_top="0.25in")
+
+
 # ---- registration ---------------------------------------------------------
 
 

@@ -2682,7 +2682,8 @@ def register_all_tools(server: MCPServer) -> None:
         name="set_page_setup",
         description=(
             "Set page size, margins and column count; only the fields passed are "
-            "written. columns=1 removes multi-column layout."
+            "written. columns=1 removes multi-column layout. Warns when the body "
+            "no longer fits the page width."
         ),
         input_schema={
             "type": "object",
@@ -2705,7 +2706,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_page_orientation",
         description=(
-            "Set page orientation to Portrait or Landscape (swaps page width and height if needed)."
+            "Set page orientation to Portrait or Landscape (swaps page width and "
+            "height if needed; a missing size is the 8.5x11in default). Warns when "
+            "the body no longer fits the page width."
         ),
         input_schema={
             "type": "object",
