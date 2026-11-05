@@ -20,9 +20,9 @@ Implementation notes:
   collide.
 
 Auto-backup hook: when the env var ``PBIRB_MCP_AUTO_BACKUP`` is set to
-a truthy value (``1`` / ``true`` / ``yes``), other ops can call
-``maybe_auto_backup(path)`` before destructive work and a snapshot is
-taken if the env is on. Default behaviour stays unchanged.
+a truthy value (``1`` / ``true`` / ``yes``), ``maybe_auto_backup(path)``
+takes a snapshot. No tool calls it yet (#63), so setting the variable
+currently has no effect; the README says so.
 """
 
 from __future__ import annotations

@@ -20,6 +20,8 @@ overwrite (mirrors the safety story in ``add_data_source``,
 
 from __future__ import annotations
 
+import contextlib
+import os
 import shutil
 import uuid
 from pathlib import Path
@@ -41,7 +43,7 @@ def duplicate_report(
     optional ``<rd:ReportID>`` into a fresh ``uuid4()``, and saves to
     ``dst_path`` via the standard atomic ``save_as`` (write to
     ``<dst>.tmp``, rename). When ``regenerate_ids=False`` the file is
-    copied byte-for-byte via ``shutil.copy``.
+    copied byte-for-byte to ``<dst>.tmp`` and renamed the same way.
 
     Refuses if ``dst_path`` already exists. Refuses if ``src_path``
     isn't a regular file (or doesn't exist).
@@ -62,7 +64,16 @@ def duplicate_report(
         )
 
     if not regenerate_ids:
-        shutil.copy(str(src), str(dst))
+        # Same atomic convention as save_as: copy to <dst>.tmp, then rename,
+        # so a failed copy never leaves a half-written dst (issue #62).
+        tmp = dst.with_name(dst.name + ".tmp")
+        try:
+            shutil.copy(str(src), str(tmp))
+            os.replace(tmp, dst)
+        except Exception:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            raise
         return {"src": str(src), "dst": str(dst), "regenerated_ids": []}
 
     # Open the source and work on a private copy: inside a transaction

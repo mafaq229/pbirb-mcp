@@ -55,10 +55,7 @@ OBJECT_RESULT: dict = {"type": "object"}
 # {result, verify}.
 EDIT_RESULT: dict = {
     "type": "object",
-    "description": (
-        "Edit outcome. `changed` is a boolean or the list of what changed. "
-        "With PBIRB_MCP_AUTO_VERIFY on: {result: <outcome>, verify: {valid, issues}}."
-    ),
+    "description": "`changed`: boolean or list. PBIRB_MCP_AUTO_VERIFY on: {result, verify}.",
     "properties": {
         "changed": {"type": ["boolean", "array"]},
         "warnings": {"type": "array"},

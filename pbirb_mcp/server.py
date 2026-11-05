@@ -238,9 +238,8 @@ _CONFIRM_PARAM = {
     "type": "boolean",
     "default": False,
     "description": (
-        "Set true to run this destructive edit. Without it the server may refuse "
-        "and ask for confirmation (PBIRB_MCP_REQUIRE_CONFIRM; on by default for "
-        "the pbirb-mcp server). Confirm with the user first."
+        "true runs this destructive edit; required when PBIRB_MCP_REQUIRE_CONFIRM "
+        "is on (the pbirb-mcp default). Ask the user first."
     ),
 }
 
@@ -255,11 +254,7 @@ _CALL_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("pbirb_mcp_cal
 
 _TRANSACTION_ID_PARAM = {
     "type": "string",
-    "description": (
-        "Optional. Run this call inside the editing transaction with this id "
-        "(from start_editing_transaction): reads and edits use its in-memory "
-        "tree; nothing reaches disk until commit_editing_transaction."
-    ),
+    "description": "Optional: run inside this start_editing_transaction id.",
 }
 
 

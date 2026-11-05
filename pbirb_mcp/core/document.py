@@ -457,12 +457,12 @@ class RDLDocument:
         try:
             with open(tmp, "wb") as fh:
                 fh.write(data)
+            os.replace(tmp, path)
         except Exception:
             if tmp.exists():
                 with contextlib.suppress(OSError):
                     tmp.unlink()
             raise
-        os.replace(tmp, path)
         self.path = path
         self._on_disk = _DiskState(target, data, _stat_signature(path))
         if self._known is not None:

@@ -29,7 +29,8 @@ Highlights:
   `get_rectangle`, plus extended `describe_report` / `get_tablixes`.
 * Parameter CRUD — `set_parameter_prompt`, `set_parameter_type`,
   `add_parameter`, `remove_parameter`, `rename_parameter`.
-* Snapshot — `backup_report` + `PBIRB_MCP_AUTO_BACKUP=1`.
+* Snapshot — `backup_report` (the planned `PBIRB_MCP_AUTO_BACKUP=1`
+  automatic backups were never wired up; tracked in #63).
 * MCP server now returns tool failures as `isError: true` result
   content with structured `{error_type, message}` payloads (per MCP
   spec) instead of opaque JSON-RPC `-32603 INTERNAL_ERROR`.
@@ -51,7 +52,7 @@ ask *"I don't want to check after every run and find an error"*.
 | 4 | Sizing / repointing / ordering | `set_image_sizing`, `set_image_source`, `set_column_width`, `set_tablix_size`, `reorder_parameters` |
 | 5 | Actions & interactivity | textbox / image / chart-series action, tooltip, document-map label — 5 tools |
 | 6 | Session-2 ergonomics | `style_tablix_row` (12 cell-styling calls → 1), `set_header_item_size` / `set_footer_item_size`, `add_dataset_field` / `refresh_dataset_fields`, `set_parameter_layout`, `duplicate_report`, `get_embedded_image_data` — 8 tools |
-| 7 | Verify suite + auto-verify | `validate_report`, `lint_report` (15 rules), `dry_run_edit`, `verify_report`, `PBIRB_MCP_AUTO_VERIFY` env var |
+| 7 | Verify suite + auto-verify | `validate_report`, `lint_report` (`rules_run` lists the current rules), `dry_run_edit`, `verify_report`, `PBIRB_MCP_AUTO_VERIFY` env var |
 | 8 | DAX-aware authoring | `update_dataset_query.alias_strategy='preserve_field_names'`, `field_format` + type-mismatch warnings on `add_*_filter` |
 | 9 | Expression reference + emitters | `get_expression_reference`, `count_where`, `sum_where`, `iif_format` |
 | 10 | Pagination | `set_group_page_break`, `set_repeat_on_new_page`, `set_keep_together`, `set_keep_with_group` |

@@ -1,4 +1,4 @@
-"""Static-analysis lint rules (Phase 7 commit 31; v0.3.1 added rule 16; #20 rules 17-18; #42 rule 19).
+"""Static-analysis lint rules (the registry: ``ALL_RULES``; ``lint_report`` reports ``rules_run``).
 
 Core rules driven by the v0.2/v0.3 sweep feedback live here; further
 rule families live in :mod:`pbirb_mcp.ops.lint_rules` (one module each,

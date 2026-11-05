@@ -102,7 +102,10 @@ These have all bitten us before. Re-check every PR:
 4. **Stable IDs?** New tools take names, not indices.
 5. **Tool registration & schema?** New tool registered in
    `pbirb_mcp/tools.py` with a clear `description` (this is *prompt
-   input* for the LLM — write it for an LLM to read), strict
+   input* for the LLM — write it for an LLM to read: purpose first, with
+   the words a user would search for, at most 400 characters, no release
+   history; longer behaviour notes go in its `docs/TOOLS.md` section —
+   `tests/test_docs_consistency.py` checks), strict
    `inputSchema`, and any pre-conditions called out (e.g.
    *"`Globals!PageNumber` only resolves inside `<PageHeader>` /
    `<PageFooter>`"*, *"Pass raw VB.NET; do not XML-escape"*).

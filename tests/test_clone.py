@@ -109,6 +109,22 @@ class TestDuplicateReport:
         # Byte-for-byte equal.
         assert dst.read_bytes() == src_path.read_bytes()
 
+    @pytest.mark.parametrize("regenerate", [True, False])
+    def test_write_is_atomic(self, src_path, tmp_path, monkeypatch, regenerate):
+        # Issue #62: the description promises an atomic write; a failure at
+        # the final rename leaves neither a half-written dst nor a temp file.
+        import os
+
+        def boom(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(os, "replace", boom)
+        dst = tmp_path / "dst.rdl"
+        with pytest.raises(OSError, match="disk full"):
+            duplicate_report(src_path=str(src_path), dst_path=str(dst), regenerate_ids=regenerate)
+        assert not dst.exists()
+        assert sorted(p.name for p in tmp_path.iterdir()) == [src_path.name]
+
     def test_round_trip_safe(self, src_path, tmp_path):
         dst = tmp_path / "dst.rdl"
         duplicate_report(src_path=str(src_path), dst_path=str(dst))

@@ -377,11 +377,19 @@ def _tool(name: str) -> dict:
     return next(t for t in listing["result"]["tools"] if t["name"] == name)
 
 
-def test_add_description_mentions_hierarchy_member():
-    assert "ChartSeriesHierarchy member" in _tool("add_chart_series")["description"]
+def _tool_notes(name: str) -> str:
+    """The tool's section of docs/TOOLS.md, where the full behaviour notes
+    live since the tools/list descriptions were shortened (#62)."""
+    text = (Path(__file__).resolve().parent.parent / "docs" / "TOOLS.md").read_text()
+    return text.split(f"### `{name}`", 1)[1].split("\n### ", 1)[0]
 
 
-def test_remove_description_and_cascade_schema():
+def test_add_documents_hierarchy_member():
+    assert "ChartSeriesHierarchy member" in _tool_notes("add_chart_series")
+
+
+def test_remove_documents_leaf_member_and_cascade_schema():
     tool = _tool("remove_chart_series")
-    assert "ChartSeriesHierarchy leaf member" in tool["description"]
+    assert "legend member" in tool["description"]
+    assert "ChartSeriesHierarchy leaf member" in _tool_notes("remove_chart_series")
     assert tool["inputSchema"]["properties"]["cascade"]["type"] == "boolean"
