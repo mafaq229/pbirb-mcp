@@ -155,10 +155,19 @@ walking each dataset's `<QueryParameters>` block manually.
 * `stale-designer-state` — the `rd:DesignerState/QueryDefinition/Query/Statement`
   text (or a legacy `rd:Statement`) diverges from `<CommandText>`.
 * `multi-value-eq` — `=Parameters!X.Value` (multi-value) compared
-  with `=` instead of `IN`. The PBI Query Designer accepts the
+  with `=` instead of `IN`, or used as the value of a filter whose
+  Operator isn't `In`. The PBI Query Designer accepts the
   ill-formed shape but the runtime errors at preview.
+* `query-parameter-mismatch` — an `@Name` in the DAX with no
+  `<QueryParameter>` (error: "The query contains the 'Name' parameter,
+  which is not declared"), or a `<QueryParameter>` the DAX never uses
+  (warning).
+* `multi-value-query-binding` — a multi-value parameter bound raw
+  (`=Parameters!X.Value`) to an `@X` the DAX compares as a scalar
+  (`[col] = @X`). Bind `=Join(Parameters!X.Value, "|")` and test with
+  `PATHCONTAINS(@X, [col])`, or use `RSCustomDaxFilter`.
 
-Run `verify_report` to surface all three plus every other lint rule
+Run `verify_report` to surface all of these plus every other lint rule
 (and the XSD check) in one call.
 
 ## The PBIDATASET connection shape

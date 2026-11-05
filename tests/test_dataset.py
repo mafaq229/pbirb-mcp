@@ -2295,3 +2295,101 @@ class TestDatasetFilterValueDataType:
             str(rdl_path), "MainDataset", expression, "Equal", ["=Parameters!Month.Value"]
         )
         assert result["warnings"] == []
+
+
+# ---- #95: query parameters vs the DAX -------------------------------------
+
+_DAX_YEAR_MONTH = (
+    "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[ProductName], "
+    "FILTER('Sales', 'Sales'[Year] = @Year && 'Sales'[Month] = @MonthNum), "
+    '"Amount", SUM(Sales[Amount]))'
+)
+
+
+def _bound_dax(rdl_path: Path) -> None:
+    from pbirb_mcp.ops.parameters import add_parameter
+
+    update_dataset_query(str(rdl_path), "MainDataset", _DAX_YEAR_MONTH)
+    add_parameter(str(rdl_path), "Year", "Integer", prompt="Year")
+    add_parameter(str(rdl_path), "MonthNum", "Integer", prompt="Month")
+    add_query_parameter(str(rdl_path), "MainDataset", "Year", "=Parameters!Year.Value")
+    add_query_parameter(str(rdl_path), "MainDataset", "MonthNum", "=Parameters!MonthNum.Value")
+
+
+class TestQueryParameterCrossChecks:
+    def test_remove_accepts_the_at_form_add_stripped(self, rdl_path):
+        _bound_dax(rdl_path)
+        added = add_query_parameter(str(rdl_path), "MainDataset", "@Extra", "=1")
+        assert added["name"] == "Extra"
+        result = remove_query_parameter(str(rdl_path), "MainDataset", "@Extra")
+        assert result["removed"] == "Extra"
+        names = [p["name"] for p in get_dataset(str(rdl_path), "MainDataset")["query_parameters"]]
+        assert names == ["Year", "MonthNum"]
+
+    def test_remove_falls_back_to_a_legacy_at_name(self, rdl_path):
+        _bound_dax(rdl_path)
+        add_query_parameter(str(rdl_path), "MainDataset", "@Legacy", "=1", force_at_prefix=True)
+        assert remove_query_parameter(str(rdl_path), "MainDataset", "@Legacy")["removed"] == (
+            "@Legacy"
+        )
+
+    def test_clean_binding_has_no_warnings(self, rdl_path):
+        _bound_dax(rdl_path)
+        result = update_query_parameter(
+            str(rdl_path), "MainDataset", "Year", "=Parameters!Year.Value"
+        )
+        assert result["warnings"] == []
+        assert result["changed"] is False
+
+    def test_add_warns_about_unused_and_undeclared(self, rdl_path):
+        _bound_dax(rdl_path)
+        result = add_query_parameter(
+            str(rdl_path), "MainDataset", "Ghost", "=Parameters!NoSuchParam.Value"
+        )
+        joined = " ".join(result["warnings"])
+        assert "query-parameter-mismatch" in joined and "@Ghost" in joined
+        assert "undefined-parameter" in joined and "NoSuchParam" in joined
+
+    def test_remove_warns_when_the_dax_still_uses_it(self, rdl_path):
+        _bound_dax(rdl_path)
+        result = remove_query_parameter(str(rdl_path), "MainDataset", "Year")
+        assert len(result["warnings"]) == 1
+        assert "@Year" in result["warnings"][0]
+
+    def test_repro_lint_after_removals_and_multi_value_toggle(self, rdl_path):
+        from pbirb_mcp.ops.parameters import update_parameter_advanced
+
+        _bound_dax(rdl_path)
+        base = {(i["rule"], i["location"]) for i in lint_report(str(rdl_path))["issues"]}
+
+        def new_issues():
+            return [
+                i
+                for i in lint_report(str(rdl_path))["issues"]
+                if (i["rule"], i["location"]) not in base
+            ]
+
+        add_query_parameter(str(rdl_path), "MainDataset", "@Extra", "=Parameters!Year.Value")
+        remove_query_parameter(str(rdl_path), "MainDataset", "@Extra")
+        remove_query_parameter(str(rdl_path), "MainDataset", "Year")
+        add_query_parameter(str(rdl_path), "MainDataset", "Ghost", "=Parameters!NoSuchParam.Value")
+        messages = [(i["rule"], i["message"]) for i in new_issues()]
+        assert any(r == "query-parameter-mismatch" and "@Year" in m for r, m in messages)
+        assert any(r == "query-parameter-mismatch" and "'Ghost'" in m for r, m in messages)
+        assert any(r == "undefined-parameter" and "NoSuchParam" in m for r, m in messages)
+
+        update_parameter_advanced(str(rdl_path), "MonthNum", multi_value=True)
+        result = update_query_parameter(
+            str(rdl_path), "MainDataset", "MonthNum", "=Parameters!MonthNum.Value"
+        )
+        assert any("multi-value-query-binding" in w for w in result["warnings"])
+        add_dataset_filter(
+            str(rdl_path),
+            "MainDataset",
+            "=Globals!ReportName",
+            "Equal",
+            ["=Parameters!MonthNum.Value"],
+        )
+        rules = [i["rule"] for i in new_issues()]
+        assert "multi-value-query-binding" in rules
+        assert "multi-value-eq" in rules

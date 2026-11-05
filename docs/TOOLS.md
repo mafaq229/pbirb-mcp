@@ -69,7 +69,7 @@ One-shot static check: union of validate_report and lint_report. Returns {valid,
 
 *read-only*
 
-Run static-analysis lint rules against an .rdl (`lint_report` returns `rules_run`; the rules live in `pbirb_mcp/ops/lint_rules/`). They cover the known bug classes (multi-value-eq, missing-field-reference, dangling-embedded-image, database-image-missing-mimetype, pbidataset-at-prefix, parameter-layout-out-of-sync, double-encoded-entities, stale-designer-state, tablix-span-misplaced, dataset-fields-out-of-sync, dangling-dataset-reference-field, parameter-state, duplicate-name, invalid-identifier, tablix-structure, chart-structure, etc.). Returns {issues, rules_run} with each issue {severity (error|warning), rule, location, message, suggestion?}; location names the nearest named items, e.g. Tablix[Name='T']>Textbox[Name='X']>Value. Optional `rules` selects a subset by name (empty = all).
+Run static-analysis lint rules against an .rdl (`lint_report` returns `rules_run`; the rules live in `pbirb_mcp/ops/lint_rules/`). They cover the known bug classes (multi-value-eq, query-parameter-mismatch, multi-value-query-binding, missing-field-reference, dangling-embedded-image, database-image-missing-mimetype, pbidataset-at-prefix, parameter-layout-out-of-sync, double-encoded-entities, stale-designer-state, tablix-span-misplaced, dataset-fields-out-of-sync, dangling-dataset-reference-field, parameter-state, duplicate-name, invalid-identifier, tablix-structure, chart-structure, etc.). Returns {issues, rules_run} with each issue {severity (error|warning), rule, location, message, suggestion?}; location names the nearest named items, e.g. Tablix[Name='T']>Textbox[Name='X']>Value. Optional `rules` selects a subset by name (empty = all).
 
 ### `dry_run_edit`
 
@@ -139,11 +139,13 @@ Add a `<QueryParameter>` binding to a dataset's query. Use to wire report parame
 
 PBIDATASET parameter naming rule: in DAX/`<CommandText>`, write @MyParam (with @). In `<QueryParameter Name=...>`, write MyParam (no @). SQL/MDX use @ in both places. This tool detects the dataset's provider and AUTO-STRIPS a leading @ from `name` for PBIDATASET datasets, returning {normalised: true, warning: ...}. Pass force_at_prefix=true to override (rare; needed for some RSCustomDaxFilter patterns).
 
+`warnings` lists the lint findings about the new binding: a Power BI dataset's DAX that never uses `@<name>` (query-parameter-mismatch), a multi-value report parameter passed raw into an `@<name>` the DAX compares as a scalar (multi-value-query-binding), a `Parameters!X` in the value that names no report parameter (undefined-parameter).
+
 ### `update_query_parameter`
 
 *idempotent*
 
-Change the value expression of an existing query parameter. Same PBIDATASET @-prefix normalisation as add_query_parameter applies on lookup; legacy Name='@X' parameters that already exist on disk are addressable via either @X or X.
+Change the value expression of an existing query parameter. Same PBIDATASET @-prefix normalisation as add_query_parameter applies on lookup; legacy Name='@X' parameters that already exist on disk are addressable via either @X or X. Returns the same `warnings` as add_query_parameter.
 
 ### `set_datasource_connection`
 
@@ -233,7 +235,7 @@ Sync a dataset's `<Fields>` block against the shape detected in its DAX `<Comman
 
 *destructive*
 
-Remove a query parameter from a dataset. Cleans up the empty `<QueryParameters/>` block when removing the last one.
+Remove a query parameter from a dataset. Same lookup as update_query_parameter: on a PBIDATASET dataset `@X` finds the `Name="X"` binding add_query_parameter wrote (and a legacy `Name="@X"`). Cleans up the empty `<QueryParameters/>` block when removing the last one. Returns {dataset, removed (the Name removed), warnings}; warnings flags an `@X` the DAX still uses (Report Builder: "The query contains the 'X' parameter, which is not declared").
 
 ## `parameters`
 

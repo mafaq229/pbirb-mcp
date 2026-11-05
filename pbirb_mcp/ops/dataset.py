@@ -542,6 +542,7 @@ def add_query_parameter(
         "name": effective_name,
         "value": value_expression,
         "normalised": normalised,
+        "warnings": _binding_warnings(doc, dataset, effective_name),
     }
     if warning is not None:
         result["warning"] = warning
@@ -599,6 +600,7 @@ def update_query_parameter(
         "value": value_expression,
         "normalised": normalised,
         "changed": changed,
+        "warnings": _binding_warnings(doc, dataset, effective_name),
     }
     if warning is not None:
         result["warning"] = warning
@@ -606,15 +608,27 @@ def update_query_parameter(
 
 
 def remove_query_parameter(path: str, dataset_name: str, name: str) -> dict[str, Any]:
+    """Remove a ``<QueryParameter>`` binding.
+
+    Same lookup as :func:`update_query_parameter` (#95): on a PBIDATASET
+    dataset a leading ``@`` is stripped first (``"@X"`` finds the
+    ``Name="X"`` that :func:`add_query_parameter` wrote), falling back to
+    the raw name for a legacy ``Name="@X"``. ``warnings`` reports an
+    ``@name`` the DAX still uses now that its binding is gone.
+    """
     doc = RDLDocument.open(path)
     dataset = resolve_dataset(doc, dataset_name)
+    effective_name, normalised, _warning = _normalise_query_parameter_name(
+        doc, dataset, name, force_at_prefix=False
+    )
     query = _query(dataset)
     qp_root = _query_parameters_root(query, create=False)
-    if qp_root is None:
-        raise ElementNotFoundError(f"QueryParameter {name!r} not found in dataset {dataset_name!r}")
-    qp = _find_query_parameter(qp_root, name)
+    qp = _find_query_parameter(qp_root, effective_name) if qp_root is not None else None
+    if qp is None and normalised and qp_root is not None:
+        qp = _find_query_parameter(qp_root, name)
     if qp is None:
         raise ElementNotFoundError(f"QueryParameter {name!r} not found in dataset {dataset_name!r}")
+    removed = qp.get("Name")
     qp_root.remove(qp)
 
     # An empty <QueryParameters/> block sometimes confuses Report Builder's
@@ -623,7 +637,22 @@ def remove_query_parameter(path: str, dataset_name: str, name: str) -> dict[str,
         qp_root.getparent().remove(qp_root)
 
     doc.save()
-    return {"dataset": dataset_name, "removed": name}
+    return {
+        "dataset": dataset_name,
+        "removed": removed,
+        "warnings": _binding_warnings(doc, dataset, removed),
+    }
+
+
+def _binding_warnings(doc: RDLDocument, dataset: etree._Element, name: str) -> list[str]:
+    """Lint findings about one query-parameter binding (#95): an ``@name``
+    the DAX uses without a binding, a binding the DAX doesn't use, a
+    multi-value parameter passed raw into a scalar comparison, an
+    undeclared report parameter in the value."""
+    # Imported here: the lint package imports this module.
+    from pbirb_mcp.ops.lint_rules.query_parameters import binding_warnings
+
+    return binding_warnings(doc, dataset, name)
 
 
 # ---- dataset-level filters ------------------------------------------------

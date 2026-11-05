@@ -22,7 +22,7 @@ and tokenize it with :mod:`pbirb_mcp.ops.vbexpr` (#46).
 Core rules (19):
 
 * ``multi-value-eq`` (warn) — multi-value param compared with ``=``, or
-  the FilterValue of an ``Equal``/``NotEqual`` ``<Filter>`` (#46).
+  the FilterValue of a ``<Filter>`` whose Operator isn't ``In`` (#46, #95).
 * ``unused-data-source`` (warn) — DataSource never referenced.
 * ``unused-data-set`` (warn) — DataSet never referenced.
 * ``date-param-as-string`` (warn) — ``*date*``-named param typed as
@@ -235,16 +235,16 @@ def _bare_reference(sig: list[vbexpr.Token]) -> Optional[expr_walk.Ref]:
 
 
 def _multi_value_filter_issues(doc: RDLDocument, multi: set[str]) -> list[Issue]:
-    """``<Filter>`` with ``Operator`` ``Equal``/``NotEqual`` whose
-    ``FilterValue`` is a multi-value parameter — the commonest form of
-    the bug (#46): the filter compares each row against an array and
-    Report Builder rejects it at run time. ``In`` is the operator for a
-    multi-value list."""
+    """``<Filter>`` with any ``Operator`` but ``In`` whose ``FilterValue``
+    is a multi-value parameter — the commonest form of the bug (#46;
+    every non-``In`` operator since #95): the filter compares each row
+    against an array and Report Builder rejects it at run time. ``In`` is
+    the operator for a multi-value list."""
     issues: list[Issue] = []
     for flt in doc.root.iter(q("Filter")):
         op = find_child(flt, "Operator")
         op_text = (op.text or "").strip() if op is not None else ""
-        if op_text not in ("Equal", "NotEqual"):
+        if not op_text or op_text == "In":
             continue
         values = find_child(flt, "FilterValues")
         if values is None:
