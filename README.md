@@ -679,8 +679,10 @@ pbirb-mcp/
   silent corruption.
 - **Stable IDs, never indices.** Tools take `tablix_name` + `group_name`,
   not `column_index: 2`. Indices break across multi-step edits.
-- **Atomic save.** `RDLDocument.save_as` writes to `<path>.tmp` then renames.
-  A failure mid-write never leaves a half-written report.
+- **Atomic save.** Every write goes to a temp file next to the report and is
+  renamed over it (`core.document.write_atomic`), following symlinks and
+  keeping the file's mode. A failure mid-write never leaves a half-written
+  report.
 - **Round-trip byte-identity is enforced** by `tests/test_byte_fidelity.py`
   (BOM × CRLF × trailing-newline matrix, Report Builder's
   `MustUnderstand` root and `<Style></Style>` form) and
