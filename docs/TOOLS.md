@@ -31,7 +31,7 @@ Top-level inventory of an RDL: data sources, datasets, parameters, tablixes, cha
 
 *read-only*
 
-Run schema/structural validation against an .rdl. Returns {valid, errors, xsd_used}. Structural checks always run (root element + required top-level sections). The Microsoft RDL 2016/01 XSD is bundled — when it's loaded, xsd_used is True and the schema-conformance bug class Power BI Report Builder rejects on load gets caught here. If the bundled XSD is missing (source-build without package-data) a {severity:warning, rule:'xsd-not-bundled'} issue surfaces instead of silent skip. Each issue is {severity, rule, location, message, suggestion?}; valid is True iff no severity='error' issue.
+Run schema/structural validation against an .rdl. Returns {valid, errors, xsd_used}. Structural checks always run (root element + required top-level sections). The Microsoft RDL 2016/01 XSD is bundled — when it's loaded, xsd_used is True and the schema-conformance bug class Power BI Report Builder rejects on load gets caught here. `xsi:type` attributes on elements outside the RDL namespace — Report Builder's `rd:DesignerState` query-designer state (`QuerySpecification xsi:type="MDXQuerySpecification"`) — are ignored for the XSD check, since they name types from schemas that aren't bundled; the file itself isn't changed. If the bundled XSD is missing (source-build without package-data) a {severity:warning, rule:'xsd-not-bundled'} issue surfaces instead of silent skip. Each issue is {severity, rule, location, message, suggestion?}; valid is True iff no severity='error' issue.
 
 ### `verify_report`
 

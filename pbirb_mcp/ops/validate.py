@@ -34,6 +34,7 @@ from pbirb_mcp.core.schema import (
     _load_xsd,
     validate_structure,
     xsd_available,
+    xsd_view,
 )
 
 
@@ -95,7 +96,8 @@ def _validate_tree(tree: etree._ElementTree, location: str) -> tuple[list[dict[s
         schema = _load_xsd()
         if schema is not None:
             xsd_used = True
-            if not schema.validate(tree):
+            # Foreign xsi:type (Report Builder's DesignerState) skipped (#76).
+            if not schema.validate(xsd_view(tree)):
                 for entry in schema.error_log:
                     errors.append(
                         {

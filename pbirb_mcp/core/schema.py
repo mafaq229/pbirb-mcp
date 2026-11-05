@@ -14,10 +14,19 @@ Two layers:
    package-data will cause :func:`xsd_available` to return ``False``;
    :mod:`pbirb_mcp.ops.validate` surfaces that as a loud
    ``rule="xsd-not-bundled"`` warning rather than silently skipping.
+
+   Foreign ``xsi:type`` attributes are ignored (#76): Report Builder's
+   ``rd:DesignerState`` holds a ``QueryDefinition`` whose
+   ``QuerySpecification xsi:type="MDXQuerySpecification"`` names a type from
+   a schema that isn't bundled. The RDL wildcard is ``processContents="lax"``,
+   but lxml still resolves ``xsi:type`` and fails an untouched report. The
+   XSD runs on :func:`xsd_view` — a copy without those attributes (line
+   numbers kept) — so the report itself is never changed.
 """
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Optional
 
@@ -69,10 +78,37 @@ def _load_xsd() -> Optional[etree.XMLSchema]:
     return _xsd_cache
 
 
+XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
+_XSI_TYPE = f"{{{XSI_NS}}}type"
+# Elements outside the RDL namespace that carry xsi:type.
+_FOREIGN_XSI_TYPED = etree.XPath(
+    "//*[@xsi:type and namespace-uri() != $rdl]", namespaces={"xsi": XSI_NS}
+)
+
+
+def xsd_view(tree: etree._ElementTree) -> etree._ElementTree:
+    """The tree to run the RDL XSD against (#76).
+
+    ``tree`` itself when no element outside the RDL namespace carries
+    ``xsi:type``; otherwise a deep copy (source line numbers kept, so XSD
+    errors still point into the file) with those attributes removed. Such
+    elements sit under the XSD's lax ``##other`` wildcards, where the
+    types they name (``MDXQuerySpecification`` in Report Builder's
+    ``rd:DesignerState``) aren't known, and Report Builder ignores
+    DesignerState when rendering. RDL elements are validated unchanged.
+    """
+    if not _FOREIGN_XSI_TYPED(tree, rdl=RDL_NS):
+        return tree
+    view = copy.deepcopy(tree)
+    for elem in _FOREIGN_XSI_TYPED(view, rdl=RDL_NS):
+        del elem.attrib[_XSI_TYPE]
+    return view
+
+
 def validate_against_xsd(tree: etree._ElementTree) -> None:
     schema = _load_xsd()
     if schema is None:
         return  # opt-in; silently skip
-    if not schema.validate(tree):
+    if not schema.validate(xsd_view(tree)):
         first = schema.error_log[0]
         raise RDLValidationError(f"RDL XSD validation failed at line {first.line}: {first.message}")
