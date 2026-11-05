@@ -3333,7 +3333,9 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Split a chart series into one series per value of a field (dynamic "
             "series), e.g. one line per Region: group_field or group_expression. "
-            "replace=true overwrites an existing grouping."
+            "The legend label becomes the group value (or label_expression), "
+            "sorted by sort. replace=true changes an existing grouping's "
+            "expression and keeps its group name."
         ),
         input_schema={
             "type": "object",
@@ -3344,6 +3346,26 @@ def register_all_tools(server: MCPServer) -> None:
                 "group_field": {"type": ["string", "null"], "default": None},
                 "group_expression": {"type": ["string", "null"], "default": None},
                 "replace": {"type": "boolean", "default": False},
+                "label_expression": {
+                    "type": ["string", "null"],
+                    "default": None,
+                    "description": "Legend text per fanned-out series; default: the "
+                    "group expression.",
+                },
+                "sort": {
+                    "type": ["string", "null"],
+                    "enum": ["Ascending", "Descending", "None", None],
+                    "default": None,
+                    "description": "Sort the series by the group expression. Default: "
+                    "Ascending for a new group, unchanged on replace. 'None' removes "
+                    "the sort.",
+                },
+                "group_name": {
+                    "type": ["string", "null"],
+                    "default": None,
+                    "description": "Name of a new group (default <series>_Group); "
+                    "with replace=true, renames the existing group.",
+                },
             },
             "required": ["path", "chart_name", "series_name"],
             "additionalProperties": False,

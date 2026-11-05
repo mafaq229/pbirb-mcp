@@ -1204,7 +1204,7 @@ class TestSetChartSeriesGrouping:
         assert result["kind"] == "ChartGroup"
         assert result["group_name"] == "Amount_Group"
         assert result["expression"] == "=Fields!Type.Value"
-        assert "group_written" in result["changed"]
+        assert "Group" in result["changed"]
 
         member = self._series_chartmember(rich_path, "SalesByProduct")
         group = find_child(member, "Group")
@@ -1302,7 +1302,7 @@ class TestSetChartSeriesGrouping:
             group_field="Region",
             replace=True,
         )
-        assert "replaced_existing_group" in result["changed"]
+        assert result["changed"] == ["GroupExpressions", "Label", "SortExpressions"]
         member = self._series_chartmember(rich_path, "SalesByProduct")
         expr = member.find(f"{q('Group')}/{q('GroupExpressions')}/{q('GroupExpression')}")
         assert expr.text == "=Fields!Region.Value"

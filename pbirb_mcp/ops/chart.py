@@ -59,7 +59,7 @@ from pbirb_mcp.core import chart_shape, chart_types, names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError, resolve_dataset
-from pbirb_mcp.core.mutation import changed_by, fingerprint
+from pbirb_mcp.core.mutation import changed_by
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, find_children, q
 from pbirb_mcp.ops.body import _ensure_body_report_items, _resolve_body
 
@@ -1420,24 +1420,79 @@ def set_chart_title(
     }
 
 
-# ---- set_chart_series_grouping (v0.4 commit 21) ---------------------------
+# ---- set_chart_series_grouping (#77) --------------------------------------
 
 
-def _resolve_first_series_chartmember(chart: etree._Element) -> Optional[etree._Element]:
-    """Find the first ``<ChartMember>`` inside ``<ChartSeriesHierarchy>``.
+# Report Builder's child order inside a <ChartMember> (the XSD is a choice).
+_CHART_MEMBER_CHILD_ORDER = (
+    "Group",
+    "SortExpressions",
+    "ChartMembers",
+    "Label",
+    "CustomProperties",
+    "DataElementName",
+    "DataElementOutput",
+)
 
-    The template-inserted chart has exactly one static ChartMember;
-    this is the natural attach point for the dynamic ``<Group>``.
-    Returns ``None`` when the hierarchy is absent — refuses upstream.
-    """
-    hierarchy = find_child(chart, "ChartSeriesHierarchy")
-    if hierarchy is None:
-        return None
-    members = find_child(hierarchy, "ChartMembers")
-    if members is None:
-        return None
-    children = find_children(members, "ChartMember")
-    return children[0] if children else None
+_SERIES_SORT_DIRECTIONS = ("Ascending", "Descending", "None")
+
+
+def _insert_member_child(member: etree._Element, node: etree._Element) -> None:
+    """Insert ``node`` into a ChartMember in Report Builder's child order."""
+    local = etree.QName(node).localname
+    idx = _CHART_MEMBER_CHILD_ORDER.index(local)
+    for i, child in enumerate(member):
+        if not isinstance(child.tag, str):
+            continue
+        child_local = etree.QName(child).localname
+        if (
+            child_local in _CHART_MEMBER_CHILD_ORDER
+            and _CHART_MEMBER_CHILD_ORDER.index(child_local) > idx
+        ):
+            member.insert(i, node)
+            return
+    member.append(node)
+
+
+def _group_expression_texts(group: etree._Element) -> list[Optional[str]]:
+    exprs = find_child(group, "GroupExpressions")
+    if exprs is None:
+        return []
+    return [e.text for e in find_children(exprs, "GroupExpression")]
+
+
+def _sort_state(member: etree._Element) -> list[tuple[Optional[str], str]]:
+    """``(Value, Direction)`` per SortExpression of a ChartMember (a missing
+    Direction is Ascending, the RDL default)."""
+    sorts = find_child(member, "SortExpressions")
+    if sorts is None:
+        return []
+    out: list[tuple[Optional[str], str]] = []
+    for s in find_children(sorts, "SortExpression"):
+        value = find_child(s, "Value")
+        direction = find_child(s, "Direction")
+        text = (direction.text or "").strip() if direction is not None else ""
+        out.append((value.text if value is not None else None, text or "Ascending"))
+    return out
+
+
+def _write_sort(member: etree._Element, expression: str, direction: str) -> bool:
+    """Make the member's SortExpressions exactly one SortExpression on
+    ``expression`` (``direction`` 'None' removes them). True iff changed."""
+    wanted = [] if direction == "None" else [(expression, direction)]
+    if _sort_state(member) == wanted:
+        return False
+    existing = find_child(member, "SortExpressions")
+    if existing is not None:
+        member.remove(existing)
+    if wanted:
+        sorts = etree.Element(q("SortExpressions"))
+        sort = etree.SubElement(sorts, q("SortExpression"))
+        etree.SubElement(sort, q("Value")).text = expression
+        if direction == "Descending":
+            etree.SubElement(sort, q("Direction")).text = "Descending"
+        _insert_member_child(member, sorts)
+    return True
 
 
 def set_chart_series_grouping(
@@ -1447,33 +1502,40 @@ def set_chart_series_grouping(
     group_field: Optional[str] = None,
     group_expression: Optional[str] = None,
     replace: bool = False,
+    label_expression: Optional[str] = None,
+    sort: Optional[str] = None,
+    group_name: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Promote a chart's static ChartMember to a dynamic-fanout series.
+    """Make a chart series dynamic: one rendered series per distinct value
+    of the group expression (``<ChartMember>/<Group>/<GroupExpressions>``).
 
-    Writes ``<Group Name="<series>_Group">/<GroupExpressions>/<GroupExpression>``
-    on the first ``<ChartMember>`` in the chart's ``<ChartSeriesHierarchy>``.
-    At render time, one rendered series is produced per distinct value of
-    the group expression — the canonical "13 violation types, list
-    unknown at design time" fan-out.
+    The member is the series' own leaf in ``ChartSeriesHierarchy`` (series
+    and leaves match by position, :mod:`pbirb_mcp.core.chart_shape`), or
+    the dynamic member it already sits under. Trailing series without a
+    member (older files) get one first (``repaired_members``).
 
     ``group_field`` is a shorthand: ``"Type"`` becomes
-    ``=Fields!Type.Value``. Pass ``group_expression`` directly for any
-    other VB.NET form. Mutually exclusive.
+    ``=Fields!Type.Value``; ``group_expression`` takes any VB.NET.
+    Mutually exclusive.
 
-    ``series_name`` must match an existing ``<ChartSeries Name=...>`` in
-    ``<ChartSeriesCollection>`` — the value-template the fanned-out
-    series share. Refused otherwise (catches typos against the chart
-    schema before the dynamic chart silently renders empty).
+    Promoting a static member writes the Report Builder shape: the
+    ``<Label>`` (legend text of each fanned-out series) becomes the group
+    expression, or ``label_expression``; ``<SortExpressions>`` sorts by the
+    group expression (``sort``: Ascending (default) / Descending / None);
+    the group is named ``group_name`` or ``<series>_Group``.
 
-    ``replace=False`` (default) refuses when the ChartMember already
-    has a ``<Group>`` child; pass ``replace=True`` to overwrite it.
+    An existing group is refused unless ``replace=True``, which rewrites
+    only its ``GroupExpressions`` and keeps ``Group/@Name`` (scope
+    references such as ``Sum(..., "SeriesGroup1")`` keep working) and the
+    group's other children unless ``group_name`` renames it. The label is
+    updated when ``label_expression`` is given, or when it was a constant
+    or the old group expression; a sort on the old group expression
+    follows the new one (``sort`` sets it explicitly). A call that matches
+    the current state changes nothing (``changed: []``, file untouched),
+    with or without ``replace``.
 
-    Note (v0.4 commit 21 scope): operates on the FIRST ChartMember
-    only. Multi-member dynamic-fanout chains aren't reachable from
-    any other v0.4 tool, so they're out of scope here.
-
-    Returns the canonical mutator shape
-    ``{chart, series, kind: 'ChartGroup', group_name, expression, changed}``.
+    Returns ``{chart, series, kind: 'ChartGroup', group_name, expression,
+    label, sort, repaired_members, changed}``.
     """
     if group_field is None and group_expression is None:
         raise ValueError(
@@ -1484,74 +1546,153 @@ def set_chart_series_grouping(
             "set_chart_series_grouping: group_field and group_expression "
             "are mutually exclusive — pass only one"
         )
+    if sort is not None and sort not in _SERIES_SORT_DIRECTIONS:
+        raise ValueError(
+            f"sort {sort!r} not valid; expected one of {list(_SERIES_SORT_DIRECTIONS)}"
+        )
+    if group_name is not None:
+        names.validate_identifier(group_name, "group")
 
-    effective_expression = (
+    effective_expression = encode_text(
         f"=Fields!{group_field}.Value" if group_field is not None else group_expression
     )
+    label_text = encode_text(label_expression) if label_expression is not None else None
 
     doc = RDLDocument.open(path)
     chart = _resolve_chart(doc, chart_name)
-
-    # Validate the series template exists (the ChartSeries in
-    # ChartSeriesCollection that gets cloned per group value at render
-    # time). Without this, a typo would silently produce an empty chart.
-    series_collection = _series_collection(chart)
-    if series_name not in _series_names(series_collection):
+    if chart_shape.series_index(chart, series_name) is None:
         raise ElementNotFoundError(
             f"chart {chart_name!r} has no series named {series_name!r}; "
-            f"existing series: {_series_names(series_collection)!r}"
+            f"existing series: {chart_shape.series_names(chart, include_derived=False)!r}"
         )
 
-    member = _resolve_first_series_chartmember(chart)
-    if member is None:
-        raise ValueError(
-            f"chart {chart_name!r} has no <ChartSeriesHierarchy>/<ChartMembers>/"
-            "<ChartMember> — cannot attach a Group element. Use "
-            "insert_chart_from_template first."
-        )
+    # Series match hierarchy leaves by position: give trailing series of
+    # an older file their member first (raises when there are extra
+    # leaves, where the mapping is ambiguous).
+    repaired = _sync_series_members(chart)
+    member = chart_shape.series_group_member(chart, series_name)
+    if member is None:  # pragma: no cover - _sync_series_members guarantees one
+        raise ValueError(f"chart {chart_name!r}: series {series_name!r} has no ChartMember")
 
-    existing_group = find_child(member, "Group")
-    changed: list[str] = []
-    if existing_group is not None:
+    changed: list[str] = ["ChartSeriesHierarchy"] if repaired else []
+    group = find_child(member, "Group")
+    label = find_child(member, "Label")
+    old_label = label.text if label is not None else None
+
+    if group is None:
+        new_label = label_text if label_text is not None else effective_expression
+        name = group_name or names.unique_name(doc, f"{series_name}_Group")
+        if group_name is not None:
+            names.ensure_unique(doc, group_name)
+        group = etree.Element(q("Group"), Name=name)
+        expressions = etree.SubElement(group, q("GroupExpressions"))
+        etree.SubElement(expressions, q("GroupExpression")).text = effective_expression
+        _insert_member_child(member, group)
+        changed.append("Group")
+        if _write_sort(member, effective_expression, sort or "Ascending"):
+            changed.append("SortExpressions")
+    else:
+        old_exprs = _group_expression_texts(group)
+        old_expr = old_exprs[0] if len(old_exprs) == 1 else None
+        name = group.get("Name")
+        rename = group_name is not None and group_name != name
+        exprs_differ = old_exprs != [effective_expression]
+
+        if label_text is not None:
+            new_label = label_text
+        elif (
+            old_label is None
+            or not old_label.lstrip().startswith("=")
+            or (old_expr is not None and old_label == old_expr)
+        ):
+            # A constant label gives every fanned-out series the same
+            # legend text; one that mirrors the group expression follows it.
+            new_label = effective_expression
+        else:
+            new_label = old_label  # a hand-written label expression
+
+        old_sort = _sort_state(member)
+        direction: Optional[str]
+        if sort is not None:
+            direction = sort
+        elif (
+            old_expr is not None
+            and len(old_sort) == 1
+            and old_sort[0][0] == old_expr
+            and exprs_differ
+        ):
+            direction = old_sort[0][1]  # the sort followed the group expression
+        else:
+            direction = None  # leave SortExpressions alone
+
+        wanted_sort = (
+            old_sort
+            if direction is None
+            else ([] if direction == "None" else [(effective_expression, direction)])
+        )
+        if not (rename or exprs_differ or new_label != old_label or wanted_sort != old_sort):
+            if repaired:
+                doc.save()
+            return _grouping_result(
+                chart_name, series_name, name, effective_expression, member, repaired, changed
+            )
         if not replace:
             raise ValueError(
-                f"chart {chart_name!r} series ChartMember already has a "
-                "<Group> child; pass replace=True to overwrite it."
+                f"chart {chart_name!r}: the ChartMember of series {series_name!r} already "
+                f"has a <Group> ({name!r} on {old_exprs!r}); pass replace=True to "
+                "rewrite its expression (the group name is kept)."
             )
-        old_fingerprint = fingerprint(existing_group)
-        member.remove(existing_group)
-        changed.append("replaced_existing_group")
+        if rename:
+            names.ensure_unique(doc, group_name)
+            group.set("Name", group_name)
+            name = group_name
+            changed.append("Group.Name")
+        if exprs_differ:
+            expressions = find_child(group, "GroupExpressions")
+            if expressions is None:
+                expressions = etree.Element(q("GroupExpressions"))
+                group.insert(0, expressions)
+            for old in list(expressions):
+                expressions.remove(old)
+            etree.SubElement(expressions, q("GroupExpression")).text = effective_expression
+            changed.append("GroupExpressions")
+        if direction is not None and _write_sort(member, effective_expression, direction):
+            changed.append("SortExpressions")
 
-    # The replaced group (if any) was removed above, so its name is free
-    # again and an idempotent re-run keeps "<series>_Group".
-    group_name = names.unique_name(doc, f"{series_name}_Group")
-    group = etree.Element(q("Group"), Name=group_name)
-    expressions = etree.SubElement(group, q("GroupExpressions"))
-    etree.SubElement(expressions, q("GroupExpression")).text = encode_text(effective_expression)
+    if label is None:
+        label = etree.Element(q("Label"))
+        _insert_member_child(member, label)
+    if label.text != new_label:
+        label.text = new_label
+        changed.append("Label")
 
-    # Per RDL XSD, inside a ChartMember the Group child comes BEFORE
-    # Label. The template-inserted ChartMember has just a Label, so we
-    # insert before it.
+    doc.save()
+    return _grouping_result(
+        chart_name, series_name, name, effective_expression, member, repaired, changed
+    )
+
+
+def _grouping_result(
+    chart_name: str,
+    series_name: str,
+    group_name: Optional[str],
+    expression: str,
+    member: etree._Element,
+    repaired: list[str],
+    changed: list[str],
+) -> dict[str, Any]:
     label = find_child(member, "Label")
-    if label is not None:
-        label.addprevious(group)
-    else:
-        member.insert(0, group)
-
-    if existing_group is not None and fingerprint(group) == old_fingerprint:
-        # Re-run with the same expression: keep the original element.
-        member.replace(group, existing_group)
-        changed = []
-    else:
-        changed.append("group_written")
-        doc.save()
+    sorts = _sort_state(member)
     return {
         "chart": chart_name,
         "series": series_name,
         "kind": "ChartGroup",
         "group_name": group_name,
-        "expression": effective_expression,
-        "changed": changed,
+        "expression": expression,
+        "label": label.text if label is not None else None,
+        "sort": [{"value": v, "direction": d} for v, d in sorts],
+        "repaired_members": repaired,
+        "changed": sorted(changed),
     }
 
 

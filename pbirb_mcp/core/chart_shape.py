@@ -213,6 +213,30 @@ def member_groups(member: etree._Element) -> list[etree._Element]:
     return out
 
 
+def dynamic_member(member: etree._Element) -> Optional[etree._Element]:
+    """The innermost of ``member`` and its ancestor ``ChartMember`` elements
+    that carries a ``<Group>`` (the dynamic member that fans ``member`` out
+    at render time), or None when the whole chain is static."""
+    for m in member_ancestors(member):
+        if find_child(m, "Group") is not None:
+            return m
+    return None
+
+
+def series_group_member(
+    chart: etree._Element, series: Union[int, str, etree._Element]
+) -> Optional[etree._Element]:
+    """The ``ChartMember`` that a series grouping of ``series`` belongs on:
+    the dynamic member the series' leaf already sits under (itself or an
+    ancestor), else the leaf itself. None when the series has no leaf
+    member (unknown series, or a hierarchy short of members)."""
+    leaf = series_member(chart, series)
+    if leaf is None:
+        return None
+    dynamic = dynamic_member(leaf)
+    return dynamic if dynamic is not None else leaf
+
+
 def data_point_count(series: etree._Element) -> int:
     """Number of ``ChartDataPoints/ChartDataPoint`` in a ``ChartSeries``."""
     points = find_child(series, "ChartDataPoints")
@@ -285,6 +309,7 @@ __all__ = [
     "derived_series_list",
     "derived_series_name",
     "derived_source_name",
+    "dynamic_member",
     "hierarchy_findings",
     "hierarchy_problems",
     "member_ancestors",
@@ -295,6 +320,7 @@ __all__ = [
     "series_leaf_members",
     "series_list",
     "series_member",
+    "series_group_member",
     "series_names",
     "subtree_leaves",
 ]
