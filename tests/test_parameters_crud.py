@@ -74,16 +74,18 @@ class TestSetParameterType:
 
     def test_incompatible_default_rejected(self, rdl_path):
         # Force a String default first, then try to switch to Integer.
+        set_parameter_type(path=str(rdl_path), name="DateFrom", type="String")
         set_parameter_default_values(
             path=str(rdl_path),
             name="DateFrom",
             source="static",
             static_values=["not_an_integer"],
         )
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="incompatible"):
             set_parameter_type(path=str(rdl_path), name="DateFrom", type="Integer")
 
     def test_compatible_default_passes(self, rdl_path):
+        set_parameter_type(path=str(rdl_path), name="DateFrom", type="String")
         set_parameter_default_values(
             path=str(rdl_path),
             name="DateFrom",
@@ -116,14 +118,14 @@ class TestAddParameter:
             name="StoreId",
             type="Integer",
             prompt="Pick a store",
-            allow_null=True,
+            allow_null=False,
             multi_value=True,
             hidden=False,
         )
         doc = RDLDocument.open(rdl_path)
         p = _param(doc, "StoreId")
         assert find_child(p, "Prompt").text == "Pick a store"
-        assert find_child(p, "Nullable").text == "true"
+        assert find_child(p, "Nullable").text == "false"
         assert find_child(p, "MultiValue").text == "true"
         assert find_child(p, "Hidden").text == "false"
 

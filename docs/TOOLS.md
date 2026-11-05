@@ -49,7 +49,7 @@ One-shot static check: union of validate_report and lint_report. Returns {valid,
 
 *read-only*
 
-Run static-analysis lint rules against an .rdl (`lint_report` returns `rules_run`; the rules live in `pbirb_mcp/ops/lint_rules/`). They cover the known bug classes (multi-value-eq, missing-field-reference, dangling-embedded-image, database-image-missing-mimetype, pbidataset-at-prefix, parameter-layout-out-of-sync, double-encoded-entities, stale-designer-state, tablix-span-misplaced, dataset-fields-out-of-sync, dangling-dataset-reference-field, duplicate-name, invalid-identifier, tablix-structure, chart-structure, etc.). Returns {issues, rules_run} with each issue {severity (error|warning), rule, location, message, suggestion?}; location names the nearest named items, e.g. Tablix[Name='T']>Textbox[Name='X']>Value. Optional `rules` selects a subset by name (empty = all).
+Run static-analysis lint rules against an .rdl (`lint_report` returns `rules_run`; the rules live in `pbirb_mcp/ops/lint_rules/`). They cover the known bug classes (multi-value-eq, missing-field-reference, dangling-embedded-image, database-image-missing-mimetype, pbidataset-at-prefix, parameter-layout-out-of-sync, double-encoded-entities, stale-designer-state, tablix-span-misplaced, dataset-fields-out-of-sync, dangling-dataset-reference-field, parameter-state, duplicate-name, invalid-identifier, tablix-structure, chart-structure, etc.). Returns {issues, rules_run} with each issue {severity (error|warning), rule, location, message, suggestion?}; location names the nearest named items, e.g. Tablix[Name='T']>Textbox[Name='X']>Value. Optional `rules` selects a subset by name (empty = all).
 
 ### `dry_run_edit`
 
@@ -243,11 +243,11 @@ Write the `<Prompt>` text on a ReportParameter. Empty string clears the `<Prompt
 
 *idempotent*
 
-Set `<DataType>` on a ReportParameter. type ∈ {Boolean, DateTime, Integer, Float, String}. Rejects with ValueError if any existing literal default value would be incompatible with the new type — fix defaults first via set_parameter_default_values, then retry.
+Set `<DataType>` on a ReportParameter. type ∈ {Boolean, DateTime, Integer, Float, String}. Rejects with ValueError if any existing literal default value or static valid value would be incompatible with the new type, or the new type is Boolean on a multi-value parameter — fix those first via set_parameter_default_values / set_parameter_available_values, then retry. Setting the type it already has returns changed=false without checking anything.
 
 ### `add_parameter`
 
-Create a new ReportParameter with a minimal valid declaration. Appends to `<ReportParameters>` (creating it if absent). Pair with set_parameter_available_values / set_parameter_default_values afterwards for value lists. Booleans are only emitted when an explicit value is supplied.
+Create a new ReportParameter with a minimal valid declaration. Appends to `<ReportParameters>` (creating it if absent). Pair with set_parameter_available_values / set_parameter_default_values afterwards for value lists. Booleans are only emitted when an explicit value is supplied. Like every parameter writer, it checks the resulting parameter (#93) and refuses a state it introduced that Report Builder rejects: MultiValue + Nullable, a multi-value Boolean, more than one static default without MultiValue, or a literal default / static valid value that doesn't fit the DataType; a hidden parameter with neither a default nor Nullable only adds a `warnings` entry. A problem the parameter already had doesn't block the edit — it comes back in `warnings` (lint rule `parameter-state` reports it).
 
 ### `remove_parameter`
 
@@ -269,19 +269,19 @@ Bring `<ReportParametersLayout>/<GridLayoutDefinition>/<CellDefinitions>` into s
 
 *idempotent*
 
-Set or clear `<ValidValues>` on a report parameter. source='static' with a non-empty static_values writes a list of `<ParameterValue>` entries (each entry can be a string or {value, label} dict). source='static' with static_values=[] or omitted CLEARS the `<ValidValues>` element entirely (mirrors set_parameter_prompt('') and returns cleared=true). source='query' writes a `<DataSetReference>` to a lookup dataset. Replaces any existing `<ValidValues>` block.
+Set or clear `<ValidValues>` on a report parameter. source='static' with a non-empty static_values writes a list of `<ParameterValue>` entries (each entry can be a string or {value, label} dict). source='static' with static_values=[] or omitted CLEARS the `<ValidValues>` element entirely (mirrors set_parameter_prompt('') and returns cleared=true). source='query' writes a `<DataSetReference>` to a lookup dataset; query_value_field and query_label_field must be fields of query_dataset. Replaces any existing `<ValidValues>` block. Like every parameter writer, it checks the resulting parameter (#93) and refuses a state it introduced that Report Builder rejects: MultiValue + Nullable, a multi-value Boolean, more than one static default without MultiValue, or a literal default / static valid value that doesn't fit the DataType; a hidden parameter with neither a default nor Nullable only adds a `warnings` entry. A problem the parameter already had doesn't block the edit — it comes back in `warnings` (lint rule `parameter-state` reports it).
 
 ### `set_parameter_default_values`
 
 *idempotent*
 
-Set or clear `<DefaultValue>` on a report parameter. source='static' with a non-empty static_values writes a `<Values>` list of expressions. source='static' with static_values=[] or omitted CLEARS the `<DefaultValue>` element entirely (mirrors set_parameter_prompt('') and returns cleared=true). source='query' writes a `<DataSetReference>` with ValueField only (no LabelField — defaults are values, not display strings). Replaces any existing block.
+Set or clear `<DefaultValue>` on a report parameter. source='static' with a non-empty static_values writes a `<Values>` list of expressions. source='static' with static_values=[] or omitted CLEARS the `<DefaultValue>` element entirely (mirrors set_parameter_prompt('') and returns cleared=true). source='query' writes a `<DataSetReference>` with ValueField only (no LabelField — defaults are values, not display strings); query_value_field must be a field of query_dataset. Replaces any existing block. Like every parameter writer, it checks the resulting parameter (#93) and refuses a state it introduced that Report Builder rejects: MultiValue + Nullable, a multi-value Boolean, more than one static default without MultiValue, or a literal default / static valid value that doesn't fit the DataType; a hidden parameter with neither a default nor Nullable only adds a `warnings` entry. A problem the parameter already had doesn't block the edit — it comes back in `warnings` (lint rule `parameter-state` reports it).
 
 ### `update_parameter_advanced`
 
 *idempotent*
 
-Toggle the four boolean flags on a report parameter: multi_value, hidden, allow_null (writes `<Nullable>`), allow_blank. Each is independently optional. With no flags passed it's a no-op. Cascading parameters are NOT a flag — use set_parameter_available_values(source='query') + add_query_parameter on the lookup dataset to wire a dependency on another parameter.
+Toggle the four boolean flags on a report parameter: multi_value, hidden, allow_null (writes `<Nullable>`), allow_blank. Each is independently optional. With no flags passed it's a no-op. Cascading parameters are NOT a flag — use set_parameter_available_values(source='query') + add_query_parameter on the lookup dataset to wire a dependency on another parameter. Like every parameter writer, it checks the resulting parameter (#93) and refuses a state it introduced that Report Builder rejects: MultiValue + Nullable, a multi-value Boolean, more than one static default without MultiValue, or a literal default / static valid value that doesn't fit the DataType; a hidden parameter with neither a default nor Nullable only adds a `warnings` entry. A problem the parameter already had doesn't block the edit — it comes back in `warnings` (lint rule `parameter-state` reports it).
 
 ## `tablix`
 

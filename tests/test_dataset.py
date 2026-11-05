@@ -1395,7 +1395,13 @@ class TestDanglingDatasetReferenceFieldLint:
             "query",
             query_dataset="LookupSet",
             query_value_field="LookupKey",
-            query_label_field="Missing",
+            query_label_field="LookupKey",
+        )
+        # #93: the writer refuses a missing field, so plant one by hand.
+        text = multi_path.read_text(encoding="utf-8")
+        multi_path.write_text(
+            text.replace("<LabelField>LookupKey</LabelField>", "<LabelField>Missing</LabelField>"),
+            encoding="utf-8",
         )
         remove_dataset_field(str(multi_path), "LookupSet", "LookupKey", force=True)
         issues = lint_report(str(multi_path), rules=["dangling-dataset-reference-field"])["issues"]

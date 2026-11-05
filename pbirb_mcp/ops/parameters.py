@@ -71,11 +71,144 @@ def _validate_query_args(
     query_dataset: Optional[str],
     query_value_field: Optional[str],
     doc: RDLDocument,
+    query_label_field: Optional[str] = None,
 ) -> None:
     if not query_dataset or not query_value_field:
         raise ValueError("source='query' requires both query_dataset and query_value_field")
     # Raises ElementNotFoundError when the dataset doesn't exist.
-    resolve_dataset(doc, query_dataset)
+    dataset = resolve_dataset(doc, query_dataset)
+    # ValueField / LabelField hold bare field names that Report Builder
+    # resolves against the dataset's <Fields> when it populates the
+    # parameter (#93; lint: dangling-dataset-reference-field).
+    fields_root = find_child(dataset, "Fields")
+    fields = (
+        [f.get("Name") for f in find_children(fields_root, "Field")]
+        if fields_root is not None
+        else []
+    )
+    missing = [
+        f"{arg}={value!r}"
+        for arg, value in (
+            ("query_value_field", query_value_field),
+            ("query_label_field", query_label_field),
+        )
+        if value is not None and value not in fields
+    ]
+    if missing:
+        raise ValueError(
+            f"{', '.join(missing)} not a field of dataset {query_dataset!r} "
+            f"(fields: {', '.join(fields) or 'none declared'}); add the field "
+            "(add_dataset_field / refresh_dataset_fields) or pick an existing one."
+        )
+
+
+# ---- parameter state (#93) -------------------------------------------------
+
+
+def _flag(parameter: etree._Element, local: str) -> bool:
+    node = find_child(parameter, local)
+    return node is not None and (node.text or "").strip().lower() == "true"
+
+
+def _static_valid_values(parameter: etree._Element) -> list[str]:
+    """Literal ``<Value>`` texts of a static ``<ValidValues>`` list."""
+    valid_values = find_child(parameter, "ValidValues")
+    pvs = find_child(valid_values, "ParameterValues") if valid_values is not None else None
+    if pvs is None:
+        return []
+    out: list[str] = []
+    for pv in find_children(pvs, "ParameterValue"):
+        value = find_child(pv, "Value")
+        if value is not None and value.text is not None:
+            out.append(value.text)
+    return out
+
+
+def parameter_state_problems(parameter: etree._Element) -> list[tuple[str, str]]:
+    """Combination / type problems of one ``<ReportParameter>`` (#93).
+
+    Returns ``[(severity, message)]``: ``"error"`` for a state Report
+    Builder rejects (or that fails every run), ``"warning"`` for one that
+    fails only when no value is passed. Shared by the parameter writers
+    (which refuse new errors) and the ``parameter-state`` lint rule (which
+    reports legacy files).
+    """
+    name = parameter.get("Name")
+    dt_node = find_child(parameter, "DataType")
+    data_type = (dt_node.text or "").strip() if dt_node is not None else "String"
+    multi = _flag(parameter, "MultiValue")
+    problems: list[tuple[str, str]] = []
+    if multi and _flag(parameter, "Nullable"):
+        problems.append(
+            (
+                "error",
+                f"parameter {name!r} is MultiValue and Nullable; a multi-value "
+                "parameter can't allow null (set allow_null=false or multi_value=false)",
+            )
+        )
+    if multi and data_type == "Boolean":
+        problems.append(
+            (
+                "error",
+                f"parameter {name!r} is a multi-value Boolean; Boolean parameters "
+                "can't be multi-value (use multi_value=false or another type)",
+            )
+        )
+    default_value = find_child(parameter, "DefaultValue")
+    values_root = find_child(default_value, "Values") if default_value is not None else None
+    if values_root is not None and not multi:
+        count = len(find_children(values_root, "Value"))
+        if count > 1:
+            problems.append(
+                (
+                    "error",
+                    f"parameter {name!r} has {count} default values but isn't "
+                    "MultiValue; give one default or set multi_value=true",
+                )
+            )
+    if data_type in _VALID_DATA_TYPES:
+        for label, values in (
+            ("default value(s)", _default_value_literals(parameter)),
+            ("static valid value(s)", _static_valid_values(parameter)),
+        ):
+            bad = [v for v in values if not _is_compatible_default(v, data_type)]
+            if bad:
+                problems.append(
+                    (
+                        "error",
+                        f"parameter {name!r}: {label} {bad!r} incompatible with type {data_type!r}",
+                    )
+                )
+    if _flag(parameter, "Hidden") and default_value is None and not _flag(parameter, "Nullable"):
+        problems.append(
+            (
+                "warning",
+                f"parameter {name!r} is hidden, not nullable and has no default; "
+                "the report can't run unless a value is passed (set a default or "
+                "allow_null=true)",
+            )
+        )
+    return problems
+
+
+def _check_parameter_state(parameter: etree._Element, before: list[tuple[str, str]]) -> list[str]:
+    """Refuse a mutation that introduced a parameter-state error (#93).
+
+    ``before`` is :func:`parameter_state_problems` from before the edit, so
+    a problem a legacy file already had doesn't block an unrelated edit —
+    it comes back as a warning instead. Returns the warnings to report.
+    """
+    after = parameter_state_problems(parameter)
+    new_errors = [m for sev, m in after if sev == "error" and (sev, m) not in before]
+    if new_errors:
+        raise ValueError("; ".join(new_errors))
+    return [m for sev, m in after if sev == "warning" or (sev, m) in before]
+
+
+def _with_warnings(result: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 # ---- builders -------------------------------------------------------------
@@ -147,27 +280,34 @@ def set_parameter_available_values(
 
     doc = RDLDocument.open(path)
     parameter = resolve_parameter(doc, name)
+    before = parameter_state_problems(parameter)
 
     if source == "static" and not static_values:
         # Clear: drop the existing <ValidValues> element if present.
         changed = remove_child_if_present(parameter, "ValidValues")
+        warnings = _check_parameter_state(parameter, before)
         if changed:
             doc.save()
-        return {"parameter": name, "source": source, "cleared": True, "changed": changed}
+        return _with_warnings(
+            {"parameter": name, "source": source, "cleared": True, "changed": changed}, warnings
+        )
 
     valid_values = etree.Element(q("ValidValues"))
     if source == "static":
         valid_values.append(_build_static_parameter_values(static_values))
     else:
-        _validate_query_args(query_dataset, query_value_field, doc)
+        _validate_query_args(query_dataset, query_value_field, doc, query_label_field)
         valid_values.append(
             _build_dataset_reference(query_dataset, query_value_field, query_label_field)
         )
 
     changed = _set_or_replace_in_order(parameter, valid_values)
+    warnings = _check_parameter_state(parameter, before)
     if changed:
         doc.save()
-    return {"parameter": name, "source": source, "cleared": False, "changed": changed}
+    return _with_warnings(
+        {"parameter": name, "source": source, "cleared": False, "changed": changed}, warnings
+    )
 
 
 # ---- set_parameter_default_values ----------------------------------------
@@ -197,12 +337,16 @@ def set_parameter_default_values(
 
     doc = RDLDocument.open(path)
     parameter = resolve_parameter(doc, name)
+    before = parameter_state_problems(parameter)
 
     if source == "static" and not static_values:
         changed = remove_child_if_present(parameter, "DefaultValue")
+        warnings = _check_parameter_state(parameter, before)
         if changed:
             doc.save()
-        return {"parameter": name, "source": source, "cleared": True, "changed": changed}
+        return _with_warnings(
+            {"parameter": name, "source": source, "cleared": True, "changed": changed}, warnings
+        )
 
     default_value = etree.Element(q("DefaultValue"))
     if source == "static":
@@ -219,9 +363,12 @@ def set_parameter_default_values(
         )
 
     changed = _set_or_replace_in_order(parameter, default_value)
+    warnings = _check_parameter_state(parameter, before)
     if changed:
         doc.save()
-    return {"parameter": name, "source": source, "cleared": False, "changed": changed}
+    return _with_warnings(
+        {"parameter": name, "source": source, "cleared": False, "changed": changed}, warnings
+    )
 
 
 # ---- update_parameter_advanced -------------------------------------------
@@ -256,6 +403,7 @@ def update_parameter_advanced(
 
     doc = RDLDocument.open(path)
     parameter = resolve_parameter(doc, name)
+    before = parameter_state_problems(parameter)
 
     changed: list[str] = []
     for local, value in flags:
@@ -266,9 +414,10 @@ def update_parameter_advanced(
         if _set_or_replace_in_order(parameter, new_node):
             changed.append(local)
 
+    warnings = _check_parameter_state(parameter, before)
     if changed:
         doc.save()
-    return {"parameter": name, "changed": changed}
+    return _with_warnings({"parameter": name, "changed": changed}, warnings)
 
 
 # ---- v0.2: full parameter CRUD --------------------------------------------
@@ -355,30 +504,35 @@ def set_parameter_type(
 
     ``type`` ∈ {Boolean, DateTime, Integer, Float, String}. Rejects the
     change with :class:`ValueError` if any existing literal default value
-    is incompatible with the new type — fix the defaults first or call
-    :func:`set_parameter_default_values`.
+    or static valid value is incompatible with the new type, or the new
+    type is Boolean on a multi-value parameter (#93) — fix those first via
+    :func:`set_parameter_default_values` /
+    :func:`set_parameter_available_values`. A no-op (the type it already
+    has) returns ``changed: false`` without checking anything.
     """
     if type not in _VALID_DATA_TYPES:
         raise ValueError(f"type {type!r} not valid; expected one of {list(_VALID_DATA_TYPES)}")
 
     doc = RDLDocument.open(path)
     parameter = resolve_parameter(doc, name)
-
-    incompatible = [
-        v for v in _default_value_literals(parameter) if not _is_compatible_default(v, type)
-    ]
-    if incompatible:
-        raise ValueError(
-            f"existing default value(s) {incompatible!r} incompatible with type "
-            f"{type!r}; clear or replace them first via set_parameter_default_values."
-        )
+    current = find_child(parameter, "DataType")
+    if current is not None and (current.text or "").strip() == type:
+        return {"parameter": name, "type": type, "changed": False}
+    before = parameter_state_problems(parameter)
 
     new = etree.Element(q("DataType"))
     new.text = type
     changed = _set_or_replace_in_order(parameter, new)
+    try:
+        warnings = _check_parameter_state(parameter, before)
+    except ValueError as exc:
+        raise ValueError(
+            f"{exc}; clear or replace them first via set_parameter_default_values / "
+            "set_parameter_available_values."
+        ) from None
     if changed:
         doc.save()
-    return {"parameter": name, "type": type, "changed": changed}
+    return _with_warnings({"parameter": name, "type": type, "changed": changed}, warnings)
 
 
 def _all_parameter_names(doc: RDLDocument) -> list[str]:
@@ -809,15 +963,20 @@ def add_parameter(
         node.text = "true" if value else "false"
         _set_or_replace_in_order(new_param, node)
 
+    warnings = _check_parameter_state(new_param, [])
+
     layout_added, _ = _sync_parameter_layout_in_doc(doc)
 
     doc.save()
-    return {
-        "parameter": name,
-        "type": type,
-        "prompt": prompt,
-        "layout_synced": name in layout_added,
-    }
+    return _with_warnings(
+        {
+            "parameter": name,
+            "type": type,
+            "prompt": prompt,
+            "layout_synced": name in layout_added,
+        },
+        warnings,
+    )
 
 
 def _reference_locator(el: etree._Element) -> str:
@@ -1286,6 +1445,7 @@ def set_parameter_layout(
 __all__ = [
     "add_parameter",
     "layout_grid_problems",
+    "parameter_state_problems",
     "remove_parameter",
     "rename_parameter",
     "reorder_parameters",

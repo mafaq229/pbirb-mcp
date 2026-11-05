@@ -2645,8 +2645,8 @@ def register_all_tools(server: MCPServer) -> None:
         name="set_parameter_type",
         description=(
             "Set a report parameter's data type: Boolean, DateTime, Integer, "
-            "Float or String. Refuses when an existing default value wouldn't fit "
-            "(fix it with set_parameter_default_values first)."
+            "Float or String. Refuses when an existing default or static valid "
+            "value wouldn't fit (fix it first)."
         ),
         input_schema={
             "type": "object",
