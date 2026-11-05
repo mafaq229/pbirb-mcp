@@ -108,6 +108,31 @@ SUBTYPE_ALIASES: dict[str, str] = {
 _EXPLODABLE = {"Pie": "ExplodedPie", "Doughnut": "ExplodedDoughnut"}
 
 
+# RDL ChartMarker/Type values (the ChartMarkerTypes enum).
+MARKER_TYPES: tuple[str, ...] = (
+    "None",
+    "Square",
+    "Circle",
+    "Diamond",
+    "Triangle",
+    "Cross",
+    "Star4",
+    "Star5",
+    "Star6",
+    "Star10",
+    "Auto",
+)
+
+# Values of the series custom property ``EmptyPointValue``: where an empty
+# point is plotted when it is drawn — the average of its neighbours (the
+# default) or zero.
+EMPTY_POINT_VALUES: tuple[str, ...] = ("Average", "Zero")
+
+# Series types that draw a marker per point (Column/Bar/Shape points are
+# shapes of their own).
+MARKER_SERIES_TYPES: frozenset[str] = frozenset({"Line", "Area", "Scatter", "Range", "Polar"})
+
+
 def _types_with_subtype(subtype: str) -> list[str]:
     return [t for t, subs in SUBTYPES_BY_TYPE.items() if subtype in subs]
 
@@ -197,6 +222,9 @@ def series_type_problem(type_text: Optional[str], subtype_text: Optional[str]) -
 
 __all__ = [
     "DEFAULT_SUBTYPE",
+    "EMPTY_POINT_VALUES",
+    "MARKER_SERIES_TYPES",
+    "MARKER_TYPES",
     "RDL_DEFAULT_SUBTYPE",
     "RDL_DEFAULT_TYPE",
     "SERIES_SUBTYPES",

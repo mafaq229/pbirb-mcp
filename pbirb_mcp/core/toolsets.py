@@ -169,6 +169,8 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "set_chart_palette",
             "set_series_color",
             "set_chart_title",
+            "set_chart_series_properties",
+            "set_chart_category_group",
         }
     ),
     # Textbox text and formatting, finding textboxes, row styling.

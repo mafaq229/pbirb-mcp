@@ -3879,6 +3879,72 @@ def register_all_tools(server: MCPServer) -> None:
         handler=chart.set_chart_title,
         mutating=True,
     )
+    server.register_tool(
+        name="set_chart_series_properties",
+        description=(
+            "Set a chart series' legend entry, value/category axis (a missing one, "
+            "e.g. 'Secondary', is created opposite), chart area, hidden, order, and "
+            "point tooltip, marker and empty points. '' clears."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "series_name": {"type": "string"},
+                "legend_text": {"type": "string"},
+                "hide_in_legend": {"type": "boolean"},
+                "legend_name": {"type": "string"},
+                "value_axis": {"type": "string"},
+                "category_axis": {"type": "string"},
+                "chart_area": {"type": "string"},
+                "hidden": {"type": "boolean"},
+                "position": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Move the series (and legend entry) to this index.",
+                },
+                "tooltip": {"type": "string"},
+                "marker_type": {"type": "string", "enum": [*chart.chart_types.MARKER_TYPES, ""]},
+                "marker_size": {"type": "string"},
+                "empty_point_value": {
+                    "type": "string",
+                    "enum": [*chart.chart_types.EMPTY_POINT_VALUES, ""],
+                },
+                "empty_point_color": {"type": "string"},
+            },
+            "required": ["path", "chart_name", "series_name"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_series_properties,
+        mutating=True,
+    )
+    server.register_tool(
+        name="set_chart_category_group",
+        description=(
+            "Set a chart category group's label (e.g. =Format(Fields!D.Value,"
+            '"MMM")), sort or field; add_level=inner|outer adds a nested category '
+            "level on group_field or group_expression."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "chart_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "label_expression": {"type": "string"},
+                "sort": {"type": "string", "enum": ["Ascending", "Descending", "None"]},
+                "sort_expression": {"type": "string"},
+                "add_level": {"type": "string", "enum": ["inner", "outer"]},
+                "group_field": {"type": "string"},
+                "group_expression": {"type": "string"},
+            },
+            "required": ["path", "chart_name"],
+            "additionalProperties": False,
+        },
+        handler=chart.set_chart_category_group,
+        mutating=True,
+    )
 
     _STATIC_VALUE_ITEM = {
         "oneOf": [

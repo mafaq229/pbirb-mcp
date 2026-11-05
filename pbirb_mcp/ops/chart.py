@@ -56,7 +56,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import chart_shape, chart_types, names, units
+from pbirb_mcp.core import chart_shape, chart_types, mutation, names, style_values, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError, resolve_dataset
@@ -1782,15 +1782,621 @@ def _grouping_result(
     }
 
 
+# ---- set_chart_series_properties (#104) -----------------------------------
+
+
+# Report Builder's child orders (the XSD types these as unordered choices).
+_SERIES_ORDER = (
+    "Hidden",
+    "ChartDataPoints",
+    "Type",
+    "Subtype",
+    "Style",
+    "ChartEmptyPoints",
+    "CustomProperties",
+    "LegendName",
+    "ChartItemInLegend",
+    "ChartAreaName",
+    "ValueAxisName",
+    "CategoryAxisName",
+    "ChartSmartLabel",
+    "ChartDataLabel",
+    "ChartMarker",
+)
+_POINT_ORDER = (
+    "ChartDataPointValues",
+    "ChartDataLabel",
+    "AxisLabel",
+    "ToolTip",
+    "ActionInfo",
+    "Style",
+    "ChartMarker",
+    "ChartItemInLegend",
+    "CustomProperties",
+    "DataElementName",
+    "DataElementOutput",
+)
+_IN_LEGEND_ORDER = ("LegendText", "ToolTip", "ActionInfo", "Hidden")
+_MARKER_ORDER = ("Type", "Size", "Style")
+_EMPTY_POINTS_ORDER = ("Style", "ChartMarker", "ChartDataLabel", "AxisLabel", "ToolTip")
+_AREA_ORDER = ("Hidden", "ChartCategoryAxes", "ChartValueAxes")
+_AXIS_LOCATION_ORDER = _CHART_AXIS_CHILD_ORDER + ("Reverse", "CrossAt", "Location")
+
+_EMPTY_POINT_PROPERTY = "EmptyPointValue"
+
+
+def _child(parent: etree._Element, local: str, order: tuple[str, ...]) -> etree._Element:
+    """``parent``'s ``<local>`` child, created in ``order`` when absent."""
+    existing = find_child(parent, local)
+    if existing is not None:
+        return existing
+    node = etree.Element(q(local))
+    mutation._insert_in_order(parent, node, order)
+    return node
+
+
+def _write_text(
+    parent: etree._Element, local: str, value: Optional[str], order: tuple[str, ...]
+) -> bool:
+    """None leaves ``<local>`` alone, ``''`` removes it, anything else is
+    written (in ``order``). True iff the tree changed."""
+    if value is None:
+        return False
+    if value == "":
+        return mutation.remove_child_if_present(parent, local)
+    return mutation.set_text_if_different(parent, local, value, order=order)
+
+
+def _write_in(
+    parent: etree._Element,
+    wrapper: str,
+    parent_order: tuple[str, ...],
+    writes: list[tuple[str, Optional[str], tuple[str, ...]]],
+) -> bool:
+    """Apply ``(local, value, order)`` writes inside ``parent/<wrapper>``:
+    the wrapper is created only for a value to write, and dropped when the
+    call emptied it (one that was already empty is left alone)."""
+    writes = [w for w in writes if w[1] is not None]
+    if not writes:
+        return False
+    holder = find_child(parent, wrapper)
+    if holder is None:
+        if all(value == "" for _, value, _ in writes):
+            return False
+        holder = _child(parent, wrapper, parent_order)
+    was_empty = len(holder) == 0
+    changed = False
+    for local, value, order in writes:
+        changed |= _write_text(holder, local, value, order)
+    if changed and not was_empty and len(holder) == 0:
+        parent.remove(holder)
+    return changed
+
+
+def _custom_property(series: etree._Element, prop: str, value: Optional[str]) -> bool:
+    """Write (``''`` removes) ``CustomProperties/CustomProperty[Name=prop]``."""
+    if value is None:
+        return False
+    props = find_child(series, "CustomProperties")
+    existing = None
+    if props is not None:
+        for cp in find_children(props, "CustomProperty"):
+            name = find_child(cp, "Name")
+            if name is not None and (name.text or "").strip() == prop:
+                existing = cp
+                break
+    if value == "":
+        if existing is None:
+            return False
+        props.remove(existing)
+        if not find_children(props, "CustomProperty"):
+            series.remove(props)
+        return True
+    if existing is not None:
+        return mutation.set_text_if_different(existing, "Value", value, order=("Name", "Value"))
+    props = _child(series, "CustomProperties", _SERIES_ORDER)
+    cp = etree.SubElement(props, q("CustomProperty"))
+    etree.SubElement(cp, q("Name")).text = prop
+    etree.SubElement(cp, q("Value")).text = value
+    return True
+
+
+def _chart_area(chart: etree._Element, name: Optional[str]) -> etree._Element:
+    """The named ``ChartArea`` (the first one for None); raises listing the
+    areas when it doesn't exist."""
+    root = find_child(chart, "ChartAreas")
+    areas = find_children(root, "ChartArea") if root is not None else []
+    if name is None and areas:
+        return areas[0]
+    for area in areas:
+        if area.get("Name") == name:
+            return area
+    raise ElementNotFoundError(
+        f"chart {chart.get('Name')!r} has no ChartArea named {name!r}; "
+        f"areas: {[a.get('Name') for a in areas]}"
+    )
+
+
+def _ensure_axis(area: etree._Element, kind: str, axis_name: str) -> bool:
+    """Make sure ``area`` has a ``kind`` (Value / Category) axis named
+    ``axis_name``; a new one is drawn on the opposite side
+    (``<Location>Opposite</Location>``), the secondary-axis layout. True
+    iff it was created."""
+    container = "ChartValueAxes" if kind == "Value" else "ChartCategoryAxes"
+    axes = find_child(area, container)
+    if axes is not None and any(
+        a.get("Name") == axis_name for a in find_children(axes, "ChartAxis")
+    ):
+        return False
+    names.validate_identifier(axis_name, f"{kind.lower()} axis")
+    if axes is None:
+        axes = _child(area, container, _AREA_ORDER)
+    axis = etree.SubElement(axes, q("ChartAxis"), Name=axis_name)
+    mutation.set_text_if_different(axis, "Location", "Opposite", order=_AXIS_LOCATION_ORDER)
+    return True
+
+
+def _relocate(node: etree._Element, anchor: etree._Element, before: bool) -> None:
+    """Move ``node`` next to its sibling ``anchor``, keeping a pretty-printed
+    parent's layout (the last child's tail closes the parent)."""
+    prev = node.getprevious()
+    if node.getnext() is None and prev is not None:
+        prev.tail, node.tail = node.tail, prev.tail
+    if before:
+        anchor.addprevious(node)
+    else:
+        last = anchor.getnext() is None
+        anchor.addnext(node)
+        if last:
+            anchor.tail, node.tail = node.tail, anchor.tail
+
+
+def _move_series(chart: etree._Element, series: etree._Element, position: int) -> bool:
+    """Move ``series`` to index ``position`` of ``ChartSeriesCollection``,
+    moving its hierarchy member with it (series and leaf members match by
+    position). The member moves among its siblings, so a series inside a
+    group of several can only move within that group; other positions are
+    refused with the reachable ones."""
+    all_series = chart_shape.series_list(chart)
+    if position >= len(all_series):
+        raise ValueError(
+            f"position {position} is out of range; chart {chart.get('Name')!r} has "
+            f"{len(all_series)} series (positions 0..{len(all_series) - 1})"
+        )
+    index = all_series.index(series)
+    if index == position:
+        return False
+    _sync_series_members(chart)
+    leaf = chart_shape.series_member(chart, index)
+    node = leaf
+    while True:
+        owner = node.getparent().getparent()
+        if (
+            owner is not None
+            and owner.tag == q("ChartMember")
+            and chart_shape.subtree_leaves(owner) == [leaf]
+        ):
+            node = owner
+            continue
+        break
+    siblings = find_children(node.getparent(), "ChartMember")
+    leaves = chart_shape.series_leaf_members(chart)
+    start = leaves.index(chart_shape.subtree_leaves(siblings[0])[0])
+    rest = [s for s in siblings if s is not node]
+    starts = [start]
+    for member in rest:
+        starts.append(starts[-1] + len(chart_shape.subtree_leaves(member)))
+    if position not in starts:
+        raise ValueError(
+            f"series {series.get('Name')!r} shares a series group with other series; "
+            f"it can only move to position(s) {starts}"
+        )
+    slot = starts.index(position)
+    if slot < len(rest):
+        _relocate(node, rest[slot], before=True)
+    else:
+        _relocate(node, rest[-1], before=False)
+    others = [s for s in all_series if s is not series]
+    if position < len(others):
+        _relocate(series, others[position], before=True)
+    else:
+        _relocate(series, others[-1], before=False)
+    return True
+
+
+def set_chart_series_properties(
+    path: str,
+    chart_name: str,
+    series_name: str,
+    legend_text: Optional[str] = None,
+    hide_in_legend: Optional[bool] = None,
+    legend_name: Optional[str] = None,
+    value_axis: Optional[str] = None,
+    category_axis: Optional[str] = None,
+    chart_area: Optional[str] = None,
+    hidden: Optional[bool] = None,
+    position: Optional[int] = None,
+    tooltip: Optional[str] = None,
+    marker_type: Optional[str] = None,
+    marker_size: Optional[str] = None,
+    empty_point_value: Optional[str] = None,
+    empty_point_color: Optional[str] = None,
+) -> dict[str, Any]:
+    """Set a series' legend entry, axes, chart area, visibility, order and
+    per-point tooltip / marker / empty-point display.
+
+    Every argument is optional (None = unchanged; ``''`` clears a string
+    one):
+
+    * ``legend_text`` — ``ChartItemInLegend/LegendText`` (overrides the
+      member label in the legend; ``#SERIESNAME`` style keywords work);
+      ``hide_in_legend`` — ``ChartItemInLegend/Hidden``; ``legend_name`` —
+      ``LegendName``, an existing ``ChartLegend``.
+    * ``value_axis`` / ``category_axis`` — ``ValueAxisName`` /
+      ``CategoryAxisName``. An axis the series' chart area doesn't have is
+      created there with ``Location=Opposite`` (a secondary axis, e.g.
+      ``value_axis="Secondary"`` for a two-scale combo chart; listed in
+      ``created_axes``). ``chart_area`` — ``ChartAreaName``, an existing
+      ``ChartArea``.
+    * ``hidden`` — ``ChartSeries/Hidden``.
+    * ``position`` — move the series (and its hierarchy member, which sets
+      the legend order) to this 0-based index.
+    * ``tooltip``, ``marker_type`` (:data:`chart_types.MARKER_TYPES`),
+      ``marker_size`` — ``ToolTip`` and ``ChartMarker/Type|Size`` on every
+      data point of the series (where Report Builder keeps them).
+    * ``empty_point_value`` — the ``EmptyPointValue`` custom property
+      (Average | Zero); ``empty_point_color`` —
+      ``ChartEmptyPoints/Style/Color`` (empty points are not drawn — a
+      gap — until they get a colour).
+
+    Returns ``{chart, series, kind, position, created_axes, changed,
+    warnings}``; ``changed`` is empty (file untouched) when everything
+    already matched.
+    """
+    if position is not None and (isinstance(position, bool) or position < 0):
+        raise ValueError(f"position must be a non-negative integer; got {position!r}")
+    marker_type = (
+        style_values.enum(marker_type, "marker_type", chart_types.MARKER_TYPES)
+        if marker_type
+        else marker_type
+    )
+    if marker_size:
+        marker_size = units.style_size(marker_size, "marker_size", positive=True)
+    empty_point_value = (
+        style_values.enum(empty_point_value, "empty_point_value", chart_types.EMPTY_POINT_VALUES)
+        if empty_point_value
+        else empty_point_value
+    )
+    if empty_point_color:
+        empty_point_color = style_values.color(empty_point_color, "empty_point_color")
+
+    doc = RDLDocument.open(path)
+    chart = _resolve_chart(doc, chart_name)
+    series = _find_series(_series_collection(chart), series_name)
+    changed: list[str] = []
+    created: list[str] = []
+    warnings: list[str] = []
+
+    def note(label: str, did: bool) -> None:
+        if did:
+            changed.append(label)
+
+    if hidden is not None:
+        note("Hidden", _write_text(series, "Hidden", "true" if hidden else "", _SERIES_ORDER))
+    if legend_name:
+        _resolve_chart_legend(chart, legend_name)
+    note("LegendName", _write_text(series, "LegendName", legend_name, _SERIES_ORDER))
+    in_legend = [
+        ("LegendText", None if legend_text is None else encode_text(legend_text), _IN_LEGEND_ORDER),
+        (
+            "Hidden",
+            None if hide_in_legend is None else ("true" if hide_in_legend else ""),
+            _IN_LEGEND_ORDER,
+        ),
+    ]
+    note("ChartItemInLegend", _write_in(series, "ChartItemInLegend", _SERIES_ORDER, in_legend))
+    if chart_area:
+        _chart_area(chart, chart_area)
+    note("ChartAreaName", _write_text(series, "ChartAreaName", chart_area, _SERIES_ORDER))
+
+    for kind, local, value in (
+        ("Value", "ValueAxisName", value_axis),
+        ("Category", "CategoryAxisName", category_axis),
+    ):
+        area_name = find_child(series, "ChartAreaName")
+        if value and _ensure_axis(
+            _chart_area(chart, area_name.text if area_name is not None else None), kind, value
+        ):
+            created.append(f"{kind}/{value}")
+            changed.append("ChartValueAxes" if kind == "Value" else "ChartCategoryAxes")
+        note(local, _write_text(series, local, value, _SERIES_ORDER))
+
+    point_writes = (tooltip, marker_type, marker_size)
+    if any(v is not None for v in point_writes):
+        points = chart_shape.data_points(series)
+        if not points:
+            raise ValueError(f"series {series_name!r} has no ChartDataPoint to set")
+        tip = None if tooltip is None else encode_text(tooltip)
+        for point in points:
+            note("ToolTip", _write_text(point, "ToolTip", tip, _POINT_ORDER))
+            note(
+                "ChartMarker",
+                _write_in(
+                    point,
+                    "ChartMarker",
+                    _POINT_ORDER,
+                    [("Type", marker_type, _MARKER_ORDER), ("Size", marker_size, _MARKER_ORDER)],
+                ),
+            )
+        type_node = find_child(series, "Type")
+        stype = (type_node.text or "").strip() if type_node is not None else "Column"
+        if marker_type and stype not in chart_types.MARKER_SERIES_TYPES:
+            warnings.append(
+                f"series {series_name!r} is a {stype} series; markers are drawn on "
+                f"{sorted(chart_types.MARKER_SERIES_TYPES)} series"
+            )
+
+    note("EmptyPointValue", _custom_property(series, _EMPTY_POINT_PROPERTY, empty_point_value))
+    if empty_point_color is not None:
+        empty = find_child(series, "ChartEmptyPoints")
+        if empty is None and empty_point_color != "":
+            empty = _child(series, "ChartEmptyPoints", _SERIES_ORDER)
+        if empty is not None:
+            did = _write_in(empty, "Style", _EMPTY_POINTS_ORDER, [("Color", empty_point_color, ())])
+            if did and len(empty) == 0:
+                series.remove(empty)
+            note("ChartEmptyPoints", did)
+
+    if position is not None:
+        note("position", _move_series(chart, series, position))
+
+    changed = list(dict.fromkeys(changed))
+    if changed:
+        doc.save()
+    return {
+        "chart": chart_name,
+        "series": series_name,
+        "kind": "ChartSeries",
+        "position": chart_shape.series_index(chart, series),
+        "created_axes": created,
+        "changed": changed,
+        "warnings": warnings,
+    }
+
+
+# ---- set_chart_category_group (#104) --------------------------------------
+
+
+_ADD_LEVELS = ("inner", "outer")
+
+
+def _category_members(chart: etree._Element) -> list[etree._Element]:
+    return [m for m, _ in chart_shape.walk_members(chart_shape.category_hierarchy_members(chart))]
+
+
+def _category_target(chart: etree._Element, group_name: Optional[str]) -> etree._Element:
+    """The category ChartMember whose Group is ``group_name``; with None,
+    the only dynamic one. Raises listing the groups otherwise."""
+    dynamic = [m for m in _category_members(chart) if find_child(m, "Group") is not None]
+    names_ = [find_child(m, "Group").get("Name") for m in dynamic]
+    if group_name is None:
+        if len(dynamic) == 1:
+            return dynamic[0]
+        raise ValueError(
+            f"chart {chart.get('Name')!r} has {len(dynamic)} category groups {names_}; "
+            "pass group_name"
+        )
+    for member, name in zip(dynamic, names_):
+        if name == group_name:
+            return member
+    raise ElementNotFoundError(
+        f"chart {chart.get('Name')!r} has no category group {group_name!r}; groups: {names_}"
+    )
+
+
+def _category_member(
+    name: str, expression: str, label: str, sort_value: str, direction: str
+) -> etree._Element:
+    member = etree.Element(q("ChartMember"))
+    group = etree.SubElement(member, q("Group"), Name=name)
+    exprs = etree.SubElement(group, q("GroupExpressions"))
+    etree.SubElement(exprs, q("GroupExpression")).text = expression
+    _write_sort(member, sort_value, direction)
+    node = etree.Element(q("Label"))
+    node.text = label
+    _insert_member_child(member, node)
+    return member
+
+
+def set_chart_category_group(
+    path: str,
+    chart_name: str,
+    group_name: Optional[str] = None,
+    label_expression: Optional[str] = None,
+    sort: Optional[str] = None,
+    sort_expression: Optional[str] = None,
+    add_level: Optional[str] = None,
+    group_field: Optional[str] = None,
+    group_expression: Optional[str] = None,
+) -> dict[str, Any]:
+    """Edit a chart category group, or add a nested category level.
+
+    Edit (``add_level`` None): the group ``group_name`` (default: the
+    chart's only category group). ``group_field`` / ``group_expression``
+    regroup it (the label and a sort that followed the old expression
+    follow the new one); ``label_expression`` sets the member ``<Label>``
+    (axis label text, e.g. ``=Format(Fields!Date.Value,"MMM d")``);
+    ``sort`` (Ascending / Descending / None) and ``sort_expression``
+    (default: the group expression) set ``<SortExpressions>``.
+
+    Add (``add_level`` = ``inner`` / ``outer``): a new dynamic level on
+    ``group_field`` / ``group_expression`` (required) — inside the
+    innermost member (``inner``; the chart must have one category leaf) or
+    around every top-level member (``outer``). Its label is
+    ``label_expression`` or the expression, its sort ``sort`` (default
+    Ascending) on ``sort_expression`` or the expression; it is named
+    ``group_name`` or ``<chart>_CategoryGroup<n>``. Leaf members, and so
+    every series' data points, stay as they are. A level on an
+    expression some category group already uses is not added again
+    (``changed: []``).
+
+    Returns ``{chart, kind: 'ChartGroup', group_name, expression, label,
+    sort, level, changed}``.
+    """
+    if group_field is not None and group_expression is not None:
+        raise ValueError("group_field and group_expression are mutually exclusive — pass only one")
+    if add_level is not None and add_level not in _ADD_LEVELS:
+        raise ValueError(f"add_level must be one of {list(_ADD_LEVELS)}; got {add_level!r}")
+    if sort is not None and sort not in _SERIES_SORT_DIRECTIONS:
+        raise ValueError(
+            f"sort {sort!r} not valid; expected one of {list(_SERIES_SORT_DIRECTIONS)}"
+        )
+    if group_field is not None:
+        names.validate_identifier(group_field, "field")
+        expression: Optional[str] = f"=Fields!{group_field}.Value"
+    elif group_expression is not None:
+        if not group_expression.strip().startswith("="):
+            raise ValueError(
+                f"group_expression {group_expression!r} must be an =expression "
+                "(a constant puts every row in one category)"
+            )
+        expression = encode_text(group_expression.strip())
+    else:
+        expression = None
+    if add_level is not None and expression is None:
+        raise ValueError("add_level needs group_field or group_expression")
+    if label_expression == "":
+        raise ValueError("label_expression cannot be empty: every ChartMember needs a <Label>")
+    label_text = encode_text(label_expression) if label_expression is not None else None
+    sort_text = encode_text(sort_expression) if sort_expression else None
+
+    doc = RDLDocument.open(path)
+    chart = _resolve_chart(doc, chart_name)
+    changed: list[str] = []
+
+    if add_level is not None:
+        for member in _category_members(chart):
+            group = find_child(member, "Group")
+            if group is not None and _group_expression_texts(group) == [expression]:
+                return _category_result(chart_name, member, [])
+        if group_name is not None:
+            names.validate_identifier(group_name, "group")
+            names.ensure_unique(doc, group_name)
+            name = group_name
+        else:
+            name = names.unique_name(doc, f"{chart_name}_CategoryGroup")
+        member = _category_member(
+            name,
+            expression,
+            label_text if label_text is not None else expression,
+            sort_text or expression,
+            sort or "Ascending",
+        )
+        top = chart_shape.category_hierarchy_members(chart)
+        if top is None:
+            hierarchy = find_child(chart, "ChartCategoryHierarchy")
+            if hierarchy is None:
+                hierarchy = etree.Element(q("ChartCategoryHierarchy"))
+                chart.insert(0, hierarchy)
+            top = etree.SubElement(hierarchy, q("ChartMembers"))
+        existing = find_children(top, "ChartMember")
+        if add_level == "outer" or not existing:
+            if existing:
+                inner = etree.Element(q("ChartMembers"))
+                for old in existing:
+                    inner.append(old)
+                _insert_member_child(member, inner)
+            top.append(member)
+        else:
+            leaves = chart_shape.category_leaf_members(chart)
+            if len(leaves) != 1:
+                raise ValueError(
+                    f"chart {chart_name!r} has {len(leaves)} innermost category members; "
+                    "add_level='inner' needs exactly one (use 'outer')"
+                )
+            holder = etree.Element(q("ChartMembers"))
+            holder.append(member)
+            _insert_member_child(leaves[0], holder)
+        doc.save()
+        return _category_result(chart_name, member, ["ChartMember"])
+
+    member = _category_target(chart, group_name)
+    group = find_child(member, "Group")
+    old_exprs = _group_expression_texts(group)
+    old_expr = old_exprs[0] if len(old_exprs) == 1 else None
+    label = find_child(member, "Label")
+    old_label = label.text if label is not None else None
+    old_sort = chart_shape.member_sorts(member)
+
+    new_expr = old_expr
+    if expression is not None and old_exprs != [expression]:
+        expressions = find_child(group, "GroupExpressions")
+        if expressions is None:
+            expressions = etree.Element(q("GroupExpressions"))
+            group.insert(0, expressions)
+        for old in list(expressions):
+            expressions.remove(old)
+        etree.SubElement(expressions, q("GroupExpression")).text = expression
+        changed.append("GroupExpressions")
+        new_expr = expression
+        if label_text is None and (
+            old_label is None or not old_label.lstrip().startswith("=") or old_label == old_expr
+        ):
+            label_text = expression
+        if sort_text is None and len(old_sort) == 1 and old_sort[0][0] == old_expr:
+            sort_text = expression
+            sort = sort or old_sort[0][1]
+
+    if label_text is not None:
+        if label is None:
+            label = etree.Element(q("Label"))
+            _insert_member_child(member, label)
+        if mutation.set_node_text(label, label_text):
+            changed.append("Label")
+
+    if sort is not None or sort_text is not None:
+        # Direction defaults to the current one; the sorted expression to
+        # sort_expression, else the current single sort's, else the group's.
+        direction = sort or (old_sort[0][1] if len(old_sort) == 1 else "Ascending")
+        target = sort_text or (old_sort[0][0] if len(old_sort) == 1 else new_expr)
+        if target is None and direction != "None":
+            raise ValueError("pass sort_expression: the group has no single group expression")
+        if _write_sort(member, target or "", direction):
+            changed.append("SortExpressions")
+
+    if changed:
+        doc.save()
+    return _category_result(chart_name, member, changed)
+
+
+def _category_result(chart_name: str, member: etree._Element, changed: list[str]) -> dict[str, Any]:
+    group = find_child(member, "Group")
+    exprs = _group_expression_texts(group) if group is not None else []
+    label = find_child(member, "Label")
+    level = len(chart_shape.member_ancestors(member)) - 1
+    return {
+        "chart": chart_name,
+        "kind": "ChartGroup",
+        "group_name": group.get("Name") if group is not None else None,
+        "expression": exprs[0] if exprs else None,
+        "label": label.text if label is not None else None,
+        "sort": [{"value": v, "direction": d} for v, d in chart_shape.member_sorts(member)],
+        "level": level,
+        "changed": changed,
+    }
+
+
 __all__ = [
     "add_chart_series",
     "insert_chart_from_template",
     "remove_chart_series",
     "set_chart_axis",
+    "set_chart_category_group",
     "set_chart_data_labels",
     "set_chart_legend",
     "set_chart_palette",
     "set_chart_series_grouping",
+    "set_chart_series_properties",
     "set_chart_series_type",
     "set_chart_title",
     "set_series_color",

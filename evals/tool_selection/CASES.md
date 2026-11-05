@@ -46,12 +46,12 @@ Every edit case is also graded by the structural gate (XSD + lint errors the edi
 | l06 | layout | easy | synth | fleet_utilization.rdl | `add_line` | 52 |
 | l07 | layout | medium | synth | fleet_utilization.rdl | `set_element_visibility` | 52 |
 | l08 | layout | hard | synth | fleet_utilization.rdl | `add_embedded_image` → `set_page_header` → `add_header_image` | 52 |
-| c01 | chart | medium | feedback | fleet_utilization.rdl | `set_chart_series_type` | 27 |
-| c02 | chart | hard | feedback | fleet_utilization.rdl | `set_chart_series_grouping` | 27 |
-| c03 | chart | hard | feedback | fleet_utilization.rdl | `set_chart_data_labels` | 27 |
-| c04 | chart | easy | synth | fleet_utilization.rdl | `set_chart_title` → `set_chart_legend` | 27 |
-| c05 | chart | easy | synth | fleet_utilization.rdl | `add_chart_series` | 27 |
-| c06 | chart | medium | synth | fleet_utilization.rdl | `set_chart_axis` | 27 |
+| c01 | chart | medium | feedback | fleet_utilization.rdl | `set_chart_series_type` | 29 |
+| c02 | chart | hard | feedback | fleet_utilization.rdl | `set_chart_series_grouping` | 29 |
+| c03 | chart | hard | feedback | fleet_utilization.rdl | `set_chart_data_labels` | 29 |
+| c04 | chart | easy | synth | fleet_utilization.rdl | `set_chart_title` → `set_chart_legend` | 29 |
+| c05 | chart | easy | synth | fleet_utilization.rdl | `add_chart_series` | 29 |
+| c06 | chart | medium | synth | fleet_utilization.rdl | `set_chart_axis` | 29 |
 | i01 | interactivity | hard | synth | fleet_utilization.rdl | `set_textbox_action` | 23 |
 | i02 | interactivity | easy | synth | fleet_utilization.rdl | `set_textbox_tooltip` | 23 |
 | t08 | tablix | hard | synth | fleet_utilization.rdl | `add_row_group` → `add_row_group` | 45 |
@@ -61,8 +61,8 @@ Every edit case is also graded by the structural gate (XSD + lint errors the edi
 | t12 | tablix | medium | synth | fleet_rb.rdl | `set_repeat_header_rows` | 46 |
 | t13 | tablix | easy | synth | fleet_utilization.rdl | `set_group_sort` | 45 |
 | s10 | style | hard | synth | fleet_rb.rdl | `set_textbox_runs` | 28 |
-| c07 | chart | medium | synth | fleet_utilization.rdl | `add_chart_series` → `remove_chart_series` | 27 |
-| c08 | chart | easy | synth | fleet_rb.rdl | `remove_chart_series` | 27 |
+| c07 | chart | medium | synth | fleet_utilization.rdl | `add_chart_series` → `remove_chart_series` | 29 |
+| c08 | chart | easy | synth | fleet_rb.rdl | `remove_chart_series` | 29 |
 | p09 | parameters | medium | synth | fleet_rb.rdl | `rename_parameter` | 29 |
 | q01 | question | easy | synth | fleet_utilization.rdl | `get_parameters`; must not edit | 15 |
 | q02 | question | medium | synth | fleet_utilization.rdl | `list_data_sources`; must not edit | 15 |

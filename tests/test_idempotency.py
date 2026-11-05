@@ -651,6 +651,31 @@ CASES: dict[str, Case] = {
         {"chart_name": CH, "series_name": "Amount", "color": "#FF0000"}, fixture=CHART
     ),
     "set_chart_title": Case({"chart_name": CH, "text": "Revenue"}, fixture=CHART),
+    "set_chart_series_properties": Case(
+        {
+            "chart_name": CH,
+            "series_name": "Quantity",
+            "legend_text": "Units",
+            "hide_in_legend": False,
+            "value_axis": "Secondary",
+            "hidden": False,
+            "position": 0,
+            "tooltip": "=Fields!Amount.Value",
+            "marker_type": "Circle",
+            "marker_size": "6pt",
+            "empty_point_value": "Zero",
+            "empty_point_color": "Gray",
+        },
+        fixture=CHART,
+    ),
+    "set_chart_category_group": Case(
+        {
+            "chart_name": CH,
+            "label_expression": "=UCase(Fields!ProductName.Value)",
+            "sort": "Descending",
+        },
+        fixture=CHART,
+    ),
 }
 
 # Further argument sets for branches the main case doesn't reach
@@ -950,6 +975,38 @@ VARIANTS: list[tuple[str, Case]] = [
     ),
     ("set_chart_axis", Case({"chart_name": CH, "axis": "Category", "title": ""}, fixture=CHART)),
     ("set_chart_axis", Case({"chart_name": CH, "axis": "Value", "log_scale": True}, fixture=CHART)),
+    (
+        "set_chart_category_group",
+        Case(
+            {"chart_name": CH, "add_level": "outer", "group_field": "ProductID"},
+            fixture=CHART,
+        ),
+    ),
+    (
+        "set_chart_category_group",
+        Case(
+            {"chart_name": CH, "add_level": "inner", "group_field": "ProductID"},
+            fixture=CHART,
+        ),
+    ),
+    (
+        "set_chart_series_properties",
+        Case(
+            {"chart_name": CH, "series_name": "Amount", "legend_text": "", "marker_type": ""},
+            fixture=CHART,
+            setup=[
+                (
+                    "set_chart_series_properties",
+                    {
+                        "chart_name": CH,
+                        "series_name": "Amount",
+                        "legend_text": "Sales",
+                        "marker_type": "Square",
+                    },
+                )
+            ],
+        ),
+    ),
     (
         "set_textbox_tooltip",
         Case(

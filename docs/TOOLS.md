@@ -538,6 +538,32 @@ Write `<Color>` into a named series's `<Style>` block, overriding the chart pale
 
 Update `<ChartTitle>/<Caption>`. text can be literal text or an =expression. title_name defaults to 'Default' (the only title the template emits). Returns {chart, title, kind, changed: bool}.
 
+### `set_chart_series_properties`
+
+*idempotent*
+
+Set the per-series properties that have no other tool. Every argument is optional (omitted = unchanged; '' clears a string one):
+
+- Legend entry: legend_text writes `ChartItemInLegend/LegendText` (overrides the series' member label in the legend); hide_in_legend writes `ChartItemInLegend/Hidden`; legend_name writes `LegendName` and must name an existing ChartLegend.
+- Axes and area: value_axis / category_axis write `ValueAxisName` / `CategoryAxisName`. An axis the series' chart area (its `ChartAreaName`, else the first area) doesn't have is created there as `<ChartAxis Name=…><Location>Opposite</Location>` — e.g. value_axis='Secondary' gives a combo chart a second scale on the right; created axes are listed in created_axes (style them with set_chart_axis). chart_area writes `ChartAreaName` and must name an existing ChartArea.
+- hidden writes `ChartSeries/Hidden`.
+- position moves the series to that 0-based index in ChartSeriesCollection together with its ChartSeriesHierarchy member (series match members by position; the member order is the legend order). A series that shares a group member with other series can only move among the positions its siblings allow; others are refused with the reachable ones.
+- Data points: tooltip (`ToolTip`), marker_type (None / Square / Circle / Diamond / Triangle / Cross / Star4 / Star5 / Star6 / Star10 / Auto) and marker_size (a size, e.g. '6pt') write onto every ChartDataPoint of the series, where Report Builder keeps them (`ChartMarker/Type|Size`). A marker on a series type that draws no markers (Column, Bar, Shape) adds a warning. For a per-point colour see set_series_color.
+- Empty points: empty_point_value writes the `EmptyPointValue` custom property — Average (default: plotted between its neighbours) or Zero; empty_point_color writes `ChartEmptyPoints/Style/Color` (empty points are not drawn, leaving a gap, until they have a colour).
+
+Returns {chart, series, kind, position, created_axes, changed, warnings}; changed is empty (file untouched) when everything already matched. get_chart reads every field back (series legend_text, hide_in_legend, legend_name, value_axis, category_axis, chart_area, hidden, tooltip, marker, empty_point_value, empty_point_color; axis location).
+
+### `set_chart_category_group`
+
+*idempotent*
+
+Edit a chart's category grouping, or add a nested category level.
+
+- Edit (no add_level): the group named group_name — default the chart's only category group (with several, group_name is required and the error lists them). group_field / group_expression regroup it (GroupExpressions rewritten, Group/@Name kept; a label that was a constant or the old expression, and a sort on the old expression, follow the new one). label_expression sets the member `<Label>` — the axis label, e.g. `=Format(Fields!OrderDate.Value, "MMM d")`. sort (Ascending / Descending / None) and sort_expression set `<SortExpressions>`: the direction defaults to the current one, the sorted expression to sort_expression, else the current sort's, else the group expression; None removes the sort.
+- Add (add_level = inner | outer): a new dynamic level on group_field / group_expression (one required; an expression must start with '='). inner nests it inside the innermost category member (the chart must have exactly one); outer wraps every top-level member (e.g. Year around Month). Its label is label_expression or the expression, its sort sort (default Ascending) on sort_expression or the expression, its name group_name or `<chart>_CategoryGroup<n>`. Leaf members — and so every series' data points — are unchanged. A level on an expression a category group already uses is not added again (changed: []).
+
+Returns {chart, kind: 'ChartGroup', group_name, expression, label, sort: [{value, direction}], level, changed}. get_chart's category_groups lists every level depth-first with its label, sort and level.
+
 ## `style`
 
 ### `get_textbox`

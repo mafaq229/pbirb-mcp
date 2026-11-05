@@ -1253,6 +1253,42 @@ def _chart_series_dict(
         "legend_name": _text(find_child(series, "LegendName")),
         "hidden": _text(find_child(series, "Hidden")),
         "action": action,
+        **_chart_series_extras(series, point),
+    }
+
+
+def _sub_text(parent: Optional[etree._Element], *path: str) -> Optional[str]:
+    """Text of ``parent/path[0]/path[1]/...`` (None anywhere along it)."""
+    node = parent
+    for local in path:
+        if node is None:
+            return None
+        node = find_child(node, local)
+    return _text(node)
+
+
+def _chart_series_extras(series: etree._Element, point: Optional[etree._Element]) -> dict[str, Any]:
+    """What set_chart_series_properties writes (#104): the legend entry,
+    and the template data point's tooltip / marker / colour, and the
+    empty-point display."""
+    empty_value = None
+    props = find_child(series, "CustomProperties")
+    for cp in find_children(props, "CustomProperty") if props is not None else []:
+        if (_text(find_child(cp, "Name")) or "").strip() == "EmptyPointValue":
+            empty_value = _text(find_child(cp, "Value"))
+    marker = find_child(point, "ChartMarker") if point is not None else None
+    return {
+        "legend_text": _sub_text(series, "ChartItemInLegend", "LegendText"),
+        "hide_in_legend": _sub_text(series, "ChartItemInLegend", "Hidden"),
+        "tooltip": _sub_text(point, "ToolTip"),
+        "point_color": _sub_text(point, "Style", "Color"),
+        "marker": (
+            {"type": _sub_text(marker, "Type"), "size": _sub_text(marker, "Size")}
+            if marker is not None
+            else None
+        ),
+        "empty_point_value": empty_value,
+        "empty_point_color": _sub_text(series, "ChartEmptyPoints", "Style", "Color"),
     }
 
 
@@ -1285,6 +1321,7 @@ def _chart_axis_dict(axis: etree._Element) -> dict[str, Any]:
         "visible": _text(visible_node),
         "log_scale": _text(log_node),
         "format": _text(format_node),
+        "location": _text(find_child(axis, "Location")),
     }
 
 
