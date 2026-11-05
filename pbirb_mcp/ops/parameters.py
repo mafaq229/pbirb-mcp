@@ -32,6 +32,7 @@ from pbirb_mcp.core.ids import (
 from pbirb_mcp.core.mutation import put_child, remove_child_if_present
 from pbirb_mcp.core.names import validate_identifier
 from pbirb_mcp.core.xpath import find_child, find_children, q
+from pbirb_mcp.ops import expr_walk
 
 _VALID_SOURCES = ("static", "query")
 
@@ -737,33 +738,35 @@ def add_parameter(
     }
 
 
-def _scan_parameter_references(doc: RDLDocument, name: str) -> list[str]:
-    """Walk every text-bearing element looking for `Parameters!<name>.Value`.
+def _reference_locator(el: etree._Element) -> str:
+    tag = etree.QName(el).localname
+    ancestor = el
+    while ancestor is not None:
+        aname = ancestor.get("Name")
+        if aname:
+            return f"{etree.QName(ancestor).localname}[Name={aname!r}]/.../<{tag}>"
+        ancestor = ancestor.getparent()
+    return tag
 
-    Returns a list of human-readable locator strings describing where the
-    references live. Used by ``remove_parameter`` to refuse a destructive
-    delete and by ``rename_parameter`` to drive the rewrite.
+
+def _scan_parameter_references(
+    doc: RDLDocument, name: str, exclude: Optional[etree._Element] = None
+) -> list[str]:
+    """Locators of every element referencing parameter ``name``, in any
+    form :func:`expr_walk.parameter_references` knows:
+    ``Parameters!<name>`` with any member (``.Value``, ``.Label``,
+    ``.Count``, ``.IsMultiValue`` …), ``Parameters("<name>")``, and
+    ``Report.Parameters…`` in the ``<Code>`` block — wherever an
+    expression can live (textboxes, query-parameter values, filters,
+    defaults / valid values, subreport and drillthrough parameters …).
+    Names inside string literals and comments don't count. References
+    inside ``exclude`` (the parameter being removed) are skipped.
     """
-    needle_value = f"Parameters!{name}.Value"
-    needle_label = f"Parameters!{name}.Label"
     locators: list[str] = []
-    for el in doc.root.iter():
-        if not isinstance(el.tag, str):
+    for el, _text, _tokens, _refs in expr_walk.iter_parameter_references(doc.root, name):
+        if exclude is not None and (el is exclude or exclude in el.iterancestors()):
             continue
-        # Check the element's text and tail for matches.
-        text = el.text
-        if text and (needle_value in text or needle_label in text):
-            tag = etree.QName(el).localname
-            # Walk up to find a stable ancestor identifier.
-            ancestor = el
-            label = tag
-            while ancestor is not None:
-                aname = ancestor.get("Name")
-                if aname:
-                    label = f"{etree.QName(ancestor).localname}[Name={aname!r}]/.../<{tag}>"
-                    break
-                ancestor = ancestor.getparent()
-            locators.append(label)
+        locators.append(_reference_locator(el))
     return locators
 
 
@@ -775,15 +778,17 @@ def remove_parameter(
     """Remove a ``<ReportParameter>`` by name.
 
     By default refuses if the parameter is still referenced anywhere in
-    the report (any element text containing ``Parameters!<name>.Value``
-    or ``.Label``) — returns the offending locators in the error message.
-    Pass ``force=True`` to remove anyway.
+    the report — any reference form :func:`_scan_parameter_references`
+    finds (``Parameters!<name>.Value`` / ``.Label`` / ``.Count`` /
+    ``.IsMultiValue``, ``Parameters("<name>")`` …) outside the parameter's
+    own declaration — and lists the offending locators in the error
+    message. Pass ``force=True`` to remove anyway.
     """
     doc = RDLDocument.open(path)
     parameter = resolve_parameter(doc, name)
 
     if not force:
-        locators = _scan_parameter_references(doc, name)
+        locators = _scan_parameter_references(doc, name, exclude=parameter)
         if locators:
             raise ValueError(
                 f"parameter {name!r} is still referenced from "
@@ -818,20 +823,25 @@ def rename_parameter(
 ) -> dict[str, Any]:
     """Rename a ``<ReportParameter>`` and rewrite every reference.
 
-    Rewrites every textual occurrence of ``Parameters!<old_name>.Value``
-    and ``Parameters!<old_name>.Label`` (case-sensitive) across:
-
-    * Textbox values, visibility expressions, group / sort / filter
-      expressions
-    * Dataset query parameters' ``<Value>`` text
-    * ``<DataSetReference>`` available/default-values lookups (covered
-      because they live in textual expression form)
+    Rewrites every reference to ``old_name`` (case-sensitive) in every
+    form :func:`_scan_parameter_references` finds —
+    ``Parameters!<old_name>`` with any member (``.Value``, ``.Label``,
+    ``.Count``, ``.IsMultiValue`` …), ``Parameters("<old_name>")``, and
+    ``Report.Parameters…`` in the ``<Code>`` block — in every expression:
+    textbox values, visibility, group / sort / filter expressions, chart
+    and style properties, dataset query-parameter values (including the
+    lookup datasets behind available / default values), other
+    parameters' defaults, subreport / drillthrough parameters. Only the
+    name token changes; names inside string literals and comments are
+    left alone. Parameter-pane layout cells are renamed too.
+    ``<DataSetReference>`` holds dataset and field names, not parameter
+    references, so it is not touched. ``<QueryParameter Name=…>`` is the
+    query-side name and is not renamed either.
 
     Errors if ``new_name`` already exists, or if ``new_name == old_name``.
 
-    Atomic: collects every match first, then commits the rewrite. If any
-    match fails to rewrite (e.g. malformed mid-rewrite), no changes are
-    saved.
+    Atomic: collects every match first, then commits the rewrite.
+    ``references_rewritten`` counts the elements rewritten.
     """
     if new_name == old_name:
         raise ValueError("new_name and old_name are identical; nothing to rename.")
@@ -852,29 +862,11 @@ def rename_parameter(
     # Locate the original (raises if absent).
     parameter = resolve_parameter(doc, old_name)
 
-    # Stage rewrites: walk every element, build a list of (element, attr_or_text, new_value).
-    needles = (
-        f"Parameters!{old_name}.Value",
-        f"Parameters!{old_name}.Label",
-    )
-    replacements = (
-        f"Parameters!{new_name}.Value",
-        f"Parameters!{new_name}.Label",
-    )
-
-    rewrites: list[tuple[etree._Element, str]] = []  # (element, new_text)
-    for el in doc.root.iter():
-        if not isinstance(el.tag, str):
-            continue
-        text = el.text
-        if not text:
-            continue
-        new_text = text
-        for old, new in zip(needles, replacements):
-            if old in new_text:
-                new_text = new_text.replace(old, new)
-        if new_text != text:
-            rewrites.append((el, new_text))
+    # Stage rewrites: (element, new_text) for every element with a reference.
+    rewrites: list[tuple[etree._Element, str]] = [
+        (el, expr_walk.rename_parameter_references(text, tokens, refs, new_name))
+        for el, text, tokens, refs in expr_walk.iter_parameter_references(doc.root, old_name)
+    ]
 
     # Commit: rename the parameter declaration, apply all text rewrites.
     parameter.set("Name", new_name)

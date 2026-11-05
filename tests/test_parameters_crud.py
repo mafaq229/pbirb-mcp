@@ -209,6 +209,129 @@ class TestRenameParameter:
         RDLDocument.open(rdl_path).validate()
 
 
+# ---- every reference form (#73) ------------------------------------------
+
+AMOUNT_VALUE = "<Value>=Fields!Amount.Value</Value>"
+
+
+def _patch(path: Path, *subs) -> None:
+    text = path.read_text(encoding="utf-8")
+    for old, new in subs:
+        assert old in text, old
+        text = text.replace(old, new, 1)
+    path.write_text(text, encoding="utf-8")
+
+
+def _amount(expr: str):
+    return (AMOUNT_VALUE, f"<Value>{expr}</Value>")
+
+
+class TestEveryReferenceForm:
+    FORMS = [
+        "=Parameters!DateFrom.Count",
+        "=Parameters!DateFrom.IsMultiValue",
+        '=Parameters("DateFrom").Value',
+        '=Parameters( "DateFrom" ).Label',
+        "=Parameters!DateFrom",
+        "=Parameters!DateFrom.Value(0)",
+        "=parameters!DateFrom.Value",  # VB collection names are case-insensitive
+    ]
+
+    @pytest.mark.parametrize("expr", FORMS)
+    def test_rename_rewrites_form(self, rdl_path, expr):
+        _patch(rdl_path, _amount(expr))
+        result = rename_parameter(str(rdl_path), "DateFrom", "StartDate")
+        assert result["references_rewritten"] == 1
+        text = rdl_path.read_text(encoding="utf-8")
+        assert "DateFrom" not in text.replace('Name="DateFrom"', "")
+        new_expr = expr.replace("DateFrom", "StartDate")
+        assert f"<Value>{new_expr}</Value>" in text
+
+    @pytest.mark.parametrize("expr", FORMS)
+    def test_remove_refuses_on_form(self, rdl_path, expr):
+        _patch(rdl_path, _amount(expr))
+        with pytest.raises(ValueError, match="still referenced"):
+            remove_parameter(str(rdl_path), "DateFrom")
+
+    def test_issue_repro(self, rdl_path):
+        from pbirb_mcp.ops.lint import lint_report
+
+        _patch(
+            rdl_path,
+            _amount(
+                "=Parameters!DateFrom.Count &amp; Parameters!DateFrom.IsMultiValue &amp; "
+                'Parameters("DateFrom").Value'
+            ),
+        )
+        assert rename_parameter(str(rdl_path), "DateFrom", "StartDate")["references_rewritten"] == 1
+        assert "Parameters!DateFrom" not in rdl_path.read_text(encoding="utf-8")
+        assert 'Parameters("DateFrom")' not in rdl_path.read_text(encoding="utf-8")
+        assert lint_report(str(rdl_path), rules=["undefined-parameter"])["issues"] == []
+
+    def test_literals_comments_and_lookalikes_untouched(self, rdl_path):
+        expr = (
+            '="Parameters!DateFrom.Value" &amp; Parameters!DateFromX.Value &amp; '
+            "Fields!DateFrom.Value &amp; Parameters!DateTo.Value ' Parameters!DateFrom.Value"
+        )
+        _patch(rdl_path, _amount(expr))
+        before = rdl_path.read_text(encoding="utf-8")
+        result = rename_parameter(str(rdl_path), "DateFrom", "StartDate")
+        assert result["references_rewritten"] == 0
+        after = rdl_path.read_text(encoding="utf-8")
+        assert after == before.replace(
+            '<ReportParameter Name="DateFrom">', '<ReportParameter Name="StartDate">'
+        )
+        # Nor do they block a remove.
+        remove_parameter(str(rdl_path), "StartDate")
+
+    def test_rename_covers_queries_defaults_filters_and_code(self, rdl_path):
+        from pbirb_mcp.ops.lint import lint_report
+        from pbirb_mcp.ops.validate import validate_report
+
+        add_query_parameter(str(rdl_path), "MainDataset", "From", '=Parameters("DateFrom").Value')
+        set_parameter_default_values(
+            str(rdl_path), "DateTo", "static", ['=DateAdd("d", 7, Parameters!DateFrom.Value)']
+        )
+        _patch(
+            rdl_path,
+            (
+                "</DataSets>",
+                "</DataSets><Code>Function F() As Object\n"
+                "  Return Report.Parameters!DateFrom.Value ' Parameters!DateFrom\n"
+                "End Function</Code>",
+            ),
+        )
+        result = rename_parameter(str(rdl_path), "DateFrom", "StartDate")
+        assert result["references_rewritten"] == 3
+        text = rdl_path.read_text(encoding="utf-8")
+        assert '<Value>=Parameters("StartDate").Value</Value>' in text
+        assert "DateAdd(&quot;d&quot;, 7, Parameters!StartDate.Value)" in text or (
+            'DateAdd("d", 7, Parameters!StartDate.Value)' in text
+        )
+        assert "Return Report.Parameters!StartDate.Value ' Parameters!DateFrom" in text
+        assert lint_report(str(rdl_path), rules=["undefined-parameter"])["issues"] == []
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_remove_ignores_the_parameters_own_declaration(self, rdl_path):
+        set_parameter_default_values(
+            str(rdl_path), "DateTo", "static", ["=Parameters!DateTo.Value"]
+        )
+        remove_parameter(str(rdl_path), "DateTo")
+        assert _param(RDLDocument.open(rdl_path), "DateTo") is None
+
+    def test_remove_refuses_on_code_reference(self, rdl_path):
+        _patch(
+            rdl_path,
+            (
+                "</DataSets>",
+                "</DataSets><Code>Function F() As Object\n"
+                '  Return Report.Parameters("DateTo").Value\nEnd Function</Code>',
+            ),
+        )
+        with pytest.raises(ValueError, match="Code"):
+            remove_parameter(str(rdl_path), "DateTo")
+
+
 # ---- registration --------------------------------------------------------
 
 

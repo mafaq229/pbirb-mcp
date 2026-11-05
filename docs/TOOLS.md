@@ -253,11 +253,11 @@ Create a new ReportParameter with a minimal valid declaration. Appends to `<Repo
 
 *destructive*
 
-Remove a ReportParameter by name. Refuses (lists offending locators) if the parameter is still referenced anywhere in the report by Parameters!`<name>.Value` or .Label. Pass force=True to remove anyway.
+Remove a ReportParameter by name. Refuses (lists offending locators) if the parameter is still referenced anywhere in the report — Parameters!`<name>` with any member (.Value, .Label, .Count, .IsMultiValue …), Parameters("`<name>`"), or Report.Parameters… in the `<Code>` block — in any expression (textboxes, query-parameter values, filters, other parameters' defaults / valid values, subreport and drillthrough parameters …). References inside the parameter's own declaration, string literals and comments don't count. Pass force=True to remove anyway.
 
 ### `rename_parameter`
 
-Rename a ReportParameter and rewrite every textual occurrence of Parameters!`<old_name>.Value` / .Label across the entire report. Case-sensitive. Atomic: collects all matches first, then commits. Errors if new_name already exists or equals old_name.
+Rename a ReportParameter and rewrite every reference to it, in the same forms remove_parameter looks for: Parameters!`<old_name>` with any member (.Value, .Label, .Count, .IsMultiValue …), Parameters("`<old_name>`"), and Report.Parameters… in the `<Code>` block, in every expression of the report (textboxes, visibility, group / sort / filter expressions, styles, query-parameter values — including the lookup datasets behind available / default values — other parameters' defaults, subreport / drillthrough parameters). Only the name token changes; names in string literals and comments are left alone. Parameter-pane layout cells are renamed too. `<DataSetReference>` holds dataset and field names, not parameter references, so it isn't touched, and `<QueryParameter Name>` (the query-side name) isn't renamed. Case-sensitive. Atomic. Errors if new_name already exists or equals old_name. Returns {old_name, new_name, references_rewritten (elements rewritten), layout_cells_rewritten}. Leftover dangling references are reported by lint's undefined-parameter rule.
 
 ### `sync_parameter_layout`
 

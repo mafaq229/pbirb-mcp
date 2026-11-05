@@ -2595,8 +2595,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_parameter",
         description=(
-            "Remove a report parameter. Refuses while Parameters!<name> is still "
-            "referenced (lists where) unless force=true."
+            "Remove a report parameter. Refuses while it is still referenced in "
+            "any form (Parameters!<name>.Value/.Label/.Count/.IsMultiValue, "
+            'Parameters("<name>"); lists where) unless force=true.'
         ),
         input_schema={
             "type": "object",
@@ -2614,8 +2615,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="rename_parameter",
         description=(
-            "Rename a report parameter and update every Parameters!<old>.Value / "
-            ".Label reference in the report. Refuses if new_name is taken."
+            "Rename a report parameter and update every reference to it: "
+            "Parameters!<old> with any member (.Value, .Label, .Count, "
+            '.IsMultiValue), Parameters("<old>"), in every expression and the '
+            "Code block, plus the pane layout. Refuses if new_name is taken."
         ),
         input_schema={
             "type": "object",

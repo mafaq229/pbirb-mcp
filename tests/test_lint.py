@@ -473,6 +473,34 @@ class TestParameterLayoutOutOfSync:
         assert _rule_count(result, "parameter-layout-out-of-sync") == 1
 
 
+# ---- dangling parameter references (#73) --------------------------------
+
+
+class TestDanglingParameterReference:
+    """#73's 'no lint safety net' claim: ``undefined-parameter`` (#47) is
+    the rule the issue asked for as ``missing-parameter-reference``; it
+    flags every reference form a hand edit (or an old rename) leaves."""
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "=Parameters!Gone.Count",
+            "=Parameters!Gone.IsMultiValue",
+            '=Parameters("Gone").Value',
+            "=Parameters!Gone",
+        ],
+    )
+    def test_flags_hand_made_dangling_reference(self, rdl_path, expr):
+        text = rdl_path.read_text(encoding="utf-8").replace(
+            "<Value>=Fields!Amount.Value</Value>", f"<Value>{expr}</Value>", 1
+        )
+        rdl_path.write_text(text, encoding="utf-8")
+        result = lint_report(str(rdl_path))
+        [issue] = [i for i in result["issues"] if i["rule"] == "undefined-parameter"]
+        assert "'Gone'" in issue["message"]
+        assert issue["severity"] == "error"
+
+
 # ---- rule 13: double-encoded-entities ----------------------------------
 
 

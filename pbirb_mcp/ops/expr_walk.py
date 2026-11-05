@@ -19,6 +19,9 @@ Public API::
     ScopeIndex(root)                                   # datasets / regions / groups
     find_field_references(root, dataset, field)        # consumers of one field (#72)
     locator(elem) -> str                               # Type[Name='X']/Sub/Path label
+    parameter_references(tokens, name=None)            # Parameters!X / ("X") / Report.Parameters…
+    iter_parameter_references(root, name=None)         # (elem, text, tokens, refs), incl. <Code>
+    rename_parameter_references(text, tokens, refs, new)
 
 All token indices refer to the *significant* token list (whitespace and
 comments dropped) — what :func:`expression_tokens` returns and what
@@ -559,6 +562,103 @@ def find_field_references(
     return [h[1] for h in hits]
 
 
+# ---- report-parameter references (#73) and dependencies (#74) ---------------
+
+
+def _is_report_qualifier(tokens: Sequence[vbexpr.Token], i: int) -> bool:
+    """``tokens[i-2:i]`` is ``Report .`` (custom code's ``Report.Parameters``)."""
+    return (
+        i >= 2
+        and tokens[i - 1].kind == vbexpr.OPERATOR
+        and tokens[i - 1].text == "."
+        and tokens[i - 2].kind == vbexpr.IDENTIFIER
+        and tokens[i - 2].text.lower() == "report"
+        and not _after_member_access(tokens, i - 2)
+    )
+
+
+def parameter_references(
+    tokens: Sequence[vbexpr.Token], name: Optional[str] = None, *, qualified: bool = True
+) -> list[Ref]:
+    """Every report-parameter reference in ``tokens`` (significant tokens):
+    ``Parameters!X`` / ``Parameters("X")`` with any member (``.Value``,
+    ``.Label``, ``.Count``, ``.IsMultiValue`` …) or none. With
+    ``qualified`` (default) also ``Report.Parameters!X`` /
+    ``Report.Parameters("X")``, the form custom code uses. ``name``
+    filters on the parameter name (case-sensitive, like RDL names).
+
+    In every form the parameter-name token is ``tokens[ref.first + 2]``:
+    an identifier for ``!X``, a string literal for ``("X")``.
+    """
+    drop: set = set()
+    if qualified:
+        for i in range(2, len(tokens)):
+            t = tokens[i]
+            if (
+                t.kind == vbexpr.IDENTIFIER
+                and t.text.lower() == "parameters"
+                and _is_report_qualifier(tokens, i)
+            ):
+                drop.update((i - 2, i - 1))
+    keep = [i for i in range(len(tokens)) if i not in drop]
+    view = [tokens[i] for i in keep]
+    out = []
+    for r in references(view, "Parameters"):
+        if name is not None and r.name != name:
+            continue
+        out.append(r._replace(first=keep[r.first], last=keep[r.last]))
+    return out
+
+
+def rename_parameter_references(
+    text: str, tokens: Sequence[vbexpr.Token], refs: Sequence[Ref], new_name: str
+) -> str:
+    """``text`` with the parameter name of each of ``refs`` (from
+    :func:`parameter_references` over ``tokens``, whose offsets index
+    ``text``) replaced by ``new_name``; nothing else changes."""
+    pieces = []
+    pos = 0
+    for ref in sorted(refs, key=lambda r: r.first):
+        tok = tokens[ref.first + 2]
+        if tok.kind == vbexpr.STRING:
+            replacement = '"' + new_name.replace('"', '""') + '"'
+        else:
+            replacement = new_name
+        pieces.append(text[pos : tok.start])
+        pieces.append(replacement)
+        pos = tok.end
+    pieces.append(text[pos:])
+    return "".join(pieces)
+
+
+def iter_parameter_references(
+    root: etree._Element, name: Optional[str] = None
+) -> Iterator[tuple[etree._Element, str, list, list]]:
+    """``(element, text, tokens, refs)`` for every element holding a
+    report-parameter reference (see :func:`parameter_references`): every
+    expression (:func:`iter_expressions`) plus the report's ``<Code>``
+    block (``Report.Parameters!X``). ``tokens`` are the significant tokens
+    whose offsets index ``text``; ``refs`` is never empty."""
+    for elem, text in iter_expressions(root):
+        if "parameters" not in text.lower():
+            continue
+        sig = expression_tokens(text)
+        if not sig:
+            continue
+        refs = parameter_references(sig, name)
+        if refs:
+            yield elem, text, sig, refs
+    ns = etree.QName(root).namespace
+    for code in root.iter(f"{{{ns}}}Code" if ns else "Code"):
+        text = code.text
+        if not text or "parameters" not in text.lower():
+            continue
+        sig = vbexpr.significant(vbexpr.tokenize(text))
+        refs = [r for r in parameter_references(sig, name) if _is_report_qualifier(sig, r.first)]
+        if refs:
+            yield code, text, sig, refs
+
+
 __all__ = [
     "AGGREGATE",
     "Call",
@@ -577,4 +677,8 @@ __all__ = [
     "locator",
     "references",
     "scope_region",
+    # report-parameter references (#73)
+    "iter_parameter_references",
+    "parameter_references",
+    "rename_parameter_references",
 ]
