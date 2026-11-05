@@ -7,6 +7,91 @@
   then `/plugin install pbirb-mcp@pbirb` (wires up the `uvx pbirb-mcp` server
   automatically). No change to the published Python package.
 
+### M5 — Remaining high-severity bugs (v0.4.1 review, #113)
+
+#### Changed — breaking (pre-1.0)
+- **`add_row_group` wraps only the detail rows by default** (#65): the
+  column-header and total rows stay static instead of repeating per group.
+  `wrap="all"` restores the old shape; new `parent_group` (nesting),
+  `wrap="details"|"member:<group>"|"all"` and `header="row"|"column"|"none"|"auto"`.
+- `set_keep_with_group` refuses grouped members (Report Builder only honours
+  KeepWithGroup on static members); target a static row with the new
+  `member=` selector (#67).
+- `set_chart_data_labels` no longer accepts `TopCenter` / `BottomCenter`
+  (legend positions, not data-label positions) (#78).
+- Database images require `mime_type`; a Database image with a literal
+  (non-`=`) value is refused; `set_image_source(path, image_name, source,
+  value, mime_type)` — `embedded_name` is a deprecated alias (#79).
+- `get_tablixes.sort_expressions` lists only the tablix-level sort (group
+  sorts are on each member's `sort`) (#69).
+- `set_chart_series_grouping` returns a new `changed` vocabulary (#77).
+- `add_tablix_column` cells copy their neighbour's style by default
+  (`copy_style_from="left"`) (#68).
+- Template tables repeat their header row on new pages by default
+  (`insert_tablix_from_template(repeat_header=True)`) (#67).
+
+#### Added
+- New tools: `list_backups` (#63), `move_report_item` and
+  `ungroup_rectangle` (#83), `set_repeat_header_rows` (#67).
+- `PBIRB_MCP_AUTO_BACKUP` works: destructive and bulk-rewrite tools take a
+  backup first (deduplicated; one per transaction/batch) and report it as
+  `auto_backup`. `backup_report(dest_dir, label)` with a `.meta.json`
+  sidecar; inside a transaction it backs up the edited tree (#63).
+- `container` on `add_body_textbox`, `add_body_image`, `add_line`,
+  `add_rectangle`, `insert_tablix_from_template` and
+  `insert_chart_from_template` (#83).
+- New inputs: `{value, direction}` sort entries on `set_group_sort` /
+  `set_column_group_sort` (#66); `header_name`, `copy_style_from`, `format`
+  on `add_tablix_column` (#68); `member` on `set_repeat_on_new_page` /
+  `set_keep_with_group` (#67); `label_expression`, `sort`, `group_name` on
+  `set_chart_series_grouping` (#77); `font_style`, `text_decoration` on the
+  textbox style tools (#82); `mime_type` on the image tools (#79);
+  `designer_state="sync"|"drop"` on `update_dataset_query` (#70); `force` on
+  `remove_calculated_field` (#72); `provider`, `catalog_id`,
+  `identity_provider` on `set_datasource_connection` (and the last two on
+  `add_data_source` / `create_report`) (#71); `reflow_layout` on
+  `reorder_parameters`, `compact_layout` on `remove_parameter` (#74).
+- Lint rules `dangling-dataset-reference-field` (#72) and
+  `database-image-missing-mimetype` (#79).
+- `get_tablixes`: real spans with `covered_by`, header and corner cells,
+  row heights, the member tree and leaves with roles (#69); `get_chart`
+  data labels read from the data point (#78); `list_data_sources` /
+  `get_data_source` add `powerbi_workspace_name` / `powerbi_dataset_name`
+  (#71).
+
+#### Fixed
+- Saves follow symlinks, keep the file's mode (and owner where allowed),
+  and refuse read-only reports with `PermissionError` (#64).
+- `restore_from_backup` validates the backup, backs up the current state
+  first (`safety_backup`) and no longer needs `force` after an edit (#63);
+  `PBIRB_MCP_ALLOWED_ROOTS` also covers `*_dir` arguments.
+- Report Builder's DesignerState QueryDefinition no longer fails XSD
+  validation (#76); `update_dataset_query` keeps the real DesignerState
+  Statement in sync and `stale-designer-state` fires on real files (#70).
+- DAX CommandText and filter literals are written verbatim — no more
+  entity-decoding of `&amp;` in DAX (#75).
+- Field-removal guards are scope-aware and cover parameter
+  ValueField/LabelField, `Fields("X")` and calculated fields (#72).
+- `set_datasource_connection` keeps a PBIDATASET source PBIDATASET, writes
+  Report Builder's shape (`rd:SecurityType` None, bare workspace label) and
+  escapes connect-string values (#71).
+- `rename_parameter` / `remove_parameter` cover every reference form
+  (`.Count`, `.IsMultiValue`, `Parameters("X")`, `Report.Parameters` in
+  code) (#73); `reorder_parameters` refuses forward dependencies and the
+  parameter layout grid is validated and repaired (#74).
+- `set_chart_series_grouping` groups the named series with Report
+  Builder's label/sort shape and is idempotent (#77); data labels are
+  written on the data point (#78).
+- Textbox styling reaches every run and paragraph and validates style
+  literals (#82); `remove_embedded_image` checks BackgroundImage and
+  expression references (#81); `set_page_orientation` handles default page
+  sizes and both page tools warn on body overflow (#80).
+- Group sorts keep `Descending`; `[]` removes a sort (#66).
+- Position, size and remove tools reach items nested in Rectangles and
+  Lists (#83).
+- Eval: d06 is graded on the real PBIDATASET shape; t12 / t13 have
+  oracles (no known gaps remain).
+
 ### M4 — Protocol, agent ergonomics and eval (v0.4.1 review, #113)
 
 #### Changed — breaking (pre-1.0)
