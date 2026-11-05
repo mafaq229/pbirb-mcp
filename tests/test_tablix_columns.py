@@ -1065,3 +1065,190 @@ class TestAddTablixColumnNamesAndStyle:
         assert not resp["result"].get("isError"), resp
         assert _look(styled_path, "QtyHead") == {"background": None, "weight": None, "format": None}
         assert _look(styled_path, "Qty")["format"] == "0"
+
+
+# ---- #89: Tablix/Width follows the column widths --------------------------------
+
+
+def _widths(path: Path, name: str = "MainTable") -> tuple[list[str], str]:
+    tablix = next(t for t in RDLDocument.open(path).root.iter(q("Tablix")) if t.get("Name") == name)
+    cols = find_child(find_child(tablix, "TablixBody"), "TablixColumns")
+    return [find_child(c, "Width").text for c in cols], find_child(tablix, "Width").text
+
+
+def _rendered_matches(path: Path, name: str = "MainTable") -> bool:
+    from pbirb_mcp.core.geometry import length_in, tablix_columns_width
+
+    tablix = next(t for t in RDLDocument.open(path).root.iter(q("Tablix")) if t.get("Name") == name)
+    return abs(tablix_columns_width(tablix) - length_in(tablix, "Width")) < 0.001
+
+
+def _width_mismatches(path: Path) -> list[dict]:
+    from pbirb_mcp.ops.lint import lint_report
+
+    return [i for i in lint_report(str(path))["issues"] if i["rule"] == "tablix-width-mismatch"]
+
+
+class TestTablixWidthFollowsColumns:
+    def test_issue_repro(self, rdl_path):
+        from pbirb_mcp.ops.tablix import set_tablix_size
+        from pbirb_mcp.ops.tablix_columns import set_column_width
+
+        assert _widths(rdl_path) == (["1in", "2in", "1in"], "4in")
+        out = add_tablix_column(str(rdl_path), "MainTable", "Extra", "=1", width="1.5in")
+        assert out["tablix_width"] == "5.5in"
+        assert _widths(rdl_path) == (["1in", "2in", "1in", "1.5in"], "5.5in")
+        out = set_column_width(str(rdl_path), "MainTable", 0, "3in")
+        assert out["changed"] is True and out["tablix_width"] == "7.5in"
+        assert _widths(rdl_path)[1] == "7.5in"
+        out = remove_tablix_column(str(rdl_path), "MainTable", "ProductName")
+        assert out["tablix_width"] == "5.5in"
+        assert _widths(rdl_path) == (["3in", "1in", "1.5in"], "5.5in")
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match=r"add up to 5\.5in.*distribute=true"):
+            set_tablix_size(str(rdl_path), "MainTable", width="1in")
+        assert rdl_path.read_bytes() == before
+        assert _width_mismatches(rdl_path) == []
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_set_column_width_repeat_is_noop(self, rdl_path):
+        from pbirb_mcp.ops.tablix_columns import set_column_width
+
+        set_column_width(str(rdl_path), "MainTable", 1, "2.5in")
+        before = rdl_path.read_bytes()
+        out = set_column_width(str(rdl_path), "MainTable", 1, "2.5in")
+        assert out["changed"] is False and "tablix_width" not in out
+        assert rdl_path.read_bytes() == before
+
+    def test_set_column_width_repairs_stale_width(self, rdl_path):
+        from pbirb_mcp.ops.tablix_columns import set_column_width
+
+        src = rdl_path.read_text(encoding="utf-8")
+        rdl_path.write_text(src.replace("<Width>4in</Width>", "<Width>9in</Width>"), "utf-8")
+        out = set_column_width(str(rdl_path), "MainTable", 0, "1in")  # same width
+        assert out["changed"] is True and out["tablix_width"] == "4in"
+
+    def test_width_keeps_its_unit(self, rdl_path):
+        src = rdl_path.read_text(encoding="utf-8")
+        rdl_path.write_text(src.replace("<Width>4in</Width>", "<Width>10.16cm</Width>"), "utf-8")
+        add_tablix_column(str(rdl_path), "MainTable", "Extra", "=1", width="2.54cm")
+        assert _widths(rdl_path)[1] == "12.7cm"
+
+    def test_add_static_column(self, rdl_path):
+        from pbirb_mcp.ops.tablix_static import add_static_column
+
+        out = add_static_column(str(rdl_path), "MainTable", "Note", width="0.75in")
+        assert out["tablix_width"] == "4.75in"
+        assert _width_mismatches(rdl_path) == []
+
+    def test_add_subtotal_column(self, rdl_path):
+        from pbirb_mcp.ops.tablix_subtotals import add_subtotal_column
+
+        add_column_group(str(rdl_path), "MainTable", "G", "=Fields!ProductID.Value")
+        out = add_subtotal_column(
+            str(rdl_path),
+            "MainTable",
+            "G",
+            aggregates=[{"row": 1, "expression": "=Sum(Fields!Amount.Value)"}],
+            width="1.25in",
+            scope="total",
+        )
+        assert "tablix_width" in out["changed"] and out["tablix_width"] == "5.25in"
+        assert _width_mismatches(rdl_path) == []
+
+    def test_row_group_header_column_and_back(self, rdl_path):
+        from pbirb_mcp.ops.tablix import add_row_group, remove_row_group
+
+        out = add_row_group(
+            str(rdl_path), "MainTable", "Region", "=Fields!ProductName.Value", header="column"
+        )
+        assert out["tablix_width"] == "5in"  # + the 1in row header
+        assert _rendered_matches(rdl_path) and _width_mismatches(rdl_path) == []
+        out = remove_row_group(str(rdl_path), "MainTable", "Region")
+        assert out["tablix_width"] == "4in"
+        assert _widths(rdl_path)[1] == "4in"
+
+    def test_row_group_header_column_repairs_stale_width(self, rdl_path):
+        # M5 #65 shifted Width by the header size, keeping an old mismatch.
+        from pbirb_mcp.ops.tablix import add_row_group
+
+        src = rdl_path.read_text(encoding="utf-8")
+        rdl_path.write_text(src.replace("<Width>4in</Width>", "<Width>6in</Width>"), "utf-8")
+        add_row_group(str(rdl_path), "MainTable", "R", "=Fields!ProductName.Value", header="column")
+        assert _widths(rdl_path)[1] == "5in"
+
+    def test_template_splits_width_over_columns(self, rdl_path):
+        from pbirb_mcp.ops.templates import insert_tablix_from_template
+
+        insert_tablix_from_template(
+            str(rdl_path),
+            name="T",
+            dataset_name="MainDataset",
+            columns=["ProductID", "ProductName", "Amount"],
+            top="1in",
+            left="0in",
+            width="10cm",
+            height="0.5in",
+        )
+        cols, width = _widths(rdl_path, "T")
+        assert width == "10cm"
+        assert cols == ["3.33333cm", "3.33333cm", "3.33334cm"]
+        assert _rendered_matches(rdl_path, "T")
+        assert _width_mismatches(rdl_path) == []
+
+
+class TestSetTablixSizeDistribute:
+    def test_distribute_scales_columns(self, rdl_path):
+        from pbirb_mcp.ops.tablix import set_tablix_size
+
+        out = set_tablix_size(str(rdl_path), "MainTable", width="2in", distribute=True)
+        assert out["changed"] == ["columns", "Width"]
+        assert out["column_widths"] == ["0.5in", "1in", "0.5in"]
+        assert _widths(rdl_path) == (["0.5in", "1in", "0.5in"], "2in")
+        assert _width_mismatches(rdl_path) == []
+        before = rdl_path.read_bytes()
+        again = set_tablix_size(str(rdl_path), "MainTable", width="2in", distribute=True)
+        assert again["changed"] == [] and rdl_path.read_bytes() == before
+
+    def test_distribute_keeps_row_headers_and_units(self, rdl_path):
+        from pbirb_mcp.ops.tablix import add_row_group, set_tablix_size
+
+        src = rdl_path.read_text(encoding="utf-8")
+        rdl_path.write_text(src.replace("<Width>2in</Width>", "<Width>5.08cm</Width>"), "utf-8")
+        add_row_group(str(rdl_path), "MainTable", "R", "=Fields!ProductName.Value", header="column")
+        assert _widths(rdl_path) == (["1in", "5.08cm", "1in"], "5in")
+        out = set_tablix_size(str(rdl_path), "MainTable", width="9in", distribute=True)
+        # 8in of columns for 4in: x2; the 1in row header stays.
+        assert out["column_widths"] == ["2in", "10.16cm", "2in"]
+        assert _rendered_matches(rdl_path)
+
+    def test_distribute_refuses_width_inside_row_headers(self, rdl_path):
+        from pbirb_mcp.ops.tablix import add_row_group, set_tablix_size
+
+        add_row_group(str(rdl_path), "MainTable", "R", "=Fields!ProductName.Value", header="column")
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="row headers alone take 1in"):
+            set_tablix_size(str(rdl_path), "MainTable", width="0.5in", distribute=True)
+        assert rdl_path.read_bytes() == before
+
+    def test_distribute_via_server(self, rdl_path):
+        import json
+
+        srv = MCPServer()
+        register_all_tools(srv)
+        call = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "set_tablix_size",
+                "arguments": {"path": str(rdl_path), "name": "MainTable", "width": "8in"},
+            },
+        }
+        refused = srv.handle_request(call)["result"]
+        assert refused.get("isError")
+        assert "distribute=true" in json.loads(refused["content"][0]["text"])["message"]
+        call["params"]["arguments"]["distribute"] = True
+        ok = srv.handle_request(call)["result"]
+        assert not ok.get("isError"), ok
+        assert _widths(rdl_path) == (["2in", "4in", "2in"], "8in")

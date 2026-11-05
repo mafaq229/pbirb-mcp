@@ -24,6 +24,7 @@ from lxml import etree
 from pbirb_mcp.core import names, tablix_spans, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
+from pbirb_mcp.core.geometry import sync_tablix_width
 from pbirb_mcp.core.ids import resolve_tablix
 from pbirb_mcp.core.tablix_shape import (
     insert_nth_child,
@@ -281,6 +282,7 @@ def add_static_column(
             widened.append(row_idx)
         else:
             emitted.append(name)
+    tablix_width = sync_tablix_width(tablix)  # #89
 
     doc.save()
     return {
@@ -290,6 +292,7 @@ def add_static_column(
         "cells": list(cells),
         "width": width_value,
         "textboxes": emitted,
+        **({"tablix_width": tablix_width} if tablix_width is not None else {}),
         **({"widened_span_rows": widened} if widened else {}),
         **_payload_extras(point, "column", header_names),
     }

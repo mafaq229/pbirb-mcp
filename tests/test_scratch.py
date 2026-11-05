@@ -455,7 +455,7 @@ class TestReportBuilderScaffold:
             columns=["Amount"],
             top="0in",
             left="0in",
-            width="1in",
+            width="2in",  # the issue repro; split over the columns (#89)
             height="0.5in",
         )
         issues = lint_report(str(dst))["issues"]

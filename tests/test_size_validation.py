@@ -321,6 +321,6 @@ def test_style_size_expressions_pass_through(rdl_path):
 
 
 def test_whitespace_is_stripped_before_writing(rdl_path):
-    set_tablix_size(str(rdl_path), "MainTable", width=" 6 in ")
+    set_tablix_size(str(rdl_path), "MainTable", width=" 6 in ", distribute=True)
     tablix = RDLDocument.open(rdl_path).root.find(f".//{{{RDL_NS}}}Tablix[@Name='MainTable']")
     assert tablix.find(f"{{{RDL_NS}}}Width").text == "6in"

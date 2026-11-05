@@ -17,7 +17,7 @@ from typing import Optional
 
 from lxml import etree
 
-from pbirb_mcp.core.units import parse_size, to_inches
+from pbirb_mcp.core.units import format_size, parse_size, to_inches
 from pbirb_mcp.core.xpath import find_child, q
 
 # Every RDL 2016 ReportItem element name. A "List" or "Matrix" in the
@@ -278,6 +278,27 @@ def tablix_columns_width(tablix: etree._Element) -> Optional[float]:
     return total + tablix_row_header_width(tablix)
 
 
+def sync_tablix_width(tablix: etree._Element) -> Optional[str]:
+    """Set the tablix's ``<Width>`` to :func:`tablix_columns_width` — what
+    it renders at — in the unit ``<Width>`` already uses (#89). Every tool
+    that adds, removes or resizes a column or a row header calls this, so
+    ``tablix-width-mismatch`` never fires on their output.
+
+    Returns the new ``<Width>`` text, or ``None`` when nothing changed: the
+    widths already agree (within :data:`TOLERANCE_IN`), the tablix has no
+    ``<Width>``, or a column width is missing / invalid."""
+    node = find_child(tablix, "Width")
+    actual = tablix_columns_width(tablix)
+    if node is None or actual is None or actual <= 0:
+        return None
+    declared = length_in(tablix, "Width")
+    if declared is not None and abs(declared - actual) <= TOLERANCE_IN:
+        return None
+    # Round away float noise (4.499999 -> 4.5) before rendering.
+    node.text = format_size(round(actual, 6), size_unit(node.text))
+    return node.text
+
+
 __all__ = [
     "PAGE_DEFAULTS",
     "REPORT_ITEM_TAGS",
@@ -292,6 +313,7 @@ __all__ = [
     "report_sections",
     "section_geometry",
     "size_unit",
+    "sync_tablix_width",
     "tablix_columns_width",
     "tablix_row_header_width",
 ]

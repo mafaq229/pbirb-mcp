@@ -752,7 +752,9 @@ def register_all_tools(server: MCPServer) -> None:
         name="set_tablix_size",
         description=(
             "Set a tablix's overall Width and/or Height (RDL sizes), e.g. after "
-            "adding rows. Column widths are set_column_width."
+            "adding rows. A width that disagrees with the column widths is refused "
+            "unless distribute=true scales the columns to fit. Column widths are "
+            "set_column_width."
         ),
         input_schema={
             "type": "object",
@@ -761,6 +763,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "name": {"type": "string"},
                 "height": {"type": "string"},
                 "width": {"type": "string"},
+                "distribute": {"type": "boolean", "default": False},
             },
             "required": ["path", "name"],
             "additionalProperties": False,
@@ -3536,7 +3539,8 @@ def register_all_tools(server: MCPServer) -> None:
             "Add a table to the body bound to a dataset: one column per entry in "
             "`columns` (a field name, or {field, header} for a caption); a header "
             "row plus a detail row of =Fields!X.Value. Every field must exist in "
-            "the dataset. Each column is 1in wide (set_column_width after)."
+            "the dataset. width is split evenly over the columns (set_column_width "
+            "after)."
         ),
         input_schema={
             "type": "object",

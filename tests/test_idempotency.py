@@ -295,7 +295,7 @@ CASES: dict[str, Case] = {
     "remove_embedded_image": Case({"name": "LogoData"}, second="refuses", setup=[EMBEDDED]),
     # ---- tablix ----
     "set_column_width": Case({"tablix_name": "MainTable", "column": 0, "width": "1.5in"}),
-    "set_tablix_size": Case({"name": "MainTable", "width": "4.5in"}),
+    "set_tablix_size": Case({"name": "MainTable", "width": "4.5in", "distribute": True}),
     "set_row_height": Case({"tablix_name": "MainTable", "row_index": 0, "height": "0.4in"}),
     "remove_tablix_filter": Case(
         {"tablix_name": "MainTable", "filter_index": 0},

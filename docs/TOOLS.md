@@ -25,6 +25,19 @@ read-only report is refused with a `PermissionError` and left untouched.
 The rename gives the report a new inode, so other hard links to it keep
 the old content.
 
+Tablix width: a tablix renders at the sum of its column widths plus its
+row-header sizes (the widest `TablixHeader/Size` path of the row
+hierarchy), whatever its `<Width>` says. Every tool that adds, removes or
+resizes a column or a row header — add_tablix_column, remove_tablix_column,
+set_column_width, add_static_column, add_subtotal_column, convert_to_matrix,
+add_row_group / remove_row_group with a row-header cell, and
+remove_column_group's legacy-column cleanup — sets `<Width>` to that sum
+(in the unit `<Width>` already uses) and reports the new value as
+`tablix_width` (convert_to_matrix / add_subtotal_column also list
+`tablix_width` in `changed`), so `tablix-width-mismatch` does not fire on
+their output. set_tablix_size refuses a contradicting width unless
+`distribute=true`.
+
 Paths: a leading `~` in any path argument (`path`, `*_path`, `*_dir`) is
 expanded to the user's home directory before the allowed-roots check and
 the tool see it. A file that is well-formed XML but whose root isn't an
@@ -312,13 +325,13 @@ Tablix layout with stable IDs: columns, row/column groups, sort expressions, fil
 
 *idempotent*
 
-Set `<Width>` on a tablix's body column. column accepts a 0-based integer index OR a textbox name living in any cell of that column (mirrors how set_cell_span / add_subtotal_row address columns), or column_ref {header | field} to pick it by header text or field. width is an RDL size ('1.5in', '4cm', '80pt'). Idempotent: same width → {changed: false}, no save.
+Set `<Width>` on a tablix's body column. column accepts a 0-based integer index OR a textbox name living in any cell of that column (mirrors how set_cell_span / add_subtotal_row address columns), or column_ref {header | field} to pick it by header text or field. width is an RDL size ('1.5in', '4cm', '80pt'). The tablix `<Width>` follows (see "Tablix width" above). Idempotent: same width → {changed: false}, no save.
 
 ### `set_tablix_size`
 
 *idempotent*
 
-Resize a tablix by writing `<Height>` and / or `<Width>` directly. Each arg independently optional. Use after adding header / footer rows that change the body's natural height. Both values are RDL size strings. Returns {tablix, kind, changed: list[str]} — empty list when inputs match existing.
+Resize a tablix by writing `<Height>` and / or `<Width>` directly. Each arg independently optional. Use after adding header / footer rows that change the body's natural height. Both values are RDL size strings. A tablix renders at the sum of its column widths plus its row-header sizes, so a `width` that disagrees with them (beyond 0.001in) is refused, naming the actual sum; with `distribute=true` the body columns are scaled proportionally to fit instead (row headers keep their size; each column keeps its unit, the last one takes the rounding remainder) and the result lists the new `column_widths`. Columns with a missing or invalid width can't be checked and the width is written as given. Height is written as given. Returns {tablix, kind, changed: list[str], column_widths?} — `changed` is empty when inputs match existing; it holds `columns` when columns were rescaled.
 
 ### `set_group_page_break`
 
@@ -365,7 +378,7 @@ Append a `<Filter>` to a tablix. Operator must be one of the RDL 2016 enumeratio
 Add a dynamic row group, like Report Builder's Add Group > Parent Group.
 
 - **Where:** `parent_group` names the existing row group the new one nests directly inside (default: the top level). `wrap` picks the members at that level it wraps: `"details"` (default) only the member on the path to the detail rows (on a matrix, the innermost group), so the column-header row and grand-total rows stay outside and render once; `"member:<group>"` that group's member wherever it is (`parent_group`, if given, must be its parent; `member:Details` adds the innermost parent of the detail rows); `"all"` every member at that level (the old behaviour: header/total rows then repeat per group).
-- **Header:** `"row"` inserts a group-header row (static member, `KeepWithGroup=After`, textboxes `<group>_Header_<i>`, the expression in the first cell) at the first wrapped row's index. `"column"` gives the group a row-header cell (`TablixHeader`, textbox `<group>_Header`): other rows get blank header cells so the header area stays rectangular, the `TablixCorner` is created/resized and the tablix `Width` grows by the header size. `"none"` adds no header. `"auto"` (default) is `"column"` when the tablix already has row-header cells (a matrix; `"row"`/`"none"` are refused there), else `"row"`.
+- **Header:** `"row"` inserts a group-header row (static member, `KeepWithGroup=After`, textboxes `<group>_Header_<i>`, the expression in the first cell) at the first wrapped row's index. `"column"` gives the group a row-header cell (`TablixHeader`, textbox `<group>_Header`): other rows get blank header cells so the header area stays rectangular, the `TablixCorner` is created/resized and the tablix `Width` grows to include the header size. `"none"` adds no header. `"auto"` (default) is `"column"` when the tablix already has row-header cells (a matrix; `"row"`/`"none"` are refused there), else `"row"`.
 - Refuses (file untouched) duplicate names, unknown groups, a `parent_group` whose member is itself a leaf, and any result with a new tablix-shape problem.
 - Returns {tablix, group, expression, parent_group, wrap, header, wrapped, header_row, header_textboxes, corner_textboxes, changed}. `remove_row_group` is the inverse for every variant.
 
@@ -473,7 +486,7 @@ Remove a filter by index. Filters are anonymous in RDL, so use list_tablix_filte
 
 ### `insert_tablix_from_template`
 
-Build and append a basic Tablix to `<Body>/<ReportItems>`. One column per entry in `columns`: a field name of the dataset, or {"field": `<field name>`, "header": `<caption>}` for a display caption that is not an identifier (e.g. 'Unit Price (USD)'). The header row shows the caption (default: the field name), the detail row binds to =Fields!`<field>.Value`. dataset_name must already exist and every field must be declared in it (unknown fields are refused, listing the available ones; declare them first with add_dataset_field, or with create_report's `fields` for a new report). The tablix name must be unused report-wide; generated textbox and detail group names are suffixed until unique. `width` is the tablix outer width — each column defaults to 1in regardless, so for a 3-column tablix the columns sum to 3in even if you pass width=10cm. Resize columns afterwards via direct edits or future column-width tools. `container` names a Rectangle in the body to put the tablix in instead (top/left relative to it; see add_body_textbox); inside a List's rectangle the list must be bound to the same dataset. The header row's member carries `KeepWithGroup=After` and, unless `repeat_header=false`, `RepeatOnNewPage=true`, so the header repeats at the top of every page.
+Build and append a basic Tablix to `<Body>/<ReportItems>`. One column per entry in `columns`: a field name of the dataset, or {"field": `<field name>`, "header": `<caption>}` for a display caption that is not an identifier (e.g. 'Unit Price (USD)'). The header row shows the caption (default: the field name), the detail row binds to =Fields!`<field>.Value`. dataset_name must already exist and every field must be declared in it (unknown fields are refused, listing the available ones; declare them first with add_dataset_field, or with create_report's `fields` for a new report). The tablix name must be unused report-wide; generated textbox and detail group names are suffixed until unique. `width` is the tablix outer width, split evenly over the columns in its unit (width=6in with 3 columns gives three 2in columns; the last column takes any rounding remainder), so `<Width>` is exactly the sum of the columns. Resize columns afterwards with set_column_width. `container` names a Rectangle in the body to put the tablix in instead (top/left relative to it; see add_body_textbox); inside a List's rectangle the list must be bound to the same dataset. The header row's member carries `KeepWithGroup=After` and, unless `repeat_header=false`, `RepeatOnNewPage=true`, so the header repeats at the top of every page.
 
 ## `chart`
 
