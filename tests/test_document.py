@@ -11,6 +11,7 @@ from lxml import etree
 from pbirb_mcp.core.document import (
     RD_NS,
     RDL_NS,
+    NotAnRDLReport,
     RDLDocument,
     RDLValidationError,
 )
@@ -45,6 +46,30 @@ class TestOpen:
         bad.write_text("<not valid xml")
         with pytest.raises(etree.XMLSyntaxError):
             RDLDocument.open(bad)
+
+    # Issue #86: well-formed XML that isn't an RDL 2016 report is refused,
+    # so readers and lint fail clearly instead of reporting an empty report.
+    def test_open_non_rdl_root_raises(self, tmp_path):
+        page = tmp_path / "page.rdl"
+        page.write_text("<html><body/></html>")
+        with pytest.raises(NotAnRDLReport, match=r"root is <html>") as info:
+            RDLDocument.open(page)
+        assert isinstance(info.value, ValueError)
+        assert info.value.payload == {"root_element": "html", "root_namespace": None}
+
+    def test_open_report_in_other_namespace_raises(self, tmp_path):
+        ns = "http://schemas.microsoft.com/sqlserver/reporting/2010/01/reportdefinition"
+        old = tmp_path / "old.rdl"
+        old.write_text(f'<Report xmlns="{ns}"><Body/></Report>')
+        with pytest.raises(NotAnRDLReport, match="RDL 2016 namespace") as info:
+            RDLDocument.open(old)
+        assert info.value.payload["root_namespace"] == ns
+
+    def test_open_unnamespaced_report_raises(self, tmp_path):
+        bare = tmp_path / "bare.rdl"
+        bare.write_text("<Report><Body/></Report>")
+        with pytest.raises(NotAnRDLReport, match=r"root is <Report>"):
+            RDLDocument.open(bare)
 
 
 class TestSave:
@@ -133,7 +158,11 @@ class TestValidate:
             '<?xml version="1.0" encoding="utf-8"?>'
             '<Report xmlns="http://example.com/wrong"></Report>'
         )
-        doc = RDLDocument.open(bad)
+        # open() refuses it outright since #86; validate() still catches a
+        # wrong root on a tree built in memory.
+        with pytest.raises(NotAnRDLReport):
+            RDLDocument.open(bad)
+        doc = RDLDocument(path=bad, tree=etree.parse(str(bad)), encoding="utf-8")
         with pytest.raises(RDLValidationError):
             doc.validate()
 

@@ -25,6 +25,13 @@ read-only report is refused with a `PermissionError` and left untouched.
 The rename gives the report a new inode, so other hard links to it keep
 the old content.
 
+Paths: a leading `~` in any path argument (`path`, `*_path`, `*_dir`) is
+expanded to the user's home directory before the allowed-roots check and
+the tool see it. A file that is well-formed XML but whose root isn't an
+RDL 2016 `<Report>` is refused by every tool except `validate_report`
+(which reports it as a `structural` error) with `NotAnRDLReport`, naming
+the root element.
+
 ## `core`
 
 ### `describe_report`

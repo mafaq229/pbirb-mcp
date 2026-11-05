@@ -82,6 +82,22 @@ _ASCII_COMPATIBLE = {"utf-8", "utf8", "us-ascii", "ascii", "iso-8859-1", "latin-
 PathLike = Union[str, os.PathLike]
 
 
+class NotAnRDLReport(ValueError):
+    """The file is well-formed XML but its root isn't an RDL 2016 ``<Report>`` (#86)."""
+
+    def __init__(self, path: PathLike, root: etree._Element):
+        qname = etree.QName(root)
+        ns = qname.namespace
+        if qname.localname == "Report" and ns:
+            what = f"<Report> in namespace {ns!r}, not the RDL 2016 namespace {RDL_NS!r}"
+            hint = " Open and save it in Power BI Report Builder to upgrade it."
+        else:
+            what = f"<{qname.localname}>" + (f" (namespace {ns!r})" if ns else "")
+            hint = ""
+        super().__init__(f"not an RDL report: root is {what}: {path}.{hint}")
+        self.payload = {"root_element": qname.localname, "root_namespace": ns}
+
+
 @dataclass
 class _SourceForm:
     """Byte-level facts about the file a document was parsed from."""
@@ -389,6 +405,10 @@ class RDLDocument:
         )
         raw = path.read_bytes()
         tree = etree.parse(io.BytesIO(raw), parser, base_url=str(path))
+        # A well-formed non-RDL file would otherwise read as an empty
+        # report (#86): every reader and lint rule finds nothing.
+        if tree.getroot().tag != f"{{{RDL_NS}}}Report":
+            raise NotAnRDLReport(path, tree.getroot())
         encoding = tree.docinfo.encoding or "utf-8"
         form, expanded = _SourceForm(), []
         if encoding.lower() in _ASCII_COMPATIBLE:
@@ -635,6 +655,7 @@ class RDLDocument:
 
 
 __all__ = [
+    "NotAnRDLReport",
     "RDLDocument",
     "RDLValidationError",
     "RDL_NS",

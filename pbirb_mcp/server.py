@@ -591,6 +591,9 @@ class MCPServer:
             payload = {"error_type": "InvalidArguments", "message": str(exc), **exc.payload}
             return _failure(payload)
 
+        # Issue #86: expand `~` in every path argument, once, here — the
+        # sandbox check below and the handler both see the expanded path.
+        arguments = security.expand_user_paths(arguments)
         # Issue #57: file-access sandbox, then the confirmation gate —
         # both before the handler, so a refused call never touches a file.
         try:
