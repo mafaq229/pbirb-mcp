@@ -171,7 +171,13 @@ uv run --with anthropic==2.3.0 python -m evals.tool_selection.harness run \
    - `search` should close most of its 10-point gap after #56/#62 (descriptions, toolsets).
    - t04/s09/i01/i02 should pass after #59.
    - t05 should pass after #66.
-   - d06 should pass after #71.
+   - d06 should pass after #71. Its check changed with #71 (2026-11-05): it now requires the
+     Report Builder PBIDATASET shape — provider kept as `PBIDATASET`, `rd:PowerBIWorkspaceName`
+     = `FleetAnalytics-Prod`, `FleetOps` as the catalog or model label — instead of the workspace in
+     the ConnectString (the legacy shape #71 fixed). d06 results before and after that date are not
+     like-for-like.
+   - t05's oracle now uses `{value, direction: "Descending"}` (#66); its check still also accepts a
+     negated expression.
    - t12 / t13 become passable after #67 / #66 (then give them oracles and drop `known_gap`).
 3. Report the `corrupted` count alongside success. A run that edits correctly but breaks structure already
    counts as a failure. The committed baseline predates the gate, so re-run it once the critical fixes

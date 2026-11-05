@@ -246,8 +246,22 @@ def _d05(r: Rdl):
 
 
 def _d06(r: Rdl):
-    cs = r.text("//r:DataSource[@Name='FleetModel']//r:ConnectString") or ""
-    return ok("FleetAnalytics-Prod" in cs and "FleetOps" in cs, f"connect string: {cs!r}")
+    # A Report Builder PBIDATASET source names its workspace only in
+    # rd:PowerBIWorkspaceName (the ConnectString is the pbiazure:// endpoint
+    # plus the model as Initial Catalog), so the edit must keep the provider
+    # and move that label (#71). Rewriting it as a legacy SQL/XMLA source with
+    # the workspace in the ConnectString is the bug #71 fixed, not a pass.
+    ds = "//r:DataSource[@Name='FleetModel']"
+    provider = r.text(f"{ds}//r:DataProvider") or ""
+    cs = r.text(f"{ds}//r:ConnectString") or ""
+    workspace = r.text(f"{ds}/rd:PowerBIWorkspaceName") or ""
+    model = r.text(f"{ds}/rd:PowerBIDatasetName") or ""
+    return ok(
+        provider == "PBIDATASET"
+        and workspace == "FleetAnalytics-Prod"
+        and ("FleetOps" in cs or model == "FleetOps"),
+        f"provider={provider!r} workspace={workspace!r} model={model!r} connect string: {cs!r}",
+    )
 
 
 def _d07(r: Rdl):
@@ -608,8 +622,8 @@ def _t03(r: Rdl):
 
 
 def _t05(r: Rdl):
-    # set_group_sort has no Direction argument, so a negated expression is an
-    # equally valid way to sort highest-first.
+    # Either Direction=Descending (set_group_sort's {value, direction}, #66) or
+    # a negated expression sorts highest-first.
     sorts = r.x("//r:Tablix[@Name='FleetTable']//r:SortExpression")
     hit = [
         s
@@ -753,7 +767,9 @@ TABLIX = [
                 {
                     "tablix_name": "FleetTable",
                     "group_name": "Details",
-                    "sort_expressions": ["=-Fields!Utilization.Value"],
+                    "sort_expressions": [
+                        {"value": "=Fields!Utilization.Value", "direction": "Descending"}
+                    ],
                 },
             )
         ],
