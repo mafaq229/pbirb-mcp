@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Entry point for the pbirb-mcp server.
 
-Configures logging from environment variables and starts the JSON-RPC stdio loop.
+Configures logging from environment variables and serves MCP over stdio via the
+official MCP SDK (protocol revisions 2024-11-05 through 2026-07-28).
 
 Environment variables:
     PBIRB_MCP_LOG_LEVEL  DEBUG|INFO|WARNING|ERROR (default: WARNING)

@@ -53,10 +53,10 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     strategy:
-      # If 3.9 fails there's no point publishing — abort the rest.
+      # If any supported Python fails there's no point publishing — abort the rest.
       fail-fast: true
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v7
 

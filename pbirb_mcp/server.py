@@ -1,4 +1,7 @@
-"""MCP JSON-RPC server core.
+"""MCP server core: the tool registry and the tool dispatcher.
+
+The wire protocol (version negotiation, JSON-RPC framing, stdio) is the
+official MCP SDK, wired up in :mod:`pbirb_mcp.protocol` (issue #53).
 
 Tools are registered via :meth:`MCPServer.register_tool`. Each registered tool
 declares an input JSON Schema and a handler callable. The bootstrap server
@@ -19,13 +22,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "pbirb-mcp"
 SERVER_VERSION = "0.4.1"
 
@@ -43,14 +44,6 @@ def _verify_target(arguments: dict, result: Any) -> Optional[str]:
         if isinstance(arguments.get(key), str):
             return arguments[key]
     return None
-
-
-# JSON-RPC 2.0 standard error codes
-PARSE_ERROR = -32700
-INVALID_REQUEST = -32600
-METHOD_NOT_FOUND = -32601
-INVALID_PARAMS = -32602
-INTERNAL_ERROR = -32603
 
 
 ToolHandler = Callable[..., Any]
@@ -110,7 +103,11 @@ class Tool:
 
 class MCPServer:
     def __init__(self) -> None:
+        from pbirb_mcp.protocol import AdapterState
+
         self._tools: dict[str, Tool] = {}
+        self._sdk_server = None
+        self._adapter_state = AdapterState()
 
     def register_tool(
         self,
@@ -169,47 +166,34 @@ class MCPServer:
 
     # ---- protocol -----------------------------------------------------------
 
+    @property
+    def sdk_server(self):
+        """The MCP SDK low-level server that serves this registry (issue #53).
+
+        Built on first use, after ``register_all_tools`` has populated the
+        registry; ``tools/list`` reads the registry live.
+        """
+        if self._sdk_server is None:
+            from pbirb_mcp.protocol import build_sdk_server
+
+            self._sdk_server = build_sdk_server(self, name=SERVER_NAME, version=SERVER_VERSION)
+        return self._sdk_server
+
     def handle_request(self, request: dict) -> Optional[dict]:
-        """Route a single JSON-RPC request. Returns None for notifications."""
-        if not isinstance(request, dict) or request.get("jsonrpc") != "2.0":
-            return self._error(None, INVALID_REQUEST, "invalid JSON-RPC envelope")
+        """Serve one JSON-RPC request in-process; ``None`` for a notification.
 
-        method = request.get("method")
-        if not isinstance(method, str):
-            return self._error(request.get("id"), INVALID_REQUEST, "missing method")
+        A thin synchronous adapter over the SDK server (see
+        :mod:`pbirb_mcp.protocol`): same methods, version negotiation, error
+        codes and result shapes as the stdio transport. A request carrying
+        the 2026-07-28 ``_meta`` envelope is served at that revision; any
+        other at the version the last ``initialize`` negotiated (default
+        2025-11-25).
+        """
+        from pbirb_mcp.protocol import handle_message
 
-        # Notifications: no `id`, no response.
-        is_notification = "id" not in request
-        request_id = request.get("id")
-        params = request.get("params") or {}
-
-        try:
-            if method == "initialize":
-                return self._ok(request_id, self._initialize_result())
-            if method == "tools/list":
-                return self._ok(request_id, {"tools": self._tools_list()})
-            if method == "tools/call":
-                return self._ok(request_id, self._tools_call(params))
-            if method.startswith("notifications/"):
-                # Spec: server may receive these and must not reply.
-                return None
-            return self._error(request_id, METHOD_NOT_FOUND, f"method not found: {method}")
-        except _MCPError as exc:
-            return self._error(request_id, exc.code, exc.message, exc.data)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("internal error handling %s", method)
-            if is_notification:
-                return None
-            return self._error(request_id, INTERNAL_ERROR, str(exc))
+        return handle_message(self.sdk_server, self._adapter_state, request)
 
     # ---- handlers -----------------------------------------------------------
-
-    def _initialize_result(self) -> dict:
-        return {
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-        }
 
     def _tools_list(self) -> list[dict]:
         return [
@@ -222,15 +206,15 @@ class MCPServer:
         ]
 
     def _tools_call(self, params: dict) -> dict:
-        name = params.get("name")
+        """Run one tool call; returns the ``CallToolResult`` dict.
+
+        The protocol layer (:mod:`pbirb_mcp.protocol`) has already checked
+        that ``params["name"]`` is a registered tool and that
+        ``params["arguments"]`` is an object (or absent).
+        """
+        name = params["name"]
         arguments = params.get("arguments") or {}
-        if not isinstance(name, str):
-            raise _MCPError(INVALID_PARAMS, "tools/call requires a string `name`")
-        tool = self._tools.get(name)
-        if tool is None:
-            raise _MCPError(METHOD_NOT_FOUND, f"unknown tool: {name}")
-        if not isinstance(arguments, dict):
-            raise _MCPError(INVALID_PARAMS, "tools/call `arguments` must be an object")
+        tool = self._tools[name]
 
         # v0.4 commit 9 — transaction routing. When `transaction_id` is in
         # arguments AND the tool is an EDIT tool (i.e. its schema declares
@@ -363,49 +347,7 @@ class MCPServer:
     # ---- transport ----------------------------------------------------------
 
     def run_stdio(self) -> None:
-        """Read newline-delimited JSON-RPC requests from stdin, write to stdout."""
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                request = json.loads(line)
-            except json.JSONDecodeError as exc:
-                resp = self._error(None, PARSE_ERROR, f"invalid JSON: {exc}")
-                self._write(resp)
-                continue
+        """Serve MCP over stdin/stdout (all supported protocol revisions)."""
+        from pbirb_mcp.protocol import serve_stdio
 
-            response = self.handle_request(request)
-            if response is not None:
-                self._write(response)
-
-    @staticmethod
-    def _write(response: dict) -> None:
-        sys.stdout.write(json.dumps(response) + "\n")
-        sys.stdout.flush()
-
-    # ---- response helpers ---------------------------------------------------
-
-    @staticmethod
-    def _ok(request_id: Any, result: Any) -> dict:
-        return {"jsonrpc": "2.0", "id": request_id, "result": result}
-
-    @staticmethod
-    def _error(
-        request_id: Any,
-        code: int,
-        message: str,
-        data: Any = None,
-    ) -> dict:
-        err: dict[str, Any] = {"code": code, "message": message}
-        if data is not None:
-            err["data"] = data
-        return {"jsonrpc": "2.0", "id": request_id, "error": err}
-
-
-class _MCPError(Exception):
-    def __init__(self, code: int, message: str, data: Any = None) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.data = data
+        serve_stdio(self.sdk_server)

@@ -12,6 +12,15 @@ def server():
     return MCPServer()
 
 
+# A spec-conformant initialize: the SDK rejects one missing
+# protocolVersion / capabilities / clientInfo with -32602 (issue #53).
+_INIT = {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {},
+    "clientInfo": {"name": "t", "version": "1"},
+}
+
+
 def _request(method, params=None, request_id=1):
     req = {"jsonrpc": "2.0", "id": request_id, "method": method}
     if params is not None:
@@ -21,7 +30,7 @@ def _request(method, params=None, request_id=1):
 
 class TestInitialize:
     def test_initialize_returns_capabilities(self, server):
-        resp = server.handle_request(_request("initialize", {"protocolVersion": "2024-11-05"}))
+        resp = server.handle_request(_request("initialize", _INIT))
         assert resp["jsonrpc"] == "2.0"
         assert resp["id"] == 1
         assert "result" in resp
@@ -32,7 +41,7 @@ class TestInitialize:
         assert result["serverInfo"]["name"] == "pbirb-mcp"
 
     def test_initialize_advertises_tools_capability(self, server):
-        resp = server.handle_request(_request("initialize", {}))
+        resp = server.handle_request(_request("initialize", _INIT))
         assert "tools" in resp["result"]["capabilities"]
 
 
@@ -55,7 +64,8 @@ class TestToolsCall:
             _request("tools/call", {"name": "no_such_tool", "arguments": {}})
         )
         assert "error" in resp
-        assert resp["error"]["code"] == -32601
+        # MCP spec: an unknown tool is Invalid params (issue #53).
+        assert resp["error"]["code"] == -32602
         assert "no_such_tool" in resp["error"]["message"]
 
     def test_handler_exception_returns_iserror_content(self, server):
