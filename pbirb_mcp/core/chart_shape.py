@@ -24,7 +24,8 @@ share the chart's series-name namespace.
 
 All functions here are read-only. :func:`series_leaf_members` /
 :func:`series_member` / :func:`member_series` translate between series and
-hierarchy members; :func:`hierarchy_problems` reports invariant breaks.
+hierarchy members; :func:`hierarchy_problems` reports invariant breaks
+(:func:`hierarchy_findings` with the offending element, for lint).
 """
 
 from __future__ import annotations
@@ -220,26 +221,60 @@ def data_point_count(series: etree._Element) -> int:
     return len(find_children(points, "ChartDataPoint"))
 
 
-def hierarchy_problems(chart: etree._Element) -> list[str]:
-    """Human-readable breaks of the positional series/category invariant;
-    empty when the chart is consistent."""
-    problems: list[str] = []
+def hierarchy_findings(
+    chart: etree._Element, *, empty_as_one: bool = False
+) -> list[tuple[str, etree._Element]]:
+    """Breaks of the positional series/category invariant as
+    ``(message, element)`` pairs — the element is the chart (series count
+    vs series leaves) or the offending ``ChartSeries`` (data points vs
+    category leaves). Empty when the chart is consistent.
+
+    ``empty_as_one`` treats a hierarchy without any member as one member
+    (a chart with no category grouping has a single data point per
+    series); by default an empty hierarchy counts as zero."""
+    problems: list[tuple[str, etree._Element]] = []
     all_series = series_list(chart)
-    leaves = series_leaf_members(chart)
-    if len(all_series) != len(leaves):
+    leaves = len(series_leaf_members(chart))
+    if empty_as_one and leaves == 0:
+        if len(all_series) != 1:
+            problems.append(
+                (
+                    f"{len(all_series)} ChartSeries but ChartSeriesHierarchy has no "
+                    "ChartMember (which counts as 1)",
+                    chart,
+                )
+            )
+    elif len(all_series) != leaves:
         problems.append(
-            f"{len(all_series)} ChartSeries but {len(leaves)} leaf ChartMember(s) "
-            "in ChartSeriesHierarchy"
+            (
+                f"{len(all_series)} ChartSeries but {leaves} leaf ChartMember(s) "
+                "in ChartSeriesHierarchy",
+                chart,
+            )
         )
     categories = len(category_leaf_members(chart))
+    empty_categories = empty_as_one and categories == 0
+    expected = 1 if empty_categories else categories
     for s in all_series:
         points = data_point_count(s)
-        if points != categories:
-            problems.append(
-                f"ChartSeries {s.get('Name')!r} has {points} ChartDataPoint(s) but the "
-                f"category hierarchy has {categories} leaf member(s)"
-            )
+        if points == expected:
+            continue
+        hierarchy = (
+            "ChartCategoryHierarchy has no ChartMember (which counts as 1)"
+            if empty_categories
+            else f"the category hierarchy has {categories} leaf member(s)"
+        )
+        problems.append(
+            (f"ChartSeries {s.get('Name')!r} has {points} ChartDataPoint(s) but {hierarchy}", s)
+        )
     return problems
+
+
+def hierarchy_problems(chart: etree._Element) -> list[str]:
+    """Human-readable breaks of the positional series/category invariant;
+    empty when the chart is consistent. (An empty hierarchy counts as
+    zero members — see :func:`hierarchy_findings`.)"""
+    return [message for message, _ in hierarchy_findings(chart)]
 
 
 __all__ = [
@@ -250,6 +285,7 @@ __all__ = [
     "derived_series_list",
     "derived_series_name",
     "derived_source_name",
+    "hierarchy_findings",
     "hierarchy_problems",
     "member_ancestors",
     "member_groups",

@@ -64,7 +64,11 @@ class TestLintRegistry:
         result = lint_report(str(rdl_path))
         assert result["issues"] == []
         assert set(result["rules_run"]) == set(ALL_RULES)
-        assert len(ALL_RULES) == 19
+        assert len(ALL_RULES) == len(set(ALL_RULES))
+        # The core rules are always present (families in ops/lint_rules/ add more).
+        from pbirb_mcp.ops.lint import _RULES
+
+        assert len(_RULES) >= 19
 
     def test_unknown_rule_rejected(self, rdl_path):
         with pytest.raises(ValueError, match="unknown lint rule"):
@@ -544,6 +548,117 @@ class TestDatasetFieldsOutOfSync:
         assert result["issues"] == []
 
 
+# #51: Fields shaped the way Report Builder writes them — sanitised Name,
+# the real column only in <DataField>.
+def _rb_sanitised(rdl_path: Path) -> str:
+    s = rdl_path.read_text(encoding="utf-8")
+    s = s.replace('"ProductName"', '"Product_Name"').replace(
+        "Sales[ProductName]", "Sales[Product Name]"
+    )
+    s = s.replace('"Amount"', '"Amount__USD_"').replace("Sales[Amount]", "Sales[Amount (USD)]")
+    rdl_path.write_text(s, encoding="utf-8")
+    return str(rdl_path)
+
+
+def _out_of_sync(path: str) -> list[dict]:
+    return lint_report(path, rules=["dataset-fields-out-of-sync"])["issues"]
+
+
+class TestDatasetFieldsOutOfSyncDataField:
+    """#51: the rule compares <DataField> (never Field/@Name), both ways."""
+
+    def test_issue_repro_flags_only_the_unbound_column(self, rdl_path):
+        from pbirb_mcp.ops.dataset import update_dataset_query
+
+        p = _rb_sanitised(rdl_path)
+        update_dataset_query(
+            p,
+            "MainDataset",
+            "EVALUATE CALCULATETABLE(SUMMARIZECOLUMNS('Sales'[ProductID], "
+            "'Sales'[Product Name], 'Sales'[Amount (USD)], 'Sales'[Region]), "
+            "FILTER(VALUES('Sales'[Date]), 'Sales'[Date] >= @From))",
+        )
+        issues = _out_of_sync(p)
+        assert len(issues) == 1
+        (issue,) = issues
+        assert issue["kind"] == "column-not-bound"
+        assert issue["severity"] == "warning"
+        assert "Sales[Region]" in issue["message"]
+        assert issue["location"] == "DataSet[Name='MainDataset']/Fields"
+
+    def test_unchanged_sanitised_report_is_clean(self, rdl_path):
+        from pbirb_mcp.ops.dataset import update_dataset_query
+
+        p = _rb_sanitised(rdl_path)
+        update_dataset_query(
+            p,
+            "MainDataset",
+            "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[Product Name], "
+            "'Sales'[Amount (USD)])",
+        )
+        assert _out_of_sync(p) == []
+
+    def test_quoted_and_case_folded_data_fields_match(self, rdl_path):
+        from pbirb_mcp.ops.dataset import update_dataset_query
+
+        p = str(rdl_path)
+        s = rdl_path.read_text(encoding="utf-8").replace(
+            "Sales[ProductName]", "'Sales'[productname]"
+        )
+        rdl_path.write_text(s, encoding="utf-8")
+        update_dataset_query(
+            p,
+            "MainDataset",
+            "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[ProductName], 'Sales'[Amount])",
+        )
+        assert _out_of_sync(p) == []
+
+    def test_selectcolumns_alias_binds_by_data_field(self, rdl_path):
+        # Name ID_X_ binds DataField [X] — the SELECTCOLUMNS alias shape.
+        doc = RDLDocument.open(rdl_path)
+        ds = doc.root.find(q("DataSets")).find(q("DataSet"))
+        ds.find(q("Query")).find(
+            q("CommandText")
+        ).text = "EVALUATE SELECTCOLUMNS('Sales', \"X\", 'Sales'[ProductID])"
+        fields = ds.find(q("Fields"))
+        for f in list(fields):
+            fields.remove(f)
+        field = etree.SubElement(fields, q("Field"), Name="ID_X_")
+        etree.SubElement(field, q("DataField")).text = "[X]"
+        _save(doc)
+        assert _out_of_sync(str(rdl_path)) == []
+
+    def test_filter_only_column_field_is_not_returned(self, rdl_path):
+        # A Field bound to a column the DAX only filters on (#24 phantom).
+        doc = RDLDocument.open(rdl_path)
+        ds = doc.root.find(q("DataSets")).find(q("DataSet"))
+        ds.find(q("Query")).find(q("CommandText")).text = (
+            "EVALUATE CALCULATETABLE(SUMMARIZECOLUMNS('Sales'[ProductID], "
+            "'Sales'[ProductName], 'Sales'[Amount]), "
+            "FILTER(VALUES('Sales'[Date]), 'Sales'[Date] >= @From))"
+        )
+        field = etree.SubElement(ds.find(q("Fields")), q("Field"), Name="Date")
+        etree.SubElement(field, q("DataField")).text = "Sales[Date]"
+        _save(doc)
+        issues = _out_of_sync(str(rdl_path))
+        assert [(i["kind"], i["location"]) for i in issues] == [
+            ("field-not-returned", "DataSet[Name='MainDataset']/Fields/Field[Name='Date']")
+        ]
+
+    def test_calculated_field_is_ignored(self, rdl_path):
+        doc = RDLDocument.open(rdl_path)
+        ds = doc.root.find(q("DataSets")).find(q("DataSet"))
+        ds.find(q("Query")).find(
+            q("CommandText")
+        ).text = (
+            "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[ProductName], 'Sales'[Amount])"
+        )
+        field = etree.SubElement(ds.find(q("Fields")), q("Field"), Name="Doubled")
+        etree.SubElement(field, q("Value")).text = "=Fields!Amount.Value * 2"
+        _save(doc)
+        assert _out_of_sync(str(rdl_path)) == []
+
+
 # ---- registration ------------------------------------------------------
 
 
@@ -556,3 +671,218 @@ class TestToolRegistration:
         ]
         names = {t["name"] for t in listing}
         assert "lint_report" in names
+
+
+# ---- #48: empty selector runs everything; locations name the item -------------
+
+
+def test_empty_rules_list_runs_all_rules(rdl_path):
+    result = lint_report(str(rdl_path), rules=[])
+    assert set(result["rules_run"]) == set(ALL_RULES)
+
+
+def test_textbox_value_issue_is_located_at_the_textbox(tmp_path):
+    p = tmp_path / "r.rdl"
+    p.write_text(FIXTURE.read_text().replace("=Fields!Amount.Value", "=Fields!Typo.Value"))
+    issues = [i for i in lint_report(str(p))["issues"] if i["rule"] == "missing-field-reference"]
+    assert issues
+    location = issues[0]["location"]
+    assert "Textbox[Name='Amount']" in location
+    assert location.startswith("Tablix[Name='MainTable']>")
+    assert location.endswith(">Value")
+
+
+def test_ancestor_chain_keeps_three_nearest_named_ancestors():
+    from lxml import etree
+
+    from pbirb_mcp.ops.lint import _ancestor_chain
+
+    root = etree.fromstring(
+        "<A Name='a'><B Name='b'><C Name='c'><D Name='d'><E><F/></E></D></C></B></A>"
+    )
+    leaf = root.find(".//F")
+    assert _ancestor_chain(leaf) == "B[Name='b']>C[Name='c']>D[Name='d']>F"
+    assert _ancestor_chain(root.find(".//D")) == "B[Name='b']>C[Name='c']>D[Name='d']"
+    assert _ancestor_chain(etree.fromstring("<X><Y/></X>").find("Y")) == "(unnamed)"
+
+
+def test_lint_rules_package_modules_are_registered(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from pbirb_mcp.ops import lint_rules
+
+    fake = types.ModuleType("pbirb_mcp.ops.lint_rules.zz_fake")
+    fake.RULES = {"zz-fake-rule": lambda doc: []}
+    monkeypatch.setitem(sys.modules, "pbirb_mcp.ops.lint_rules.zz_fake", fake)
+    real_iter = lint_rules.pkgutil.iter_modules
+
+    def iter_modules(path):
+        yield from real_iter(path)
+        yield types.SimpleNamespace(name="zz_fake")
+
+    monkeypatch.setattr(lint_rules.pkgutil, "iter_modules", iter_modules)
+    assert "zz-fake-rule" in lint_rules.load()
+
+
+# ---- #50: page-chrome rules (lint_rules/page_chrome.py) -------------------
+
+_CHROME_RULES = [
+    "page-number-out-of-chrome",
+    "field-in-page-chrome",
+    "page-section-missing-height",
+]
+
+
+def _chrome_issues(path: str) -> list[tuple[str, str]]:
+    return [(i["rule"], i["location"]) for i in lint_report(path, rules=_CHROME_RULES)["issues"]]
+
+
+class TestPageChromeRules:
+    def test_fixtures_are_clean(self):
+        for fixture in sorted((Path(__file__).parent / "fixtures").glob("*.rdl")):
+            assert _chrome_issues(str(fixture)) == [], fixture.name
+
+    def test_issue_50_repro(self, rdl_path):
+        from pbirb_mcp.ops.body import add_body_textbox
+        from pbirb_mcp.ops.header_footer import add_header_textbox, set_page_header
+
+        p = str(rdl_path)
+        set_page_header(p, print_on_first_page=False)
+        add_header_textbox(
+            p, "HdrField", "=Fields!ProductName.Value", "0in", "0in", "2in", "0.25in"
+        )
+        add_body_textbox(
+            p,
+            "Pg1",
+            '=Globals!OverallPageNumber & "/" & Globals!OverallTotalPages',
+            "1.2in",
+            "0.5in",
+            "2in",
+            "0.25in",
+        )
+        add_body_textbox(p, "Pg2", "=Globals!PageName", "1.5in", "0.5in", "2in", "0.25in")
+        add_body_textbox(p, "Pg3", "=Globals!PageNumber", "1.8in", "0.5in", "2in", "0.25in")
+        found = _chrome_issues(p)
+        assert sorted(found) == sorted(
+            [
+                ("field-in-page-chrome", "Textbox[Name='HdrField']>Value"),
+                ("page-number-out-of-chrome", "Textbox[Name='Pg1']>Value"),
+                ("page-number-out-of-chrome", "Textbox[Name='Pg2']>Value"),
+                ("page-number-out-of-chrome", "Textbox[Name='Pg3']>Value"),
+            ]
+        )
+        issue = next(
+            i
+            for i in lint_report(p)["issues"]
+            if i["rule"] == "page-number-out-of-chrome" and "Pg1" in i["location"]
+        )
+        assert issue["severity"] == "error"
+        assert "OverallPageNumber" in issue["message"]
+        assert "OverallTotalPages" in issue["message"]
+
+    def test_page_globals_inside_chrome_are_fine(self, rdl_path):
+        from pbirb_mcp.ops.header_footer import add_footer_textbox
+
+        add_footer_textbox(
+            str(rdl_path),
+            "Pager",
+            '=Globals!PageName & " " & Globals!OverallPageNumber',
+            "0in",
+            "0in",
+            "3in",
+            "0.25in",
+        )
+        assert _chrome_issues(str(rdl_path)) == []
+
+    def test_page_global_in_string_literal_is_ignored(self, rdl_path):
+        from pbirb_mcp.ops.body import add_body_textbox
+
+        add_body_textbox(
+            str(rdl_path), "Lit", '="Globals!PageName"', "1.2in", "0.5in", "2in", "0.25in"
+        )
+        assert _chrome_issues(str(rdl_path)) == []
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            '=First(Fields!ProductName.Value, "MainDataset")',
+            '=Sum(Fields!Amount.Value, "MainDataset")',
+            '="Total: " & Format(Sum(Fields!Amount.Value, "maindataset"), "N0")',
+            '=Max(Fields!Amount.Value + First(Fields!Amount.Value, "MainDataset"), "MainDataset")',
+            "=ReportItems!Title.Value",
+        ],
+    )
+    def test_scoped_aggregate_in_header_is_not_flagged(self, rdl_path, expr):
+        from pbirb_mcp.ops.header_footer import add_header_textbox
+
+        add_header_textbox(str(rdl_path), "Hdr", expr, "0in", "0in", "2in", "0.25in")
+        assert _chrome_issues(str(rdl_path)) == []
+
+    @pytest.mark.parametrize(
+        "expr,needle",
+        [
+            ("=Fields!ProductName.Value", "not inside an aggregate"),
+            ("=First(Fields!ProductName.Value)", "not inside an aggregate"),
+            ('=First(Fields!ProductName.Value, "NoSuchSet")', "'NoSuchSet' is not a dataset"),
+            ('=Format(Fields!Amount.Value, "N0")', "not inside an aggregate"),
+            (
+                '=First(Fields!Amount.Value, "MainDataset") & Fields!ProductName.Value',
+                "Fields!ProductName",
+            ),
+        ],
+    )
+    def test_unscoped_field_in_footer_is_flagged(self, rdl_path, expr, needle):
+        from pbirb_mcp.ops.header_footer import add_footer_textbox
+
+        add_footer_textbox(str(rdl_path), "Ftr", expr, "0in", "0in", "2in", "0.25in")
+        issues = lint_report(str(rdl_path), rules=["field-in-page-chrome"])["issues"]
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "error"
+        assert issues[0]["location"] == "Textbox[Name='Ftr']>Value"
+        assert needle in issues[0]["message"]
+        assert "MainDataset" in issues[0]["suggestion"]
+
+    def test_field_in_chrome_style_expression_is_flagged(self, rdl_path):
+        from pbirb_mcp.ops.header_footer import add_header_textbox
+
+        add_header_textbox(str(rdl_path), "Hdr", "x", "0in", "0in", "2in", "0.25in")
+        doc = RDLDocument.open(rdl_path)
+        tb = next(t for t in doc.root.iter(q("Textbox")) if t.get("Name") == "Hdr")
+        etree.SubElement(
+            tb.find(q("Style")), q("Color")
+        ).text = '=IIf(Fields!Amount.Value > 0, "Black", "Red")'
+        _save(doc)
+        assert _chrome_issues(str(rdl_path)) == [
+            ("field-in-page-chrome", "Textbox[Name='Hdr']>Color")
+        ]
+
+    def test_field_in_body_is_not_a_chrome_issue(self, rdl_path):
+        assert lint_report(str(rdl_path), rules=["field-in-page-chrome"])["issues"] == []
+
+    def test_page_section_missing_height(self, rdl_path):
+        from pbirb_mcp.ops.validate import validate_report
+
+        doc = RDLDocument.open(rdl_path)
+        page = doc.root.find(f".//{{{RDL_NS}}}Page")
+        footer = etree.Element(q("PageFooter"))
+        etree.SubElement(footer, q("PrintOnFirstPage")).text = "true"
+        page.insert(0, footer)
+        _save(doc)
+        # The XSD's choice model lets it through; the lint rule doesn't.
+        assert validate_report(str(rdl_path))["valid"]
+        issues = lint_report(str(rdl_path), rules=["page-section-missing-height"])["issues"]
+        assert [(i["severity"], i["location"]) for i in issues] == [("error", "Page>PageFooter")]
+        assert "<PageFooter> has no <Height>" in issues[0]["message"]
+
+    def test_set_page_footer_fixes_missing_height(self, rdl_path):
+        from pbirb_mcp.ops.header_footer import set_page_footer
+
+        doc = RDLDocument.open(rdl_path)
+        page = doc.root.find(f".//{{{RDL_NS}}}Page")
+        footer = etree.Element(q("PageFooter"))
+        etree.SubElement(footer, q("PrintOnFirstPage")).text = "true"
+        page.insert(0, footer)
+        _save(doc)
+        set_page_footer(str(rdl_path), print_on_last_page=False)
+        assert lint_report(str(rdl_path), rules=["page-section-missing-height"])["issues"] == []

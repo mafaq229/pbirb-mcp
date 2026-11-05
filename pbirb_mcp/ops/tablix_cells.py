@@ -203,11 +203,40 @@ def set_cell_span(
         )
 
     # Repair v0.2 legacy placement before reading / writing spans.
+    had_legacy_col_span = find_child(target, "ColSpan") is not None
     _migrate_legacy_span_placement(target)
 
     cols_root = find_child(body, "TablixColumns")
     n_cols = len(find_children(cols_root, "TablixColumn")) if cols_root is not None else 0
     n_cols = n_cols or len(cells)
+
+    cleared: list[str] = []
+    if had_legacy_col_span and col_span is None:
+        # The migrated ColSpan now takes effect (it was inert where v0.2
+        # wrote it), so the cells it covers must become placeholders — the
+        # same rule as widening a span (#34): blank ones are emptied,
+        # non-blank ones refuse unless force (which clears them).
+        legacy_covered = cells[target_col + 1 : target_col + tablix_spans.span(target)]
+        blocking = [
+            (target_col + 1 + k, tablix_spans.report_item_names(c))
+            for k, c in enumerate(legacy_covered)
+            if not tablix_spans.is_blank(c)
+        ]
+        if blocking and not force:
+            detail = "; ".join(f"column {j}: {', '.join(n) or 'content'}" for j, n in blocking)
+            raise ValueError(
+                f"cell {column_name!r} carries a v0.2-style ColSpan of "
+                f"{tablix_spans.span(target)} that would now cover non-empty cells "
+                f"({detail}); clear them, pass force=True to migrate the span and "
+                "delete their contents, or pass col_span (e.g. 1) to set the span "
+                "yourself."
+            )
+        for cell in legacy_covered:
+            cleared.extend(tablix_spans.report_item_names(cell))
+            cell_contents = find_child(cell, "CellContents")
+            if cell_contents is not None:
+                tablix_spans.detach(cell_contents)
+
     owners = tablix_spans.owner_map(cells)
     if owners[target_col] != target_col:
         owner_names = tablix_spans.report_item_names(cells[owners[target_col]])
@@ -217,8 +246,9 @@ def set_cell_span(
             "shrink that span first."
         )
 
-    old_span = tablix_spans.span(target)
-    cleared: list[str] = []
+    # A v0.2 ColSpan never covered anything (it was inert where v0.2 put
+    # it), so an explicit col_span is measured from a span of 1.
+    old_span = 1 if had_legacy_col_span else tablix_spans.span(target)
     created: list[str] = []
     if col_span is not None:
         if target_col + col_span > n_cols:

@@ -56,6 +56,30 @@ def _resolve_page(doc: RDLDocument) -> etree._Element:
     return page
 
 
+def printable_width_in(page: etree._Element) -> Optional[float]:
+    """The page's printable width in inches: ``PageWidth - LeftMargin -
+    RightMargin`` (#50). Missing margins count as 0; ``None`` when there
+    is no ``<PageWidth>`` or a value isn't a plain RDL size (an
+    expression), so callers skip the check rather than guess.
+    """
+    total = 0.0
+    for local, sign, required in (
+        ("PageWidth", 1.0, True),
+        ("LeftMargin", -1.0, False),
+        ("RightMargin", -1.0, False),
+    ):
+        node = find_child(page, local)
+        if node is None:
+            if required:
+                return None
+            continue
+        try:
+            total += sign * units.to_inches((node.text or "").strip())
+        except ValueError:
+            return None
+    return total
+
+
 def _set_or_create_text_in_order(page: etree._Element, local: str, value: str) -> None:
     existing = find_child(page, local)
     if existing is not None:
@@ -280,4 +304,4 @@ def set_body_size(
     return {"kind": "Body", "changed": changed}
 
 
-__all__ = ["set_body_size", "set_page_orientation", "set_page_setup"]
+__all__ = ["printable_width_in", "set_body_size", "set_page_orientation", "set_page_setup"]

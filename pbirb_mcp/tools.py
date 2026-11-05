@@ -38,6 +38,7 @@ from pbirb_mcp.ops import dry_run as _dry_run
 from pbirb_mcp.ops import escape as _escape
 from pbirb_mcp.ops import expressions as _expressions
 from pbirb_mcp.ops import layout as _layout
+from pbirb_mcp.ops import layout_helpers as _layout_helpers
 from pbirb_mcp.ops import lint as _lint
 from pbirb_mcp.ops import scratch as _scratch
 from pbirb_mcp.ops import transactions as _transactions
@@ -59,6 +60,25 @@ _PATH_ONLY_SCHEMA: dict = {
 }
 
 
+# list_body_items / list_header_items / list_footer_items (#52).
+_LIST_ITEMS_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": "Absolute path to the .rdl file to read.",
+        },
+        "recursive": {
+            "type": "boolean",
+            "default": False,
+            "description": "Also list the items inside Rectangles (with parent set).",
+        },
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+
 def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="describe_report",
@@ -68,7 +88,14 @@ def register_all_tools(server: MCPServer) -> None:
             "planning edits. v0.4: `tablixes` returns rich shape hints "
             "[{name, rows, columns, has_groups, has_subtotals, has_spans}] "
             "(was bare strings — migrate with `[t['name'] for t in tablixes]`). "
-            "`charts` (new in v0.4) is a top-level array of chart names."
+            "`charts` (new in v0.4) is a top-level array of chart names. "
+            "Also: `subreports` [{name, report_name, parameters}], `maps`, "
+            "`gauges`, `body` {height, width}, `nested_items` (items inside "
+            "Rectangles, with parent/region); `page` fills absent sizes with "
+            "the RDL defaults (11in x 8.5in, 0in margins) and lists them in "
+            "`page.defaulted`, plus page.columns, page.column_spacing, "
+            "page.body {width, height} and page.printable_width (width minus "
+            "left/right margins) for overflow checks."
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=reader.describe_report,
@@ -864,16 +891,19 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="lint_report",
         description=(
-            "Run static-analysis lint rules against an .rdl. Nineteen "
-            "rules cover the v0.2/v0.3 sweep bug classes (multi-value-eq, "
+            f"Run static-analysis lint rules against an .rdl. {len(_lint.ALL_RULES)} "
+            "rules cover the known bug classes (multi-value-eq, "
             "missing-field-reference, dangling-embedded-image, "
             "pbidataset-at-prefix, parameter-layout-out-of-sync, "
             "double-encoded-entities, stale-designer-state, "
             "tablix-span-misplaced, dataset-fields-out-of-sync, "
-            "duplicate-name, invalid-identifier, etc.). "
-            "Returns {issues, rules_run} with each issue {severity, "
-            "rule, location, message, suggestion?}. Optional `rules` "
-            "selects a subset by name."
+            "duplicate-name, invalid-identifier, tablix-structure, "
+            "chart-structure, etc.). "
+            "Returns {issues, rules_run} with each issue {severity "
+            "(error|warning), "
+            "rule, location, message, suggestion?}; location names the "
+            "nearest named items, e.g. Tablix[Name='T']>Textbox[Name='X']>Value. "
+            "Optional `rules` selects a subset by name (empty = all)."
         ),
         input_schema={
             "type": "object",
@@ -882,7 +912,9 @@ def register_all_tools(server: MCPServer) -> None:
                 "rules": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional subset of rule names; default runs all 19.",
+                    "description": (
+                        "Optional subset of rule names; omitted or empty runs all rules."
+                    ),
                 },
             },
             "required": ["path"],
@@ -2296,7 +2328,10 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Move an existing named ReportItem inside <PageHeader> to "
             "(top, left). Errors if there is no <PageHeader> (call "
-            "set_page_header first) or no item by that name."
+            "set_page_header first) or no item by that name. Returns "
+            "`warnings` when the item now hangs below the band or past "
+            "the printable page width; grow_band=true grows the band "
+            "to fit instead (result gets band_height)."
         ),
         input_schema={
             "type": "object",
@@ -2305,6 +2340,13 @@ def register_all_tools(server: MCPServer) -> None:
                 "name": {"type": "string"},
                 "top": {"type": "string"},
                 "left": {"type": "string"},
+                "grow_band": {
+                    "type": "boolean",
+                    "description": (
+                        "Grow the band's Height to fit the item instead of "
+                        "returning a warning when it hangs below the band."
+                    ),
+                },
             },
             "required": ["path", "name", "top", "left"],
             "additionalProperties": False,
@@ -2317,7 +2359,10 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Move an existing named ReportItem inside <PageFooter> to "
             "(top, left). Errors if there is no <PageFooter> (call "
-            "set_page_footer first) or no item by that name."
+            "set_page_footer first) or no item by that name. Returns "
+            "`warnings` when the item now hangs below the band or past "
+            "the printable page width; grow_band=true grows the band "
+            "to fit instead (result gets band_height)."
         ),
         input_schema={
             "type": "object",
@@ -2326,6 +2371,13 @@ def register_all_tools(server: MCPServer) -> None:
                 "name": {"type": "string"},
                 "top": {"type": "string"},
                 "left": {"type": "string"},
+                "grow_band": {
+                    "type": "boolean",
+                    "description": (
+                        "Grow the band's Height to fit the item instead of "
+                        "returning a warning when it hangs below the band."
+                    ),
+                },
             },
             "required": ["path", "name", "top", "left"],
             "additionalProperties": False,
@@ -2361,8 +2413,10 @@ def register_all_tools(server: MCPServer) -> None:
             "Resize a named item inside <PageHeader>. Mirrors "
             "set_body_item_size — at least one of width / height; "
             "missing fields untouched; idempotent ({changed: false} "
-            "when nothing differs). Closes the v0.2 parity gap where "
-            "only the body variant existed."
+            "when nothing differs). Returns `warnings` when the item "
+            "outgrows the band or the printable page width; "
+            "grow_band=true grows the band to fit instead (result gets "
+            "band_height)."
         ),
         input_schema={
             "type": "object",
@@ -2371,6 +2425,13 @@ def register_all_tools(server: MCPServer) -> None:
                 "name": {"type": "string"},
                 "width": {"type": ["string", "null"]},
                 "height": {"type": ["string", "null"]},
+                "grow_band": {
+                    "type": "boolean",
+                    "description": (
+                        "Grow the band's Height to fit the item instead of "
+                        "returning a warning when it hangs below the band."
+                    ),
+                },
             },
             "required": ["path", "name"],
             "additionalProperties": False,
@@ -2390,6 +2451,13 @@ def register_all_tools(server: MCPServer) -> None:
                 "name": {"type": "string"},
                 "width": {"type": ["string", "null"]},
                 "height": {"type": ["string", "null"]},
+                "grow_band": {
+                    "type": "boolean",
+                    "description": (
+                        "Grow the band's Height to fit the item instead of "
+                        "returning a warning when it hangs below the band."
+                    ),
+                },
             },
             "required": ["path", "name"],
             "additionalProperties": False,
@@ -2406,21 +2474,24 @@ def register_all_tools(server: MCPServer) -> None:
             "Returns name, type (Tablix / Textbox / Image / Rectangle / "
             "Subreport / Chart / etc.), top, left, width, height. Use "
             "before set_body_item_position / set_body_item_size when you "
-            "don't already know what's in the body."
+            "don't already know what's in the body. Each entry has `parent` "
+            "(null at the top level); recursive=true also lists the items "
+            "inside each Rectangle, right after it, with parent = the "
+            "Rectangle's name (their top/left are relative to it)."
         ),
-        input_schema=_PATH_ONLY_SCHEMA,
+        input_schema=_LIST_ITEMS_SCHEMA,
         handler=reader.list_body_items,
     )
     server.register_tool(
         name="list_header_items",
         description="Same shape as list_body_items but for <PageHeader>.",
-        input_schema=_PATH_ONLY_SCHEMA,
+        input_schema=_LIST_ITEMS_SCHEMA,
         handler=reader.list_header_items,
     )
     server.register_tool(
         name="list_footer_items",
         description="Same shape as list_body_items but for <PageFooter>.",
-        input_schema=_PATH_ONLY_SCHEMA,
+        input_schema=_LIST_ITEMS_SCHEMA,
         handler=reader.list_footer_items,
     )
     server.register_tool(
@@ -2820,6 +2891,59 @@ def register_all_tools(server: MCPServer) -> None:
         handler=page.set_body_size,
         mutating=True,
     )
+    # ---- geometry fix-ups (#49) ---------------------------------------------
+    server.register_tool(
+        name="fit_page_to_body",
+        description=(
+            "Fix a body wider than the page (lint body-wider-than-page: blank "
+            "pages after every page). mode='page' (default) widens PageWidth to "
+            "columns x body width + column spacing + left/right margins (a page "
+            "already wide enough is left alone). mode='body' shrinks the body "
+            "width (ReportSection Width) to the right edge of its rightmost item; "
+            "errors when even that exceeds the printable width. Returns {mode, "
+            "changed, page_width, body_width, printable_width}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "mode": {"type": "string", "enum": ["page", "body"], "default": "page"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=_layout_helpers.fit_page_to_body,
+        mutating=True,
+    )
+    server.register_tool(
+        name="center_item",
+        description=(
+            "Centre a named report item in its container by setting Left "
+            "(axis='horizontal', default), Top ('vertical') or both: "
+            "Left = (container width - item width) / 2. Container = the body "
+            "(body width) for body items, the printable width (page width minus "
+            "margins) for page header/footer items, the Rectangle for items "
+            "inside one. A Tablix is centred on the width its columns render at. "
+            "Errors when the item is larger than its container. Idempotent. "
+            "Returns {name, container, axis, top, left, changed, warnings}."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "axis": {
+                    "type": "string",
+                    "enum": ["horizontal", "vertical", "both"],
+                    "default": "horizontal",
+                },
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=_layout_helpers.center_item,
+        mutating=True,
+    )
 
     _SECTION_FLAGS_SCHEMA = {
         "type": "object",
@@ -2897,7 +3021,9 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Create or update <PageHeader>: height plus PrintOnFirstPage / "
             "PrintOnLastPage flags. All fields optional — only what's "
-            "passed gets written."
+            "passed gets written, except that a section always gets a "
+            "Height (0.5in when none is given). Returns `warnings` when "
+            "the new height is shorter than the band's items."
         ),
         input_schema=_SECTION_FLAGS_SCHEMA,
         handler=header_footer.set_page_header,
@@ -2917,7 +3043,12 @@ def register_all_tools(server: MCPServer) -> None:
             "static strings or RDL expressions (=Parameters!DateFrom.Value). "
             "Pass raw text — encoding is handled; don't pre-encode XML "
             "entities (use `&` not `&amp;`, including for the VB.NET "
-            "string-concat operator in expressions)."
+            "string-concat operator in expressions). Creates the band "
+            "when missing and grows its Height to max(0.5in, top + "
+            "height); returns band_height, plus `warnings` when an "
+            "existing band grew or the item passes the printable page "
+            "width. Fields!X needs an aggregate with a dataset scope "
+            'here, e.g. =First(Fields!X.Value, "DataSet1").'
         ),
         input_schema=_TEXTBOX_SCHEMA,
         handler=header_footer.add_header_textbox,
@@ -2935,7 +3066,8 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Add an Image to <PageHeader>/<ReportItems>. image_source is "
             "External (URL in value), Embedded (EmbeddedImage Name in value), "
-            "or Database (=Fields!Photo.Value-style expression)."
+            "or Database (=Fields!Photo.Value-style expression). Sizes "
+            "the band like add_header_textbox (band_height, warnings)."
         ),
         input_schema=_IMAGE_SCHEMA,
         handler=header_footer.add_header_image,

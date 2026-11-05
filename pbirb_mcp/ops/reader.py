@@ -18,7 +18,9 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.geometry import PAGE_DEFAULTS, REPORT_ITEM_TAGS, size_unit
 from pbirb_mcp.core.tablix_shape import is_dynamic_group
+from pbirb_mcp.core.units import format_size, to_inches
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q, qrd
 
 
@@ -210,23 +212,93 @@ def _designer_state_present(root: etree._Element) -> bool:
     return False
 
 
+# describe_report.page keys -> <Page> child element.
+_PAGE_FIELDS = (
+    ("height", "PageHeight"),
+    ("width", "PageWidth"),
+    ("margin_top", "TopMargin"),
+    ("margin_bottom", "BottomMargin"),
+    ("margin_left", "LeftMargin"),
+    ("margin_right", "RightMargin"),
+)
+
+
+def _page_summary(page_node: Optional[etree._Element], body: dict[str, Any]) -> dict[str, Any]:
+    """``describe_report.page``: page size and margins as written, with the
+    RDL default (what Report Builder renders: 11in x 8.5in, 0in margins)
+    filled in for every absent element. ``defaulted`` lists the keys of
+    those six that came from a default rather than the file.
+
+    #49 adds what an overflow check needs: ``columns`` / ``column_spacing``
+    (defaults 1 / 0.5in), ``body`` ({width, height}, as in
+    ``describe_report.body``) and ``printable_width`` — page width minus
+    the left and right margins, in the page width's unit (``None`` when a
+    size doesn't parse)."""
+    page: dict[str, Any] = {}
+    defaulted: list[str] = []
+    for key, local in _PAGE_FIELDS:
+        value = _text(find_child(page_node, local)) if page_node is not None else None
+        if value is None:
+            value = PAGE_DEFAULTS[local]
+            defaulted.append(key)
+        page[key] = value
+    page["defaulted"] = defaulted
+    columns_text = _text(find_child(page_node, "Columns")) if page_node is not None else None
+    try:
+        page["columns"] = max(1, int(columns_text)) if columns_text else 1
+    except ValueError:
+        page["columns"] = columns_text
+    page["column_spacing"] = (
+        _text(find_child(page_node, "ColumnSpacing")) if page_node is not None else None
+    ) or PAGE_DEFAULTS["ColumnSpacing"]
+    page["body"] = dict(body)
+    try:
+        printable = (
+            to_inches(page["width"])
+            - to_inches(page["margin_left"])
+            - to_inches(page["margin_right"])
+        )
+        page["printable_width"] = format_size(round(printable, 5), size_unit(page["width"]))
+    except ValueError:
+        page["printable_width"] = None
+    return page
+
+
+def _body_summary(body_node: Optional[etree._Element]) -> dict[str, Any]:
+    """``{height, width}`` of the first ReportSection's body: ``height`` is
+    ``<Body>/<Height>``, ``width`` is ``<ReportSection>/<Width>`` (RDL keeps
+    the body width on the section). ``None`` for an absent element."""
+    if body_node is None:
+        return {"height": None, "width": None}
+    section = body_node.getparent()
+    return {
+        "height": _text(find_child(body_node, "Height")),
+        "width": _text(find_child(section, "Width")) if section is not None else None,
+    }
+
+
+def _subreport_summary(subreport: etree._Element) -> dict[str, Any]:
+    """``{name, report_name, parameters: [{name, value}]}`` for a <Subreport>."""
+    params_root = find_child(subreport, "Parameters")
+    params = find_children(params_root, "Parameter") if params_root is not None else []
+    return {
+        "name": subreport.get("Name"),
+        "report_name": _text(find_child(subreport, "ReportName")),
+        "parameters": [
+            {"name": p.get("Name"), "value": _text(find_child(p, "Value"))} for p in params
+        ],
+    }
+
+
 def describe_report(path: str) -> dict[str, Any]:
     doc = RDLDocument.open(path)
     root = doc.root
 
     page_node = root.find(f".//{{{RDL_NS}}}ReportSection/{{{RDL_NS}}}Page")
-    page: dict[str, Any] = {}
-    if page_node is not None:
-        page = {
-            "height": _text(find_child(page_node, "PageHeight")),
-            "width": _text(find_child(page_node, "PageWidth")),
-            "margin_top": _text(find_child(page_node, "TopMargin")),
-            "margin_bottom": _text(find_child(page_node, "BottomMargin")),
-            "margin_left": _text(find_child(page_node, "LeftMargin")),
-            "margin_right": _text(find_child(page_node, "RightMargin")),
-        }
-
     body_node = root.find(f".//{{{RDL_NS}}}ReportSection/{{{RDL_NS}}}Body")
+    body = _body_summary(body_node)
+    page = _page_summary(page_node, body)
+
     header_node = page_node.find(f"{{{RDL_NS}}}PageHeader") if page_node is not None else None
     footer_node = page_node.find(f"{{{RDL_NS}}}PageFooter") if page_node is not None else None
 
@@ -253,6 +325,16 @@ def describe_report(path: str) -> dict[str, Any]:
         "header_items": _list_items_in(header_node),
         "footer_items": _list_items_in(footer_node),
         "page": page,
+        # #52: items inside Rectangles (body_items lists the top level
+        # only), the body's own size, and subreport / map / gauge
+        # inventories (subreports matter for dependency checks).
+        "nested_items": _nested_items(
+            [("body", body_node), ("header", header_node), ("footer", footer_node)]
+        ),
+        "body": body,
+        "subreports": [_subreport_summary(s) for s in root.iter(q("Subreport"))],
+        "maps": [m.get("Name") for m in root.iter(q("Map"))],
+        "gauges": [g.get("Name") for g in root.iter(q("GaugePanel"))],
         # v0.3 (Phase 12 commit 44): visibility into the blocks the LLM
         # had to scan separately before — parameter-layout sync state,
         # embedded-image inventory, dataset-level query-parameter
@@ -476,18 +558,9 @@ def get_tablixes(path: str) -> list[dict[str, Any]]:
 # ---- v0.2: list_*_items / get_textbox / get_image / get_rectangle --------
 
 
-_REPORT_ITEM_TAGS = (
-    "Tablix",
-    "Textbox",
-    "Image",
-    "Rectangle",
-    "Subreport",
-    "Chart",
-    "Map",
-    "Gauge",
-    "Line",
-    "List",
-)
+# Every RDL ReportItem element name (#52: the old list carried the
+# non-RDL "Gauge" / "List" and missed GaugePanel / CustomReportItem).
+_REPORT_ITEM_TAGS = REPORT_ITEM_TAGS
 
 
 def _layout_dict(el: etree._Element) -> dict[str, Any]:
@@ -507,7 +580,16 @@ def _layout_dict(el: etree._Element) -> dict[str, Any]:
     }
 
 
-def _list_items_in(container: Optional[etree._Element]) -> list[dict[str, Any]]:
+def _list_items_in(
+    container: Optional[etree._Element],
+    *,
+    recursive: bool = False,
+    parent: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Report items directly inside ``container/ReportItems``, in document
+    order. Each entry carries ``parent`` — the containing Rectangle's
+    name, or ``None`` at the top level of the region. With ``recursive``
+    the items inside every Rectangle follow that Rectangle (depth-first)."""
     if container is None:
         return []
     items_root = find_child(container, "ReportItems")
@@ -515,8 +597,28 @@ def _list_items_in(container: Optional[etree._Element]) -> list[dict[str, Any]]:
         return []
     out: list[dict[str, Any]] = []
     for child in items_root:
-        if etree.QName(child).localname in _REPORT_ITEM_TAGS:
-            out.append(_layout_dict(child))
+        if not isinstance(child.tag, str):
+            continue
+        local = etree.QName(child).localname
+        if local not in _REPORT_ITEM_TAGS:
+            continue
+        entry = _layout_dict(child)
+        entry["parent"] = parent
+        out.append(entry)
+        if recursive and local == "Rectangle":
+            out.extend(_list_items_in(child, recursive=True, parent=child.get("Name")))
+    return out
+
+
+def _nested_items(regions: list[tuple[str, Optional[etree._Element]]]) -> list[dict[str, Any]]:
+    """Every item inside a Rectangle (at any depth) in the given regions,
+    each tagged with its ``region`` (``body`` / ``header`` / ``footer``)
+    and ``parent`` Rectangle."""
+    out: list[dict[str, Any]] = []
+    for region, container in regions:
+        for entry in _list_items_in(container, recursive=True):
+            if entry["parent"] is not None:
+                out.append({**entry, "region": region})
     return out
 
 
@@ -542,23 +644,26 @@ def _resolve_footer(doc: RDLDocument) -> Optional[etree._Element]:
     return find_child(page, "PageFooter")
 
 
-def list_body_items(path: str) -> list[dict[str, Any]]:
+def list_body_items(path: str, recursive: bool = False) -> list[dict[str, Any]]:
     """Enumerate every named ReportItem at the top level of <Body>.
-    Returns a list of {name, type, top, left, width, height}."""
+    Returns a list of {name, type, top, left, width, height, parent}.
+    ``parent`` is ``None`` for top-level items; with ``recursive=True``
+    the items inside each Rectangle follow it, with ``parent`` set to the
+    Rectangle's name (their top/left are relative to that Rectangle)."""
     doc = RDLDocument.open(path)
-    return _list_items_in(_resolve_body(doc))
+    return _list_items_in(_resolve_body(doc), recursive=recursive)
 
 
-def list_header_items(path: str) -> list[dict[str, Any]]:
+def list_header_items(path: str, recursive: bool = False) -> list[dict[str, Any]]:
     """Same shape as ``list_body_items`` for <PageHeader>."""
     doc = RDLDocument.open(path)
-    return _list_items_in(_resolve_header(doc))
+    return _list_items_in(_resolve_header(doc), recursive=recursive)
 
 
-def list_footer_items(path: str) -> list[dict[str, Any]]:
+def list_footer_items(path: str, recursive: bool = False) -> list[dict[str, Any]]:
     """Same shape as ``list_body_items`` for <PageFooter>."""
     doc = RDLDocument.open(path)
-    return _list_items_in(_resolve_footer(doc))
+    return _list_items_in(_resolve_footer(doc), recursive=recursive)
 
 
 _BOX_STYLE_FIELDS = (

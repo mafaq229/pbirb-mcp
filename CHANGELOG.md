@@ -7,6 +7,71 @@
   then `/plugin install pbirb-mcp@pbirb` (wires up the `uvx pbirb-mcp` server
   automatically). No change to the published Python package.
 
+### M3 — Safety net: lint/verify rules that would have caught M2 (v0.4.1 review, #113)
+
+New lint rules run automatically in `lint_report`, `verify_report`,
+`PBIRB_MCP_AUTO_VERIFY` and the commit-time verify of `apply_edits` /
+`commit_editing_transaction` (which block only on errors a transaction
+introduces).
+
+#### Added
+- **Structure rules:** `tablix-structure` (error: cells per row, span
+  overflow, covered cells with content, leaves vs rows/columns, header
+  depth, corner shape; warnings for a missing corner and
+  `KeepWithGroup` on a grouped member) (#44); `chart-structure` (error:
+  series vs hierarchy members, data points vs categories, chart area /
+  axis / legend names, derived-series sources, unique series names,
+  Type/Subtype pairs, palettes) (#45).
+- **Expression rules** on every `=` expression in the report — chart
+  point values, styles, formats, filters, actions, bookmarks included
+  (#46): `field-out-of-scope` (error: a field not in the dataset in
+  scope, or a bare field outside any data region).
+- **Reference integrity** (#47): `undefined-parameter`,
+  `undefined-report-item`, `unknown-aggregate-scope`,
+  `dangling-dataset-reference`, `missing-data-source-name`,
+  `parameter-forward-dependency` (errors); `dangling-bookmark-link`,
+  `empty-hyperlink` (warnings).
+- **Geometry** (warnings) (#49): `body-wider-than-page`,
+  `item-out-of-bounds`, `overlapping-items`, `tablix-width-mismatch`.
+- **Page chrome** (errors) (#50): `field-in-page-chrome`,
+  `page-section-missing-height`.
+- New tools `fit_page_to_body` (widen the page or shrink the body so it
+  fits) and `center_item` (centre an item in its container) (#49).
+- `describe_report` gains `nested_items`, `body`, `subreports`, `maps`,
+  `gauges`, and `page.body` / `printable_width` / `columns` /
+  `column_spacing` / `defaulted` (absent page sizes now report the RDL
+  defaults) (#49, #52).
+- `list_body_items` / `list_header_items` / `list_footer_items`: every
+  entry has `parent`; optional `recursive` lists items inside
+  Rectangles (#52).
+- `grow_band` on the header/footer size and position tools (#50).
+- Rule families live in `pbirb_mcp/ops/lint_rules/` (auto-registered);
+  the expression walker is `pbirb_mcp/ops/expr_walk.py`.
+
+#### Changed
+- `lint_report(rules=[])` runs every rule (it ran none); issue locations
+  name the three nearest named items, e.g.
+  `Tablix[Name='MainTable']>Textbox[Name='Amount']>Value`, instead of
+  `"(unnamed)"` for anything inside a textbox (#48).
+- `missing-field-reference` also catches `.Label` / `.IsMissing` / … and
+  `Fields("X")`, and now means "no dataset declares this field"; a field
+  of *another* dataset is `field-out-of-scope` (#46).
+- `page-number-out-of-chrome` covers `OverallPageNumber`,
+  `OverallTotalPages` and `PageName`, listing every one it finds (#46,
+  #50); `multi-value-eq` flags an Equal/NotEqual filter on a multi-value
+  parameter (#46); `dangling-embedded-image` covers `BackgroundImage`
+  (#47).
+- `dataset-fields-out-of-sync` reports both directions — a Field whose
+  DataField the query doesn't return, and a returned column no Field
+  binds — with a `kind` on each issue (#51).
+- Page header/footer bands always have a `Height` and grow to fit items
+  added to them; size/position tools warn when an item overflows the band
+  or the printable width (#50).
+- Gauges and custom report items appear in the inventories and can be
+  moved/resized (#52).
+- `set_cell_span` repairing a v0.2-style ColSpan no longer leaves the
+  covered cells with content: it refuses unless `force=true` (#44, #34).
+
 ### M2 — Stop silent corruption (v0.4.1 review, #113)
 
 The remaining critical bugs: tools that returned success while leaving a

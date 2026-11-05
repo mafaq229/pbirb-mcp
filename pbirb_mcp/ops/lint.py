@@ -1,6 +1,8 @@
 """Static-analysis lint rules (Phase 7 commit 31; v0.3.1 added rule 16; #20 rules 17-18; #42 rule 19).
 
-Nineteen rules driven by the v0.2/v0.3 sweep feedback. Each rule is a
+Core rules driven by the v0.2/v0.3 sweep feedback live here; further
+rule families live in :mod:`pbirb_mcp.ops.lint_rules` (one module each,
+auto-registered). Each rule is a
 small pure function that takes the open :class:`RDLDocument` and
 returns a list of issue dicts:
 
@@ -13,22 +15,31 @@ returns a list of issue dicts:
 The shape mirrors :mod:`pbirb_mcp.ops.validate` so :func:`verify_report`
 (commit 33) can union the two streams without reshaping.
 
-Rules (19):
+Expression rules walk every expression in the report (any element whose
+text starts with ``=``) via :func:`pbirb_mcp.ops.expr_walk.iter_expressions`
+and tokenize it with :mod:`pbirb_mcp.ops.vbexpr` (#46).
 
-* ``multi-value-eq`` (warn) — multi-value param compared with ``=``.
+Core rules (19):
+
+* ``multi-value-eq`` (warn) — multi-value param compared with ``=``, or
+  the FilterValue of an ``Equal``/``NotEqual`` ``<Filter>`` (#46).
 * ``unused-data-source`` (warn) — DataSource never referenced.
 * ``unused-data-set`` (warn) — DataSet never referenced.
 * ``date-param-as-string`` (warn) — ``*date*``-named param typed as
   String.
-* ``missing-field-reference`` (error) — ``Fields!X.Value`` for X not in
-  any dataset's ``<Fields>``.
-* ``page-number-out-of-chrome`` (error) — ``Globals!PageNumber`` /
-  ``Globals!TotalPages`` outside header/footer.
+* ``missing-field-reference`` (error) — ``Fields!X.<member>`` /
+  ``Fields("X")`` for X not in any dataset's ``<Fields>`` (a field of
+  another dataset than the one in scope is ``field-out-of-scope``, in
+  :mod:`pbirb_mcp.ops.lint_rules.expressions`).
+* ``page-number-out-of-chrome`` (error) — ``Globals!(Overall)PageNumber``
+  / ``Globals!(Overall)TotalPages`` / ``Globals!PageName`` outside
+  header/footer.
 * ``expression-syntax`` (error) — expression with an unterminated
   string literal or mismatched parens/brackets/braces (tokenized via
   :mod:`pbirb_mcp.ops.vbexpr`, so literals and comments don't count).
-* ``dangling-embedded-image`` (error) — ``Image Source=Embedded`` whose
-  ``Value`` doesn't name an ``<EmbeddedImage>``.
+* ``dangling-embedded-image`` (error) — ``Image`` or (#47)
+  ``Style/BackgroundImage`` with ``Source=Embedded`` whose ``Value``
+  doesn't name an ``<EmbeddedImage>``.
 * ``dangling-data-source-reference`` (error) —
   ``<DataSet>/<Query>/<DataSourceName>`` doesn't match a real
   ``<DataSource>``.
@@ -47,10 +58,13 @@ Rules (19):
   diverges from ``<CommandText>``.
 * ``tablix-span-misplaced`` (error) — ``<ColSpan>``/``<RowSpan>``
   outside ``<CellContents>``.
-* ``dataset-fields-out-of-sync`` (warn, v0.3.1) — data-bound ``<Field>``
-  whose ``<DataField>`` matches no column the dataset's DAX
-  ``<CommandText>`` returns (:func:`pbirb_mcp.ops.dax.result_columns`,
-  matched with :func:`pbirb_mcp.ops.dax.data_field_matches`).
+* ``dataset-fields-out-of-sync`` (warn, v0.3.1; both directions #51) —
+  compares each data-bound ``<Field>``'s ``<DataField>`` with the columns
+  the dataset's DAX ``<CommandText>`` returns
+  (:func:`pbirb_mcp.ops.dax.result_columns`, matched with
+  :func:`pbirb_mcp.ops.dax.data_field_matches`). Issue ``kind`` is
+  ``field-not-returned`` (a DataField the DAX doesn't return) or
+  ``column-not-bound`` (a returned column no Field binds).
 * ``duplicate-name`` (error, #20) — two report items / groups share a
   ``Name`` (one report-wide namespace across body, header, footer and
   every nested container), or two data sources / datasets / parameters /
@@ -67,16 +81,16 @@ Rules (19):
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from lxml import etree
 
 from pbirb_mcp.core import names
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q
-from pbirb_mcp.ops import vbexpr
+from pbirb_mcp.ops import expr_walk, vbexpr
 from pbirb_mcp.ops.dataset import _is_pbidataset_dataset
-from pbirb_mcp.ops.dax import data_field_matches, result_columns
+from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
 
 Issue = dict[str, Any]
 
@@ -93,61 +107,39 @@ def _named_locator(elem: etree._Element) -> str:
     return f"{tag}[Name={name!r}]" if name else tag
 
 
-def _ancestor_chain(elem: etree._Element, max_depth: int = 4) -> str:
-    """Walk parents, collect named ancestors, return ``A>B>C``."""
-    parts: list[str] = []
-    cur = elem
-    depth = 0
-    while cur is not None and depth < max_depth:
-        local = etree.QName(cur.tag).localname
-        if cur.get("Name"):
-            parts.append(f"{local}[Name={cur.get('Name')!r}]")
+def _ancestor_chain(elem: etree._Element, max_named: int = 3) -> str:
+    """Locator for ``elem``: its nearest ``max_named`` named ancestors (the
+    element itself included), outermost first, then the element's own tag
+    when it isn't named — e.g. ``Tablix[Name='MainTable']>Textbox[Name='Amount']>Value``.
+
+    Walks all the way to the root (#48): a textbox value sits six levels
+    below its Textbox, so a fixed depth cut-off lost the name. Returns
+    ``"(unnamed)"`` only when nothing up the chain has a Name.
+    """
+    if not isinstance(elem.tag, str):
+        elem = elem.getparent()
+        if elem is None:
+            return "(unnamed)"
+    named: list[str] = []
+    cur: Optional[etree._Element] = elem
+    while cur is not None and len(named) < max_named:
+        if isinstance(cur.tag, str) and cur.get("Name"):
+            named.append(_named_locator(cur))
         cur = cur.getparent()
-        depth += 1
-    return ">".join(reversed(parts)) if parts else "(unnamed)"
+    if not named:
+        return "(unnamed)"
+    parts = list(reversed(named))
+    if not elem.get("Name"):
+        parts.append(etree.QName(elem.tag).localname)
+    return ">".join(parts)
 
 
 # ---- expression-bearing nodes -------------------------------------------
-
-# Elements whose text is treated as an expression in RDL. ``<Value>``
-# inside ``<Textbox>/<Paragraphs>/<Paragraph>/<TextRuns>/<TextRun>`` is
-# the canonical example; aggregates also live in tablix cells, query
-# parameters, filter expressions, etc.
-_EXPRESSION_TAGS = (
-    "Value",
-    "FilterExpression",
-    "Filter",
-    "GroupExpression",
-    "SortExpression",
-    "ToolTip",
-    "Label",
-    "Hidden",
-    "ReportName",
-    "BackgroundColor",
-    "Color",
-    "FontWeight",
-    "FontStyle",
-    "Action",
-)
-
-
-def _iter_expression_nodes(root: etree._Element):
-    """Yield all elements whose text is treated as an expression. We
-    over-approximate (every ``<Value>`` regardless of parent) — false
-    positives are tolerable because the rule body filters by content
-    (``=``-prefix, ``Fields!``, ``Parameters!``, etc.).
-    """
-    for tag in (
-        "Value",
-        "FilterExpression",
-        "GroupExpression",
-        "SortExpression",
-        "ToolTip",
-        "Label",
-        "Hidden",
-        "InitialToggleState",
-    ):
-        yield from root.iter(q(tag))
+#
+# Every rule that inspects expressions walks them with
+# :func:`pbirb_mcp.ops.expr_walk.iter_expressions` (#46): any element whose
+# text starts with ``=``, except ``<CommandText>``, ``<Code>`` and
+# non-RDL-namespace (``rd:``/``am:`` …) elements.
 
 
 # ---- rule 1: multi-value-eq --------------------------------------------
@@ -180,10 +172,10 @@ def _rule_multi_value_eq(doc: RDLDocument) -> list[Issue]:
         return []
     issues: list[Issue] = []
     seen: set[tuple[str, str]] = set()
-    for elem in _iter_expression_nodes(doc.root):
-        if not elem.text or "parameters!" not in elem.text.lower():
+    for elem, text in expr_walk.iter_expressions(doc.root):
+        if "parameters!" not in text.lower():
             continue
-        tokens = vbexpr.tokenize_expression(elem.text)
+        tokens = vbexpr.tokenize_expression(text)
         if tokens is None:
             continue
         sig = vbexpr.significant(tokens)
@@ -213,6 +205,64 @@ def _rule_multi_value_eq(doc: RDLDocument) -> list[Issue]:
                     "suggestion": (
                         f"use IN: ``Fields!X.Value IN (Parameters!{ref.name}.Value)`` "
                         f'or JOIN(Parameters!{ref.name}.Value, ",")'
+                    ),
+                }
+            )
+    issues.extend(_multi_value_filter_issues(doc, multi))
+    return issues
+
+
+def _bare_reference(sig: list[vbexpr.Token]) -> Optional[expr_walk.Ref]:
+    """The single ``Parameters!X.Value`` an expression consists of
+    (optionally wrapped in parentheses), else ``None``."""
+    while (
+        len(sig) >= 2
+        and sig[0].text == "("
+        and sig[-1].text == ")"
+        and vbexpr.first_unbalanced_delimiter(sig[1:-1]) is None
+    ):
+        sig = sig[1:-1]
+    refs = expr_walk.references(sig, "Parameters")
+    if len(refs) == 1 and refs[0].first == 0 and refs[0].last == len(sig) - 1:
+        return refs[0]
+    return None
+
+
+def _multi_value_filter_issues(doc: RDLDocument, multi: set[str]) -> list[Issue]:
+    """``<Filter>`` with ``Operator`` ``Equal``/``NotEqual`` whose
+    ``FilterValue`` is a multi-value parameter — the commonest form of
+    the bug (#46): the filter compares each row against an array and
+    Report Builder rejects it at run time. ``In`` is the operator for a
+    multi-value list."""
+    issues: list[Issue] = []
+    for flt in doc.root.iter(q("Filter")):
+        op = find_child(flt, "Operator")
+        op_text = (op.text or "").strip() if op is not None else ""
+        if op_text not in ("Equal", "NotEqual"):
+            continue
+        values = find_child(flt, "FilterValues")
+        if values is None:
+            continue
+        for fv in find_children(values, "FilterValue"):
+            sig = expr_walk.expression_tokens(fv.text)
+            if not sig:
+                continue
+            ref = _bare_reference(sig)
+            if ref is None or ref.name not in multi or (ref.member or "").lower() != "value":
+                continue
+            issues.append(
+                {
+                    "severity": "warning",
+                    "rule": "multi-value-eq",
+                    "location": _ancestor_chain(fv),
+                    "message": (
+                        f"filter Operator {op_text} compares against multi-value parameter "
+                        f"{ref.name!r}; its Value is an array"
+                    ),
+                    "suggestion": (
+                        "use Operator In (add_tablix_filter / add_dataset_filter with "
+                        "operator='In'), or index a single value: "
+                        f"Parameters!{ref.name}.Value(0)"
                     ),
                 }
             )
@@ -302,30 +352,24 @@ def _rule_date_param_as_string(doc: RDLDocument) -> list[Issue]:
 # ---- rule 5: missing-field-reference -----------------------------------
 
 
-def _all_field_names(doc: RDLDocument) -> set[str]:
-    """Union of every ``<Field Name>`` in every dataset."""
-    out: set[str] = set()
-    for f in doc.root.iter(q("Field")):
-        if f.get("Name"):
-            out.add(f.get("Name"))
-    return out
-
-
 def _rule_missing_field_reference(doc: RDLDocument) -> list[Issue]:
-    valid = _all_field_names(doc)
+    """A field reference — ``Fields!X.Value`` / ``.Label`` / ``.IsMissing``
+    / any other member, or ``Fields("X")`` — to a field that no dataset
+    declares, in any expression of the report (#46). A field that exists
+    but in another dataset than the one in scope is ``field-out-of-scope``
+    (:mod:`pbirb_mcp.ops.lint_rules.expressions`)."""
+    valid = expr_walk.ScopeIndex(doc.root).all_fields
     issues: list[Issue] = []
     seen: set[tuple[str, str]] = set()  # de-dupe by (location, field)
-    for elem in _iter_expression_nodes(doc.root):
-        if not elem.text or "fields!" not in elem.text.lower():
+    for elem, text in expr_walk.iter_expressions(doc.root):
+        if "fields" not in text.lower():
             continue
-        # Only real code counts: a non-``=`` value is a literal, and
-        # ``Fields!X.Value`` inside a string literal or comment is text.
-        tokens = vbexpr.tokenize_expression(elem.text)
-        if tokens is None:
+        # Only real code counts: ``Fields!X.Value`` inside a string
+        # literal or comment is text.
+        sig = expr_walk.expression_tokens(text)
+        if not sig:
             continue
-        for ref in vbexpr.bang_references(tokens, "Fields"):
-            if (ref.member or "").lower() != "value":
-                continue
+        for ref in expr_walk.references(sig, "Fields"):
             field = ref.name
             if field in valid:
                 continue
@@ -338,7 +382,10 @@ def _rule_missing_field_reference(doc: RDLDocument) -> list[Issue]:
                     "severity": "error",
                     "rule": "missing-field-reference",
                     "location": loc,
-                    "message": f"Fields!{field}.Value referenced but not declared in any dataset",
+                    "message": (
+                        f"{text[ref.start : ref.end]} referenced but field {field!r} "
+                        "is not declared in any dataset"
+                    ),
                     "suggestion": (
                         "add the field to the relevant dataset's <Fields> "
                         "(see add_dataset_field / refresh_dataset_fields)"
@@ -351,7 +398,12 @@ def _rule_missing_field_reference(doc: RDLDocument) -> list[Issue]:
 # ---- rule 6: page-number-out-of-chrome ---------------------------------
 
 
-_PAGE_GLOBAL_RE = re.compile(r"Globals!(PageNumber|TotalPages)")
+# Globals that only resolve in the page header/footer (#46): the issue's
+# ``Globals!(Overall)?(PageNumber|TotalPages)|Globals!PageName``, matched
+# on VB tokens so a mention inside a string literal doesn't count.
+_PAGE_GLOBALS = frozenset(
+    {"pagenumber", "totalpages", "overallpagenumber", "overalltotalpages", "pagename"}
+)
 
 
 def _under_chrome(elem: etree._Element) -> bool:
@@ -367,20 +419,25 @@ def _under_chrome(elem: etree._Element) -> bool:
 
 def _rule_page_number_out_of_chrome(doc: RDLDocument) -> list[Issue]:
     issues: list[Issue] = []
-    for elem in _iter_expression_nodes(doc.root):
-        if not elem.text or "Globals!" not in elem.text:
+    for elem, text in expr_walk.iter_expressions(doc.root):
+        if "globals" not in text.lower():
             continue
-        m = _PAGE_GLOBAL_RE.search(elem.text)
-        if not m:
+        sig = expr_walk.expression_tokens(text)
+        hits: list[str] = []
+        for r in expr_walk.references(sig or [], "Globals"):
+            if r.name.lower() in _PAGE_GLOBALS and r.name not in hits:
+                hits.append(r.name)
+        if not hits:
             continue
         if _under_chrome(elem):
             continue
+        listed = ", ".join(f"Globals!{h}" for h in hits)
         issues.append(
             {
                 "severity": "error",
                 "rule": "page-number-out-of-chrome",
                 "location": _ancestor_chain(elem),
-                "message": (f"Globals!{m.group(1)} only resolves inside <PageHeader>/<PageFooter>"),
+                "message": f"{listed} only resolves inside <PageHeader>/<PageFooter>",
                 "suggestion": "move the textbox to the page header/footer",
             }
         )
@@ -397,8 +454,7 @@ def _rule_expression_syntax(doc: RDLDocument) -> list[Issue]:
     are ignored, so ``=Fields!A.Value & ") "`` is fine.
     """
     issues: list[Issue] = []
-    for elem in _iter_expression_nodes(doc.root):
-        text = elem.text
+    for elem, text in expr_walk.iter_expressions(doc.root):
         tokens = vbexpr.tokenize_expression(text)
         if tokens is None:
             continue
@@ -441,7 +497,9 @@ def _rule_dangling_embedded_image(doc: RDLDocument) -> list[Issue]:
             if entry.get("Name"):
                 declared.add(entry.get("Name"))
     issues: list[Issue] = []
-    for img in doc.root.iter(q("Image")):
+    # <Image> report items and Style/<BackgroundImage> (#47) share the
+    # Source/Value shape.
+    for img in doc.root.iter(q("Image"), q("BackgroundImage")):
         source = find_child(img, "Source")
         if source is None or (source.text or "").strip() != "Embedded":
             continue
@@ -454,12 +512,20 @@ def _rule_dangling_embedded_image(doc: RDLDocument) -> list[Issue]:
             continue
         if ref in declared:
             continue
+        if etree.QName(img).localname == "BackgroundImage":
+            location = _ancestor_chain(img)
+            what = "BackgroundImage"
+        else:
+            location = f"Image[Name={img.get('Name')!r}]" if img.get("Name") else "Image"
+            what = "Image"
         issues.append(
             {
                 "severity": "error",
                 "rule": "dangling-embedded-image",
-                "location": f"Image[Name={img.get('Name')!r}]" if img.get("Name") else "Image",
-                "message": f"Image Source=Embedded references {ref!r}, which isn't in <EmbeddedImages>",
+                "location": location,
+                "message": (
+                    f"{what} Source=Embedded references {ref!r}, which isn't in <EmbeddedImages>"
+                ),
                 "suggestion": "add the image via add_embedded_image or fix the Value reference",
             }
         )
@@ -734,22 +800,26 @@ def _rule_tablix_span_misplaced(doc: RDLDocument) -> list[Issue]:
 
 
 def _rule_dataset_fields_out_of_sync(doc: RDLDocument) -> list[Issue]:
-    """Detect ``<Field>`` declarations that no longer correspond to any
-    column the DAX ``<CommandText>`` is expected to return.
+    """Compare a dataset's data-bound ``<Field>`` declarations with the
+    columns its DAX ``<CommandText>`` returns, in both directions (#51).
 
-    Same regression class as the v0.3.0 SELECTCOLUMNS over-match
-    (commit ``9792281``), but caught at the static-lint layer instead
-    of the runtime ``refresh_dataset_fields`` reporter — useful when
-    nobody has called the refresh tool yet but the dataset query was
-    rewritten in a way that drops columns.
+    Each Field's ``<DataField>`` is matched (never its ``Name`` — Report
+    Builder names ``Sales[Amount (USD)]`` ``Amount__USD_``) against
+    :func:`pbirb_mcp.ops.dax.result_columns` with
+    :func:`pbirb_mcp.ops.dax.data_field_matches` (quotes stripped,
+    case-insensitive — the same rule ``refresh_dataset_fields`` uses).
+    Two issue kinds, both warnings, told apart by the issue's ``kind``:
 
-    Matches each Field's ``<DataField>`` (not its Name — Report Builder
-    names ``Sales[Amount (USD)]`` ``Amount__USD_``) against the DAX
-    result columns with :func:`pbirb_mcp.ops.dax.data_field_matches`
-    (the same rule ``refresh_dataset_fields`` uses). When
+    * ``field-not-returned`` — a declared DataField the DAX doesn't
+      return (e.g. a column that only appears in a FILTER, or one a query
+      rewrite dropped).
+    * ``column-not-bound`` — a column the DAX returns that no Field binds
+      (the case that breaks a report after a query rewrite).
+
+    Calculated fields (``<Value>``, no ``<DataField>``) are skipped. When
     the extractor returns warnings (the DAX shape isn't recognisable —
-    e.g. bare ``EVALUATE 'Table'``), the rule silently skips that
-    dataset rather than false-flagging every declared field as orphan.
+    e.g. bare ``EVALUATE 'Table'``), the dataset is skipped rather than
+    false-flagged.
     """
     issues: list[Issue] = []
     datasets_root = find_child(doc.root, "DataSets")
@@ -770,35 +840,60 @@ def _rule_dataset_fields_out_of_sync(doc: RDLDocument) -> list[Issue]:
         if not columns:
             continue
         fields_root = find_child(ds, "Fields")
-        if fields_root is None:
-            continue
-        for f in find_children(fields_root, "Field"):
+        bound: list[str] = []
+        fields = find_children(fields_root, "Field") if fields_root is not None else []
+        for f in fields:
             name = f.get("Name")
             if name is None:
                 continue
-            # Calculated fields (have <Value>, not <DataField>) are
-            # author-defined and never expected to come back from DAX —
-            # skip them.
-            if find_child(f, "Value") is not None and find_child(f, "DataField") is None:
-                continue
             data_field = find_child(f, "DataField")
-            if data_field is not None and any(
-                data_field_matches(data_field.text, c) for c in columns
-            ):
+            # Calculated fields (have <Value>, not <DataField>) are
+            # author-defined and never expected to come back from DAX.
+            if data_field is None and find_child(f, "Value") is not None:
+                continue
+            df_text = data_field.text if data_field is not None else None
+            if df_text and df_text.strip():
+                bound.append(df_text)
+            if df_text is not None and any(data_field_matches(df_text, c) for c in columns):
+                continue
+            shown = (df_text or "").strip() or "(none)"
+            issues.append(
+                {
+                    "severity": "warning",
+                    "rule": "dataset-fields-out-of-sync",
+                    "kind": "field-not-returned",
+                    "location": (f"DataSet[Name={ds_name!r}]/Fields/Field[Name={name!r}]"),
+                    "message": (
+                        f"field-not-returned: <Field Name={name!r}> binds DataField "
+                        f"{shown!r}, which the DAX <CommandText> does not return"
+                    ),
+                    "suggestion": (
+                        "rewrite the dataset query (update_dataset_query) "
+                        "or remove the orphan field (remove_dataset_field)"
+                    ),
+                }
+            )
+        seen: set[str] = set()
+        for c in columns:
+            key = normalize_data_field(c.data_field)
+            if key in seen:
+                continue
+            seen.add(key)
+            if any(data_field_matches(df, c) for df in bound):
                 continue
             issues.append(
                 {
                     "severity": "warning",
                     "rule": "dataset-fields-out-of-sync",
-                    "location": (f"DataSet[Name={ds_name!r}]/Fields/Field[Name={name!r}]"),
+                    "kind": "column-not-bound",
+                    "location": f"DataSet[Name={ds_name!r}]/Fields",
                     "message": (
-                        f"<Field Name={name!r}> is declared but the DAX "
-                        f"<CommandText> does not appear to return that "
-                        f"column"
+                        f"column-not-bound: the DAX <CommandText> returns {c.data_field} "
+                        "but no <Field> binds it"
                     ),
                     "suggestion": (
-                        "rewrite the dataset query (update_dataset_query) "
-                        "or remove the orphan field (remove_dataset_field)"
+                        "add the field (refresh_dataset_fields / add_dataset_field) "
+                        "or drop the column from the query"
                     ),
                 }
             )
@@ -962,12 +1057,24 @@ _RULES: dict[str, Callable[[RDLDocument], list[Issue]]] = {
     "dangling-toggle-item": _rule_dangling_toggle_item,
 }
 
+# Rule families in pbirb_mcp/ops/lint_rules/ (auto-discovered). Imported
+# here, after every helper above is defined, because those modules import
+# helpers from this one.
+from pbirb_mcp.ops import lint_rules as _lint_rules  # noqa: E402
+
+for _name, _fn in _lint_rules.load().items():
+    if _name in _RULES:
+        raise ValueError(f"lint rule {_name!r} defined twice")
+    _RULES[_name] = _fn
+
 ALL_RULES = tuple(_RULES.keys())
 
 
 def _resolve_rules(rules: list[str] | None) -> list[str]:
-    """Validate and expand a ``rules`` selector. Unknown names raise."""
-    if rules is None:
+    """Validate and expand a ``rules`` selector. ``None`` or an empty list
+    means every rule (#48 — an empty selection used to run nothing and
+    report a clean file). Unknown names raise."""
+    if not rules:
         return list(_RULES.keys())
     unknown = [r for r in rules if r not in _RULES]
     if unknown:
