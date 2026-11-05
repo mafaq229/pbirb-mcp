@@ -1579,18 +1579,32 @@ def register_all_tools(server: MCPServer) -> None:
         "properties": {
             "name": {"type": "string"},
             "value": {"type": "string"},
+            "omit": {"type": ["boolean", "string"]},
         },
         "required": ["name", "value"],
         "additionalProperties": False,
+    }
+    # Shared by set_textbox_action / set_image_action / set_item_action.
+    _ACTION_PROPS = {
+        "action_type": {
+            "type": "string",
+            "enum": ["Hyperlink", "Drillthrough", "BookmarkLink"],
+        },
+        "target_expression": {"type": "string"},
+        "drillthrough_parameters": {
+            "type": "array",
+            "items": _DRILLTHROUGH_PARAM_ITEM,
+        },
+        "clear": {"type": "boolean"},
     }
 
     server.register_tool(
         name="set_textbox_action",
         description=(
             "Make a textbox clickable: a hyperlink (URL), a drillthrough to "
-            "another report (with parameters) or a bookmark link. "
-            "target_expression is text or an =expression. Or pass `cell` (tablix "
-            "+ column header/field/index + row) instead of textbox_name."
+            "another report (with parameters) or a bookmark link; clear=true "
+            "removes it. target_expression is text or an =expression. Or pass "
+            "`cell` (tablix + column header/field/index + row) instead of textbox_name."
         ),
         input_schema={
             "type": "object",
@@ -1598,21 +1612,9 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "textbox_name": {"type": "string"},
                 "cell": _columns.CELL_SCHEMA,
-                "action_type": {
-                    "type": "string",
-                    "enum": ["Hyperlink", "Drillthrough", "BookmarkLink"],
-                },
-                "target_expression": {"type": "string"},
-                "drillthrough_parameters": {
-                    "type": "array",
-                    "items": _DRILLTHROUGH_PARAM_ITEM,
-                },
+                **_ACTION_PROPS,
             },
-            "required": [
-                "path",
-                "action_type",
-                "target_expression",
-            ],
+            "required": ["path"],
             "additionalProperties": False,
         },
         handler=_columns.with_cell_target(actions.set_textbox_action),
@@ -1629,25 +1631,31 @@ def register_all_tools(server: MCPServer) -> None:
             "properties": {
                 "path": {"type": "string"},
                 "image_name": {"type": "string"},
-                "action_type": {
-                    "type": "string",
-                    "enum": ["Hyperlink", "Drillthrough", "BookmarkLink"],
-                },
-                "target_expression": {"type": "string"},
-                "drillthrough_parameters": {
-                    "type": "array",
-                    "items": _DRILLTHROUGH_PARAM_ITEM,
-                },
+                **_ACTION_PROPS,
             },
-            "required": [
-                "path",
-                "image_name",
-                "action_type",
-                "target_expression",
-            ],
+            "required": ["path", "image_name"],
             "additionalProperties": False,
         },
         handler=actions.set_image_action,
+        mutating=True,
+    )
+    server.register_tool(
+        name="set_item_action",
+        description=(
+            "Make a textbox, image, rectangle or line clickable (as "
+            "set_textbox_action), by item name; clear=true removes it."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                **_ACTION_PROPS,
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=actions.set_item_action,
         mutating=True,
     )
     server.register_tool(
@@ -1669,6 +1677,41 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_columns.with_cell_target(actions.set_textbox_tooltip),
+        mutating=True,
+    )
+    server.register_tool(
+        name="set_item_tooltip",
+        description="Set or clear ('') the hover tooltip of any named report item.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "text_or_expression": {"type": "string"},
+            },
+            "required": ["path", "name", "text_or_expression"],
+            "additionalProperties": False,
+        },
+        handler=actions.set_item_tooltip,
+        mutating=True,
+    )
+    server.register_tool(
+        name="set_bookmark",
+        description=(
+            "Set or clear ('') the bookmark of any named report item: the "
+            "target a BookmarkLink action jumps to."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "bookmark_or_expression": {"type": "string"},
+            },
+            "required": ["path", "name", "bookmark_or_expression"],
+            "additionalProperties": False,
+        },
+        handler=actions.set_bookmark,
         mutating=True,
     )
     server.register_tool(

@@ -870,19 +870,37 @@ Set `<Visibility>` on any named ReportItem (Tablix, Textbox, Image, Rectangle, S
 
 *idempotent*
 
-Set `<Textbox>/<Action>` to a Hyperlink (URL), Drillthrough (another report + optional parameters), or BookmarkLink (jump within document). target_expression accepts literal text or =expression. drillthrough_parameters is a list of {name, value} dicts wired into `<Drillthrough>/<Parameters>`. Idempotent: same action_type + target + parameters → {changed: false}, no save. Tablix cell by column header or field: pass cell {tablix, header | field | index, row: data (default) | header} instead of textbox_name.
+Set the textbox's `<ActionInfo>` to a Hyperlink (URL), Drillthrough (another report + optional parameters), or BookmarkLink (jump within the document). target_expression accepts literal text or =expression. drillthrough_parameters is a list of {name, value, omit?} dicts wired into `<Drillthrough>/<Parameters>`; omit (true / false or an =expression) writes `<Omit>`. Refused, file untouched: a parameter name that is empty, not an identifier or repeated; drillthrough_parameters with a Hyperlink / BookmarkLink action (they would be dropped); an empty target_expression; a literal BookmarkLink target that no item's `<Bookmark>` carries (set it first with set_bookmark — an =expression target, or any =expression bookmark in the report, passes). clear=true (with no other action arguments) removes the action, leaving the file byte-identical to before it was added. Idempotent: same action_type + target + parameters → {changed: false}, no save. Returns {textbox, kind, action_type, changed}. Tablix cell by column header or field: pass cell {tablix, header | field | index, row: data (default) | header} instead of textbox_name.
 
 ### `set_image_action`
 
 *idempotent*
 
-Same shape as set_textbox_action but operates on a named `<Image>`. action_type ∈ Hyperlink / Drillthrough / BookmarkLink. Returns {image, kind, action_type, changed}.
+Same shape and checks as set_textbox_action but operates on a named `<Image>`. action_type ∈ Hyperlink / Drillthrough / BookmarkLink; clear=true removes the action. Returns {image, kind, action_type, changed}.
+
+### `set_item_action`
+
+*idempotent*
+
+set_textbox_action for any named Textbox, Image, Rectangle or Line anywhere in the report (body, header, footer, rectangles, tablix cells), addressed by `name`: same arguments, checks and clear=true. Other item types are refused (a chart's click action lives on its series — set_chart_series_action; a tablix's on its cells' textboxes). Returns {name, kind, action_type, changed}.
 
 ### `set_textbox_tooltip`
 
 *idempotent*
 
-Set `<Textbox>/<ToolTip>`. Literal text or =expression. Pass '' to clear. Idempotent. Returns {textbox, kind, changed: bool}. Tablix cell by column header or field: pass cell {tablix, header | field | index, row: data (default) | header} instead of textbox_name.
+Set `<Textbox>/<ToolTip>`. Literal text or =expression. Pass '' to clear. Idempotent. Returns {textbox, kind, changed: bool}. Tablix cell by column header or field: pass cell {tablix, header | field | index, row: data (default) | header} instead of textbox_name. For other item types use set_item_tooltip.
+
+### `set_item_tooltip`
+
+*idempotent*
+
+Set `<ToolTip>` on any named report item — Textbox, Image, Rectangle, Line, Chart, Tablix, Subreport, Map, GaugePanel, CustomReportItem — anywhere in the report. Literal text or =expression; '' clears (byte-identical to before). Idempotent. Returns {name, kind, changed}. Read it back as `tooltip` from get_textbox / get_image / get_rectangle.
+
+### `set_bookmark`
+
+*idempotent*
+
+Set `<Bookmark>` on any named report item: the anchor a BookmarkLink action (set_textbox_action / set_image_action / set_item_action) jumps to. Literal id or =expression; '' clears. Idempotent. Returns {name, kind, changed}, plus warnings when another item already carries the same literal bookmark (a link jumps to the first one). Clearing a bookmark that a link still points at is left to the dangling-bookmark-link lint rule. Read it back as `bookmark` from get_textbox / get_image / get_rectangle.
 
 ### `set_document_map_label`
 

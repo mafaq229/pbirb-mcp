@@ -240,7 +240,10 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "set_textbox_action",
             "set_image_action",
             "set_chart_series_action",
+            "set_item_action",
             "set_textbox_tooltip",
+            "set_item_tooltip",
+            "set_bookmark",
             "set_document_map_label",
         }
     ),

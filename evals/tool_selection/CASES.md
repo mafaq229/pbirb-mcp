@@ -52,8 +52,8 @@ Every edit case is also graded by the structural gate (XSD + lint errors the edi
 | c04 | chart | easy | synth | fleet_utilization.rdl | `set_chart_title` → `set_chart_legend` | 29 |
 | c05 | chart | easy | synth | fleet_utilization.rdl | `add_chart_series` | 29 |
 | c06 | chart | medium | synth | fleet_utilization.rdl | `set_chart_axis` | 29 |
-| i01 | interactivity | hard | synth | fleet_utilization.rdl | `set_textbox_action` | 23 |
-| i02 | interactivity | easy | synth | fleet_utilization.rdl | `set_textbox_tooltip` | 23 |
+| i01 | interactivity | hard | synth | fleet_utilization.rdl | `set_textbox_action` | 25 |
+| i02 | interactivity | easy | synth | fleet_utilization.rdl | `set_textbox_tooltip` | 25 |
 | t08 | tablix | hard | synth | fleet_utilization.rdl | `add_row_group` → `add_row_group` | 45 |
 | t09 | tablix | medium | synth | fleet_utilization.rdl | `add_static_row` → `set_cell_span` | 45 |
 | t10 | tablix | hard | synth | fleet_rb.rdl | `add_subtotal_row` | 45 |

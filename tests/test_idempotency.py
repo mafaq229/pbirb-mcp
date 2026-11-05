@@ -453,6 +453,17 @@ CASES: dict[str, Case] = {
         setup=[BODY_IMAGE],
     ),
     "set_textbox_tooltip": Case({"textbox_name": TB, "text_or_expression": "Total amount"}),
+    "set_item_action": Case(
+        {
+            "name": "Logo",
+            "action_type": "Drillthrough",
+            "target_expression": "Detail",
+            "drillthrough_parameters": [{"name": "Id", "value": "1", "omit": True}],
+        },
+        setup=[BODY_IMAGE],
+    ),
+    "set_item_tooltip": Case({"name": "MainTable", "text_or_expression": "Sales"}),
+    "set_bookmark": Case({"name": "MainTable", "bookmark_or_expression": "Top"}),
     "set_document_map_label": Case({"element_name": TB, "label_or_expression": "Amount"}),
     "set_chart_series_action": Case(
         {
@@ -1085,6 +1096,33 @@ VARIANTS: list[tuple[str, Case]] = [
         Case(
             {"textbox_name": TB, "text_or_expression": ""},
             setup=[("set_textbox_tooltip", {"textbox_name": TB, "text_or_expression": "Tip"})],
+        ),
+    ),
+    # clear=true (#109): the second clear finds nothing to remove.
+    (
+        "set_textbox_action",
+        Case(
+            {"textbox_name": TB, "clear": True},
+            setup=[
+                (
+                    "set_textbox_action",
+                    {"textbox_name": TB, "action_type": "Hyperlink", "target_expression": "x"},
+                )
+            ],
+        ),
+    ),
+    (
+        "set_bookmark",
+        Case(
+            {"name": TB, "bookmark_or_expression": ""},
+            setup=[("set_bookmark", {"name": TB, "bookmark_or_expression": "Top"})],
+        ),
+    ),
+    (
+        "set_textbox_action",
+        Case(
+            {"textbox_name": TB, "action_type": "BookmarkLink", "target_expression": "Top"},
+            setup=[("set_bookmark", {"name": "MainTable", "bookmark_or_expression": "Top"})],
         ),
     ),
     (

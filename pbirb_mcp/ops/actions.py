@@ -12,6 +12,11 @@ support three sibling-of-Style mechanisms for interactivity:
 - ``<DocumentMapLabel>``: a string / expression that appears in the
   rendered report's "document map" (the navigable table-of-contents
   pane).
+- ``<Bookmark>``: the anchor a ``BookmarkLink`` action jumps to.
+
+The generic setters (:func:`set_item_action`, :func:`set_item_tooltip`,
+:func:`set_bookmark`, :func:`set_document_map_label`) address any named
+item; the textbox / image variants are thin wrappers (#109).
 
 This module respects the RDL 2016 trailing-child order via
 :func:`_insert_in_item_order` so inserts don't drift round-trip
@@ -30,11 +35,15 @@ from lxml import etree
 from pbirb_mcp.core import chart_shape
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
+from pbirb_mcp.core.geometry import REPORT_ITEM_TAGS
 from pbirb_mcp.core.ids import (
     AmbiguousElementError,
     ElementNotFoundError,
+    resolve_report_item,
     resolve_textbox,
 )
+from pbirb_mcp.core.names import is_identifier
+from pbirb_mcp.core.tablix_shape import detach
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, find_children, q
 
 # RDL Action sub-element types.
@@ -94,20 +103,31 @@ def _build_action_xml(
     For ``BookmarkLink``: ``<Action><BookmarkLink>...</BookmarkLink></Action>``.
     For ``Drillthrough``: ``<Action><Drillthrough><ReportName>...</ReportName>
     <Parameters>...</Parameters></Drillthrough></Action>``. Each entry in
-    ``drillthrough_parameters`` is ``{"name": "P", "value": "=expr"}``.
+    ``drillthrough_parameters`` is ``{"name": "P", "value": "=expr"}``,
+    optionally with ``"omit"`` (a bool or an ``=expression``) written as
+    ``<Omit>``.
 
     Raises ``ValueError`` on unknown action_type, on empty
-    target_expression, or on missing keys in drillthrough parameters.
+    target_expression, and on bad drillthrough parameters: missing keys,
+    an empty / non-identifier or duplicate name, or parameters passed with
+    a non-Drillthrough action (they would be dropped) (#109).
     """
     if action_type not in _VALID_ACTION_TYPES:
         raise ValueError(
             f"action_type {action_type!r} not valid; expected one of {sorted(_VALID_ACTION_TYPES)}"
         )
-    if not target_expression or not str(target_expression).strip():
+    if not isinstance(target_expression, str) or not target_expression.strip():
         raise ValueError(
             "target_expression must be a non-empty string "
-            "(URL / report name / bookmark id, optionally =expression)"
+            "(URL / report name / bookmark id, optionally =expression); "
+            "to remove an action pass clear=true"
         )
+    if drillthrough_parameters and action_type != "Drillthrough":
+        raise ValueError(
+            f"drillthrough_parameters only apply to action_type='Drillthrough', "
+            f"not {action_type!r}; drop them or switch the action type"
+        )
+    _check_drillthrough_parameters(drillthrough_parameters or [])
 
     action = etree.Element(q("Action"))
     if action_type == "Hyperlink":
@@ -122,19 +142,62 @@ def _build_action_xml(
         report_name.text = encode_text(target_expression)
         if drillthrough_parameters:
             params_root = etree.SubElement(drill, q("Parameters"))
-            for i, p in enumerate(drillthrough_parameters):
-                if not isinstance(p, dict):
-                    raise ValueError(
-                        f"drillthrough_parameters[{i}] must be a dict; got {type(p).__name__}"
-                    )
-                if "name" not in p or "value" not in p:
-                    raise ValueError(
-                        f"drillthrough_parameters[{i}] must have 'name' and 'value' keys"
-                    )
+            for p in drillthrough_parameters:
                 param = etree.SubElement(params_root, q("Parameter"), Name=p["name"])
                 value_node = etree.SubElement(param, q("Value"))
                 value_node.text = encode_text(p["value"])
+                if p.get("omit") is not None:
+                    omit = p["omit"]
+                    etree.SubElement(param, q("Omit")).text = (
+                        ("true" if omit else "false") if isinstance(omit, bool) else omit
+                    )
     return action
+
+
+def _check_drillthrough_parameters(params: Any) -> None:
+    """Refuse a malformed ``drillthrough_parameters`` list: each entry a
+    dict with ``name`` (a parameter identifier, unique in the list) and a
+    string ``value``, and ``omit`` a bool or an ``=expression``."""
+    if not isinstance(params, list):
+        raise ValueError(f"drillthrough_parameters must be a list; got {type(params).__name__}")
+    seen: set[str] = set()
+    for i, p in enumerate(params):
+        if not isinstance(p, dict):
+            raise ValueError(f"drillthrough_parameters[{i}] must be a dict; got {type(p).__name__}")
+        if "name" not in p or "value" not in p:
+            raise ValueError(f"drillthrough_parameters[{i}] must have 'name' and 'value' keys")
+        unknown = sorted(set(p) - {"name", "value", "omit"})
+        if unknown:
+            raise ValueError(
+                f"drillthrough_parameters[{i}] has unknown keys {unknown}; valid: name, value, omit"
+            )
+        name = p["name"]
+        if not is_identifier(name):
+            raise ValueError(
+                f"drillthrough_parameters[{i}].name {name!r} is not a parameter name "
+                "(non-empty; a letter, then letters, digits or _)"
+            )
+        if name in seen:
+            raise ValueError(f"drillthrough_parameters has {name!r} twice")
+        seen.add(name)
+        if not isinstance(p["value"], str):
+            raise ValueError(
+                f"drillthrough_parameters[{i}].value must be a string (literal or =expression)"
+            )
+        omit = p.get("omit")
+        omit_ok = (
+            omit is None
+            or isinstance(omit, bool)
+            or (
+                isinstance(omit, str)
+                and (omit.strip().startswith("=") or omit.lower() in ("true", "false"))
+            )
+        )
+        if not omit_ok:
+            raise ValueError(
+                f"drillthrough_parameters[{i}].omit must be true / false or an "
+                f"=expression; got {omit!r}"
+            )
 
 
 def _build_action_info_xml(
@@ -172,149 +235,236 @@ def _drop_legacy_bare_action(item: etree._Element) -> bool:
 # ---- ReportItem resolver --------------------------------------------------
 
 
-_NAMED_REPORT_ITEM_LOCALS = (
-    "Textbox",
-    "Image",
-    "Rectangle",
-    "Subreport",
-    "Chart",
-    "Tablix",
-    "Map",
-    "Gauge",
-    "Line",
-    "List",
-)
+# Report items set_item_action writes an <ActionInfo> on (#109). The XSD
+# allows it on every ReportItem; these are the ones whose click action is
+# the item itself (a chart's lives on its series' data points —
+# set_chart_series_action; a tablix's on its cells' textboxes).
+ACTION_ITEM_KINDS = ("Textbox", "Image", "Rectangle", "Line")
 
 
-def _resolve_named_report_item(doc: RDLDocument, name: str) -> etree._Element:
-    """Find any named ReportItem (Textbox / Image / Rectangle / etc.)
-    by Name attribute. Used by ``set_document_map_label`` which works on
-    any positioned item."""
-    type_clause = " or ".join(f"local-name()='{tag}'" for tag in _NAMED_REPORT_ITEM_LOCALS)
-    matches = list(
-        doc.root.xpath(
-            f".//*[@Name=$n and ({type_clause})]",
-            namespaces=XPATH_NS,
-            n=name,
-        )
-    )
-    if not matches:
+def _resolve_item(
+    doc: RDLDocument, name: str, kinds: Optional[tuple[str, ...]] = None
+) -> etree._Element:
+    """The report item named ``name`` anywhere in the report (body, page
+    header / footer, rectangles, tablix cells); with ``kinds``, refuse an
+    item of another type."""
+    try:
+        item, _container, _region = resolve_report_item(doc, name)
+    except ElementNotFoundError:
         raise ElementNotFoundError(
-            f"no ReportItem named {name!r} (looked at: {', '.join(_NAMED_REPORT_ITEM_LOCALS)})"
-        )
-    if len(matches) > 1:
-        raise AmbiguousElementError(f"ReportItem name {name!r} matches {len(matches)} elements")
-    return matches[0]
+            f"no ReportItem named {name!r} (looked at: {', '.join(REPORT_ITEM_TAGS)})"
+        ) from None
+    kind = etree.QName(item).localname
+    if kinds is not None and kind not in kinds:
+        raise ValueError(f"{kind} {name!r} can't carry an action here; expected one of {kinds}")
+    return item
 
 
-def _resolve_image(doc: RDLDocument, name: str) -> etree._Element:
+def _resolve_kind(doc: RDLDocument, local: str, name: str) -> etree._Element:
+    """The ``<local>`` element named ``name`` (any depth)."""
     matches = list(
-        doc.root.xpath(
-            ".//*[local-name()='Image' and @Name=$n]",
-            namespaces=XPATH_NS,
-            n=name,
-        )
+        doc.root.xpath(f".//*[local-name()='{local}' and @Name=$n]", namespaces=XPATH_NS, n=name)
     )
     if not matches:
-        raise ElementNotFoundError(f"no Image named {name!r}")
+        raise ElementNotFoundError(f"no {local} named {name!r}")
     if len(matches) > 1:
-        raise AmbiguousElementError(f"Image name {name!r} matches {len(matches)} elements")
+        raise AmbiguousElementError(f"{local} name {name!r} matches {len(matches)} elements")
     return matches[0]
 
 
-# ---- public tools --------------------------------------------------------
+# ---- bookmarks ------------------------------------------------------------
 
 
-def set_textbox_action(
-    path: str,
-    textbox_name: str,
-    action_type: str,
-    target_expression: str,
-    drillthrough_parameters: Optional[list[dict[str, str]]] = None,
-) -> dict[str, Any]:
-    """Set ``<Textbox>/<Action>`` to one of Hyperlink / Drillthrough /
-    BookmarkLink.
+def _is_expression(text: Optional[str]) -> bool:
+    return bool(text) and text.lstrip().startswith("=")
 
-    ``target_expression`` is the URL (Hyperlink), drill-target report
-    name (Drillthrough), or bookmark id (BookmarkLink). Pass an
-    expression with a leading ``=`` for dynamic values.
 
-    For ``Drillthrough``, ``drillthrough_parameters`` is an optional
-    list of ``{"name": "<paramName>", "value": "<value-or-expr>"}``
-    dicts that get wired into ``<Drillthrough>/<Parameters>``.
+def _check_bookmark_target(doc: RDLDocument, target: str) -> None:
+    """Refuse a literal BookmarkLink target no ``<Bookmark>`` carries. An
+    =expression target, or any =expression bookmark in the report (it may
+    produce the target at run time), passes — the ``dangling-bookmark-link``
+    lint rule's logic."""
+    if _is_expression(target):
+        return
+    literal: set[str] = set()
+    for bm in doc.root.iter(q("Bookmark")):
+        if _is_expression(bm.text):
+            return
+        if bm.text and bm.text.strip():
+            literal.add(bm.text.strip())
+    if target.strip() not in literal:
+        raise ValueError(
+            f"BookmarkLink target {target.strip()!r} matches no <Bookmark> in the report; "
+            f"add it first with set_bookmark(name=<item>, bookmark_or_expression="
+            f"{target.strip()!r}), or pass an =expression"
+        )
 
-    Replaces any existing Action on the textbox. Returns ``{textbox,
-    kind, action_type, changed: bool}``. The change check is
-    structural — same action_type + target + drillthrough_parameters
-    short-circuits without saving.
-    """
+
+# ---- action writer --------------------------------------------------------
+
+
+def _write_action(
+    doc: RDLDocument,
+    item: etree._Element,
+    action_type: Optional[str],
+    target_expression: Optional[str],
+    drillthrough_parameters: Optional[list[dict[str, Any]]],
+    clear: bool,
+) -> bool:
+    """Set (or, with ``clear``, remove) ``item``'s ``<ActionInfo>``.
+    Validates everything before touching the tree; saves only on a change.
+    Returns ``changed``."""
+    if clear:
+        if action_type is not None or target_expression is not None or drillthrough_parameters:
+            raise ValueError(
+                "clear=true removes the action; pass no action_type / target_expression / "
+                "drillthrough_parameters with it"
+            )
+        changed = False
+        for local in ("ActionInfo", "Action"):
+            node = find_child(item, local)
+            if node is not None:
+                detach(node)
+                changed = True
+        if changed:
+            doc.save()
+        return changed
+
+    if action_type is None or target_expression is None:
+        raise ValueError("action_type and target_expression are required (or pass clear=true)")
     new_action_info = _build_action_info_xml(
         action_type, target_expression, drillthrough_parameters
     )
+    if action_type == "BookmarkLink":
+        _check_bookmark_target(doc, target_expression)
 
-    doc = RDLDocument.open(path)
-    textbox = resolve_textbox(doc, textbox_name)
-
-    existing = find_child(textbox, "ActionInfo")
-    legacy_present = find_child(textbox, "Action") is not None
+    existing = find_child(item, "ActionInfo")
+    legacy_present = find_child(item, "Action") is not None
     if (
         existing is not None
         and not legacy_present
         and _action_info_matches(existing, new_action_info)
     ):
-        return {
-            "textbox": textbox_name,
-            "kind": "Textbox",
-            "action_type": action_type,
-            "changed": False,
-        }
-    _drop_legacy_bare_action(textbox)
-    _insert_in_item_order(textbox, new_action_info)
+        return False
+    _drop_legacy_bare_action(item)
+    _insert_in_item_order(item, new_action_info)
     doc.save()
+    return True
+
+
+def _write_text_child(item: etree._Element, local: str, value: str) -> bool:
+    """Set ``item``'s ``<local>`` to ``value``, or remove it for ``""``.
+    Returns True iff the tree changed (the caller saves)."""
+    existing = find_child(item, local)
+    if value == "":
+        if existing is None:
+            return False
+        detach(existing)
+        return True
+    encoded = encode_text(value)
+    if existing is not None and existing.text == encoded:
+        return False
+    new_node = etree.Element(q(local))
+    new_node.text = encoded
+    _insert_in_item_order(item, new_node)
+    return True
+
+
+# ---- public tools --------------------------------------------------------
+
+
+def set_item_action(
+    path: str,
+    name: str,
+    action_type: Optional[str] = None,
+    target_expression: Optional[str] = None,
+    drillthrough_parameters: Optional[list[dict[str, Any]]] = None,
+    clear: bool = False,
+) -> dict[str, Any]:
+    """Set the click action of a named Textbox / Image / Rectangle / Line
+    (anywhere in the report): ``Hyperlink`` (URL), ``Drillthrough``
+    (report name, with optional ``drillthrough_parameters`` —
+    ``[{name, value, omit?}]``) or ``BookmarkLink`` (a ``<Bookmark>`` of
+    this report; see :func:`set_bookmark`). ``clear=True`` removes it.
+
+    Refuses (file untouched) bad drillthrough parameters, parameters with a
+    non-Drillthrough action and a literal BookmarkLink target no item
+    carries. Idempotent. Returns ``{name, kind, action_type, changed}``.
+    """
+    doc = RDLDocument.open(path)
+    item = _resolve_item(doc, name, ACTION_ITEM_KINDS)
+    changed = _write_action(
+        doc, item, action_type, target_expression, drillthrough_parameters, clear
+    )
+    return {
+        "name": name,
+        "kind": etree.QName(item).localname,
+        "action_type": None if clear else action_type,
+        "changed": changed,
+    }
+
+
+def set_textbox_action(
+    path: str,
+    textbox_name: str,
+    action_type: Optional[str] = None,
+    target_expression: Optional[str] = None,
+    drillthrough_parameters: Optional[list[dict[str, Any]]] = None,
+    clear: bool = False,
+) -> dict[str, Any]:
+    """:func:`set_item_action` on a named Textbox (tablix cells included).
+
+    ``target_expression`` is the URL (Hyperlink), drill-target report
+    name (Drillthrough), or bookmark id (BookmarkLink); a leading ``=``
+    makes it an expression. Replaces any existing action; ``clear=True``
+    removes it. Returns ``{textbox, kind, action_type, changed}``.
+    """
+    doc = RDLDocument.open(path)
+    textbox = resolve_textbox(doc, textbox_name)
+    changed = _write_action(
+        doc, textbox, action_type, target_expression, drillthrough_parameters, clear
+    )
     return {
         "textbox": textbox_name,
         "kind": "Textbox",
-        "action_type": action_type,
-        "changed": True,
+        "action_type": None if clear else action_type,
+        "changed": changed,
     }
 
 
 def set_image_action(
     path: str,
     image_name: str,
-    action_type: str,
-    target_expression: str,
-    drillthrough_parameters: Optional[list[dict[str, str]]] = None,
+    action_type: Optional[str] = None,
+    target_expression: Optional[str] = None,
+    drillthrough_parameters: Optional[list[dict[str, Any]]] = None,
+    clear: bool = False,
 ) -> dict[str, Any]:
     """Same shape as :func:`set_textbox_action` but on a named Image."""
-    new_action_info = _build_action_info_xml(
-        action_type, target_expression, drillthrough_parameters
-    )
     doc = RDLDocument.open(path)
-    image = _resolve_image(doc, image_name)
-
-    existing = find_child(image, "ActionInfo")
-    legacy_present = find_child(image, "Action") is not None
-    if (
-        existing is not None
-        and not legacy_present
-        and _action_info_matches(existing, new_action_info)
-    ):
-        return {
-            "image": image_name,
-            "kind": "Image",
-            "action_type": action_type,
-            "changed": False,
-        }
-    _drop_legacy_bare_action(image)
-    _insert_in_item_order(image, new_action_info)
-    doc.save()
+    image = _resolve_kind(doc, "Image", image_name)
+    changed = _write_action(
+        doc, image, action_type, target_expression, drillthrough_parameters, clear
+    )
     return {
         "image": image_name,
         "kind": "Image",
-        "action_type": action_type,
-        "changed": True,
+        "action_type": None if clear else action_type,
+        "changed": changed,
     }
+
+
+def set_item_tooltip(path: str, name: str, text_or_expression: str) -> dict[str, Any]:
+    """Set ``<ToolTip>`` on any named report item (Textbox, Image,
+    Rectangle, Line, Chart, Tablix, Subreport, Map, GaugePanel, ...).
+    Literal text or ``=expression``; ``""`` clears. Idempotent. Returns
+    ``{name, kind, changed}``."""
+    doc = RDLDocument.open(path)
+    item = _resolve_item(doc, name)
+    changed = _write_text_child(item, "ToolTip", text_or_expression)
+    if changed:
+        doc.save()
+    return {"name": name, "kind": etree.QName(item).localname, "changed": changed}
 
 
 def set_textbox_tooltip(
@@ -322,39 +472,48 @@ def set_textbox_tooltip(
     textbox_name: str,
     text_or_expression: str,
 ) -> dict[str, Any]:
-    """Set ``<Textbox>/<ToolTip>``.
-
-    ``text_or_expression`` is the literal hover text or an
-    ``=expression``. Pass ``""`` to clear the existing ToolTip.
-    Idempotent: same value → ``{changed: false}``, no save.
-    """
+    """Set ``<Textbox>/<ToolTip>`` (:func:`set_item_tooltip` for a
+    textbox, tablix cells included). ``""`` clears. Idempotent: same value
+    → ``{changed: false}``, no save."""
     doc = RDLDocument.open(path)
     textbox = resolve_textbox(doc, textbox_name)
-
-    existing = find_child(textbox, "ToolTip")
-    if text_or_expression == "":
-        if existing is None:
-            return {
-                "textbox": textbox_name,
-                "kind": "Textbox",
-                "changed": False,
-            }
-        textbox.remove(existing)
+    changed = _write_text_child(textbox, "ToolTip", text_or_expression)
+    if changed:
         doc.save()
-        return {"textbox": textbox_name, "kind": "Textbox", "changed": True}
+    return {"textbox": textbox_name, "kind": "Textbox", "changed": changed}
 
-    encoded = encode_text(text_or_expression)
-    if existing is not None and existing.text == encoded:
-        return {
-            "textbox": textbox_name,
-            "kind": "Textbox",
-            "changed": False,
-        }
-    new_node = etree.Element(q("ToolTip"))
-    new_node.text = encoded
-    _insert_in_item_order(textbox, new_node)
-    doc.save()
-    return {"textbox": textbox_name, "kind": "Textbox", "changed": True}
+
+def set_bookmark(path: str, name: str, bookmark_or_expression: str) -> dict[str, Any]:
+    """Set ``<Bookmark>`` on any named report item — the anchor a
+    ``BookmarkLink`` action jumps to. Literal id or ``=expression``;
+    ``""`` clears. Idempotent. Returns ``{name, kind, changed}``, plus
+    ``warnings`` when another item already carries the same literal
+    bookmark (a link jumps to the first one)."""
+    if not isinstance(bookmark_or_expression, str):
+        raise ValueError("bookmark_or_expression must be a string ('' clears)")
+    doc = RDLDocument.open(path)
+    item = _resolve_item(doc, name)
+    changed = _write_text_child(item, "Bookmark", bookmark_or_expression)
+    result: dict[str, Any] = {
+        "name": name,
+        "kind": etree.QName(item).localname,
+        "changed": changed,
+    }
+    wanted = bookmark_or_expression.strip()
+    if wanted and not _is_expression(wanted):
+        others = sorted(
+            bm.getparent().get("Name") or "?"
+            for bm in doc.root.iter(q("Bookmark"))
+            if bm.getparent() is not item and (bm.text or "").strip() == wanted
+        )
+        if others:
+            result["warnings"] = [
+                f"bookmark {wanted!r} is also on {', '.join(others)}; a BookmarkLink "
+                "jumps to the first one"
+            ]
+    if changed:
+        doc.save()
+    return result
 
 
 def set_document_map_label(
@@ -372,25 +531,12 @@ def set_document_map_label(
     Idempotent: same value → ``{changed: false}``, no save.
     """
     doc = RDLDocument.open(path)
-    element = _resolve_named_report_item(doc, element_name)
+    element = _resolve_item(doc, element_name)
     kind = etree.QName(element).localname
-
-    existing = find_child(element, "DocumentMapLabel")
-    if label_or_expression == "":
-        if existing is None:
-            return {"element": element_name, "kind": kind, "changed": False}
-        element.remove(existing)
+    changed = _write_text_child(element, "DocumentMapLabel", label_or_expression)
+    if changed:
         doc.save()
-        return {"element": element_name, "kind": kind, "changed": True}
-
-    encoded = encode_text(label_or_expression)
-    if existing is not None and existing.text == encoded:
-        return {"element": element_name, "kind": kind, "changed": False}
-    new_node = etree.Element(q("DocumentMapLabel"))
-    new_node.text = encoded
-    _insert_in_item_order(element, new_node)
-    doc.save()
-    return {"element": element_name, "kind": kind, "changed": True}
+    return {"element": element_name, "kind": kind, "changed": changed}
 
 
 # ---- helpers --------------------------------------------------------------
@@ -449,10 +595,11 @@ def _action_matches(existing: etree._Element, new_action: etree._Element) -> boo
         for ep, np in zip(e_params, n_params):
             if ep.get("Name") != np.get("Name"):
                 return False
-            ev = find_child(ep, "Value")
-            nv = find_child(np, "Value")
-            if (ev.text if ev is not None else None) != (nv.text if nv is not None else None):
-                return False
+            for local in ("Value", "Omit"):
+                ev = find_child(ep, local)
+                nv = find_child(np, local)
+                if (ev.text if ev is not None else None) != (nv.text if nv is not None else None):
+                    return False
         return True
     return False
 
@@ -706,9 +853,13 @@ def _clear_chart_series_action(path: str, chart_name: str, series_name: str) -> 
 
 
 __all__ = [
+    "ACTION_ITEM_KINDS",
+    "set_bookmark",
     "set_chart_series_action",
     "set_document_map_label",
     "set_image_action",
+    "set_item_action",
+    "set_item_tooltip",
     "set_textbox_action",
     "set_textbox_tooltip",
 ]
