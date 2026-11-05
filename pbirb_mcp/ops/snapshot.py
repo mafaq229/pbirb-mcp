@@ -34,6 +34,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from pbirb_mcp.core.document import write_atomic
+
 _TRUTHY = frozenset({"1", "true", "yes", "y", "on"})
 
 # Filenames produced by ``backup_report`` end in ``.bak.<UTC-ts>`` plus
@@ -141,11 +143,14 @@ def restore_from_backup(
     from pbirb_mcp.core import transactions as _tx
 
     _tx.check_writable(str(dst.resolve()), None)
-    shutil.copy2(src, dst)
+    # Atomic, through a symlink, keeping the report's mode, refusing a
+    # read-only report (#64) — copy2 wrote in place and stamped the
+    # backup's mode and mtime onto the report.
+    real = write_atomic(dst, src.read_bytes())
     return {
         "source": str(src),
         "restored_to": str(dst),
-        "bytes_restored": dst.stat().st_size,
+        "bytes_restored": real.stat().st_size,
     }
 
 

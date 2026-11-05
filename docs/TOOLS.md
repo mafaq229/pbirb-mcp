@@ -11,6 +11,14 @@ deletes content or overwrites a file; the `pbirb-mcp` server asks for
 `confirm=true`), **idempotent** (`idempotentHint`: an identical repeat call
 changes nothing).
 
+Saving: every tool that writes a report writes a temp file next to it and
+renames it over the report, so a failed save leaves the report as it was.
+Through a symlink the link's target is updated and the link stays a link;
+the report keeps its permission bits (and owner, where allowed); a
+read-only report is refused with a `PermissionError` and left untouched.
+The rename gives the report a new inode, so other hard links to it keep
+the old content.
+
 ## `core`
 
 ### `describe_report`
