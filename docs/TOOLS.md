@@ -524,7 +524,7 @@ Configure the data labels of one or all series in a chart. Labels are written wh
 
 *idempotent*
 
-Set `<Palette>` on a chart. palette ∈ Default / EarthTones / Excel / GrayScale / Light / Pastel / SemiTransparent / Berry / Chocolate / Fire / SeaGreen / BrightPastel. Pass '' to clear (RB falls back to its built-in default palette). Returns {chart, kind, changed: bool}.
+Set `<Palette>` on a chart. palette ∈ Default / EarthTones / Excel / GrayScale / Light / Pastel / SemiTransparent / Berry / Chocolate / Fire / SeaGreen / BrightPastel / Pacific / PacificLight / PacificSemiTransparent / Custom (the RDL ChartPalette enum; the chart-structure lint rule checks the same list). Custom takes its colours from colors — named colours, #RRGGBB / #AARRGGBB or =expressions, whitespace trimmed — written in order as `<ChartCustomPaletteColors><ChartCustomPaletteColor>`; colors is required with Custom (unless the chart already has custom colours, which are then kept) and refused with any other palette. hatch_behavior ∈ Default / None / Always writes `<PaletteHatchBehavior>` ('' removes it). Pass palette '' to clear `<Palette>` and `<ChartCustomPaletteColors>` (RB falls back to its built-in default palette). Returns {chart, kind, palette, custom_colors, changed: bool}; changed is false (file untouched) when everything already matched.
 
 ### `set_series_color`
 

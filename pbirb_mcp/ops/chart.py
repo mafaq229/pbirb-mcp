@@ -62,6 +62,7 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError, resolve_dataset
 from pbirb_mcp.core.mutation import (
+    ChangeTracker,
     changed_by,
     remove_child_if_present,
     set_node_text,
@@ -1383,95 +1384,160 @@ def set_chart_data_labels(
 # ---- set_chart_palette ----------------------------------------------------
 
 
-# RDL Palette enum. The values match Report Builder's "Palette" dropdown.
-_VALID_PALETTES = frozenset(
-    {
-        "Default",
-        "EarthTones",
-        "Excel",
-        "GrayScale",
-        "Light",
-        "Pastel",
-        "SemiTransparent",
-        "Berry",
-        "Chocolate",
-        "Fire",
-        "SeaGreen",
-        "BrightPastel",
-    }
+# The palette block of a <Chart> in Report Builder's order. It follows the
+# chart-content blocks (ChartCategoryHierarchy … ChartTitles) and precedes
+# the elements in _PALETTE_ANCHORS (the XSD is a choice, so this is
+# Report Builder's layout rather than a schema rule).
+_PALETTE_BLOCK = ("Palette", "ChartCustomPaletteColors", "PaletteHatchBehavior")
+_PALETTE_ANCHORS = (
+    "ChartBorderSkin",
+    "ChartNoDataMessage",
+    "DataSetName",
+    "Top",
+    "Left",
+    "Height",
+    "Width",
+    "Style",
 )
 
 
-# Per RDL XSD, the position of <Palette> inside <Chart>: it sits AFTER
-# the chart-content blocks (ChartCategoryHierarchy, ChartSeriesHierarchy,
-# ChartData, ChartAreas, ChartLegends, ChartTitles) but BEFORE the
-# layout fields (DataSetName, Top, Left, ...). The ordering helper
-# inserts before DataSetName when present.
-def _set_chart_palette_text(chart: etree._Element, palette_text: str) -> bool:
-    """Write or rewrite ``<Palette>`` on a chart. Returns True iff the
-    text actually changed. Empty string ``""`` removes the element."""
-    existing = find_child(chart, "Palette")
-    if palette_text == "":
+def _place_palette_child(chart: etree._Element, node: etree._Element) -> None:
+    """Insert a palette-block element after its present predecessors in
+    :data:`_PALETTE_BLOCK`, else before the first later block element or
+    anchor, else at the end."""
+    idx = _PALETTE_BLOCK.index(etree.QName(node).localname)
+    for prev_local in reversed(_PALETTE_BLOCK[:idx]):
+        prev = find_child(chart, prev_local)
+        if prev is not None:
+            prev.addnext(node)
+            return
+    for later in _PALETTE_BLOCK[idx + 1 :] + _PALETTE_ANCHORS:
+        anchor = find_child(chart, later)
+        if anchor is not None:
+            anchor.addprevious(node)
+            return
+    chart.append(node)
+
+
+def _set_palette_text(chart: etree._Element, local: str, value: str) -> None:
+    """Write ``<local>value</local>`` in the palette block; ``""`` removes it."""
+    existing = find_child(chart, local)
+    if value == "":
         if existing is not None:
             chart.remove(existing)
-            return True
-        return False
+        return
+    if existing is None:
+        existing = etree.Element(q(local))
+        _place_palette_child(chart, existing)
+    set_node_text(existing, value)
+
+
+def _set_custom_palette_colors(chart: etree._Element, colors: list[str]) -> None:
+    """Make ``ChartCustomPaletteColors`` hold exactly ``colors`` (in order);
+    an empty list removes it. An identical block is left as it is."""
+    existing = find_child(chart, "ChartCustomPaletteColors")
+    if not colors:
+        if existing is not None:
+            chart.remove(existing)
+        return
+    if existing is not None and chart_shape.custom_palette_colors(chart) == colors:
+        return
+    block = etree.Element(q("ChartCustomPaletteColors"))
+    for value in colors:
+        etree.SubElement(block, q("ChartCustomPaletteColor")).text = value
     if existing is not None:
-        if existing.text == palette_text:
-            return False
-        existing.text = palette_text
-        return True
-    new = etree.Element(q("Palette"))
-    new.text = palette_text
-    # Insert before DataSetName (always present in our writes); fall
-    # back to before the next layout child or append.
-    for anchor_local in (
-        "DataSetName",
-        "Top",
-        "Left",
-        "Height",
-        "Width",
-        "Style",
-    ):
-        anchor = find_child(chart, anchor_local)
-        if anchor is not None:
-            anchor.addprevious(new)
-            return True
-    chart.append(new)
-    return True
+        chart.replace(existing, block)
+    else:
+        _place_palette_child(chart, block)
+
+
+def _canonical_choice(value: str, allowed: tuple[str, ...], field: str) -> str:
+    """``value`` matched case-insensitively against ``allowed``, in its
+    canonical spelling (no expressions: these are plain RDL enums)."""
+    for candidate in allowed:
+        if candidate.lower() == value.strip().lower():
+            return candidate
+    raise ValueError(f"{field} {value!r} not valid; expected one of {list(allowed)} or '' to clear")
 
 
 def set_chart_palette(
     path: str,
     chart_name: str,
     palette: str,
+    colors: Optional[list[str]] = None,
+    hatch_behavior: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Set the chart's ``<Palette>`` element.
+    """Set the chart's ``<Palette>``, its custom colours and hatching.
 
-    ``palette`` ∈ Default / EarthTones / Excel / GrayScale / Light /
-    Pastel / SemiTransparent / Berry / Chocolate / Fire / SeaGreen /
-    BrightPastel. Pass ``""`` to clear (Report Builder falls back to
-    its default palette).
+    ``palette`` ∈ :data:`pbirb_mcp.core.chart_types.PALETTES` (the 16 RDL
+    ChartPalette values, matched case-insensitively). ``Custom`` takes its
+    colours from ``colors`` — named colours, ``#RRGGBB`` / ``#AARRGGBB``
+    or ``=expressions``, written in order as
+    ``<ChartCustomPaletteColors><ChartCustomPaletteColor>``. ``colors`` is
+    required with ``Custom`` (unless the chart already has custom colours,
+    which are then kept) and refused with any other palette. ``""`` clears
+    ``<Palette>`` and ``<ChartCustomPaletteColors>`` (Report Builder falls
+    back to its default palette).
 
-    Returns ``{chart, kind, changed: bool}``. False when the palette
-    text was already what was requested (no save).
+    ``hatch_behavior`` ∈ Default / None / Always writes
+    ``<PaletteHatchBehavior>``; ``""`` removes it; ``None`` leaves it.
+
+    Returns ``{chart, kind, palette, custom_colors, changed: bool}``.
+    False when everything already matched (no save).
     """
-    if palette != "" and palette not in _VALID_PALETTES:
-        raise ValueError(
-            f"palette {palette!r} not valid; expected one of "
-            f"{sorted(_VALID_PALETTES)} or '' to clear"
+    if palette != "":
+        palette = _canonical_choice(palette, chart_types.PALETTES, "palette")
+    if hatch_behavior not in (None, ""):
+        hatch_behavior = _canonical_choice(
+            hatch_behavior, chart_types.PALETTE_HATCH_BEHAVIORS, "hatch_behavior"
         )
+    if colors is not None:
+        if palette != "Custom":
+            raise ValueError(
+                "colors: only valid with palette='Custom' "
+                f"(got palette={palette!r}); a built-in palette has fixed colours"
+            )
+        if not isinstance(colors, list) or not colors:
+            raise ValueError("colors: give at least one colour for the Custom palette")
+        colors = [_palette_color(c, f"colors[{i}]") for i, c in enumerate(colors)]
 
     doc = RDLDocument.open(path)
     chart = _resolve_chart(doc, chart_name)
-    changed = _set_chart_palette_text(chart, palette)
-    if changed:
+    if palette == "Custom" and colors is None and not chart_shape.custom_palette_colors(chart):
+        raise ValueError(
+            "colors: required with palette='Custom' — pass the palette's colours, "
+            "e.g. ['#112233', 'Red']"
+        )
+
+    with ChangeTracker(chart) as tracker:
+        _set_palette_text(chart, "Palette", palette)
+        if palette == "":
+            _set_custom_palette_colors(chart, [])
+        elif colors is not None:
+            _set_custom_palette_colors(chart, colors)
+        if hatch_behavior is not None:
+            _set_palette_text(chart, "PaletteHatchBehavior", hatch_behavior)
+    if tracker.changed:
         doc.save()
     return {
         "chart": chart_name,
         "kind": "Chart",
-        "changed": changed,
+        "palette": palette or None,
+        "custom_colors": chart_shape.custom_palette_colors(chart),
+        "changed": tracker.changed,
     }
+
+
+def _palette_color(value: object, field: str) -> str:
+    """A colour for a custom palette or a series: whitespace around a
+    literal is trimmed, then :func:`pbirb_mcp.core.style_values.color`
+    validates it (named colour, ``#RRGGBB``, ``#AARRGGBB``, ``=expr``)."""
+    if not isinstance(value, str):
+        raise ValueError(f"{field}: expected a colour string; got {type(value).__name__}")
+    text = value if value.startswith("=") else value.strip()
+    if text == "":
+        raise ValueError(f"{field}: empty colour")
+    return encode_text(style_values.color(text, field))
 
 
 # ---- set_series_color -----------------------------------------------------

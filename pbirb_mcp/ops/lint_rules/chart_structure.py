@@ -41,25 +41,8 @@ from pbirb_mcp.ops.lint import Issue, _ancestor_chain
 
 RULE = "chart-structure"
 
-# RDL 2016 ChartPalette enumeration.
-PALETTES: tuple[str, ...] = (
-    "Default",
-    "EarthTones",
-    "Excel",
-    "GrayScale",
-    "Light",
-    "Pastel",
-    "SemiTransparent",
-    "Berry",
-    "Chocolate",
-    "Fire",
-    "SeaGreen",
-    "BrightPastel",
-    "Pacific",
-    "PacificLight",
-    "PacificSemiTransparent",
-    "Custom",
-)
+# RDL 2016 ChartPalette enumeration — shared with set_chart_palette.
+PALETTES: tuple[str, ...] = chart_types.PALETTES
 
 
 def _text(elem: etree._Element, local: str) -> Optional[str]:

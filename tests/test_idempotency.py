@@ -976,6 +976,19 @@ VARIANTS: list[tuple[str, Case]] = [
     ("set_chart_axis", Case({"chart_name": CH, "axis": "Category", "title": ""}, fixture=CHART)),
     ("set_chart_axis", Case({"chart_name": CH, "axis": "Value", "log_scale": True}, fixture=CHART)),
     (
+        "set_chart_palette",
+        Case(
+            {
+                "chart_name": CH,
+                "palette": "Custom",
+                "colors": ["#112233", "Red"],
+                "hatch_behavior": "Always",
+            },
+            fixture=CHART,
+        ),
+    ),
+    ("set_chart_palette", Case({"chart_name": CH, "palette": ""}, fixture=CHART)),
+    (
         "set_chart_axis",
         Case(
             {"chart_name": CH, "axis": "Value", "chart_area": "Default", "visible": "Auto"},

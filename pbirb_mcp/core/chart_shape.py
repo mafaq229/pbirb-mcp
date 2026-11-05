@@ -320,6 +320,15 @@ def chart_areas(chart: etree._Element) -> list[etree._Element]:
     return find_children(areas, "ChartArea")
 
 
+def custom_palette_colors(chart: etree._Element) -> list[str]:
+    """Texts of ``ChartCustomPaletteColors/ChartCustomPaletteColor``, in
+    order (the colours of a ``Custom`` palette); empty when absent."""
+    colors = find_child(chart, "ChartCustomPaletteColors")
+    if colors is None:
+        return []
+    return [(c.text or "") for c in find_children(colors, "ChartCustomPaletteColor")]
+
+
 def hierarchy_findings(
     chart: etree._Element, *, empty_as_one: bool = False
 ) -> list[tuple[str, etree._Element]]:
@@ -381,6 +390,7 @@ __all__ = [
     "category_leaf_members",
     "chart_areas",
     "child_members",
+    "custom_palette_colors",
     "data_label",
     "data_point_count",
     "data_points",

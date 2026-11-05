@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pbirb_mcp.core import chart_types as _chart_types
 from pbirb_mcp.core import columns as _columns
 from pbirb_mcp.ops import (
     actions,
@@ -3826,16 +3827,27 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_chart_palette",
         description=(
-            "Set a chart's colour palette (Default, EarthTones, Excel, GrayScale, "
-            "Light, Pastel, SemiTransparent, Berry, Chocolate, Fire, SeaGreen, "
-            "BrightPastel); '' clears."
+            "Set a chart's colour palette (a built-in such as Pastel or Pacific, "
+            "or Custom with brand colours in colors) and hatching; '' clears."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "chart_name": {"type": "string"},
-                "palette": {"type": "string"},
+                "palette": {"type": "string", "enum": [*_chart_types.PALETTES, ""]},
+                "colors": {
+                    "type": ["array", "null"],
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "default": None,
+                    "description": "Custom palette colours, in order (name, #hex, =expr).",
+                },
+                "hatch_behavior": {
+                    "type": ["string", "null"],
+                    "enum": [*_chart_types.PALETTE_HATCH_BEHAVIORS, "", None],
+                    "default": None,
+                },
             },
             "required": ["path", "chart_name", "palette"],
             "additionalProperties": False,

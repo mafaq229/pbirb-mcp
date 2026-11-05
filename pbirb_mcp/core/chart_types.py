@@ -76,6 +76,31 @@ DEFAULT_SUBTYPE: dict[str, str] = {t: subs[0] for t, subs in SUBTYPES_BY_TYPE.it
 RDL_DEFAULT_TYPE = "Column"
 RDL_DEFAULT_SUBTYPE = "Plain"
 
+# RDL 2016 ChartPalette enumeration (``Chart/Palette``) — the one list
+# set_chart_palette writes from and the chart-structure lint rule checks
+# against. ``Custom`` takes its colours from ``ChartCustomPaletteColors``.
+PALETTES: tuple[str, ...] = (
+    "Default",
+    "EarthTones",
+    "Excel",
+    "GrayScale",
+    "Light",
+    "Pastel",
+    "SemiTransparent",
+    "Berry",
+    "Chocolate",
+    "Fire",
+    "SeaGreen",
+    "BrightPastel",
+    "Pacific",
+    "PacificLight",
+    "PacificSemiTransparent",
+    "Custom",
+)
+
+# RDL ChartPaletteHatchBehavior (``Chart/PaletteHatchBehavior``).
+PALETTE_HATCH_BEHAVIORS: tuple[str, ...] = ("Default", "None", "Always")
+
 # series_type shorthand → canonical (Type, Subtype).
 TYPE_ALIASES: dict[str, tuple[str, str]] = {
     "Pie": ("Shape", "Pie"),
@@ -225,6 +250,8 @@ __all__ = [
     "EMPTY_POINT_VALUES",
     "MARKER_SERIES_TYPES",
     "MARKER_TYPES",
+    "PALETTES",
+    "PALETTE_HATCH_BEHAVIORS",
     "RDL_DEFAULT_SUBTYPE",
     "RDL_DEFAULT_TYPE",
     "SERIES_SUBTYPES",
