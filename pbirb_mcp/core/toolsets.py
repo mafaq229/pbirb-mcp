@@ -98,6 +98,13 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "add_dataset_field",
             "remove_dataset_field",
             "refresh_dataset_fields",
+            "set_dataset_data_source",
+            "add_dataset",
+            "remove_dataset",
+            "rename_dataset",
+            "rename_dataset_field",
+            "set_field_type",
+            "set_dataset_options",
         }
     ),
     # Report parameters: declarations, values, prompts, the parameter pane layout.

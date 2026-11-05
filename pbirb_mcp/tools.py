@@ -677,6 +677,7 @@ def register_all_tools(server: MCPServer) -> None:
         handler=dataset.refresh_dataset_fields,
         mutating=True,
     )
+    _register_dataset_authoring(server)
     server.register_tool(
         name="set_image_sizing",
         description=(
@@ -4385,6 +4386,106 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=visibility.set_element_visibility,
+        mutating=True,
+    )
+
+
+_SENSITIVITY = {"type": ["string", "null"], "enum": ["True", "False", "Auto", None]}
+
+
+def _register_dataset_authoring(server: MCPServer) -> None:
+    """set_dataset_data_source, add/remove/rename_dataset, rename_dataset_field,
+    set_field_type, set_dataset_options (#98)."""
+
+    def schema(props: dict, required: list) -> dict:
+        return {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, **props},
+            "required": ["path", *required],
+            "additionalProperties": False,
+        }
+
+    s = {"type": "string"}
+    server.register_tool(
+        name="set_dataset_data_source",
+        description=("Point a dataset at another data source (warns on a Power BI/SQL switch)."),
+        input_schema=schema(
+            {"dataset_name": s, "data_source_name": s}, ["dataset_name", "data_source_name"]
+        ),
+        handler=dataset.set_dataset_data_source,
+        mutating=True,
+    )
+    server.register_tool(
+        name="add_dataset",
+        description=(
+            "Create a dataset: a query on a data source, optionally with fields from DataFields."
+        ),
+        input_schema=schema(
+            {
+                "name": s,
+                "data_source_name": s,
+                "command_text": s,
+                "fields": {"type": ["array", "null"], "items": s},
+            },
+            ["name", "data_source_name", "command_text"],
+        ),
+        handler=dataset.add_dataset,
+        mutating=True,
+    )
+    server.register_tool(
+        name="remove_dataset",
+        description=("Remove a dataset; refuses while anything uses it unless force=true."),
+        input_schema=schema({"name": s, "force": {"type": "boolean", "default": False}}, ["name"]),
+        handler=dataset.remove_dataset,
+        mutating=True,
+    )
+    server.register_tool(
+        name="rename_dataset",
+        description=("Rename a dataset and every DataSetName / scope string naming it."),
+        input_schema=schema({"old_name": s, "new_name": s}, ["old_name", "new_name"]),
+        handler=dataset.rename_dataset,
+        mutating=True,
+    )
+    server.register_tool(
+        name="rename_dataset_field",
+        description=("Rename a dataset field and every reference to it."),
+        input_schema=schema(
+            {"dataset_name": s, "old_name": s, "new_name": s},
+            ["dataset_name", "old_name", "new_name"],
+        ),
+        handler=dataset.rename_dataset_field,
+        mutating=True,
+    )
+    server.register_tool(
+        name="set_field_type",
+        description="Set a field's .NET type (rd:TypeName); null removes it.",
+        input_schema=schema(
+            {
+                "dataset_name": s,
+                "field_name": s,
+                "type_name": {"type": ["string", "null"]},
+            },
+            ["dataset_name", "field_name", "type_name"],
+        ),
+        handler=dataset.set_field_type,
+        mutating=True,
+    )
+    server.register_tool(
+        name="set_dataset_options",
+        description=("Set a dataset's query timeout, collation and sensitivity options."),
+        input_schema=schema(
+            {
+                "dataset_name": s,
+                "timeout": {"type": ["integer", "null"], "minimum": 0},
+                "case_sensitivity": _SENSITIVITY,
+                "collation": {"type": ["string", "null"]},
+                "accent_sensitivity": _SENSITIVITY,
+                "kanatype_sensitivity": _SENSITIVITY,
+                "width_sensitivity": _SENSITIVITY,
+            },
+            ["dataset_name"],
+        ),
+        handler=dataset.set_dataset_options,
         mutating=True,
     )
 

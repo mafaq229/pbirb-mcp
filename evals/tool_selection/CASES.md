@@ -6,14 +6,14 @@ Every edit case is also graded by the structural gate (XSD + lint errors the edi
 
 | id | category | difficulty | source | fixture | reference solution | tools in subset arm |
 |---|---|---|---|---|---|---|
-| d01 | data | easy | feedback | fleet_utilization.rdl | `remove_data_source` → `remove_data_source` | 31 |
-| d02 | data | medium | synth | fleet_utilization.rdl | `rename_data_source` | 31 |
-| d03 | data | easy | synth | fleet_utilization.rdl | `add_calculated_field` | 31 |
-| d04 | data | medium | synth | fleet_utilization.rdl | `add_dataset_filter` | 31 |
-| d05 | data | hard | feedback | fleet_utilization.rdl | `update_dataset_query` → `add_dataset_field` | 31 |
-| d06 | data | easy | synth | fleet_utilization.rdl | `set_datasource_connection` | 32 |
-| d07 | data | medium | synth | fleet_utilization.rdl | `add_query_parameter` → `add_query_parameter` | 31 |
-| d08 | data | easy | synth | fleet_utilization.rdl | `remove_dataset_field` | 31 |
+| d01 | data | easy | feedback | fleet_utilization.rdl | `remove_data_source` → `remove_data_source` | 37 |
+| d02 | data | medium | synth | fleet_utilization.rdl | `rename_data_source` | 37 |
+| d03 | data | easy | synth | fleet_utilization.rdl | `add_calculated_field` | 37 |
+| d04 | data | medium | synth | fleet_utilization.rdl | `add_dataset_filter` | 37 |
+| d05 | data | hard | feedback | fleet_utilization.rdl | `update_dataset_query` → `add_dataset_field` | 37 |
+| d06 | data | easy | synth | fleet_utilization.rdl | `set_datasource_connection` | 38 |
+| d07 | data | medium | synth | fleet_utilization.rdl | `add_query_parameter` → `add_query_parameter` | 37 |
+| d08 | data | easy | synth | fleet_utilization.rdl | `remove_dataset_field` | 37 |
 | p01 | parameters | easy | feedback | fleet_utilization.rdl | `set_parameter_type` → `set_parameter_type` | 29 |
 | p02 | parameters | easy | synth | fleet_utilization.rdl | `set_parameter_prompt` | 29 |
 | p03 | parameters | medium | synth | fleet_utilization.rdl | `set_parameter_available_values` | 29 |

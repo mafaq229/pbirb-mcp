@@ -18,6 +18,9 @@ Public API::
     enclosing_calls(calls, index) -> list[Call]        # innermost first
     ScopeIndex(root)                                   # datasets / regions / groups
     find_field_references(root, dataset, field)        # consumers of one field (#72)
+    iter_field_expression_references(root, dataset, field)  # … with tokens, to rewrite (#98)
+    field_dataset_reference_slots(root, dataset, field)     # DataSetReference Value/LabelField
+    dataset_scope_references(root, dataset)            # Sum(…, "DS") / Lookup(…, "DS") (#98)
     locator(elem) -> str                               # Type[Name='X']/Sub/Path label
     parameter_references(tokens, name=None)            # Parameters!X / ("X") / Report.Parameters…
     iter_parameter_references(root, name=None)         # (elem, text, tokens, refs), incl. <Code>
@@ -504,8 +507,39 @@ def find_field_references(
 
     The field's own ``<Field>`` definition is not a consumer and is skipped.
     """
-    ns = etree.QName(root).namespace
-    index = ScopeIndex(root)
+    hits: list[tuple[etree._Element, FieldReference]] = []
+    for elem, text, _sig, refs in iter_field_expression_references(root, dataset_name, field_name):
+        for ref, _resolved, ds in refs:
+            hits.append(
+                (
+                    elem,
+                    FieldReference(
+                        elem, locator(elem), "expression", text[ref.start : ref.end], ds
+                    ),
+                )
+            )
+
+    for el in field_dataset_reference_slots(root, dataset_name, field_name):
+        hits.append(
+            (el, FieldReference(el, locator(el), "dataset_reference", field_name, dataset_name))
+        )
+
+    order = {el: i for i, el in enumerate(root.iter())}
+    hits.sort(key=lambda h: order.get(h[0], 0))
+    return [h[1] for h in hits]
+
+
+def iter_field_expression_references(
+    root: etree._Element, dataset_name: str, field_name: str
+) -> Iterator[tuple[etree._Element, str, list, list]]:
+    """``(element, text, tokens, [(ref, resolved, dataset)])`` for every
+    expression holding a ``Fields`` reference to ``field_name`` whose scope
+    is ``dataset_name`` or can't be resolved statically (``resolved`` is
+    then False, ``dataset`` None) — the expression half of
+    :func:`find_field_references`, with the tokens (offsets index
+    ``text``) so a caller can rewrite the name token
+    (``tokens[ref.first + 2]``, as :func:`rename_parameter_references`
+    does). The field's own ``<Field>/<Value>`` is skipped."""
 
     def own_definition(elem: etree._Element) -> bool:
         # <DataSet Name=dataset_name>/<Fields>/<Field Name=field_name>/<Value>
@@ -520,7 +554,7 @@ def find_field_references(
             and ds.get("Name") == dataset_name
         )
 
-    hits: list[tuple[etree._Element, FieldReference]] = []
+    index = ScopeIndex(root)
     for elem, text in iter_expressions(root):
         if field_name not in text:
             continue
@@ -532,19 +566,24 @@ def find_field_references(
             continue
         calls = aggregate_calls(sig)
         region_ds = dataset_scope(elem)
+        kept = []
         for ref in refs:
             resolved, ds = _resolve_ref_dataset(ref, calls, region_ds, index)
             if resolved and ds != dataset_name:
                 continue
-            hits.append(
-                (
-                    elem,
-                    FieldReference(
-                        elem, locator(elem), "expression", text[ref.start : ref.end], ds
-                    ),
-                )
-            )
+            kept.append((ref, resolved, ds))
+        if kept:
+            yield elem, text, sig, kept
 
+
+def field_dataset_reference_slots(
+    root: etree._Element, dataset_name: str, field_name: str
+) -> list[etree._Element]:
+    """The ``DataSetReference/ValueField|LabelField`` elements (a
+    parameter's ValidValues / DefaultValue query) of dataset
+    ``dataset_name`` that name ``field_name``."""
+    ns = etree.QName(root).namespace
+    out: list[etree._Element] = []
     for dsref in root.iter(f"{{{ns}}}DataSetReference"):
         names = _children(dsref, ns, "DataSetName")
         if not names or (names[0].text or "").strip() != dataset_name:
@@ -552,18 +591,29 @@ def find_field_references(
         for slot in ("ValueField", "LabelField"):
             for el in _children(dsref, ns, slot):
                 if (el.text or "").strip() == field_name:
-                    hits.append(
-                        (
-                            el,
-                            FieldReference(
-                                el, locator(el), "dataset_reference", field_name, dataset_name
-                            ),
-                        )
-                    )
+                    out.append(el)
+    return out
 
-    order = {el: i for i, el in enumerate(root.iter())}
-    hits.sort(key=lambda h: order.get(h[0], 0))
-    return [h[1] for h in hits]
+
+def dataset_scope_references(
+    root: etree._Element, dataset_name: str
+) -> list[tuple[etree._Element, str, list, list]]:
+    """``(element, text, tokens, calls)`` for every expression whose
+    aggregate / lookup / scope-function calls name ``dataset_name`` in a
+    literal scope or dataset argument (``Sum(…, "DS")``,
+    ``Lookup(…, "DS")``, ``CountRows("DS")``); ``calls`` are those
+    :class:`Call` s (their ``scope_token`` indexes ``text``)."""
+    out = []
+    for elem, text in iter_expressions(root):
+        if dataset_name not in text:
+            continue
+        sig = expression_tokens(text)
+        if not sig:
+            continue
+        calls = [c for c in aggregate_calls(sig) if c.scope == dataset_name]
+        if calls:
+            out.append((elem, text, sig, calls))
+    return out
 
 
 # ---- report-parameter references (#73) and dependencies (#74) ---------------
@@ -911,8 +961,11 @@ __all__ = [
     "dataset_scope",
     "enclosing_calls",
     "expression_tokens",
+    "dataset_scope_references",
+    "field_dataset_reference_slots",
     "find_field_references",
     "iter_expressions",
+    "iter_field_expression_references",
     "locator",
     "references",
     "scope_region",

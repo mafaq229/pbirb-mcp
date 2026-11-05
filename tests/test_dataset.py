@@ -2393,3 +2393,395 @@ class TestQueryParameterCrossChecks:
         rules = [i["rule"] for i in new_issues()]
         assert "multi-value-query-binding" in rules
         assert "multi-value-eq" in rules
+
+
+# ---- #98: dataset-authoring tools ------------------------------------------
+
+
+def _lint_keys(path) -> set:
+    return {(i["rule"], i["location"]) for i in lint_report(str(path))["issues"]}
+
+
+def _assert_noop_repeat(path: Path, fn, *args, **kwargs) -> None:
+    before = path.read_bytes()
+    result = fn(str(path), *args, **kwargs)
+    assert result["changed"] is False
+    assert path.read_bytes() == before
+
+
+class TestSetDatasetDataSource:
+    def test_rebinds_and_validates(self, multi_path):
+        from pbirb_mcp.ops.dataset import set_dataset_data_source
+
+        result = set_dataset_data_source(str(multi_path), "MainDataset", "LookupDataset")
+        assert result["changed"] is True
+        assert result["previous"] == "PowerBIDataset"
+        assert get_dataset(str(multi_path), "MainDataset")["data_source"] == "LookupDataset"
+        assert validate_report(str(multi_path))["valid"]
+        _assert_noop_repeat(multi_path, set_dataset_data_source, "MainDataset", "LookupDataset")
+
+    def test_unknown_source_refused(self, multi_path):
+        from pbirb_mcp.ops.dataset import set_dataset_data_source
+
+        before = multi_path.read_bytes()
+        with pytest.raises(ElementNotFoundError, match="LookupDataset"):
+            set_dataset_data_source(str(multi_path), "MainDataset", "Nope")
+        assert multi_path.read_bytes() == before
+
+    def test_provider_family_change_warns(self, multi_path):
+        from pbirb_mcp.ops.dataset import set_dataset_data_source
+
+        doc = RDLDocument.open(multi_path)
+        for ds in doc.root.iter(f"{{{RDL_NS}}}DataSource"):
+            if ds.get("Name") == "LookupDataset":
+                ds.find(
+                    f".//{{{RDL_NS}}}ConnectString"
+                ).text = "Data Source=sql01;Initial Catalog=x"
+        doc.save()
+        result = set_dataset_data_source(str(multi_path), "MainDataset", "LookupDataset")
+        assert len(result["warnings"]) == 1
+        assert "Power BI" in result["warnings"][0] and "SQL" in result["warnings"][0]
+
+
+class TestAddDataset:
+    def test_creates_dataset_with_seeded_fields(self, rdl_path):
+        from pbirb_mcp.ops.dataset import add_dataset
+
+        result = add_dataset(
+            str(rdl_path),
+            "Regions",
+            "PowerBIDataset",
+            "EVALUATE SUMMARIZECOLUMNS('Geo'[Region (EU)], \"Total\", [Sales])",
+            fields=["'Geo'[Region (EU)]", "[Total]"],
+        )
+        assert result["changed"] is True
+        assert result["fields"] == [
+            {"name": "Region__EU_", "data_field": "'Geo'[Region (EU)]"},
+            {"name": "Total", "data_field": "[Total]"},
+        ]
+        ds = get_dataset(str(rdl_path), "Regions")
+        assert ds["data_source"] == "PowerBIDataset"
+        assert [f["name"] for f in ds["fields"]] == ["Region__EU_", "Total"]
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_without_fields_and_unbound_param_warning(self, rdl_path):
+        from pbirb_mcp.ops.dataset import add_dataset
+
+        result = add_dataset(
+            str(rdl_path), "Years", "PowerBIDataset", "EVALUATE FILTER('D', 'D'[y] = @Year)"
+        )
+        assert result["fields"] == []
+        assert any("@Year" in w for w in result["warnings"])
+        assert validate_report(str(rdl_path))["valid"]
+
+    @pytest.mark.parametrize(
+        "name,source,text,match",
+        [
+            ("MainDataset", "PowerBIDataset", "EVALUATE 'T'", "already exists"),
+            ("MainTable", "PowerBIDataset", "EVALUATE 'T'", "report item or group"),
+            ("Bad Name", "PowerBIDataset", "EVALUATE 'T'", "invalid dataset name"),
+            ("New", "NoSource", "EVALUATE 'T'", "not found"),
+            ("New", "PowerBIDataset", "  ", "non-empty"),
+        ],
+    )
+    def test_refusals_leave_the_file_alone(self, rdl_path, name, source, text, match):
+        from pbirb_mcp.ops.dataset import add_dataset
+
+        before = rdl_path.read_bytes()
+        with pytest.raises((ValueError, ElementNotFoundError), match=match):
+            add_dataset(str(rdl_path), name, source, text)
+        assert rdl_path.read_bytes() == before
+
+    def test_repeat_refuses(self, rdl_path):
+        from pbirb_mcp.ops.dataset import add_dataset
+
+        add_dataset(str(rdl_path), "L", "PowerBIDataset", "EVALUATE 'L'")
+        with pytest.raises(ValueError, match="already exists"):
+            add_dataset(str(rdl_path), "L", "PowerBIDataset", "EVALUATE 'L'")
+
+
+class TestRemoveDataset:
+    def test_removes_an_unused_dataset(self, multi_path):
+        from pbirb_mcp.ops.dataset import remove_dataset
+
+        result = remove_dataset(str(multi_path), "LookupSet")
+        assert result["changed"] is True
+        assert "LookupSet" not in multi_path.read_text("utf-8")
+        assert validate_report(str(multi_path))["valid"]
+        with pytest.raises(ElementNotFoundError):
+            remove_dataset(str(multi_path), "LookupSet")
+
+    def test_refuses_while_a_region_uses_it(self, multi_path):
+        from pbirb_mcp.ops.dataset import remove_dataset
+
+        before = multi_path.read_bytes()
+        with pytest.raises(ValueError, match="Tablix"):
+            remove_dataset(str(multi_path), "MainDataset")
+        assert multi_path.read_bytes() == before
+
+    def test_refuses_while_a_parameter_or_scope_string_uses_it(self, multi_path):
+        from pbirb_mcp.ops.dataset import remove_dataset
+        from pbirb_mcp.ops.parameters import add_parameter
+
+        add_parameter(str(multi_path), "Key", "String", prompt="Key")
+        set_parameter_available_values(
+            str(multi_path),
+            "Key",
+            source="query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+        )
+        with pytest.raises(ValueError, match="DataSetReference"):
+            remove_dataset(str(multi_path), "LookupSet")
+        set_parameter_available_values(str(multi_path), "Key", source="static", static_values=[])
+        set_textbox_value(str(multi_path), "HeaderAmount", '=CountRows("LookupSet")')
+        with pytest.raises(ValueError, match="HeaderAmount"):
+            remove_dataset(str(multi_path), "LookupSet")
+        assert remove_dataset(str(multi_path), "LookupSet", force=True)["references"] == 1
+
+    def test_last_dataset_drops_the_block(self, rdl_path):
+        from pbirb_mcp.ops.dataset import remove_dataset
+
+        remove_dataset(str(rdl_path), "MainDataset", force=True)
+        assert "<DataSets" not in rdl_path.read_text("utf-8")
+
+
+class TestRenameDataset:
+    def test_multi_datasource_fixture_main_to_sales(self, multi_path):
+        from pbirb_mcp.ops.dataset import rename_dataset
+
+        base = _lint_keys(multi_path)
+        result = rename_dataset(str(multi_path), "MainDataset", "Sales")
+        assert result["changed"] is True
+        assert "MainDataset" not in multi_path.read_text("utf-8")
+        assert validate_report(str(multi_path))["valid"]
+        assert _lint_keys(multi_path) == base
+        with pytest.raises(ElementNotFoundError):
+            rename_dataset(str(multi_path), "MainDataset", "Sales")
+
+    def test_rewrites_scope_strings_and_dataset_references(self, multi_path):
+        from pbirb_mcp.ops.dataset import rename_dataset
+        from pbirb_mcp.ops.parameters import add_parameter
+
+        add_parameter(str(multi_path), "Key", "String", prompt="Key")
+        set_parameter_available_values(
+            str(multi_path),
+            "Key",
+            source="query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+        )
+        set_textbox_value(
+            str(multi_path),
+            "HeaderAmount",
+            '=CountRows("LookupSet") & " LookupSet " & Lookup(1, 1, 1, "LookupSet")',
+        )
+        result = rename_dataset(str(multi_path), "LookupSet", "Keys")
+        assert result["references_rewritten"] == 2
+        text = multi_path.read_text("utf-8")
+        assert 'CountRows("Keys")' in text and 'Lookup(1, 1, 1, "Keys")' in text
+        assert '" LookupSet "' in text  # a plain string literal is left alone
+        assert "<DataSetName>Keys</DataSetName>" in text
+        assert validate_report(str(multi_path))["valid"]
+
+    def test_refusals(self, multi_path):
+        from pbirb_mcp.ops.dataset import rename_dataset
+
+        with pytest.raises(ValueError, match="already exists"):
+            rename_dataset(str(multi_path), "MainDataset", "LookupSet")
+        with pytest.raises(ValueError, match="identical"):
+            rename_dataset(str(multi_path), "MainDataset", "MainDataset")
+        with pytest.raises(ValueError, match="report item or group"):
+            rename_dataset(str(multi_path), "MainDataset", "MainTable")
+
+
+class TestRenameDatasetField:
+    def test_rewrites_scope_aware_references(self, multi_path):
+        from pbirb_mcp.ops.dataset import rename_dataset_field
+
+        add_calculated_field(str(multi_path), "MainDataset", "Doubled", "=Fields!Amount.Value * 2")
+        set_textbox_value(
+            str(multi_path), "HeaderAmount", '=Sum(Fields!Amount.Value, "MainDataset") & "Amount"'
+        )
+        base = _lint_keys(multi_path)
+        result = rename_dataset_field(str(multi_path), "MainDataset", "Amount", "Revenue")
+        assert result["changed"] is True
+        assert result["references_rewritten"] == 3  # cell, calculated field, header
+        text = multi_path.read_text("utf-8")
+        assert "Fields!Amount" not in text
+        assert '<Field Name="Revenue">' in text
+        assert "<DataField>Sales[Amount]</DataField>" in text  # binding unchanged
+        assert '"MainDataset") &amp; "Amount"' in text  # string literal untouched
+        assert validate_report(str(multi_path))["valid"]
+        assert _lint_keys(multi_path) == base
+        with pytest.raises(ElementNotFoundError):
+            rename_dataset_field(str(multi_path), "MainDataset", "Amount", "Revenue")
+
+    def test_other_datasets_field_is_untouched(self, multi_path):
+        from pbirb_mcp.ops.dataset import rename_dataset_field
+
+        add_calculated_field(str(multi_path), "LookupSet", "Amount", "=1")
+        add_calculated_field(str(multi_path), "LookupSet", "UsesIt", "=Fields!Amount.Value")
+        rename_dataset_field(str(multi_path), "MainDataset", "Amount", "Revenue")
+        lookup = get_dataset(str(multi_path), "LookupSet")
+        assert {f["name"]: f["value"] for f in lookup["fields"]}["UsesIt"] == (
+            "=Fields!Amount.Value"
+        )
+
+    def test_rewrites_parameter_value_field(self, multi_path):
+        from pbirb_mcp.ops.dataset import rename_dataset_field
+        from pbirb_mcp.ops.parameters import add_parameter
+
+        add_parameter(str(multi_path), "Key", "String", prompt="Key")
+        set_parameter_available_values(
+            str(multi_path),
+            "Key",
+            source="query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+            query_label_field="LookupKey",
+        )
+        result = rename_dataset_field(str(multi_path), "LookupSet", "LookupKey", "KeyCode")
+        assert result["references_rewritten"] == 2
+        text = multi_path.read_text("utf-8")
+        assert "<ValueField>KeyCode</ValueField>" in text
+        assert "<LabelField>KeyCode</LabelField>" in text
+
+    def test_refusals(self, multi_path):
+        from pbirb_mcp.ops.dataset import rename_dataset_field
+
+        before = multi_path.read_bytes()
+        with pytest.raises(ValueError, match="already exists"):
+            rename_dataset_field(str(multi_path), "MainDataset", "Amount", "ProductID")
+        with pytest.raises(ElementNotFoundError):
+            rename_dataset_field(str(multi_path), "MainDataset", "Nope", "X")
+        with pytest.raises(ValueError):
+            rename_dataset_field(str(multi_path), "MainDataset", "Amount", "1bad")
+        assert multi_path.read_bytes() == before
+
+
+class TestSetFieldType:
+    def test_sets_normalises_and_is_idempotent(self, rdl_path):
+        from pbirb_mcp.ops.dataset import set_field_type
+
+        result = set_field_type(str(rdl_path), "MainDataset", "Amount", "double")
+        assert result == {
+            "dataset": "MainDataset",
+            "field": "Amount",
+            "type_name": "System.Double",
+            "changed": True,
+        }
+        fields = {f["name"]: f for f in get_dataset(str(rdl_path), "MainDataset")["fields"]}
+        assert fields["Amount"]["type_name"] == "System.Double"
+        assert validate_report(str(rdl_path))["valid"]
+        _assert_noop_repeat(rdl_path, set_field_type, "MainDataset", "Amount", "System.Double")
+
+    def test_none_removes_and_adds_when_missing(self, rdl_path):
+        from pbirb_mcp.ops.dataset import set_field_type
+
+        assert set_field_type(str(rdl_path), "MainDataset", "Amount", None)["changed"] is True
+        _assert_noop_repeat(rdl_path, set_field_type, "MainDataset", "Amount", None)
+        assert set_field_type(str(rdl_path), "MainDataset", "Amount", "Int64")["changed"] is True
+        assert "<rd:TypeName>System.Int64</rd:TypeName>" in rdl_path.read_text("utf-8")
+
+    def test_unknown_type_refused(self, rdl_path):
+        from pbirb_mcp.ops.dataset import set_field_type
+
+        with pytest.raises(ValueError, match="unknown .NET type"):
+            set_field_type(str(rdl_path), "MainDataset", "Amount", "System.Money")
+        with pytest.raises(ElementNotFoundError):
+            set_field_type(str(rdl_path), "MainDataset", "Nope", "System.String")
+
+
+class TestSetDatasetOptions:
+    def test_sets_options_validates_and_is_idempotent(self, rdl_path):
+        from pbirb_mcp.ops.dataset import set_dataset_options
+
+        result = set_dataset_options(
+            str(rdl_path),
+            "MainDataset",
+            timeout=120,
+            case_sensitivity="True",
+            collation="Latin1_General",
+            accent_sensitivity="False",
+            kanatype_sensitivity="Auto",
+            width_sensitivity="False",
+        )
+        assert result["changed"] is True
+        assert result["options"] == {
+            "timeout": 120,
+            "case_sensitivity": "True",
+            "collation": "Latin1_General",
+            "accent_sensitivity": "False",
+            "kanatype_sensitivity": "Auto",
+            "width_sensitivity": "False",
+        }
+        assert "<Timeout>120</Timeout>" in rdl_path.read_text("utf-8")
+        assert validate_report(str(rdl_path))["valid"]
+        _assert_noop_repeat(
+            rdl_path, set_dataset_options, "MainDataset", timeout=120, collation="Latin1_General"
+        )
+
+    def test_empty_collation_removes_it(self, rdl_path):
+        from pbirb_mcp.ops.dataset import set_dataset_options
+
+        set_dataset_options(str(rdl_path), "MainDataset", collation="Latin1_General")
+        result = set_dataset_options(str(rdl_path), "MainDataset", collation="")
+        assert result["changed"] is True and result["options"]["collation"] is None
+
+    @pytest.mark.parametrize(
+        "kwargs,match",
+        [
+            ({}, "at least one"),
+            ({"timeout": -1}, ">= 0"),
+            ({"case_sensitivity": "yes"}, "CaseSensitivity"),
+        ],
+    )
+    def test_refusals(self, rdl_path, kwargs, match):
+        from pbirb_mcp.ops.dataset import set_dataset_options
+
+        with pytest.raises(ValueError, match=match):
+            set_dataset_options(str(rdl_path), "MainDataset", **kwargs)
+
+
+class TestDatasetAuthoringRegistration:
+    NAMES = {
+        "set_dataset_data_source",
+        "add_dataset",
+        "remove_dataset",
+        "rename_dataset",
+        "rename_dataset_field",
+        "set_field_type",
+        "set_dataset_options",
+    }
+
+    def test_registered_in_the_data_toolset(self):
+        from pbirb_mcp.core.toolsets import TOOLSETS
+
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        names = {t["name"] for t in listing["result"]["tools"]}
+        assert names >= self.NAMES
+        assert TOOLSETS["data"] >= self.NAMES
+
+    def test_set_dataset_options_via_jsonrpc(self, rdl_path):
+        srv = MCPServer()
+        register_all_tools(srv)
+        resp = srv.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "set_dataset_options",
+                    "arguments": {
+                        "path": str(rdl_path),
+                        "dataset_name": "MainDataset",
+                        "timeout": 5,
+                    },
+                },
+            }
+        )
+        assert resp["result"].get("isError") is not True
+        assert "<Timeout>5</Timeout>" in rdl_path.read_text("utf-8")

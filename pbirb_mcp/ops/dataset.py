@@ -28,8 +28,18 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset
-from pbirb_mcp.core.mutation import ChangeTracker, set_text_if_different
-from pbirb_mcp.core.names import MAX_IDENTIFIER_LENGTH, is_identifier, validate_identifier
+from pbirb_mcp.core.mutation import (
+    ChangeTracker,
+    remove_child_if_present,
+    set_node_text,
+    set_text_if_different,
+)
+from pbirb_mcp.core.names import (
+    MAX_IDENTIFIER_LENGTH,
+    is_identifier,
+    report_scope_names,
+    validate_identifier,
+)
 from pbirb_mcp.core.xpath import (
     RD_NS,
     RDL_NS,
@@ -41,6 +51,7 @@ from pbirb_mcp.core.xpath import (
 )
 from pbirb_mcp.ops import expr_walk
 from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
+from pbirb_mcp.ops.dax import tokenize as dax_tokenize
 from pbirb_mcp.ops.filter_types import (
     encode_filter_texts,
     filter_to_dict,
@@ -91,19 +102,27 @@ def _is_pbidataset_dataset(doc: RDLDocument, dataset: etree._Element) -> bool:
     for ds in doc.root.iter(f"{{{RDL_NS}}}DataSource"):
         if ds.get("Name") != ds_name:
             continue
-        cp = find_child(ds, "ConnectionProperties")
-        if cp is None:
-            return False
-        provider_node = find_child(cp, "DataProvider")
-        provider = provider_node.text if provider_node is not None else ""
-        if provider == "PBIDATASET":
-            return True
-        if provider == "SQL":
-            cs_node = find_child(cp, "ConnectString")
-            if cs_node is not None and cs_node.text and "powerbi://" in cs_node.text:
-                return True
-        return False
+        return _source_family(ds) == "Power BI"
     return False
+
+
+def _source_family(source: etree._Element) -> Optional[str]:
+    """``"Power BI"`` for a PBIDATASET source or the SQL + ``powerbi://``
+    XMLA shape (DAX; bare ``<QueryParameter Name>``), ``"SQL/other"`` for
+    any other provider (``@`` in both places), ``None`` when the source
+    has no ``<ConnectionProperties>`` (a shared reference)."""
+    cp = find_child(source, "ConnectionProperties")
+    if cp is None:
+        return None
+    provider_node = find_child(cp, "DataProvider")
+    provider = provider_node.text if provider_node is not None else ""
+    if provider == "PBIDATASET":
+        return "Power BI"
+    if provider == "SQL":
+        cs_node = find_child(cp, "ConnectString")
+        if cs_node is not None and cs_node.text and "powerbi://" in cs_node.text:
+            return "Power BI"
+    return "SQL/other"
 
 
 def _normalise_query_parameter_name(
@@ -1366,8 +1385,497 @@ def refresh_dataset_fields(
     }
 
 
+# ---- dataset authoring (#98) ---------------------------------------------
+
+
+def _data_sources(doc: RDLDocument) -> dict[str, etree._Element]:
+    out: dict[str, etree._Element] = {}
+    block = find_child(doc.root, "DataSources")
+    for ds in find_children(block, "DataSource") if block is not None else []:
+        if ds.get("Name"):
+            out.setdefault(ds.get("Name"), ds)
+    return out
+
+
+def _require_data_source(doc: RDLDocument, name: str) -> etree._Element:
+    sources = _data_sources(doc)
+    if name not in sources:
+        raise ElementNotFoundError(
+            f"DataSource {name!r} not found; data sources: {sorted(sources) or 'none'}"
+        )
+    return sources[name]
+
+
+def _dataset_names(doc: RDLDocument) -> list[str]:
+    block = find_child(doc.root, "DataSets")
+    return [d.get("Name") for d in find_children(block, "DataSet")] if block is not None else []
+
+
+def _check_new_dataset_name(doc: RDLDocument, name: str) -> None:
+    validate_identifier(name, "dataset")
+    if name in _dataset_names(doc):
+        raise ValueError(f"DataSet {name!r} already exists")
+    if name in report_scope_names(doc):
+        # A scope string ("Sum(..., 'X')") could no longer tell them apart.
+        raise ValueError(
+            f"{name!r} is already the name of a report item or group; pick another dataset name"
+        )
+
+
+def _locators(elements: Iterable[etree._Element]) -> list[str]:
+    out: list[str] = []
+    for el in elements:
+        loc = expr_walk.locator(el)
+        if loc not in out:
+            out.append(loc)
+    return out
+
+
+def _in_dataset(elem: etree._Element, dataset: etree._Element) -> bool:
+    cur: Optional[etree._Element] = elem
+    while cur is not None:
+        if cur is dataset:
+            return True
+        cur = cur.getparent()
+    return False
+
+
+def _dataset_name_nodes(doc: RDLDocument, name: str) -> list[etree._Element]:
+    """Every ``<DataSetName>`` naming ``name``: data regions (Tablix,
+    Chart, GaugePanel, MapDataRegion, CustomReportItem) and parameters'
+    ``DataSetReference``."""
+    return [el for el in doc.root.iter(q("DataSetName")) if (el.text or "").strip() == name]
+
+
+def set_dataset_data_source(path: str, dataset_name: str, data_source_name: str) -> dict[str, Any]:
+    """Point a dataset's ``<Query>/<DataSourceName>`` at another data source.
+
+    The source must exist. ``warnings`` flags a switch between a Power BI
+    source (DAX; bare ``<QueryParameter Name>``) and a SQL / other one
+    (``@`` in both places): the command text and the query-parameter
+    names probably need rewriting too. Same source again → ``changed:
+    false``, no write.
+    """
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, dataset_name)
+    query = _query(dataset)
+    new_source = _require_data_source(doc, data_source_name)
+    node = find_child(query, "DataSourceName")
+    previous = (node.text or "").strip() if node is not None else None
+    changed = set_text_if_different(query, "DataSourceName", data_source_name, order=_QUERY_ORDER)
+    warnings: list[str] = []
+    old_source = _data_sources(doc).get(previous or "")
+    if changed and old_source is not None:
+        old_family, new_family = _source_family(old_source), _source_family(new_source)
+        if old_family and new_family and old_family != new_family:
+            warnings.append(
+                f"provider family changes from {old_family} ({previous!r}) to {new_family} "
+                f"({data_source_name!r}): review the CommandText and the QueryParameter names "
+                "(Power BI: '@Name' in the DAX, bare 'Name' in the binding; SQL: '@Name' in both)."
+            )
+    if changed:
+        doc.save()
+    return {
+        "dataset": dataset_name,
+        "data_source": data_source_name,
+        "previous": previous,
+        "changed": changed,
+        "warnings": warnings,
+    }
+
+
+_QUERY_ORDER = ("DataSourceName", "CommandType", "CommandText", "QueryParameters", "Timeout")
+# DataSet children in Report Builder's order (the XSD allows any order).
+_DATASET_ORDER = (
+    "Query",
+    "Fields",
+    "Filters",
+    "CaseSensitivity",
+    "Collation",
+    "AccentSensitivity",
+    "KanatypeSensitivity",
+    "WidthSensitivity",
+)
+
+
+def _column_name(data_field: str) -> str:
+    """The column part of a DataField (``'Sales'[Amount (USD)]`` →
+    ``Amount (USD)``, ``[Total]`` → ``Total``) for :func:`rb_field_name`."""
+    brackets = [t for t in dax_tokenize(data_field) if t.kind == "bracket"]
+    return brackets[-1].value if brackets else data_field.strip()
+
+
+def add_dataset(
+    path: str,
+    name: str,
+    data_source_name: str,
+    command_text: str,
+    fields: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Create ``<DataSet Name><Query><DataSourceName/><CommandText/></Query>``.
+
+    ``name`` must be a valid identifier, not an existing dataset and not
+    a report item / group name (scope strings would be ambiguous); the
+    data source must exist; ``command_text`` (DAX for a Power BI source)
+    is stored verbatim. ``fields`` optionally seeds data-bound Fields from
+    DataField bindings (``Sales[Amount]``, ``[Total]``), named the way
+    Report Builder's Refresh Fields does (:func:`rb_field_name`);
+    :func:`refresh_dataset_fields` seeds them from the DAX instead.
+    ``warnings`` lists ``@Name`` parameters the DAX uses with no binding
+    yet (add them with :func:`add_query_parameter`).
+    """
+    if not isinstance(command_text, str) or not command_text.strip():
+        raise ValueError("command_text must be a non-empty query")
+    doc = RDLDocument.open(path)
+    _check_new_dataset_name(doc, name)
+    _require_data_source(doc, data_source_name)
+
+    seeded: list[tuple[str, str]] = []
+    taken: set[str] = set()
+    keys: set[str] = set()
+    for data_field in fields or []:
+        if not isinstance(data_field, str) or not data_field.strip():
+            raise ValueError("fields entries must be non-empty DataField strings")
+        key = normalize_data_field(data_field)
+        if key in keys:
+            raise ValueError(f"DataField {data_field!r} is listed twice")
+        keys.add(key)
+        field_name = rb_field_name(_column_name(data_field), taken)
+        taken.add(field_name)
+        seeded.append((field_name, data_field.strip()))
+
+    block = find_child(doc.root, "DataSets")
+    if block is None:
+        block = etree.Element(q("DataSets"))
+        anchor = find_child(doc.root, "DataSources")
+        if anchor is not None:
+            anchor.addnext(block)
+        else:
+            doc.root.insert(0, block)
+    dataset = etree.SubElement(block, q("DataSet"), Name=name)
+    query = etree.SubElement(dataset, q("Query"))
+    etree.SubElement(query, q("DataSourceName")).text = data_source_name
+    etree.SubElement(query, q("CommandText")).text = command_text  # verbatim (#75)
+    if seeded:
+        fields_root = etree.SubElement(dataset, q("Fields"))
+        for field_name, data_field in seeded:
+            field = etree.SubElement(fields_root, q("Field"), Name=field_name)
+            etree.SubElement(field, q("DataField")).text = data_field
+
+    warnings = _dataset_lint_warnings(doc, dataset)
+    doc.save()
+    return {
+        "dataset": name,
+        "kind": "DataSet",
+        "data_source": data_source_name,
+        "fields": [{"name": n, "data_field": df} for n, df in seeded],
+        "changed": True,
+        "warnings": warnings,
+    }
+
+
+def _dataset_lint_warnings(doc: RDLDocument, dataset: etree._Element) -> list[str]:
+    # Imported here: the lint package imports this module.
+    from pbirb_mcp.ops.lint_rules.query_parameters import dataset_warnings
+
+    return dataset_warnings(doc, dataset)
+
+
+def _dataset_consumers(doc: RDLDocument, name: str) -> list[etree._Element]:
+    """Elements outside the dataset that use it: ``<DataSetName>`` nodes
+    and expressions naming it as an aggregate / lookup scope."""
+    dataset = resolve_dataset(doc, name)
+    out = list(_dataset_name_nodes(doc, name))
+    out += [
+        elem
+        for elem, _t, _s, _c in expr_walk.dataset_scope_references(doc.root, name)
+        if not _in_dataset(elem, dataset)
+    ]
+    order = {el: i for i, el in enumerate(doc.root.iter())}
+    return sorted(out, key=lambda el: order.get(el, 0))
+
+
+def remove_dataset(path: str, name: str, force: bool = False) -> dict[str, Any]:
+    """Remove a ``<DataSet>``.
+
+    Refuses while anything uses it — a data region's or a parameter
+    ``DataSetReference``'s ``<DataSetName>``, or an aggregate / lookup
+    scope string (``Sum(…, "DS")``, ``Lookup(…, "DS")``) — listing up to
+    5 locators; ``force=True`` removes anyway. The empty ``<DataSets>``
+    block is dropped with the last dataset.
+    """
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, name)
+    consumers = _dataset_consumers(doc, name)
+    if consumers and not force:
+        locators = _locators(consumers)
+        elided = f" (+{len(locators) - 5} more)" if len(locators) > 5 else ""
+        raise ValueError(
+            f"DataSet {name!r} is still used from {len(locators)} location(s): "
+            f"{locators[:5]}{elided}. Pass force=True to remove anyway."
+        )
+    block = dataset.getparent()
+    block.remove(dataset)
+    if len(find_children(block, "DataSet")) == 0:
+        block.getparent().remove(block)
+    doc.save()
+    return {"removed": name, "force": force, "references": len(consumers), "changed": True}
+
+
+def _rewrite_tokens(text: str, tokens: list, replacement: str) -> str:
+    pieces: list[str] = []
+    pos = 0
+    for tok in sorted(tokens, key=lambda t: t.start):
+        pieces.append(text[pos : tok.start])
+        pieces.append(replacement)
+        pos = tok.end
+    pieces.append(text[pos:])
+    return "".join(pieces)
+
+
+def rename_dataset(path: str, old_name: str, new_name: str) -> dict[str, Any]:
+    """Rename a ``<DataSet>`` and rewrite every reference to it: each
+    ``<DataSetName>`` (data regions, parameter ``DataSetReference``) and
+    each aggregate / lookup scope string (``Sum(…, "Old")``,
+    ``Lookup(…, "Old")``, ``CountRows("Old")``). Names in other string
+    literals and comments are left alone. ``new_name`` is checked like
+    :func:`add_dataset`'s ``name``. Atomic.
+    """
+    if new_name == old_name:
+        raise ValueError("new_name and old_name are identical; nothing to rename.")
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, old_name)
+    _check_new_dataset_name(doc, new_name)
+
+    rewrites: list[tuple[etree._Element, str]] = [
+        (el, new_name) for el in _dataset_name_nodes(doc, old_name)
+    ]
+    quoted = '"' + new_name.replace('"', '""') + '"'
+    for elem, text, _sig, calls in expr_walk.dataset_scope_references(doc.root, old_name):
+        rewrites.append((elem, _rewrite_tokens(text, [c.scope_token for c in calls], quoted)))
+
+    dataset.set("Name", new_name)
+    for el, text in rewrites:
+        el.text = text
+    doc.save()
+    return {
+        "old_name": old_name,
+        "new_name": new_name,
+        "references_rewritten": len(rewrites),
+        "changed": True,
+    }
+
+
+def _find_field(dataset: etree._Element, field_name: str) -> etree._Element:
+    fields_root = find_child(dataset, "Fields")
+    for f in find_children(fields_root, "Field") if fields_root is not None else []:
+        if f.get("Name") == field_name:
+            return f
+    raise ElementNotFoundError(f"field {field_name!r} not found in dataset {dataset.get('Name')!r}")
+
+
+def rename_dataset_field(
+    path: str, dataset_name: str, old_name: str, new_name: str
+) -> dict[str, Any]:
+    """Rename a ``<Field>`` and rewrite its consumers: ``Fields!Old.<member>``
+    and ``Fields("Old")`` in expressions evaluated against this dataset
+    (the scope-aware resolution of
+    :func:`pbirb_mcp.ops.expr_walk.find_field_references`), and parameter
+    ``DataSetReference`` ValueField / LabelField. The ``<DataField>``
+    binding to the query column is unchanged.
+
+    A reference whose dataset can't be resolved statically is rewritten
+    only when no other dataset has a field ``old_name``; otherwise it is
+    left alone and listed in ``warnings``. Atomic.
+    """
+    if new_name == old_name:
+        raise ValueError("new_name and old_name are identical; nothing to rename.")
+    validate_identifier(new_name, "field")
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, dataset_name)
+    field = _find_field(dataset, old_name)
+    siblings = {f.get("Name") for f in field.getparent() if isinstance(f.tag, str)}
+    if new_name in siblings:
+        raise ValueError(f"field {new_name!r} already exists in dataset {dataset_name!r}")
+    others = expr_walk.ScopeIndex(doc.root).datasets
+    elsewhere = any(old_name in flds for ds, flds in others.items() if ds != dataset_name)
+
+    rewrites: list[tuple[etree._Element, str]] = []
+    warnings: list[str] = []
+    for elem, text, sig, refs in expr_walk.iter_field_expression_references(
+        doc.root, dataset_name, old_name
+    ):
+        chosen = [ref for ref, resolved, _ds in refs if resolved or not elsewhere]
+        if len(chosen) < len(refs):
+            warnings.append(
+                f"{expr_walk.locator(elem)}: left a reference to {old_name!r} alone — its "
+                f"dataset can't be resolved and another dataset has a field {old_name!r}"
+            )
+        if chosen:
+            rewrites.append(
+                (elem, expr_walk.rename_parameter_references(text, sig, chosen, new_name))
+            )
+    for slot in expr_walk.field_dataset_reference_slots(doc.root, dataset_name, old_name):
+        rewrites.append((slot, new_name))
+
+    field.set("Name", new_name)
+    for el, text in rewrites:
+        el.text = text
+    doc.save()
+    return {
+        "dataset": dataset_name,
+        "old_name": old_name,
+        "new_name": new_name,
+        "references_rewritten": len(rewrites),
+        "changed": True,
+        "warnings": warnings,
+    }
+
+
+# .NET types Report Builder writes in <rd:TypeName>.
+FIELD_TYPE_NAMES: tuple[str, ...] = (
+    "System.String",
+    "System.Boolean",
+    "System.Char",
+    "System.Byte",
+    "System.SByte",
+    "System.Int16",
+    "System.Int32",
+    "System.Int64",
+    "System.UInt16",
+    "System.UInt32",
+    "System.UInt64",
+    "System.Single",
+    "System.Double",
+    "System.Decimal",
+    "System.DateTime",
+    "System.DateTimeOffset",
+    "System.TimeSpan",
+    "System.Guid",
+    "System.Object",
+    "System.Byte[]",
+)
+_FIELD_TYPES_BY_KEY = {t.casefold(): t for t in FIELD_TYPE_NAMES} | {
+    t[len("System.") :].casefold(): t for t in FIELD_TYPE_NAMES
+}
+
+
+def set_field_type(
+    path: str, dataset_name: str, field_name: str, type_name: Optional[str]
+) -> dict[str, Any]:
+    """Set a field's ``<rd:TypeName>``. ``type_name`` is a .NET type
+    (``System.Int64``, or ``Int64`` / any case — written in the canonical
+    ``System.`` form; see :data:`FIELD_TYPE_NAMES`); ``None`` removes it.
+    The type drives the type checks of the filter tools. No-op when
+    already set (``changed: false``)."""
+    canonical: Optional[str] = None
+    if type_name is not None:
+        canonical = _FIELD_TYPES_BY_KEY.get(str(type_name).strip().casefold())
+        if canonical is None:
+            raise ValueError(
+                f"unknown .NET type {type_name!r}; valid: {', '.join(FIELD_TYPE_NAMES)}"
+            )
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, dataset_name)
+    field = _find_field(dataset, field_name)
+    node = field.find(qrd("TypeName"))
+    if canonical is None:
+        changed = node is not None
+        if node is not None:
+            field.remove(node)
+    elif node is None:
+        etree.SubElement(field, qrd("TypeName")).text = canonical
+        changed = True
+    else:
+        changed = set_node_text(node, canonical)
+    if changed:
+        doc.save()
+    return {
+        "dataset": dataset_name,
+        "field": field_name,
+        "type_name": canonical,
+        "changed": changed,
+    }
+
+
+_SENSITIVITY_VALUES = ("True", "False", "Auto")
+
+
+def set_dataset_options(
+    path: str,
+    dataset_name: str,
+    timeout: Optional[int] = None,
+    case_sensitivity: Optional[str] = None,
+    collation: Optional[str] = None,
+    accent_sensitivity: Optional[str] = None,
+    kanatype_sensitivity: Optional[str] = None,
+    width_sensitivity: Optional[str] = None,
+) -> dict[str, Any]:
+    """Set dataset properties: the query ``<Timeout>`` (seconds, 0 = none)
+    and ``<CaseSensitivity>`` / ``<Collation>`` / ``<AccentSensitivity>`` /
+    ``<KanatypeSensitivity>`` / ``<WidthSensitivity>`` (True / False /
+    Auto; collation a name such as ``Latin1_General``, ``""`` removes it).
+    ``None`` leaves an option alone; at least one is required. Returns the
+    options now set; ``changed: false`` (no write) when nothing differs.
+    """
+    sens = {
+        "CaseSensitivity": case_sensitivity,
+        "AccentSensitivity": accent_sensitivity,
+        "KanatypeSensitivity": kanatype_sensitivity,
+        "WidthSensitivity": width_sensitivity,
+    }
+    if timeout is None and collation is None and all(v is None for v in sens.values()):
+        raise ValueError("pass at least one option to set")
+    if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, int)):
+        raise ValueError("timeout must be a whole number of seconds")
+    if timeout is not None and timeout < 0:
+        raise ValueError("timeout must be >= 0 (0 = no timeout)")
+    for local, value in sens.items():
+        if value is not None and value not in _SENSITIVITY_VALUES:
+            raise ValueError(f"{local} must be one of {list(_SENSITIVITY_VALUES)}; got {value!r}")
+
+    doc = RDLDocument.open(path)
+    dataset = resolve_dataset(doc, dataset_name)
+    query = _query(dataset)
+    changed = False
+    if timeout is not None:
+        changed |= set_text_if_different(query, "Timeout", str(timeout), order=_QUERY_ORDER)
+    if collation is not None:
+        if collation.strip():
+            changed |= set_text_if_different(
+                dataset, "Collation", collation.strip(), order=_DATASET_ORDER
+            )
+        else:
+            changed |= remove_child_if_present(dataset, "Collation")
+    for local, value in sens.items():
+        if value is not None:
+            changed |= set_text_if_different(dataset, local, value, order=_DATASET_ORDER)
+    if changed:
+        doc.save()
+
+    def text(parent: etree._Element, local: str) -> Optional[str]:
+        node = find_child(parent, local)
+        return node.text if node is not None else None
+
+    timeout_text = text(query, "Timeout")
+    return {
+        "dataset": dataset_name,
+        "options": {
+            "timeout": int(timeout_text) if timeout_text and timeout_text.isdigit() else None,
+            "case_sensitivity": text(dataset, "CaseSensitivity"),
+            "collation": text(dataset, "Collation"),
+            "accent_sensitivity": text(dataset, "AccentSensitivity"),
+            "kanatype_sensitivity": text(dataset, "KanatypeSensitivity"),
+            "width_sensitivity": text(dataset, "WidthSensitivity"),
+        },
+        "changed": changed,
+    }
+
+
 __all__ = [
+    "FIELD_TYPE_NAMES",
     "add_calculated_field",
+    "add_dataset",
     "add_dataset_field",
     "add_dataset_filter",
     "add_query_parameter",
@@ -1376,8 +1884,14 @@ __all__ = [
     "rb_field_name",
     "refresh_dataset_fields",
     "remove_calculated_field",
+    "remove_dataset",
     "remove_dataset_filter",
     "remove_query_parameter",
+    "rename_dataset",
+    "rename_dataset_field",
+    "set_dataset_data_source",
+    "set_dataset_options",
+    "set_field_type",
     "update_dataset_query",
     "update_query_parameter",
 ]

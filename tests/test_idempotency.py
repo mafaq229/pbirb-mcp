@@ -221,6 +221,31 @@ CASES: dict[str, Case] = {
     "rename_data_source": Case(
         {"old_name": "PowerBIDataset", "new_name": "MainSource"}, second="refuses"
     ),
+    # dataset authoring (#98)
+    "set_dataset_data_source": Case(
+        {"dataset_name": "MainDataset", "data_source_name": "LookupDataset"}, fixture=MULTI_DS
+    ),
+    "add_dataset": Case(
+        {
+            "name": "Lookup2",
+            "data_source_name": "PowerBIDataset",
+            "command_text": "EVALUATE 'Lookup'",
+            "fields": ["Lookup[Key]"],
+        },
+        second="refuses",
+    ),
+    "remove_dataset": Case({"name": "LookupSet"}, second="refuses", fixture=MULTI_DS),
+    "rename_dataset": Case({"old_name": "MainDataset", "new_name": "Sales"}, second="refuses"),
+    "rename_dataset_field": Case(
+        {"dataset_name": "MainDataset", "old_name": "Amount", "new_name": "Revenue"},
+        second="refuses",
+    ),
+    "set_field_type": Case(
+        {"dataset_name": "MainDataset", "field_name": "Amount", "type_name": "System.Double"}
+    ),
+    "set_dataset_options": Case(
+        {"dataset_name": "MainDataset", "timeout": 30, "case_sensitivity": "True"}
+    ),
     "remove_dataset_filter": Case(
         {"dataset_name": "MainDataset", "filter_index": 0},
         second="refuses",

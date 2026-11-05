@@ -196,6 +196,12 @@ def _rule(rule: str):
     return run
 
 
+def dataset_warnings(doc, dataset: etree._Element) -> list[str]:
+    """Every finding of both rules for ``dataset``, as warning strings."""
+    multi = _multi_value_param_names(doc.root)
+    return [f"{i['rule']}: {i['message']}" for _k, i in _dataset_findings(doc, dataset, multi)]
+
+
 def binding_warnings(doc, dataset: etree._Element, name: str) -> list[str]:
     """The findings of both rules about binding / ``@name`` ``name`` of
     ``dataset``, as warning strings, plus ``Parameters!X`` references in

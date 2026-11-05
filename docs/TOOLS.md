@@ -231,6 +231,42 @@ Append a data-bound `<Field>` to a dataset's `<Fields>` block. Writes `<DataFiel
 
 Sync a dataset's `<Fields>` block against the shape detected in its DAX `<CommandText>`. Eliminates the manual 'open Report Builder → right-click → Refresh Fields' step after a query rewrite. Matches existing Fields to the query's result columns by `<DataField>` (Table[Col] / [Alias]), not by Name. Adds a Field per unbound column the way Report Builder does: Name sanitised (Amount (USD) -> Amount__USD_; duplicates Name1, Name2 ...), DataField Table[Col] or [Alias]. Lists orphans without auto-removing (caller decides what to drop). Returns {added: [{name, data_field}], orphans: [{name, data_field}], unchanged: [names], warnings}. When the DAX can't be fully analysed (e.g. bare EVALUATE 'Table') nothing is added and warnings explain why.
 
+### `set_dataset_data_source`
+
+*idempotent*
+
+Point a dataset's `<Query>/<DataSourceName>` at another data source — e.g. to retire a duplicate, unused source. The source must exist (the error lists the data sources). `warnings` flags a switch between provider families: a Power BI source (PBIDATASET, or SQL with a `powerbi://` connect string — DAX, `@Name` in the query and a bare `Name` in `<QueryParameter>`) and a SQL / other one (`@Name` in both places); the command text and query-parameter names probably need rewriting too. Returns {dataset, data_source, previous, changed, warnings}; the same source again → changed: false, no write.
+
+### `add_dataset`
+
+Create `<DataSet Name><Query><DataSourceName/><CommandText/></Query></DataSet>` — e.g. the lookup dataset a cascading parameter's available values need. `name` must be a valid identifier that is neither an existing dataset nor a report item / group name (scope strings such as `Sum(…, "X")` would be ambiguous); the data source must exist; `command_text` (DAX for a Power BI source) is stored verbatim and must not be empty. `fields` optionally seeds data-bound Fields from DataField bindings (`Sales[Amount]`, `'Sales'[Region (EU)]`, `[Total]`), named the way Report Builder's Refresh Fields does (`Region__EU_`, duplicates `Name1` …); refresh_dataset_fields seeds them from the DAX instead. `warnings` lists `@Name` parameters the DAX uses without a QueryParameter (add them with add_query_parameter). Returns {dataset, kind: 'DataSet', data_source, fields: [{name, data_field}], changed, warnings}.
+
+### `remove_dataset`
+
+*destructive*
+
+Remove a `<DataSet>`. Refuses while anything still uses it — a `<DataSetName>` of a data region (Tablix, Chart, GaugePanel, map, CustomReportItem) or of a parameter's ValidValues / DefaultValue `DataSetReference`, or an aggregate / lookup scope string (`Sum(…, "DS")`, `Lookup(…, "DS")`, `CountRows("DS")`) outside the dataset itself — and lists up to 5 locators; force=true removes anyway. The empty `<DataSets>` block is dropped with the last dataset. Returns {removed, force, references, changed}.
+
+### `rename_dataset`
+
+Rename a `<DataSet>` and rewrite every reference to it: each `<DataSetName>` (data regions and parameter DataSetReference) and each aggregate / lookup / scope-function scope string naming it (`Sum(…, "Old")`, `Lookup(…, "Old")`, `CountRows("Old")`, `RowNumber("Old")`). Names in other string literals and comments are left alone. new_name is checked like add_dataset's name. Atomic. Returns {old_name, new_name, references_rewritten (elements rewritten), changed}.
+
+### `rename_dataset_field`
+
+Rename a `<Field>` of a dataset and rewrite its consumers — the references remove_dataset_field looks for: `Fields!<old>.<member>` and `Fields("<old>")` in expressions evaluated against this dataset (aggregate / lookup scope argument, else the data region's DataSetName, else the DataSet itself), and a parameter DataSetReference's ValueField / LabelField. Same-named fields of other datasets are untouched; names in string literals and comments too. A reference whose dataset can't be resolved statically is rewritten only when no other dataset has a field of that name, otherwise left alone and reported in `warnings`. The `<DataField>` (the query column binding) doesn't change. Atomic. Returns {dataset, old_name, new_name, references_rewritten, changed, warnings}.
+
+### `set_field_type`
+
+*idempotent*
+
+Set a field's `<rd:TypeName>` — the .NET type the filter tools' type checks read. type_name is one of System.String, Boolean, Char, Byte, SByte, Int16, Int32, Int64, UInt16, UInt32, UInt64, Single, Double, Decimal, DateTime, DateTimeOffset, TimeSpan, Guid, Object, Byte[] (with or without `System.`, any case; written as `System.X`); null removes the element. Returns {dataset, field, type_name, changed}.
+
+### `set_dataset_options`
+
+*idempotent*
+
+Set dataset properties: timeout (the query `<Timeout>`, seconds, 0 = none), collation (`<Collation>`, e.g. Latin1_General; "" removes it) and case_sensitivity / accent_sensitivity / kanatype_sensitivity / width_sensitivity (True / False / Auto). Omitted options are left alone; at least one is required. Returns {dataset, options: {timeout, case_sensitivity, collation, accent_sensitivity, kanatype_sensitivity, width_sensitivity}, changed}; nothing different → changed: false, no write.
+
 ### `remove_query_parameter`
 
 *destructive*
