@@ -225,7 +225,7 @@ Report parameter declarations: name, data type, prompt, flags.
 
 *idempotent*
 
-Reorder `<ReportParameter>` children to match the supplied names list. names MUST be a permutation of every existing parameter — no missing, no duplicates, no unknown names. When a `<ReportParametersLayout>` exists, its CellDefinition entries are reordered in lockstep so the parameter pane shows fields in the new declaration order. RowIndex / ColumnIndex are not recomputed (RB's layout grid is independent of declaration order). Returns {order, kind, changed: bool}; same order → no save.
+Reorder `<ReportParameter>` children to match the supplied names list. names MUST be a permutation of every existing parameter — no missing, no duplicates, no unknown names. Refuses (naming each `dependant -> dependency` pair) an order that declares a parameter before one it depends on: a Parameters! reference in its DefaultValue / ValidValues, or in the lookup dataset (query parameters, filters) its DataSetReference points at — Report Builder evaluates parameters in declaration order and rejects forward dependencies. The same graph drives lint's parameter-forward-dependency rule. The parameter pane's positions come from each cell's RowIndex / ColumnIndex, so by default the pane looks the same afterwards (the CellDefinition elements are reordered in lockstep but keep their slots); reflow_layout=true rewrites the slots row-major in the new order (wrapping at NumberOfColumns; NumberOfRows set to fit). Returns {order, kind, changed, layout_reflowed}; nothing to do → no save.
 
 ### `set_parameter_layout`
 
@@ -253,7 +253,7 @@ Create a new ReportParameter with a minimal valid declaration. Appends to `<Repo
 
 *destructive*
 
-Remove a ReportParameter by name. Refuses (lists offending locators) if the parameter is still referenced anywhere in the report — Parameters!`<name>` with any member (.Value, .Label, .Count, .IsMultiValue …), Parameters("`<name>`"), or Report.Parameters… in the `<Code>` block — in any expression (textboxes, query-parameter values, filters, other parameters' defaults / valid values, subreport and drillthrough parameters …). References inside the parameter's own declaration, string literals and comments don't count. Pass force=True to remove anyway.
+Remove a ReportParameter by name. Refuses (lists offending locators) if the parameter is still referenced anywhere in the report — Parameters!`<name>` with any member (.Value, .Label, .Count, .IsMultiValue …), Parameters("`<name>`"), or Report.Parameters… in the `<Code>` block — in any expression (textboxes, query-parameter values, filters, other parameters' defaults / valid values, subreport and drillthrough parameters …). References inside the parameter's own declaration, string literals and comments don't count. Pass force=True to remove anyway. The parameter's pane cell is dropped, leaving a hole; compact_layout=true re-packs the remaining cells row-major in their current slot order and shrinks NumberOfRows. Returns {parameter, removed, force, layout_synced, layout_compacted}.
 
 ### `rename_parameter`
 
@@ -263,7 +263,7 @@ Rename a ReportParameter and rewrite every reference to it, in the same forms re
 
 *idempotent*
 
-Bring `<ReportParametersLayout>/<GridLayoutDefinition>/<CellDefinitions>` into sync with `<ReportParameters>`. Drops cells whose ParameterName no longer exists; appends cells for parameters that have no entry, placed at the next free (row, col) slot. add_parameter / remove_parameter / rename_parameter call this internally; the standalone tool repairs reports whose layout drifted. No-op when the report has no `<ReportParametersLayout>`. Returns {added, removed}.
+Bring `<ReportParametersLayout>/<GridLayoutDefinition>/<CellDefinitions>` into sync with `<ReportParameters>`. Drops cells whose ParameterName no longer exists (and a second cell for one parameter); moves cells that share a (row, column) slot with an earlier cell or sit outside the grid (ColumnIndex ≥ NumberOfColumns, a missing or negative index); appends cells for parameters that have no entry. Moved and new cells go to the next free slot after the last occupied one, wrapping at NumberOfColumns; NumberOfRows grows to fit (a RowIndex beyond it is kept). add_parameter / remove_parameter / rename_parameter call this internally; the standalone tool repairs reports whose layout drifted. No-op when the report has no `<ReportParametersLayout>`. Returns {added, removed, relocated: [{parameter, from, to, reason}], grid_problems (what was wrong before the repair: duplicate-slot / column-out-of-range / row-out-of-range / invalid-index), changed}. Lint's parameter-layout-out-of-sync rule reports the same grid problems.
 
 ### `set_parameter_available_values`
 

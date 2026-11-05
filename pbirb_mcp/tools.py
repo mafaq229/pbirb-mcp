@@ -769,9 +769,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="reorder_parameters",
         description=(
-            "Reorder the report parameters (their prompt order). names must list "
-            "every parameter exactly once; the parameter pane layout is reordered "
-            "to match."
+            "Reorder the report parameters (declaration order). names must list "
+            "every parameter exactly once; refuses an order that puts a parameter "
+            "before one its defaults / available values depend on. The pane keeps "
+            "its cell positions unless reflow_layout=true."
         ),
         input_schema={
             "type": "object",
@@ -782,6 +783,7 @@ def register_all_tools(server: MCPServer) -> None:
                     "items": {"type": "string"},
                     "minItems": 1,
                 },
+                "reflow_layout": {"type": "boolean", "default": False},
             },
             "required": ["path", "names"],
             "additionalProperties": False,
@@ -2597,7 +2599,8 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Remove a report parameter. Refuses while it is still referenced in "
             "any form (Parameters!<name>.Value/.Label/.Count/.IsMultiValue, "
-            'Parameters("<name>"); lists where) unless force=true.'
+            'Parameters("<name>"); lists where) unless force=true. '
+            "compact_layout=true re-packs the parameter pane."
         ),
         input_schema={
             "type": "object",
@@ -2605,6 +2608,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "name": {"type": "string"},
                 "force": {"type": "boolean", "default": False},
+                "compact_layout": {"type": "boolean", "default": False},
             },
             "required": ["path", "name"],
             "additionalProperties": False,
@@ -2636,9 +2640,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="sync_parameter_layout",
         description=(
-            "Repair the parameter pane layout: drop cells for removed parameters "
-            "and add cells for missing ones. No-op without a layout. "
-            "add/remove/rename_parameter already do this."
+            "Repair the parameter pane layout: drop cells for removed parameters, "
+            "add cells for missing ones, move cells that share a slot or sit "
+            "outside the grid. No-op without a layout. add/remove/rename_parameter "
+            "already do this."
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=parameters.sync_parameter_layout,

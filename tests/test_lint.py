@@ -472,6 +472,24 @@ class TestParameterLayoutOutOfSync:
         result = lint_report(str(rdl_path), rules=["parameter-layout-out-of-sync"])
         assert _rule_count(result, "parameter-layout-out-of-sync") == 1
 
+    def test_fires_on_duplicate_slot_and_out_of_range_column(self, rdl_path):
+        """#74: equal counts but a broken grid."""
+        doc = RDLDocument.open(rdl_path)
+        _inject_parameter_layout(doc, len(doc.root.find(q("ReportParameters"))))
+        cells = list(doc.root.iter(q("CellDefinition")))
+        cells[1].find(q("ColumnIndex")).text = "0"  # same slot as cells[0]
+        _save(doc)
+        result = lint_report(str(rdl_path), rules=["parameter-layout-out-of-sync"])
+        [issue] = result["issues"]
+        assert "duplicate-slot" in issue["message"]
+
+        cells = list(doc.root.iter(q("CellDefinition")))
+        cells[1].find(q("ColumnIndex")).text = "9"  # NumberOfColumns is 4
+        _save(doc)
+        result = lint_report(str(rdl_path), rules=["parameter-layout-out-of-sync"])
+        [issue] = result["issues"]
+        assert "column-out-of-range" in issue["message"]
+
 
 # ---- dangling parameter references (#73) --------------------------------
 

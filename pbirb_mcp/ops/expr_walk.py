@@ -22,6 +22,8 @@ Public API::
     parameter_references(tokens, name=None)            # Parameters!X / ("X") / Report.Parameters…
     iter_parameter_references(root, name=None)         # (elem, text, tokens, refs), incl. <Code>
     rename_parameter_references(text, tokens, refs, new)
+    parameter_dependency_edges(root) / parameter_dependencies(root)
+    forward_dependencies(order, edges)                 # dependants declared before a dependency
 
 All token indices refer to the *significant* token list (whitespace and
 comments dropped) — what :func:`expression_tokens` returns and what
@@ -659,6 +661,76 @@ def iter_parameter_references(
             yield code, text, sig, refs
 
 
+def parameter_dependency_edges(root: etree._Element) -> dict[str, list[tuple[str, str]]]:
+    """For each ``<ReportParameter>`` (declaration order), the parameters
+    it depends on as ``(dependency, via)`` pairs, in document order (may
+    repeat). Sources: expressions in its ``<DefaultValue>`` /
+    ``<ValidValues>``, and — for a ``<DataSetReference>`` there — every
+    ``Parameters!`` reference in that dataset (its query parameters,
+    filters, calculated fields). ``via`` says which (``"DefaultValue"``,
+    ``"ValidValues dataset 'X'"`` …). Report Builder evaluates
+    parameters in declaration order, so a dependency must be declared
+    earlier."""
+    ns = etree.QName(root).namespace
+
+    def kids(elem: etree._Element, local: str) -> list:
+        return _children(elem, ns, local)
+
+    def names_in(elem: etree._Element) -> list[str]:
+        return [r.name for _e, _t, _s, refs in iter_parameter_references(elem) for r in refs]
+
+    datasets: dict[str, etree._Element] = {}
+    for block in kids(root, "DataSets"):
+        for ds in kids(block, "DataSet"):
+            if ds.get("Name"):
+                datasets.setdefault(ds.get("Name"), ds)
+    out: dict[str, list[tuple[str, str]]] = {}
+    for block in kids(root, "ReportParameters"):
+        for param in kids(block, "ReportParameter"):
+            pname = param.get("Name")
+            if not pname:
+                continue
+            deps: list[tuple[str, str]] = []
+            for tag in ("DefaultValue", "ValidValues"):
+                for section in kids(param, tag):
+                    deps.extend((dep, tag) for dep in names_in(section))
+                    for dsref in section.iter(f"{{{ns}}}DataSetReference"):
+                        ds_name = ""
+                        for n in kids(dsref, "DataSetName"):
+                            ds_name = (n.text or "").strip()
+                        ds = datasets.get(ds_name)
+                        if ds is not None:
+                            via = f"{tag} dataset {ds_name!r}"
+                            deps.extend((dep, via) for dep in names_in(ds))
+            out.setdefault(pname, deps)
+    return out
+
+
+def parameter_dependencies(root: etree._Element) -> dict[str, set]:
+    """``{parameter: {parameters it depends on}}`` (see
+    :func:`parameter_dependency_edges`)."""
+    return {p: {d for d, _via in edges} for p, edges in parameter_dependency_edges(root).items()}
+
+
+def forward_dependencies(
+    order: Sequence[str], edges: dict[str, list[tuple[str, str]]]
+) -> list[tuple[str, str, str]]:
+    """``(parameter, dependency, via)`` for each dependency declared at or
+    after its dependant in ``order`` (``dependency == parameter`` is a
+    self-dependency). Unknown names are ignored; each pair once."""
+    pos = {n: i for i, n in enumerate(order)}
+    out = []
+    for name in order:
+        seen: set = set()
+        for dep, via in edges.get(name, ()):
+            j = pos.get(dep)
+            if j is None or j < pos[name] or dep in seen:
+                continue
+            seen.add(dep)
+            out.append((name, dep, via))
+    return out
+
+
 __all__ = [
     "AGGREGATE",
     "Call",
@@ -677,8 +749,11 @@ __all__ = [
     "locator",
     "references",
     "scope_region",
-    # report-parameter references (#73)
+    # report-parameter references / dependencies (#73, #74)
+    "forward_dependencies",
     "iter_parameter_references",
+    "parameter_dependencies",
+    "parameter_dependency_edges",
     "parameter_references",
     "rename_parameter_references",
 ]

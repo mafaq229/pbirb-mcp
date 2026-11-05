@@ -211,13 +211,135 @@ class TestStandaloneSyncTool:
         _inject_layout(rdl_path, ["DateFrom", "DateTo"], columns_per_row=4)
         before_bytes = rdl_path.read_bytes()
         result = sync_parameter_layout(path=str(rdl_path))
-        assert result == {"added": [], "removed": [], "changed": False}
+        assert result == {
+            "added": [],
+            "removed": [],
+            "relocated": [],
+            "grid_problems": [],
+            "changed": False,
+        }
         # In-sync → file untouched.
         assert rdl_path.read_bytes() == before_bytes
 
     def test_no_layout_block_no_op(self, rdl_path):
         result = sync_parameter_layout(path=str(rdl_path))
-        assert result == {"added": [], "removed": [], "changed": False}
+        assert result == {
+            "added": [],
+            "removed": [],
+            "relocated": [],
+            "grid_problems": [],
+            "changed": False,
+        }
+
+
+# ---- grid integrity (#74) -------------------------------------------------
+
+
+def _set_cell(rdl_path: Path, name: str, row: int, col: int) -> None:
+    doc = RDLDocument.open(rdl_path)
+    for cell in doc.root.iter(q("CellDefinition")):
+        if find_child(cell, "ParameterName").text == name:
+            find_child(cell, "RowIndex").text = str(row)
+            find_child(cell, "ColumnIndex").text = str(col)
+    doc.save()
+
+
+def _slots(rdl_path: Path) -> dict[str, tuple[int, int]]:
+    doc = RDLDocument.open(rdl_path)
+    return {
+        find_child(c, "ParameterName").text: (
+            int(find_child(c, "RowIndex").text),
+            int(find_child(c, "ColumnIndex").text),
+        )
+        for c in doc.root.iter(q("CellDefinition"))
+    }
+
+
+class TestGridIntegrity:
+    def _three(self, rdl_path: Path) -> None:
+        add_parameter(str(rdl_path), "Region", "String")
+        set_parameter_layout(str(rdl_path), 1, 3, ["DateFrom", "DateTo", "Region"])
+
+    def test_sync_reports_and_repairs_duplicate_and_out_of_range(self, rdl_path):
+        from pbirb_mcp.ops.lint import lint_report
+        from pbirb_mcp.ops.validate import validate_report
+
+        self._three(rdl_path)
+        _set_cell(rdl_path, "DateTo", 0, 0)  # shares DateFrom's slot
+        _set_cell(rdl_path, "Region", 0, 7)  # beyond NumberOfColumns=3
+        lint = lint_report(str(rdl_path), rules=["parameter-layout-out-of-sync"])["issues"]
+        messages = " ".join(i["message"] for i in lint)
+        assert "duplicate-slot" in messages and "column-out-of-range" in messages
+
+        result = sync_parameter_layout(str(rdl_path))
+        assert {p["problem"] for p in result["grid_problems"]} == {
+            "duplicate-slot",
+            "column-out-of-range",
+        }
+        assert [r["parameter"] for r in result["relocated"]] == ["DateTo", "Region"]
+        assert result["changed"] is True
+        assert _slots(rdl_path) == {"DateFrom": (0, 0), "DateTo": (0, 1), "Region": (0, 2)}
+        assert lint_report(str(rdl_path), rules=["parameter-layout-out-of-sync"])["issues"] == []
+        assert validate_report(str(rdl_path))["valid"]
+        # Repaired: a second call is a no-op.
+        assert sync_parameter_layout(str(rdl_path))["changed"] is False
+
+    def test_relocation_continues_after_the_last_slot_and_wraps(self, rdl_path):
+        self._three(rdl_path)
+        _set_cell(rdl_path, "DateTo", 0, 0)  # collides with DateFrom; Region keeps (0, 2)
+        result = sync_parameter_layout(str(rdl_path))
+        assert result["relocated"][0]["to"] == [1, 0]
+        assert _grid_dim(_layout_grid(rdl_path), "NumberOfRows") == 2
+
+    def test_row_beyond_number_of_rows_grows_the_grid(self, rdl_path):
+        from pbirb_mcp.ops.lint import lint_report
+
+        self._three(rdl_path)
+        _set_cell(rdl_path, "Region", 2, 0)
+        [issue] = lint_report(str(rdl_path), rules=["parameter-layout-out-of-sync"])["issues"]
+        assert "row-out-of-range" in issue["message"]
+        result = sync_parameter_layout(str(rdl_path))
+        assert result["relocated"] == [] and result["changed"] is True
+        assert _grid_dim(_layout_grid(rdl_path), "NumberOfRows") == 3
+        assert _slots(rdl_path)["Region"] == (2, 0)
+
+    def test_negative_index_is_flagged_and_moved(self, rdl_path):
+        from pbirb_mcp.ops.lint import lint_report
+
+        self._three(rdl_path)
+        _set_cell(rdl_path, "DateTo", -1, 0)
+        [issue] = lint_report(str(rdl_path), rules=["parameter-layout-out-of-sync"])["issues"]
+        assert "invalid-index" in issue["message"]
+        sync_parameter_layout(str(rdl_path))
+        assert _slots(rdl_path)["DateTo"] == (1, 0)
+
+    def test_clean_grid_has_no_problems(self, rdl_path):
+        from pbirb_mcp.ops.lint import lint_report
+
+        self._three(rdl_path)
+        assert lint_report(str(rdl_path), rules=["parameter-layout-out-of-sync"])["issues"] == []
+
+
+class TestRemoveCompactsLayout:
+    def test_default_leaves_a_hole(self, rdl_path):
+        add_parameter(str(rdl_path), "Region", "String")
+        add_parameter(str(rdl_path), "Site", "String")
+        set_parameter_layout(str(rdl_path), 2, 2, ["DateFrom", "DateTo", "Region", "Site"])
+        result = remove_parameter(str(rdl_path), "DateTo")
+        assert result["layout_compacted"] is False
+        assert _slots(rdl_path) == {"DateFrom": (0, 0), "Region": (1, 0), "Site": (1, 1)}
+        assert _grid_dim(_layout_grid(rdl_path), "NumberOfRows") == 2
+
+    def test_compact_layout_repacks_and_shrinks(self, rdl_path):
+        from pbirb_mcp.ops.validate import validate_report
+
+        add_parameter(str(rdl_path), "Region", "String")
+        set_parameter_layout(str(rdl_path), 2, 2, ["DateFrom", "DateTo", "Region"])
+        result = remove_parameter(str(rdl_path), "DateFrom", compact_layout=True)
+        assert result["layout_compacted"] is True
+        assert _slots(rdl_path) == {"DateTo": (0, 0), "Region": (0, 1)}
+        assert _grid_dim(_layout_grid(rdl_path), "NumberOfRows") == 1
+        assert validate_report(str(rdl_path))["valid"]
 
 
 # ---- in_sync invariant after CRUD ---------------------------------------

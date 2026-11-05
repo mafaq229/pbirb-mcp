@@ -51,7 +51,9 @@ Core rules (19):
   ``<QueryParameter Name="@…">`` (the bare ``Name`` is what works; the
   ``@`` belongs only in the DAX text).
 * ``parameter-layout-out-of-sync`` (error) — ``<ReportParameters>`` /
-  ``<CellDefinitions>`` count mismatch.
+  ``<CellDefinitions>`` count mismatch, or a broken grid: two cells in one
+  slot, a RowIndex / ColumnIndex outside NumberOfRows / NumberOfColumns,
+  a missing or negative index.
 * ``double-encoded-entities`` (error) — element text contains
   ``&amp;``/``&lt;``/``&gt;``/``&quot;`` (the post-decode signature of a
   double-encoding regression). Skips ``<Code>``, ``<CommandText>``,
@@ -659,25 +661,45 @@ def _rule_parameter_layout_out_of_sync(doc: RDLDocument) -> list[Issue]:
     cells = find_child(grid, "CellDefinitions")
     if cells is None:
         return []
+    from pbirb_mcp.ops.parameters import layout_grid_problems
+
+    issues: list[Issue] = []
     param_count = len(find_children(params_block, "ReportParameter"))
     cell_count = len(find_children(cells, "CellDefinition"))
-    if param_count == cell_count:
-        return []
-    return [
-        {
-            "severity": "error",
-            "rule": "parameter-layout-out-of-sync",
-            "location": "ReportParametersLayout/GridLayoutDefinition/CellDefinitions",
-            "message": (
-                f"<ReportParameters> declares {param_count} parameter(s) but "
-                f"<CellDefinitions> has {cell_count} cell(s)"
-            ),
-            "suggestion": (
-                "call sync_parameter_layout(path) to fill gaps, or "
-                "set_parameter_layout(...) to author the grid explicitly"
-            ),
-        }
-    ]
+    if param_count != cell_count:
+        issues.append(
+            {
+                "severity": "error",
+                "rule": "parameter-layout-out-of-sync",
+                "location": "ReportParametersLayout/GridLayoutDefinition/CellDefinitions",
+                "message": (
+                    f"<ReportParameters> declares {param_count} parameter(s) but "
+                    f"<CellDefinitions> has {cell_count} cell(s)"
+                ),
+                "suggestion": (
+                    "call sync_parameter_layout(path) to fill gaps, or "
+                    "set_parameter_layout(...) to author the grid explicitly"
+                ),
+            }
+        )
+    # Grid integrity (#74): duplicate slots, indices outside the grid.
+    for problem in layout_grid_problems(grid):
+        issues.append(
+            {
+                "severity": "error",
+                "rule": "parameter-layout-out-of-sync",
+                "location": (
+                    "ReportParametersLayout/GridLayoutDefinition/CellDefinitions/"
+                    f"CellDefinition[ParameterName={problem['parameter']!r}]"
+                ),
+                "message": f"parameter pane grid: {problem['message']} ({problem['problem']})",
+                "suggestion": (
+                    "call sync_parameter_layout(path) to move it to a free slot, or "
+                    "set_parameter_layout(...) to author the grid explicitly"
+                ),
+            }
+        )
+    return issues
 
 
 # ---- rule 13: double-encoded-entities ----------------------------------

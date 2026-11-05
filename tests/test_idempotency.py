@@ -822,6 +822,31 @@ VARIANTS: list[tuple[str, Case]] = [
     ),
     ("set_parameter_prompt", Case({"name": "DateFrom", "prompt": ""})),
     (
+        "reorder_parameters",
+        Case(
+            {"names": ["DateTo", "DateFrom"], "reflow_layout": True},
+            setup=[
+                (
+                    "set_parameter_layout",
+                    {"rows": 1, "columns": 2, "parameter_order": ["DateFrom", "DateTo"]},
+                )
+            ],
+        ),
+    ),
+    (
+        "remove_parameter",
+        Case(
+            {"name": "DateFrom", "compact_layout": True},
+            second="refuses",
+            setup=[
+                (
+                    "set_parameter_layout",
+                    {"rows": 1, "columns": 2, "parameter_order": ["DateFrom", "DateTo"]},
+                )
+            ],
+        ),
+    ),
+    (
         "set_parameter_available_values",
         Case(
             {
