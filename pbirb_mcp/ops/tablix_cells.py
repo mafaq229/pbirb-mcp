@@ -37,8 +37,10 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core import names, tablix_spans
+from pbirb_mcp.core.columns import resolve_column
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
+from pbirb_mcp.core.mutation import ChangeTracker
 from pbirb_mcp.core.tablix_headers import new_textbox
 from pbirb_mcp.core.xpath import find_child, find_children, q
 
@@ -120,14 +122,30 @@ def _check_span_arg(label: str, value: Any) -> None:
         raise ValueError(f"{label} must be >= 1; got {value}")
 
 
+def _ref_textbox(
+    tablix: etree._Element, cells: list[etree._Element], row_index: int, column_ref: dict
+) -> str:
+    """Textbox name of the cell in ``cells`` (body row ``row_index``) at
+    the column ``column_ref`` names (#59)."""
+    col = resolve_column(tablix, column_ref)
+    tb = cells[col].find(f"{q('CellContents')}/{q('Textbox')}") if col < len(cells) else None
+    if tb is None:
+        raise ElementNotFoundError(
+            f"row {row_index} of tablix {tablix.get('Name')!r} has no textbox in "
+            f"column {col} (a span placeholder or a non-textbox cell)"
+        )
+    return tb.get("Name")
+
+
 def set_cell_span(
     path: str,
     tablix_name: str,
     row_index: int,
-    column_name: str,
+    column_name: Optional[str] = None,
     row_span: Optional[int] = None,
     col_span: Optional[int] = None,
     force: bool = False,
+    column_ref: Optional[dict] = None,
 ) -> dict[str, Any]:
     """Set ``<ColSpan>`` (and/or reset ``<RowSpan>``) on a tablix body cell.
 
@@ -136,7 +154,9 @@ def set_cell_span(
     are migrated to the correct location on touch.
 
     ``row_index`` is 0-based into ``<TablixRows>``. ``column_name`` is the
-    textbox name inside the target cell. At least one of ``row_span`` /
+    textbox name inside the target cell; ``column_ref`` (#59) picks the
+    column by header text or field instead (``{"header": ...}`` /
+    ``{"field": ...}`` / ``{"index": n}``). At least one of ``row_span`` /
     ``col_span`` must be supplied; both must be integers >= 1.
 
     Report Builder's merged-cell shape is kept: an owner with
@@ -182,6 +202,11 @@ def set_cell_span(
     cells_root = find_child(row, "TablixCells")
     cells = find_children(cells_root, "TablixCell") if cells_root is not None else []
 
+    if (column_name is None) == (column_ref is None):
+        raise ValueError("pass exactly one of column_name or column_ref")
+    if column_ref is not None:
+        column_name = _ref_textbox(tablix, cells, row_index, column_ref)
+
     target: Optional[etree._Element] = None
     target_col: Optional[int] = None
     for col_idx, cell in enumerate(cells):
@@ -202,6 +227,7 @@ def set_cell_span(
             "the cell is malformed and cannot accept spans."
         )
 
+    tracker = ChangeTracker(row)
     # Repair v0.2 legacy placement before reading / writing spans.
     had_legacy_col_span = find_child(target, "ColSpan") is not None
     _migrate_legacy_span_placement(target)
@@ -295,7 +321,9 @@ def set_cell_span(
                 etree.SubElement(cell, q("CellContents")).append(new_textbox(name))
                 created.append(name)
 
-    doc.save()
+    changed = tracker.check()
+    if changed:
+        doc.save()
     return {
         "tablix": tablix_name,
         "row_index": row_index,
@@ -305,6 +333,7 @@ def set_cell_span(
         "col_span": col_span,
         "cleared": cleared,
         "created": created,
+        "changed": changed,
     }
 
 

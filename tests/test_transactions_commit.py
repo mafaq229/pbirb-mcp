@@ -194,6 +194,16 @@ def test_failed_save_keeps_transaction_open_and_retryable(server, rdl, monkeypat
 def test_cancel_after_failed_commit_leaves_disk_untouched(server, rdl, monkeypatch):
     before = rdl.read_bytes()
     tx = _start(server, rdl)
+    # An edit, so the commit has something to write (an unchanged tree
+    # isn't written at all, #61).
+    _call(
+        server,
+        "set_textbox_value",
+        path=str(rdl),
+        textbox_name="HeaderAmount",
+        value="FIRST",
+        transaction_id=tx,
+    )
 
     def deny(src, dst):
         raise PermissionError(13, "Permission denied", str(dst))
@@ -246,3 +256,24 @@ def test_recycled_inode_is_not_a_conflict(server, tmp_path):
     )
     assert not is_error, payload
     assert b"OK" in b.read_bytes()
+
+
+def test_commit_without_net_change_leaves_file_alone(server, rdl):
+    """#61: a transaction whose edits are all no-ops commits without
+    rewriting the file (same inode and mtime)."""
+    st = rdl.stat()
+    before = (rdl.read_bytes(), st.st_ino, st.st_mtime_ns)
+    tx = _start(server, rdl)
+    payload, is_error = _call(
+        server,
+        "set_textbox_value",
+        path=str(rdl),
+        textbox_name="HeaderAmount",
+        value="Amount",  # what it already says
+        transaction_id=tx,
+    )
+    assert not is_error and payload["changed"] is False
+    payload, _ = _call(server, "commit_editing_transaction", transaction_id=tx)
+    assert payload["saved"] is True
+    st = rdl.stat()
+    assert (rdl.read_bytes(), st.st_ino, st.st_mtime_ns) == before

@@ -102,10 +102,21 @@ These have all bitten us before. Re-check every PR:
 4. **Stable IDs?** New tools take names, not indices.
 5. **Tool registration & schema?** New tool registered in
    `pbirb_mcp/tools.py` with a clear `description` (this is *prompt
-   input* for the LLM — write it for an LLM to read), strict
+   input* for the LLM — write it for an LLM to read: purpose first, with
+   the words a user would search for, at most 400 characters, no release
+   history; longer behaviour notes go in its `docs/TOOLS.md` section —
+   `tests/test_docs_consistency.py` checks), strict
    `inputSchema`, and any pre-conditions called out (e.g.
    *"`Globals!PageNumber` only resolves inside `<PageHeader>` /
    `<PageFooter>`"*, *"Pass raw VB.NET; do not XML-escape"*).
+   Register it `mutating=True` if it writes a report: that flag drives
+   auto-verify, the audit log and the published `readOnlyHint`. A tool
+   that deletes content belongs in `DESTRUCTIVE_TOOLS` (confirmation +
+   `destructiveHint`); one whose identical repeat call is a no-op in
+   `tests/test_idempotency.py` belongs in `IDEMPOTENT_TOOLS`
+   (`idempotentHint`). `tests/test_annotations.py` checks all three.
+   Add the tool to one toolset in `pbirb_mcp/core/toolsets.py`
+   (`tests/test_toolsets.py` fails until you do).
 6. **Manual smoke in Report Builder?** Drove the new tool against a
    copy of `tests/fixtures/pbi_paginated_minimal.rdl`, opened the
    resulting `.rdl` in Power BI Report Builder on Windows, confirmed no

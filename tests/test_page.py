@@ -90,6 +90,19 @@ class TestSetPageSetup:
         doc = RDLDocument.open(rdl_path)
         doc.validate()
 
+    def test_changed_lists_only_fields_that_differ(self, rdl_path):
+        # #61: the fixture's PageWidth is already 8.5in.
+        result = set_page_setup(path=str(rdl_path), page_width="8.5in", margin_top="0.5in")
+        assert result["changed"] == ["TopMargin"]
+
+    def test_identical_values_report_no_change_and_keep_file(self, rdl_path):
+        st = rdl_path.stat()
+        before = (rdl_path.read_bytes(), st.st_ino, st.st_mtime_ns)
+        result = set_page_setup(path=str(rdl_path), page_width="8.5in", columns=1)
+        assert result["changed"] == []
+        st = rdl_path.stat()
+        assert (rdl_path.read_bytes(), st.st_ino, st.st_mtime_ns) == before
+
 
 # ---- set_page_orientation -------------------------------------------------
 

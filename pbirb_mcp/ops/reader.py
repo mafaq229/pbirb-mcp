@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core.columns import describe_columns
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.geometry import PAGE_DEFAULTS, REPORT_ITEM_TAGS, size_unit
 from pbirb_mcp.core.tablix_shape import is_dynamic_group
@@ -117,8 +118,8 @@ def _dataset_query_parameters_summary(root: etree._Element) -> list[dict[str, An
 def _tablix_summary(tablix: etree._Element) -> dict[str, Any]:
     """Compact shape hint for ``describe_report.tablixes``.
 
-    Returns ``{name, rows, columns, has_groups, has_subtotals, has_spans}``
-    — just enough to let a planner pick between ``style_tablix_row`` /
+    Returns ``{name, rows, columns, has_groups, has_subtotals, has_spans,
+    column_details}`` — just enough to let a planner pick between ``style_tablix_row`` /
     ``set_textbox_style`` / ``add_subtotal_row`` without first calling
     ``get_tablixes``.
 
@@ -136,6 +137,10 @@ def _tablix_summary(tablix: etree._Element) -> dict[str, Any]:
       the shape ``add_subtotal_row`` / ``add_subtotal_column`` create.
     * ``has_spans`` — True iff any ``<ColSpan>`` or ``<RowSpan>``
       element exists anywhere inside the tablix.
+    * ``column_details`` (#59) — one ``{index, header_text, header_cell,
+      data_cell, bound_fields}`` per body column
+      (:func:`pbirb_mcp.core.columns.describe_columns`), so "the Asset
+      Name column" maps to a column index and cell textbox names.
     """
     name = tablix.get("Name")
     body = find_child(tablix, "TablixBody")
@@ -196,6 +201,7 @@ def _tablix_summary(tablix: etree._Element) -> dict[str, Any]:
         "has_groups": has_groups,
         "has_subtotals": has_subtotals,
         "has_spans": has_spans,
+        "column_details": [c.as_dict() for c in describe_columns(tablix)],
     }
 
 

@@ -59,6 +59,7 @@ from pbirb_mcp.core import chart_shape, chart_types, names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError, resolve_dataset
+from pbirb_mcp.core.mutation import changed_by, fingerprint
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, find_children, q
 from pbirb_mcp.ops.body import _ensure_body_report_items, _resolve_body
 
@@ -374,6 +375,8 @@ def _set_axis_format(axis: etree._Element, format_value: str) -> None:
     direct ChartAxis child."""
     style = find_child(axis, "Style")
     if style is None:
+        if format_value == "":
+            return  # nothing to clear
         style = etree.Element(q("Style"))
         _insert_axis_child_in_order(axis, style)
     fmt = find_child(style, "Format")
@@ -452,39 +455,30 @@ def set_chart_axis(
     axis_el = _resolve_chart_axis(chart, axis, axis_name)
 
     changed: list[str] = []
-
-    if title is not None:
-        _set_axis_title(axis_el, title)
-        changed.append("Title")
-
-    if format is not None:
-        _set_axis_format(axis_el, format)
-        changed.append("Style.Format")
-
-    if min is not None:
-        _set_axis_simple_text(axis_el, "Minimum", min)
-        changed.append("Minimum")
-
-    if max is not None:
-        _set_axis_simple_text(axis_el, "Maximum", max)
-        changed.append("Maximum")
-
-    if log_scale is not None:
-        # ChartAxis/LogScale is a BooleanLocalizableType — case-sensitive
-        # enum {True, False}. Lowercase 'true'/'false' is rejected by RB
-        # with "true is not a valid value." This differs from
-        # BooleanExpressionType used on most other ReportItem booleans.
-        _set_axis_simple_text(axis_el, "LogScale", "True" if log_scale else "False")
-        changed.append("LogScale")
-
-    if interval is not None:
-        _set_axis_simple_text(axis_el, "Interval", interval)
-        changed.append("Interval")
-
-    if visible is not None:
-        # Same BooleanLocalizableType story as LogScale above.
-        _set_axis_simple_text(axis_el, "Visible", "True" if visible else "False")
-        changed.append("Visible")
+    # ChartAxis/LogScale and Visible are BooleanLocalizableType — a
+    # case-sensitive enum {True, False}. Lowercase 'true'/'false' is
+    # rejected by RB with "true is not a valid value." This differs from
+    # BooleanExpressionType used on most other ReportItem booleans.
+    writes = (
+        ("Title", title, _set_axis_title),
+        ("Style.Format", format, _set_axis_format),
+        ("Minimum", min, lambda a, v: _set_axis_simple_text(a, "Minimum", v)),
+        ("Maximum", max, lambda a, v: _set_axis_simple_text(a, "Maximum", v)),
+        (
+            "LogScale",
+            None if log_scale is None else ("True" if log_scale else "False"),
+            lambda a, v: _set_axis_simple_text(a, "LogScale", v),
+        ),
+        ("Interval", interval, lambda a, v: _set_axis_simple_text(a, "Interval", v)),
+        (
+            "Visible",
+            None if visible is None else ("True" if visible else "False"),
+            lambda a, v: _set_axis_simple_text(a, "Visible", v),
+        ),
+    )
+    for label, value, writer in writes:
+        if value is not None and changed_by(axis_el, writer, axis_el, value):
+            changed.append(label)
 
     if changed:
         doc.save()
@@ -1524,6 +1518,7 @@ def set_chart_series_grouping(
                 f"chart {chart_name!r} series ChartMember already has a "
                 "<Group> child; pass replace=True to overwrite it."
             )
+        old_fingerprint = fingerprint(existing_group)
         member.remove(existing_group)
         changed.append("replaced_existing_group")
 
@@ -1543,8 +1538,13 @@ def set_chart_series_grouping(
     else:
         member.insert(0, group)
 
-    changed.append("group_written")
-    doc.save()
+    if existing_group is not None and fingerprint(group) == old_fingerprint:
+        # Re-run with the same expression: keep the original element.
+        member.replace(group, existing_group)
+        changed = []
+    else:
+        changed.append("group_written")
+        doc.save()
     return {
         "chart": chart_name,
         "series": series_name,

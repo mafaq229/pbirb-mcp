@@ -37,6 +37,7 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError
+from pbirb_mcp.core.mutation import remove_child_if_present, set_text_if_different
 from pbirb_mcp.core.names import validate_identifier
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, XPATH_NS, find_child, find_children, q, qrd
 
@@ -65,17 +66,12 @@ def _xmla_data_source(workspace_url: str) -> str:
     return _XMLA_PREFIX + workspace_url
 
 
-def _set_or_create_text(parent: etree._Element, local: str, value: str) -> None:
-    node = find_child(parent, local)
-    if node is None:
-        node = etree.SubElement(parent, q(local))
-    node.text = value
+def _set_or_create_text(parent: etree._Element, local: str, value: str) -> bool:
+    return set_text_if_different(parent, local, value)
 
 
-def _remove_if_present(parent: etree._Element, local: str) -> None:
-    node = find_child(parent, local)
-    if node is not None:
-        parent.remove(node)
+def _remove_if_present(parent: etree._Element, local: str) -> bool:
+    return remove_child_if_present(parent, local)
 
 
 def set_datasource_connection(
@@ -88,27 +84,31 @@ def set_datasource_connection(
     doc = RDLDocument.open(path)
     data_source = _resolve_data_source(doc, name)
     cp = find_child(data_source, "ConnectionProperties")
+    changed = False
     if cp is None:
         # Defensive: every PBI Report Builder export has one, but if we're
         # repointing a freshly-stubbed DataSource, create the block.
         cp = etree.SubElement(data_source, q("ConnectionProperties"))
+        changed = True
 
     connect_string = (
         f"Data Source={_xmla_data_source(workspace_url)};Initial Catalog={dataset_name}"
     )
-    _set_or_create_text(cp, "DataProvider", "SQL")
-    _set_or_create_text(cp, "ConnectString", connect_string)
+    changed |= _set_or_create_text(cp, "DataProvider", "SQL")
+    changed |= _set_or_create_text(cp, "ConnectString", connect_string)
     if integrated_security:
-        _set_or_create_text(cp, "IntegratedSecurity", "true")
+        changed |= _set_or_create_text(cp, "IntegratedSecurity", "true")
     else:
-        _remove_if_present(cp, "IntegratedSecurity")
+        changed |= _remove_if_present(cp, "IntegratedSecurity")
 
-    doc.save()
+    if changed:
+        doc.save()
     return {
         "name": name,
         "data_provider": "SQL",
         "connect_string": connect_string,
         "integrated_security": integrated_security,
+        "changed": changed,
     }
 
 

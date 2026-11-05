@@ -2,7 +2,9 @@
 
 Each (case, rep) gets a fresh copy of the fixture in its own workspace. The
 model drives pbirb-mcp through the same JSON-RPC `tools/call` path an MCP
-client uses; the grader then reads the edited .rdl directly.
+client uses; the grader then reads the edited .rdl directly, and a
+structural gate (XSD + every lint error the edit introduced) fails any edit
+that left the file broken. `corrupted` is reported as its own metric.
 
 Setups ("arms"):
   all     every tool definition sent up front (what MCP clients do today)
@@ -12,9 +14,10 @@ Setups ("arms"):
           (a ceiling: tool choice made easy)
 
 Usage (from the repo root):
-  uv run --with anthropic==2.3.0 python -m evals.tool_selection.harness selftest
+  uv run --with anthropic==2.3.0 python -m evals.tool_selection.harness selftest   # offline; CI runs it
+  uv run --with anthropic==2.3.0 python -m evals.tool_selection.harness cases      # regenerate CASES.md
   uv run --with anthropic==2.3.0 python -m evals.tool_selection.harness run \
-      --variant baseline --model claude-sonnet-5-5 --arm all --reps 2 [--cases d01,p01]
+      --variant v3 --model claude-haiku-5-5 --arm all --reps 2 [--cases d01,p01]
   uv run --with anthropic==2.3.0 python -m evals.tool_selection.harness run ... --approve-harness
 
 Output goes to evals/tool_selection/runs/<variant>/ (results.jsonl,
@@ -34,6 +37,7 @@ import shutil
 import sys
 import tempfile
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Optional
 
@@ -226,6 +230,66 @@ class ToolRunner:
 
 
 # ---------------------------------------------------------------------------
+# structural gate (#60)
+# ---------------------------------------------------------------------------
+
+# Lint rules the gate relies on for the invariants the XSD cannot see:
+# tablix hierarchy leaves vs body columns/rows, cells, spans and corner
+# (core/tablix_headers.shape_findings); chart series vs series-hierarchy
+# members and data points vs category members (core/chart_shape); and
+# report-wide duplicate names (core/names). If one is renamed or dropped the
+# gate refuses to run rather than silently losing coverage.
+GATE_RULES = ("tablix-structure", "chart-structure", "duplicate-name")
+
+
+class GateMisconfigured(Exception):
+    pass
+
+
+def _structural_errors(path: Path) -> list[tuple[tuple, str]]:
+    """``(issue_key, message)`` for every error-severity finding in ``path``:
+    parse / XSD (``validate_report``) plus every lint rule (``lint_report``)."""
+    from pbirb_mcp.ops.lint import lint_report
+    from pbirb_mcp.ops.validate import issue_key, validate_report
+
+    v = validate_report(str(path))
+    found = [e for e in v["errors"] if e.get("severity") == "error"]
+    if not any(e.get("rule") == "parse" for e in found):
+        lint = lint_report(str(path))
+        missing = [r for r in GATE_RULES if r not in lint["rules_run"]]
+        if missing:
+            raise GateMisconfigured(f"structural gate: lint rules {missing} did not run")
+        found += [i for i in lint["issues"] if i.get("severity") == "error"]
+    return [(issue_key(i), f"{i.get('rule')}: {i.get('message')}") for i in found]
+
+
+def structural_violations(report: Path, baseline: Path) -> list[str]:
+    """Error-severity problems in ``report`` that its starting file
+    ``baseline`` did not have: XSD, every lint error (tablix-structure,
+    chart-structure, duplicate-name, dangling references, ...). Matched as
+    a multiset of ``issue_key`` (the same identity ``verify_report``'s
+    ``baseline_path`` uses), so a fixture's own pre-existing errors never
+    count and a second copy of one does. Empty means structurally clean.
+
+    A crash while checking is reported as a violation: a file the checker
+    can't read is not a file to trust."""
+    try:
+        before = Counter(k for k, _ in _structural_errors(baseline))
+        after = _structural_errors(report)
+    except GateMisconfigured:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        return [f"structural check crashed: {type(exc).__name__}: {exc}"]
+    new = []
+    for key, message in after:
+        if before[key] > 0:
+            before[key] -= 1
+        else:
+            new.append(message)
+    return new
+
+
+# ---------------------------------------------------------------------------
 # grading
 # ---------------------------------------------------------------------------
 
@@ -235,12 +299,18 @@ def is_mutating(name: str) -> bool:
 
 
 def grade(case: Case, ws: Workspace, calls: list[dict], answer: str) -> tuple[dict, dict]:
-    """Returns (grade, explanation)."""
+    """Returns (grade, explanation).
+
+    ``success`` needs both the case's own check and the structural gate;
+    ``corrupted`` is 1 when the edit introduced any structural error, whether
+    or not the check passed, so a run can be read as "did the asked-for
+    thing" and "left the file intact" separately."""
     called = [c["name"] for c in calls]
     oracle_tools = {n for n, _ in case.oracle}
     mutations = [n for n in called if is_mutating(n)]
     explanation: dict[str, str] = {}
     unchanged = ws.sha() == ws.initial_sha
+    corrupt = [] if unchanged else structural_violations(ws.report, FIXTURES / case.fixture)
 
     if case.must_not_edit:
         passed, reason = unchanged, "ok" if unchanged else "report was modified"
@@ -258,18 +328,17 @@ def grade(case: Case, ws: Workspace, calls: list[dict], answer: str) -> tuple[di
             passed, reason = case.check(rdl)
         except Exception as exc:  # noqa: BLE001 — a corrupt report is a model failure here
             passed, reason = False, f"report unreadable: {exc}"
-        if passed:
-            verdict = json.loads(ToolRunner(ws).call("verify_report", {"path": str(ws.report)})[0])
-            if not verdict.get("valid", False):
-                passed = False
-                errs = [i for i in verdict.get("issues", []) if i.get("severity") == "error"]
-                reason = f"edit left the report invalid: {errs[0]['message'] if errs else verdict}"
         right_tool = 1.0 if oracle_tools & set(called) else 0.0
 
+    explanation["check"] = reason
+    if passed and corrupt:
+        passed, reason = False, f"edit corrupted the report: {corrupt[0]}"
     explanation["success"] = reason
+    explanation["corrupted"] = " | ".join(corrupt[:5]) if corrupt else "ok"
     return (
         {
             "success": 1.0 if passed else 0.0,
+            "corrupted": 1.0 if corrupt else 0.0,
             "right_tool": right_tool,
             "raw_xml": 1.0 if "raw_xml_replace" in called else 0.0,
             "tool_errors": float(sum(1 for c in calls if c["is_error"])),
@@ -460,16 +529,140 @@ WRONG = {
             },
         ),
     ],
+    # A grand total (scope=total) instead of one subtotal per site.
+    "t10": [
+        (
+            "add_subtotal_row",
+            {
+                "tablix_name": "FleetTable",
+                "group_name": "Site",
+                "scope": "total",
+                "aggregates": [
+                    {
+                        "column": "FleetTable_OperatingHours",
+                        "expression": "=Sum(Fields!OperatingHours.Value)",
+                    },
+                    {
+                        "column": "FleetTable_IdleHours",
+                        "expression": "=Sum(Fields!IdleHours.Value)",
+                    },
+                ],
+            },
+        )
+    ],
+    # A title row that isn't merged across the table.
+    "t09": [
+        (
+            "add_static_row",
+            {
+                "tablix_name": "FleetTable",
+                "row_name": "FleetTable_Title",
+                "cells": ["Fleet assets"],
+                "position": 0,
+            },
+        )
+    ],
+    # Idle hours added, but operating hours left on the chart.
+    "c07": [
+        (
+            "add_chart_series",
+            {"chart_name": "HoursBySite", "series_name": "IdleHours", "value_field": "IdleHours"},
+        )
+    ],
+    # One run: ' (%)' comes out bold like the rest of the heading.
+    "s10": [
+        (
+            "set_textbox_value",
+            {"textbox_name": "FleetTable_Header_Utilization", "value": "Utilization (%)"},
+        )
+    ],
+}
+
+
+# Solutions that pass their case's own check but leave the file structurally
+# broken. The structural gate must fail each one; there is one per gate
+# component (tablix-structure, chart-structure, duplicate-name, xsd).
+def _corrupt_t03(report: Path) -> list[tuple[str, dict]]:
+    """Drop the Equipment Type column from the body only: the column
+    hierarchy keeps 6 members for 5 TablixColumns."""
+    from lxml import etree
+
+    from evals.tool_selection.cases import NS
+
+    xpath = "//r:Tablix[@Name='FleetTable']/r:TablixBody"
+    body = etree.parse(str(report)).xpath(xpath, namespaces=NS)[0]
+    cells = body.xpath("r:TablixRows/r:TablixRow/r:TablixCells", namespaces=NS)
+    for parent in [body.find("r:TablixColumns", NS), *cells]:
+        parent.remove(parent[2])
+    return [
+        ("raw_xml_replace", {"xpath": xpath, "content": etree.tostring(body, encoding="unicode")})
+    ]
+
+
+_SERIES = (
+    '<ChartSeries Name="{0}"><ChartDataPoints><ChartDataPoint><ChartDataPointValues>'
+    "<Y>=Sum(Fields!{0}.Value)</Y></ChartDataPointValues></ChartDataPoint></ChartDataPoints>"
+    "<Type>Column</Type><Subtype>Plain</Subtype></ChartSeries>"
+)
+
+CORRUPT: dict[str, Any] = {
+    # A second series with no ChartSeriesHierarchy member.
+    "c05": [
+        (
+            "raw_xml_replace",
+            {
+                "xpath": "//r:Chart[@Name='HoursBySite']//r:ChartSeriesCollection",
+                "content": "<ChartSeriesCollection>"
+                + _SERIES.format("OperatingHours")
+                + _SERIES.format("IdleHours")
+                + "</ChartSeriesCollection>",
+            },
+        )
+    ],
+    "t03": _corrupt_t03,
+    # The label is right, but a second textbox now carries its name.
+    "s07": [
+        BY_ID["s07"].oracle[0],
+        (
+            "raw_xml_replace",
+            {
+                "xpath": "//r:Textbox[@Name='TotalHoursValue']",
+                "content": '<Textbox Name="TotalHoursLabel"><Paragraphs><Paragraph><TextRuns>'
+                "<TextRun><Value>=Sum(Fields!OperatingHours.Value)</Value><Style /></TextRun>"
+                "</TextRuns><Style /></Paragraph></Paragraphs><Top>1.3in</Top><Left>4in</Left>"
+                "<Height>0.25in</Height><Width>1in</Width><Style /></Textbox>",
+            },
+        ),
+    ],
+    # A line carrying an element the RDL schema doesn't allow there.
+    "l06": [
+        BY_ID["l06"].oracle[0],
+        (
+            "raw_xml_replace",
+            {
+                "xpath": "//r:Line[@Name='TitleRule']",
+                "content": '<Line Name="TitleRule"><Top>0.45in</Top><Left>0in</Left>'
+                "<Height>0in</Height><Width>6in</Width><Caption>rule</Caption></Line>",
+            },
+        ),
+    ],
 }
 
 
 def run_scripted(case: Case, ws: Workspace, mode: str) -> dict:
-    """mode='oracle' replays the reference solution, 'wrong' a plausible mistake, 'null' does nothing."""
+    """Replay a scripted solution: mode='oracle' the reference solution,
+    'wrong' a plausible mistake, 'corrupt' one that passes the case's check
+    but breaks the file, 'null' nothing."""
     runner = ToolRunner(ws)
     calls, trace = [], [{"role": "user", "content": ws.render(case.prompt)}]
     answer = ""
-    if mode in ("oracle", "wrong"):
-        for name, args in case.oracle if mode == "oracle" else WRONG[case.id]:
+    if mode in ("oracle", "wrong", "corrupt"):
+        script = {"oracle": case.oracle, "wrong": WRONG, "corrupt": CORRUPT}[mode]
+        if isinstance(script, dict):
+            script = script[case.id]
+        if callable(script):
+            script = script(ws.report)
+        for name, args in script:
             args = json.loads(ws.render(json.dumps(args)))
             out, is_err = runner.call(name, {"path": str(ws.report), **args})
             calls.append({"name": name, "is_error": is_err})
@@ -600,6 +793,7 @@ async def run_one(
                 "wall_s": round(time.monotonic() - t0, 2),
                 "attempts": attempt,
                 "called": [c["name"] for c in res["calls"]],
+                "known_gap": case.known_gap,
                 "cost_usd": round(cost_usd(args.model or "", res["usage"]), 5),
             }
             trace = res["trace"] + [
@@ -653,7 +847,14 @@ def summarize(rows: list[dict]) -> str:
     for r in rows:
         by_cat.setdefault(r["tags"][0], []).append(r["grade"]["success"])
     cats = "  ".join(f"{k}:{sum(v) / len(v):.0%}" for k, v in by_cat.items())
-    return f"success {succ:.1%} ±{half:.1%} (n={n})  cost ${cost:.2f}\n{cats}"
+    graded = [r["grade"]["corrupted"] for r in rows if "corrupted" in r["grade"]]
+    # Rows graded before the structural gate existed (#60) have no `corrupted`.
+    corrupted = f"corrupted {int(sum(graded))}/{len(graded)}" if graded else "corrupted n/a"
+    gaps = [r["grade"]["success"] for r in rows if r.get("known_gap")]
+    gap_line = f"\nknown-gap cases passed {int(sum(gaps))}/{len(gaps)}" if gaps else ""
+    return (
+        f"success {succ:.1%} ±{half:.1%} (n={n})  {corrupted}  cost ${cost:.2f}\n{cats}{gap_line}"
+    )
 
 
 async def cmd_run(args) -> None:
@@ -694,10 +895,28 @@ async def cmd_run(args) -> None:
 
 
 def cmd_selftest() -> int:
-    """Oracle must pass every case; doing nothing must fail every edit case."""
+    """Offline, no API calls. The oracle must pass every case except the known
+    gaps, without corrupting the file; doing nothing must fail every edit case
+    (known gaps included); every wrong solution must fail; every corrupt
+    solution must pass its case's own check and still fail on the
+    structural gate."""
     failures = []
-    for mode in ("oracle", "null", "wrong"):
-        ids = ",".join(WRONG) if mode == "wrong" else None
+    for kind, table in (("wrong", WRONG), ("corrupt", CORRUPT)):
+        failures += [f"{kind} {cid}: no such case" for cid in table if cid not in BY_ID]
+    # The gate is baseline-aware: a fixture's own errors are not corruption.
+    bad = FIXTURES / BY_ID["q03"].fixture
+    if structural_violations(bad, bad) or not structural_violations(
+        bad, FIXTURES / CASES[0].fixture
+    ):
+        failures.append("gate: pre-existing fixture errors are not matched against the baseline")
+    gaps = [c for c in CASES if c.known_gap]
+    for mode in ("oracle", "null", "wrong", "corrupt"):
+        ids = {
+            "oracle": ",".join(c.id for c in CASES if not c.known_gap),
+            "null": None,
+            "wrong": ",".join(WRONG),
+            "corrupt": ",".join(CORRUPT),
+        }[mode]
         ns = argparse.Namespace(
             scripted=mode,
             cases=ids,
@@ -714,9 +933,17 @@ def cmd_selftest() -> int:
             want = 1.0 if (mode == "oracle" or (mode == "null" and case.must_not_edit)) else 0.0
             if mode == "null" and case.answer_must_mention:
                 want = 0.0  # an empty answer must not pass a question
-            if r["grade"]["success"] != want:
+            g, expl = r["grade"], r["explanation"]
+            if g["success"] != want:
                 failures.append(
-                    f"{mode} {r['prompt_id']}: success={r['grade']['success']} ({r['explanation']['success']})"
+                    f"{mode} {r['prompt_id']}: success={g['success']} ({expl['success']})"
+                )
+            if mode == "oracle" and g["corrupted"]:
+                failures.append(f"oracle {r['prompt_id']}: corrupted ({expl['corrupted']})")
+            if mode == "corrupt" and (expl["check"] != "ok" or not g["corrupted"]):
+                failures.append(
+                    f"corrupt {r['prompt_id']}: check={expl['check']!r} "
+                    f"corrupted={g['corrupted']} (must pass the check and fail the gate)"
                 )
         errs = out_dir / "errors.jsonl"
         if errs.exists():
@@ -724,8 +951,15 @@ def cmd_selftest() -> int:
         shutil.rmtree(out_dir, ignore_errors=True)
     print(
         "\n".join(failures)
-        or "selftest ok: oracle passes all cases; null passes only no-edit cases; wrong solutions all fail"
+        or "selftest ok: oracle passes all cases without corrupting them; null passes only "
+        "no-edit cases; wrong solutions all fail; corrupt solutions pass their checks and "
+        "fail the structural gate"
     )
+    if gaps:
+        print(
+            "known gaps (oracle not replayed; null still checked): "
+            + "; ".join(f"{c.id} — {c.known_gap}" for c in gaps)
+        )
     return 1 if failures else 0
 
 
@@ -737,19 +971,27 @@ def cmd_cases_md() -> int:
         "",
         f"{len(CASES)} cases. Generated from `cases.py` by `harness.py cases`; edit that file, not this one.",
         "",
-        "| id | category | difficulty | source | reference solution | tools in subset arm |",
-        "|---|---|---|---|---|---|",
+        "Every edit case is also graded by the structural gate (XSD + lint errors the edit "
+        "introduced, see `CONTEXT.md`). A known gap is a request no tool can do correctly yet; "
+        "its oracle is not replayed by `selftest`.",
+        "",
+        "| id | category | difficulty | source | fixture | reference solution | tools in subset arm |",
+        "|---|---|---|---|---|---|---|",
     ]
     for c in CASES:
         ref = " → ".join(f"`{n}`" for n, _ in c.oracle) or "_(no edit)_"
         if c.must_not_edit:
             ref = (ref + "; must not edit") if c.oracle else "must not edit"
+        if c.known_gap:
+            ref = f"_known gap_ ({c.known_gap.split(':')[0]})"
         lines.append(
-            f"| {c.id} | {c.category} | {c.difficulty} | {c.source} | {ref} | "
+            f"| {c.id} | {c.category} | {c.difficulty} | {c.source} | {c.fixture} | {ref} | "
             f"{len(tools_for_arm(all_tools, 'subset', c))} |"
         )
     for c in CASES:
         lines += ["", f"## {c.id} · {c.category} · {c.difficulty}", "", "```text", c.prompt, "```"]
+        if c.known_gap:
+            lines.append(f"Known gap: {c.known_gap}")
         if c.answer_must_mention:
             lines.append(
                 "Answer must mention: "

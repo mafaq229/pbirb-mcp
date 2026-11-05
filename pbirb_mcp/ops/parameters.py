@@ -29,6 +29,7 @@ from pbirb_mcp.core.ids import (
     resolve_dataset,
     resolve_parameter,
 )
+from pbirb_mcp.core.mutation import put_child, remove_child_if_present
 from pbirb_mcp.core.names import validate_identifier
 from pbirb_mcp.core.xpath import find_child, find_children, q
 
@@ -52,20 +53,9 @@ _PARAMETER_CHILD_ORDER = (
 )
 
 
-def _set_or_replace_in_order(parent: etree._Element, new_child: etree._Element) -> None:
-    new_local = etree.QName(new_child).localname
-    existing = find_child(parent, new_local)
-    if existing is not None:
-        parent.replace(existing, new_child)
-        return
-    if new_local in _PARAMETER_CHILD_ORDER:
-        new_idx = _PARAMETER_CHILD_ORDER.index(new_local)
-        for i, child in enumerate(list(parent)):
-            local = etree.QName(child).localname
-            if local in _PARAMETER_CHILD_ORDER and _PARAMETER_CHILD_ORDER.index(local) > new_idx:
-                parent.insert(i, new_child)
-                return
-    parent.append(new_child)
+def _set_or_replace_in_order(parent: etree._Element, new_child: etree._Element) -> bool:
+    """Replace/insert ``new_child`` in XSD order; ``True`` iff changed."""
+    return put_child(parent, new_child, order=_PARAMETER_CHILD_ORDER)
 
 
 # ---- shared validation ----------------------------------------------------
@@ -159,11 +149,10 @@ def set_parameter_available_values(
 
     if source == "static" and not static_values:
         # Clear: drop the existing <ValidValues> element if present.
-        existing = find_child(parameter, "ValidValues")
-        if existing is not None:
-            parameter.remove(existing)
+        changed = remove_child_if_present(parameter, "ValidValues")
+        if changed:
             doc.save()
-        return {"parameter": name, "source": source, "cleared": True}
+        return {"parameter": name, "source": source, "cleared": True, "changed": changed}
 
     valid_values = etree.Element(q("ValidValues"))
     if source == "static":
@@ -174,10 +163,10 @@ def set_parameter_available_values(
             _build_dataset_reference(query_dataset, query_value_field, query_label_field)
         )
 
-    _set_or_replace_in_order(parameter, valid_values)
-
-    doc.save()
-    return {"parameter": name, "source": source, "cleared": False}
+    changed = _set_or_replace_in_order(parameter, valid_values)
+    if changed:
+        doc.save()
+    return {"parameter": name, "source": source, "cleared": False, "changed": changed}
 
 
 # ---- set_parameter_default_values ----------------------------------------
@@ -209,11 +198,10 @@ def set_parameter_default_values(
     parameter = resolve_parameter(doc, name)
 
     if source == "static" and not static_values:
-        existing = find_child(parameter, "DefaultValue")
-        if existing is not None:
-            parameter.remove(existing)
+        changed = remove_child_if_present(parameter, "DefaultValue")
+        if changed:
             doc.save()
-        return {"parameter": name, "source": source, "cleared": True}
+        return {"parameter": name, "source": source, "cleared": True, "changed": changed}
 
     default_value = etree.Element(q("DefaultValue"))
     if source == "static":
@@ -229,10 +217,10 @@ def set_parameter_default_values(
             _build_dataset_reference(query_dataset, query_value_field, label_field=None)
         )
 
-    _set_or_replace_in_order(parameter, default_value)
-
-    doc.save()
-    return {"parameter": name, "source": source, "cleared": False}
+    changed = _set_or_replace_in_order(parameter, default_value)
+    if changed:
+        doc.save()
+    return {"parameter": name, "source": source, "cleared": False, "changed": changed}
 
 
 # ---- update_parameter_advanced -------------------------------------------
@@ -274,10 +262,11 @@ def update_parameter_advanced(
             continue
         new_node = etree.Element(q(local))
         new_node.text = "true" if value else "false"
-        _set_or_replace_in_order(parameter, new_node)
-        changed.append(local)
+        if _set_or_replace_in_order(parameter, new_node):
+            changed.append(local)
 
-    doc.save()
+    if changed:
+        doc.save()
     return {"parameter": name, "changed": changed}
 
 
@@ -300,18 +289,17 @@ def set_parameter_prompt(
     doc = RDLDocument.open(path)
     parameter = resolve_parameter(doc, name)
 
-    existing = find_child(parameter, "Prompt")
     if prompt == "":
         # Clear: remove the element entirely if present.
-        if existing is not None:
-            parameter.remove(existing)
+        changed = remove_child_if_present(parameter, "Prompt")
     else:
         new = etree.Element(q("Prompt"))
         new.text = encode_text(prompt)
-        _set_or_replace_in_order(parameter, new)
+        changed = _set_or_replace_in_order(parameter, new)
 
-    doc.save()
-    return {"parameter": name, "prompt": prompt if prompt != "" else None}
+    if changed:
+        doc.save()
+    return {"parameter": name, "prompt": prompt if prompt != "" else None, "changed": changed}
 
 
 def _default_value_literals(parameter: etree._Element) -> list[str]:
@@ -386,9 +374,10 @@ def set_parameter_type(
 
     new = etree.Element(q("DataType"))
     new.text = type
-    _set_or_replace_in_order(parameter, new)
-    doc.save()
-    return {"parameter": name, "type": type}
+    changed = _set_or_replace_in_order(parameter, new)
+    if changed:
+        doc.save()
+    return {"parameter": name, "type": type, "changed": changed}
 
 
 def _all_parameter_names(doc: RDLDocument) -> list[str]:
@@ -477,20 +466,20 @@ def sync_parameter_layout(path: str) -> dict[str, Any]:
     last row, falling back to a new row if the existing rows are full.
     Updates ``<NumberOfRows>`` and ``<NumberOfColumns>`` to fit.
 
-    Returns ``{added: [name...], removed: [name...]}``. A no-op call with
-    nothing to sync returns the empty lists and doesn't touch the file
-    bytes — safe to call defensively.
+    Returns ``{added: [name...], removed: [name...], changed: bool}``. A
+    no-op call with nothing to sync returns the empty lists and doesn't
+    touch the file bytes — safe to call defensively.
 
     No-op for reports that don't carry a layout block at all.
     """
     doc = RDLDocument.open(path)
     layout_root = find_child(doc.root, "ReportParametersLayout")
     if layout_root is None:
-        return {"added": [], "removed": []}
+        return {"added": [], "removed": [], "changed": False}
     grid = _grid_layout_definition(layout_root)
     if grid is None:
         # Older form without GridLayoutDefinition wrapper — ignore.
-        return {"added": [], "removed": []}
+        return {"added": [], "removed": [], "changed": False}
     cells_root = _cell_definitions(grid)
 
     declared = _all_parameter_names(doc)
@@ -565,7 +554,7 @@ def sync_parameter_layout(path: str) -> dict[str, Any]:
 
     if added or removed:
         doc.save()
-    return {"added": added, "removed": removed}
+    return {"added": added, "removed": removed, "changed": bool(added or removed)}
 
 
 def _sync_parameter_layout_in_doc(doc: RDLDocument) -> tuple[list[str], list[str]]:

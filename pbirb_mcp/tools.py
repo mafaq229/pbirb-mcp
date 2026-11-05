@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pbirb_mcp.core import columns as _columns
 from pbirb_mcp.ops import (
     actions,
     body,
@@ -42,6 +43,7 @@ from pbirb_mcp.ops import layout_helpers as _layout_helpers
 from pbirb_mcp.ops import lint as _lint
 from pbirb_mcp.ops import scratch as _scratch
 from pbirb_mcp.ops import transactions as _transactions
+from pbirb_mcp.ops.response_format import RESPONSE_FORMAT_PARAM, with_response_format
 
 if TYPE_CHECKING:
     from pbirb_mcp.server import MCPServer
@@ -54,6 +56,21 @@ _PATH_ONLY_SCHEMA: dict = {
             "type": "string",
             "description": "Absolute path to the .rdl file to read.",
         }
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+
+# describe_report / get_datasets / get_parameters / get_tablixes (#55).
+_READER_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": "Absolute path to the .rdl file to read.",
+        },
+        "response_format": RESPONSE_FORMAT_PARAM,
     },
     "required": ["path"],
     "additionalProperties": False,
@@ -83,62 +100,51 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="describe_report",
         description=(
-            "Top-level inventory of an RDL: data sources, datasets, parameters, "
-            "tablixes, charts, and page setup. Always the first call when "
-            "planning edits. v0.4: `tablixes` returns rich shape hints "
-            "[{name, rows, columns, has_groups, has_subtotals, has_spans}] "
-            "(was bare strings — migrate with `[t['name'] for t in tablixes]`). "
-            "`charts` (new in v0.4) is a top-level array of chart names. "
-            "Also: `subreports` [{name, report_name, parameters}], `maps`, "
-            "`gauges`, `body` {height, width}, `nested_items` (items inside "
-            "Rectangles, with parent/region); `page` fills absent sizes with "
-            "the RDL defaults (11in x 8.5in, 0in margins) and lists them in "
-            "`page.defaulted`, plus page.columns, page.column_spacing, "
-            "page.body {width, height} and page.printable_width (width minus "
-            "left/right margins) for overflow checks."
+            "Inventory of a report: data sources, datasets, parameters, tablixes "
+            "(rows, columns, groups, column_details with each column's header "
+            "text, cell textbox names and bound fields), charts, subreports, "
+            "nested items, body and page setup (with defaults and printable "
+            "width). Call it first when planning edits."
         ),
-        input_schema=_PATH_ONLY_SCHEMA,
-        handler=reader.describe_report,
+        input_schema=_READER_SCHEMA,
+        handler=with_response_format("describe_report", reader.describe_report),
     )
     server.register_tool(
         name="get_datasets",
         description=(
-            "Full DAX command text, fields, query parameters, and dataset-level "
-            "filters for every DataSet in the report."
+            "Read every dataset: DAX command text, fields, query parameters and dataset filters."
         ),
-        input_schema=_PATH_ONLY_SCHEMA,
-        handler=reader.get_datasets,
+        input_schema=_READER_SCHEMA,
+        handler=with_response_format("get_datasets", reader.get_datasets),
     )
     server.register_tool(
         name="get_parameters",
-        description="Report parameter declarations: name, data type, prompt, flags.",
-        input_schema=_PATH_ONLY_SCHEMA,
-        handler=reader.get_parameters,
+        description=(
+            "Read the report parameters: name, data type, prompt and flags "
+            "(multi-value, hidden, nullable, allow blank)."
+        ),
+        input_schema=_READER_SCHEMA,
+        handler=with_response_format("get_parameters", reader.get_parameters),
     )
     server.register_tool(
         name="get_tablixes",
         description=(
-            "Tablix layout with stable IDs: columns, row/column groups, sort "
-            "expressions, filters, visibility. Required input for any tablix edit."
+            "Read every tablix (table/matrix): columns, row and column groups, "
+            "sort expressions, filters and visibility. Read it before editing a "
+            "tablix."
         ),
-        input_schema=_PATH_ONLY_SCHEMA,
-        handler=reader.get_tablixes,
+        input_schema=_READER_SCHEMA,
+        handler=with_response_format("get_tablixes", reader.get_tablixes),
     )
 
     server.register_tool(
         name="update_dataset_query",
         description=(
-            "Replace the DAX command text of a named dataset. The full DAX "
-            "expression is accepted verbatim; empty bodies are rejected. "
-            "Optional alias_strategy='preserve_field_names' keeps every "
-            "<Field Name> (so Fields!X.Value references keep resolving) "
-            "and re-aims <DataField> cells at the new DAX columns "
-            "(Table[Col] or [Alias]): Fields whose column is still "
-            "returned stay as they are (any order); a Field whose column "
-            "vanished is re-aimed only when exactly one new column took "
-            "its slot in the old DAX's column order; everything else is "
-            "left untouched and reported in warnings. dry_run=true "
-            "returns the result (including mapped) without saving."
+            "Replace a dataset's DAX query (CommandText); the DAX is taken "
+            "verbatim, empty is refused. alias_strategy='preserve_field_names' "
+            "keeps every Field name and re-aims DataFields at the new columns "
+            "where unambiguous (the rest are reported in warnings). dry_run=true "
+            "returns the result without saving."
         ),
         input_schema={
             "type": "object",
@@ -172,18 +178,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_query_parameter",
         description=(
-            "Add a <QueryParameter> binding to a dataset's query. Use to "
-            "wire report parameters into DAX (e.g. "
-            "=Parameters!DateFrom.Value).\n"
-            "\n"
-            "PBIDATASET parameter naming rule: in DAX/<CommandText>, "
-            "write @MyParam (with @). In <QueryParameter Name=...>, "
-            "write MyParam (no @). SQL/MDX use @ in both places. This "
-            "tool detects the dataset's provider and AUTO-STRIPS a "
-            "leading @ from `name` for PBIDATASET datasets, returning "
-            "{normalised: true, warning: ...}. Pass force_at_prefix=true "
-            "to override (rare; needed for some RSCustomDaxFilter "
-            "patterns)."
+            "Add a query parameter to a dataset, e.g. to pass "
+            "=Parameters!DateFrom.Value into the DAX. For Power BI (PBIDATASET) "
+            "datasets write @Name in the DAX but Name here: a leading @ is "
+            "stripped (normalised: true); force_at_prefix=true keeps it."
         ),
         input_schema={
             "type": "object",
@@ -203,10 +201,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="update_query_parameter",
         description=(
-            "Change the value expression of an existing query parameter. "
-            "Same PBIDATASET @-prefix normalisation as add_query_parameter "
-            "applies on lookup; legacy Name='@X' parameters that already "
-            "exist on disk are addressable via either @X or X."
+            "Change the value expression of an existing query parameter. Finds it "
+            "by Name with or without a leading @ (same PBIDATASET rule as "
+            "add_query_parameter)."
         ),
         input_schema={
             "type": "object",
@@ -226,9 +223,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_datasource_connection",
         description=(
-            "Repoint a DataSource at a Power BI XMLA endpoint. workspace_url "
-            "accepts a bare workspace name or a full powerbi:// URL; "
-            "DataProvider is set to SQL (the AS provider id in RDL)."
+            "Point a data source at a Power BI workspace/semantic model (XMLA). "
+            "workspace_url takes a workspace name or a full powerbi:// URL; "
+            "DataProvider is set to SQL (the AS provider id RDL uses)."
         ),
         input_schema={
             "type": "object",
@@ -260,11 +257,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="list_data_sources",
         description=(
-            "Return a rich list of every <DataSource> in the report — "
-            "name, data_provider, connect_string, integrated_security, "
-            "shared_reference, security_type, data_source_id. "
-            "describe_report.data_sources returns names only; this tool "
-            "is the authoring-friendly read."
+            "List every data source with its connection details: provider, "
+            "connect string, integrated security, shared reference, security "
+            "type, id."
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=datasource.list_data_sources,
@@ -272,34 +267,29 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="get_data_source",
         description=(
-            "Single-DataSource read-back (parity with get_textbox / "
-            "get_image / get_rectangle / get_chart). Returns the same "
-            "shape as one entry of list_data_sources."
+            "Read one data source by name: provider, connect string, integrated "
+            "security, shared reference, security type, id."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
+                "response_format": RESPONSE_FORMAT_PARAM,
             },
             "required": ["path", "name"],
             "additionalProperties": False,
         },
-        handler=datasource.get_data_source,
+        handler=with_response_format("get_data_source", datasource.get_data_source),
     )
     server.register_tool(
         name="add_data_source",
         description=(
-            "Create a new <DataSource> for a Power BI XMLA endpoint. "
-            "workspace_url accepts a bare workspace name or a full "
-            "powerbi:// URL. Generates a fresh rd:DataSourceID GUID. "
-            "Refuses if a DataSource of the same name already exists. "
-            "provider='sql' (default) emits the legacy DataProvider=SQL "
-            "+ powerbi:// ConnectString + <rd:SecurityType> shape; "
-            "provider='pbidataset' emits the modern PBI Desktop shape — "
-            "DataProvider=PBIDATASET, pbiazure:// ConnectString with "
-            "ClaimsToken auth, plus <rd:PowerBIWorkspaceName> / "
-            "<rd:PowerBIDatasetName> siblings, no <rd:SecurityType>."
+            "Add a data source for a Power BI workspace/semantic model. "
+            "workspace_url takes a workspace name or powerbi:// URL; gets a fresh "
+            "DataSourceID; refuses a duplicate name. provider='sql' (default) "
+            "writes the XMLA (DataProvider=SQL) shape, 'pbidataset' the Power BI "
+            "Desktop (PBIDATASET) shape."
         ),
         input_schema={
             "type": "object",
@@ -324,10 +314,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_data_source",
         description=(
-            "Remove a named <DataSource>. Refuses by default if any "
-            "DataSet/Query/DataSourceName or DataSource/"
-            "DataSourceReference still references it; the error lists "
-            "the offending locators. Pass force=True to remove anyway."
+            "Remove a data source by name. Refuses while a dataset or shared "
+            "reference still uses it (lists them); force=true removes anyway."
         ),
         input_schema={
             "type": "object",
@@ -345,11 +333,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="rename_data_source",
         description=(
-            "Rename a <DataSource> and rewrite every reference: "
-            "DataSet/Query/DataSourceName entries AND any "
-            "DataSource/DataSourceReference shared-source links. "
-            "Atomic: stages all matches before committing. Errors if "
-            "new_name already exists or equals old_name."
+            "Rename a data source and update every dataset and shared reference "
+            "that names it. Refuses if new_name is taken."
         ),
         input_schema={
             "type": "object",
@@ -367,12 +352,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="list_dataset_filters",
         description=(
-            "List dataset-level filters in document order. Returns "
-            "[{expression, operator, values}]; index in the list is the "
-            "stable handle for remove_dataset_filter. DataSet filters "
-            "apply to every consumer of the dataset (every Tablix / "
-            "Chart bound to it); use list_tablix_filters for per-tablix "
-            "filtering."
+            "List a dataset's filters in order: expression, operator, values. The "
+            "list index is the handle for remove_dataset_filter. Dataset filters "
+            "apply to every item bound to the dataset (see list_tablix_filters "
+            "for one tablix)."
         ),
         input_schema={
             "type": "object",
@@ -388,16 +371,12 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_dataset_filter",
         description=(
-            "Append a <Filter> to the named dataset's <Filters> block. "
-            "operator ∈ Equal / NotEqual / GreaterThan / LessThan / "
-            "GreaterThanOrEqual / LessThanOrEqual / Like / In / Between "
-            "/ TopN / BottomN / TopPercent / BottomPercent. values must "
-            "be non-empty (single-value filters use a one-element list). "
-            "Returns the new filter's index for later removal. Optional "
-            "field_format wraps the expression as Format(<body>, fmt) "
-            "to coerce typed fields for string-parameter comparison. "
-            "Response includes warnings for field/parameter type "
-            "mismatches detected via best-effort cross-check."
+            "Add a filter to a dataset (applies to every tablix/chart using it). "
+            "Operators: Equal, NotEqual, GreaterThan, LessThan, "
+            "GreaterThanOrEqual, LessThanOrEqual, Like, In, Between, TopN, "
+            "BottomN, TopPercent, BottomPercent; values is a non-empty list. "
+            "field_format wraps the expression in Format() for string parameters. "
+            "Returns the filter's index."
         ),
         input_schema={
             "type": "object",
@@ -436,11 +415,7 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="remove_dataset_filter",
-        description=(
-            "Remove a dataset-level filter by its 0-based document-order "
-            "index. Cleans up the empty <Filters> block when removing the "
-            "last entry."
-        ),
+        description=("Remove a dataset filter by its index from list_dataset_filters."),
         input_schema={
             "type": "object",
             "properties": {
@@ -457,32 +432,27 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="get_dataset",
         description=(
-            "Single-DataSet read-back (parity with get_textbox / "
-            "get_image / get_rectangle / get_chart / get_data_source). "
-            "Returns dataset name, data_source, command_text, fields "
-            "(with both data_field and value), query_parameters, "
-            "filters, and designer_state_present."
+            "Read one dataset by name: data source, DAX command text, fields "
+            "(data_field / value), query parameters and filters."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
+                "response_format": RESPONSE_FORMAT_PARAM,
             },
             "required": ["path", "name"],
             "additionalProperties": False,
         },
-        handler=dataset.get_dataset,
+        handler=with_response_format("get_dataset", dataset.get_dataset),
     )
     server.register_tool(
         name="add_calculated_field",
         description=(
-            "Append a calculated <Field> to the named dataset. "
-            "Calculated fields carry an expression (<Value>) instead of "
-            "a column reference (<DataField>); use them for derived "
-            "fields like Total = Amount * Quantity that aren't in the "
-            "source query but should be available via Fields!Name.Value. "
-            "Refuses if a field of the same name already exists."
+            "Add a calculated field (an expression, e.g. =Fields!Amount.Value * "
+            "Fields!Qty.Value) to a dataset, usable as Fields!Name.Value. Refuses "
+            "a duplicate name."
         ),
         input_schema={
             "type": "object",
@@ -504,11 +474,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_calculated_field",
         description=(
-            "Remove a calculated <Field> by name. Refuses if the field "
-            "is data-bound (carries <DataField> instead of <Value>) — "
-            "those reflect the source query's columns. Drop a data-bound "
-            "field via remove_dataset_field, or rewrite the dataset "
-            "query via update_dataset_query."
+            "Remove a calculated field from a dataset. Refuses a query-bound "
+            "field (use remove_dataset_field)."
         ),
         input_schema={
             "type": "object",
@@ -526,15 +493,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_dataset_field",
         description=(
-            "Remove a data-bound <Field> by name (one with <DataField>). "
-            "Symmetric counterpart to remove_calculated_field. Refuses "
-            "on calculated fields (use remove_calculated_field instead) "
-            "and on still-referenced fields (any expression containing "
-            "Fields!<name>.Value / .IsMissing / .Count). Pass "
-            "force=True to delete anyway. Closes the cookbook flow: "
-            "refresh_dataset_fields lists orphans, "
-            "remove_dataset_field drops them. Returns "
-            "{dataset, removed, kind: 'DataBoundField'}."
+            "Remove a query-bound field (one with a DataField) from a dataset. "
+            "Refuses a calculated field (use remove_calculated_field) and a field "
+            "still referenced by an expression unless force=true. Use it to drop "
+            "orphans refresh_dataset_fields reports."
         ),
         input_schema={
             "type": "object",
@@ -560,13 +522,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_dataset_field",
         description=(
-            "Append a data-bound <Field> to a dataset's <Fields> block. "
-            "Writes <DataField>data_field</DataField> (and optional "
-            "<rd:TypeName>type_name</rd:TypeName>). Distinct from "
-            "add_calculated_field which writes <Value> for derived "
-            "fields. Use after rewriting the DAX to declare a new "
-            "column that came back from the query but isn't yet in "
-            "<Fields>. Refuses on duplicate field name."
+            "Declare a query-bound field on a dataset (DataField = the DAX "
+            "column, optional type_name), e.g. after the query returns a new "
+            "column. Refuses a duplicate name. For an expression field use "
+            "add_calculated_field."
         ),
         input_schema={
             "type": "object",
@@ -598,19 +557,11 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="refresh_dataset_fields",
         description=(
-            "Sync a dataset's <Fields> block against the shape detected "
-            "in its DAX <CommandText>. Eliminates the manual 'open "
-            "Report Builder → right-click → Refresh Fields' step after "
-            "a query rewrite. Matches existing Fields to the query's "
-            "result columns by <DataField> (Table[Col] / [Alias]), not by "
-            "Name. Adds a Field per unbound column the way Report Builder "
-            "does: Name sanitised (Amount (USD) -> Amount__USD_; "
-            "duplicates Name1, Name2 ...), DataField Table[Col] or "
-            "[Alias]. Lists orphans without auto-removing (caller decides "
-            "what to drop). Returns {added: [{name, data_field}], "
-            "orphans: [{name, data_field}], unchanged: [names], "
-            "warnings}. When the DAX can't be fully analysed (e.g. bare "
-            "EVALUATE 'Table') nothing is added and warnings explain why."
+            "Refresh a dataset's fields from its DAX query, like Report Builder's "
+            "Refresh Fields: adds a field per new result column (Report Builder "
+            "naming) and lists orphans without removing them. Matches by "
+            "DataField, not Name. When the DAX can't be analysed nothing is added "
+            "and warnings say why."
         ),
         input_schema={
             "type": "object",
@@ -627,12 +578,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_image_sizing",
         description=(
-            "Set <Image>/<Sizing> on a named Image. sizing ∈ AutoSize / "
-            "Fit / FitProportional / Clip. AutoSize renders at native "
-            "size (box grows to fit); Fit stretches to fill (ignores "
-            "aspect ratio); FitProportional preserves aspect ratio; "
-            "Clip renders at native size, clipped to the box. "
-            "Idempotent: same value → {changed: false}, no save."
+            "Set how an image fits its box: AutoSize (native size, box grows), "
+            "Fit (stretch), FitProportional (keep aspect ratio) or Clip."
         ),
         input_schema={
             "type": "object",
@@ -653,14 +600,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_image_source",
         description=(
-            "Repoint an existing <Image> at a different embedded image "
-            "entry without delete-and-readd. Sets Source=Embedded and "
-            "rewrites <Value> to embedded_name. Refuses with a clear "
-            "error if embedded_name isn't in <EmbeddedImages> — leaving "
-            "a dangling reference would render as a broken image. Add "
-            "the image first via add_embedded_image. Idempotent: same "
-            "(Source, Value) pair → {changed: false}, no save. Returns "
-            "{name, kind, changed: bool}."
+            "Point an existing image at an embedded image (Source=Embedded, "
+            "Value=embedded_name) without re-adding it. Refuses a name not in the "
+            "report's embedded images (add_embedded_image first)."
         ),
         input_schema={
             "type": "object",
@@ -678,11 +620,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_column_width",
         description=(
-            "Set <Width> on a tablix's body column. column accepts a "
-            "0-based integer index OR a textbox name living in any cell "
-            "of that column (mirrors how set_cell_span / add_subtotal_row "
-            "address columns). width is an RDL size ('1.5in', '4cm', "
-            "'80pt'). Idempotent: same width → {changed: false}, no save."
+            "Set the width of a tablix column. column is a 0-based index or the "
+            "name of a textbox in the column; or pick it with column_ref {header "
+            "| field}. width is an RDL size ('1.5in', '4cm')."
         ),
         input_schema={
             "type": "object",
@@ -696,9 +636,10 @@ def register_all_tools(server: MCPServer) -> None:
                     ],
                     "description": "0-based column index or textbox name in any column cell.",
                 },
+                "column_ref": _columns.COLUMN_REF_SCHEMA,
                 "width": {"type": "string"},
             },
-            "required": ["path", "tablix_name", "column", "width"],
+            "required": ["path", "tablix_name", "width"],
             "additionalProperties": False,
         },
         handler=tablix_columns.set_column_width,
@@ -707,12 +648,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_tablix_size",
         description=(
-            "Resize a tablix by writing <Height> and / or <Width> directly. "
-            "Each arg independently optional. Use after adding header / "
-            "footer rows that change the body's natural height — v0.2's "
-            "positioning tools only cover top/left, not size. Both values "
-            "are RDL size strings. Returns {tablix, kind, changed: "
-            "list[str]} — empty list when inputs match existing."
+            "Set a tablix's overall Width and/or Height (RDL sizes), e.g. after "
+            "adding rows. Column widths are set_column_width."
         ),
         input_schema={
             "type": "object",
@@ -731,15 +668,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="reorder_parameters",
         description=(
-            "Reorder <ReportParameter> children to match the supplied "
-            "names list. names MUST be a permutation of every existing "
-            "parameter — no missing, no duplicates, no unknown names. "
-            "When a <ReportParametersLayout> exists, its CellDefinition "
-            "entries are reordered in lockstep so the parameter pane "
-            "shows fields in the new declaration order. RowIndex / "
-            "ColumnIndex are not recomputed (RB's layout grid is "
-            "independent of declaration order). Returns {order, kind, "
-            "changed: bool}; same order → no save."
+            "Reorder the report parameters (their prompt order). names must list "
+            "every parameter exactly once; the parameter pane layout is reordered "
+            "to match."
         ),
         input_schema={
             "type": "object",
@@ -760,16 +691,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_parameter_layout",
         description=(
-            "Author <ReportParametersLayout>/<GridLayoutDefinition> "
-            "explicitly. Writes <NumberOfRows> + <NumberOfColumns>; "
-            "rewrites <CellDefinitions> so each name in parameter_order "
-            "lands at (row=index // columns, col=index % columns). "
-            "Strict permutation check (every existing parameter exactly "
-            "once). rows*columns must be ≥ parameter count. Auto-creates "
-            "the layout block when absent. Idempotent: same grid + order "
-            "→ no save. Complements reorder_parameters (declaration "
-            "order) and sync_parameter_layout (gap-filling). Returns "
-            "{rows, columns, order, kind, changed}."
+            "Lay out the parameter pane: a rows x columns grid with the "
+            "parameters placed in parameter_order (each exactly once). Creates "
+            "the layout if absent. See reorder_parameters (declaration order) and "
+            "sync_parameter_layout (repair)."
         ),
         input_schema={
             "type": "object",
@@ -792,13 +717,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="duplicate_report",
         description=(
-            "Clone an .rdl to a new path. When regenerate_ids=true "
-            "(default), every <rd:DataSourceID> and any <rd:ReportID> "
-            "is rewritten to a fresh uuid4() so Power BI Report Builder "
-            "doesn't refuse to load the duplicate due to identity "
-            "collision. Atomic-write convention from RDLDocument.save_as. "
-            "Refuses if dst_path already exists. Returns {src, dst, "
-            "regenerated_ids: list[str]}."
+            "Copy a report to a new file (save as). regenerate_ids=true (default) "
+            "gives the copy fresh DataSourceID / ReportID GUIDs so Report Builder "
+            "accepts both. Refuses an existing dst_path; the write is atomic."
         ),
         input_schema={
             "type": "object",
@@ -816,12 +737,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="get_embedded_image_data",
         description=(
-            "Read an embedded image's base64 <ImageData> for porting "
-            "it to another report without re-reading from disk. Returns "
-            "{name, mime_type, base64, byte_size}. base64 is the raw "
-            "text of the ImageData element; byte_size is the decoded "
-            "size for sanity-checking. Refuses with ElementNotFoundError "
-            "if the named entry isn't in <EmbeddedImages>."
+            "Read an embedded image's base64 data, MIME type and decoded size, "
+            "e.g. to copy it into another report."
         ),
         input_schema={
             "type": "object",
@@ -840,17 +757,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="validate_report",
         description=(
-            "Run schema/structural validation against an .rdl. Returns "
-            "{valid, errors, xsd_used}. Structural checks always run "
-            "(root element + required top-level sections). The Microsoft "
-            "RDL 2016/01 XSD is bundled by default since v0.3.1 — when "
-            "it's loaded, xsd_used is True and the schema-conformance "
-            "bug class Power BI Report Builder rejects on load gets "
-            "caught here. If the bundled XSD is missing (source-build "
-            "without package-data) a {severity:warning, "
-            "rule:'xsd-not-bundled'} issue surfaces instead of silent "
-            "skip. Each issue is {severity, rule, location, message, "
-            "suggestion?}; valid is True iff no severity='error' issue."
+            "Validate a report: structural checks plus the bundled RDL 2016 XSD "
+            "(xsd_used). Returns {valid, errors}; valid is false on any "
+            "error-severity issue. For XSD + lint in one call use verify_report."
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=validate.validate_report,
@@ -859,16 +768,11 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="verify_report",
         description=(
-            "One-shot static check: union of validate_report and "
-            "lint_report. Returns {valid, issues, xsd_used} where "
-            "valid is True iff no issue has severity='error'. "
-            "Warnings (including 'xsd-not-bundled' when the schema "
-            "file is missing) don't invalidate the report. Use this as "
-            "the single 'is the report OK?' tool, or set "
-            "PBIRB_MCP_AUTO_VERIFY=1 to have it run after every "
-            "mutating call. With baseline_path (e.g. a backup taken "
-            "before an edit), or inside a transaction, each issue gets "
-            "new: true|false plus introduced_count / preexisting_count."
+            "Check a report is OK: validate_report (XSD) + lint_report in one "
+            "call. valid is false on any error. With baseline_path (e.g. a "
+            "backup) or inside a transaction, each issue is marked new or "
+            "pre-existing. PBIRB_MCP_AUTO_VERIFY=1 runs it after every edit "
+            "outside a transaction."
         ),
         input_schema={
             "type": "object",
@@ -891,19 +795,11 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="lint_report",
         description=(
-            f"Run static-analysis lint rules against an .rdl. {len(_lint.ALL_RULES)} "
-            "rules cover the known bug classes (multi-value-eq, "
-            "missing-field-reference, dangling-embedded-image, "
-            "pbidataset-at-prefix, parameter-layout-out-of-sync, "
-            "double-encoded-entities, stale-designer-state, "
-            "tablix-span-misplaced, dataset-fields-out-of-sync, "
-            "duplicate-name, invalid-identifier, tablix-structure, "
-            "chart-structure, etc.). "
-            "Returns {issues, rules_run} with each issue {severity "
-            "(error|warning), "
-            "rule, location, message, suggestion?}; location names the "
-            "nearest named items, e.g. Tablix[Name='T']>Textbox[Name='X']>Value. "
-            "Optional `rules` selects a subset by name (empty = all)."
+            "Lint a report for the bugs Report Builder rejects or renders wrong "
+            "(broken field references, multi-value comparisons, tablix/chart "
+            f"structure, duplicate names, layout overflow, ... {len(_lint.ALL_RULES)} "
+            "rules). Each issue has severity, rule, location and message; `rules` "
+            "runs a subset."
         ),
         input_schema={
             "type": "object",
@@ -926,13 +822,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="dry_run_edit",
         description=(
-            "Apply a list of {tool, args} ops to a tempfile clone of "
-            "the report; return the unified diff and a verify "
-            "(validate + lint) report. The original file is NEVER "
-            "modified. The harness auto-injects `path` into each op's "
-            "args, so callers don't supply it. On op failure, dispatch "
-            "stops; partial diff + verify are still returned. Use this "
-            "to preview risky multi-step edits before committing."
+            "Preview edits without changing the report: runs {tool, args} ops on "
+            "a temp copy and returns per-op results, a unified diff and a verify "
+            "report. Ops omit `path`. Stops at the first failing op. summary=true "
+            "leaves out the diff; max_diff_bytes caps it."
         ),
         input_schema={
             "type": "object",
@@ -951,6 +844,20 @@ def register_all_tools(server: MCPServer) -> None:
                     },
                     "description": "Sequence of tool calls to dispatch against the tempfile.",
                 },
+                "summary": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Omit the diff and op result_text; verify becomes "
+                        "{valid, error_count, issue_count, issues_by_rule}."
+                    ),
+                },
+                "max_diff_bytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 40000,
+                    "description": "Cap on the returned diff's UTF-8 size (0 = no cap).",
+                },
             },
             "required": ["path", "ops"],
             "additionalProperties": False,
@@ -962,15 +869,11 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="start_editing_transaction",
         description=(
-            "Open the report and start an editing transaction. Returns "
-            "{transaction_id, path, expires_at}. Pass transaction_id to "
-            "subsequent edit tools to mutate the live in-memory tree "
-            "WITHOUT touching disk between calls — eliminates the "
-            "per-edit parse+serialize round-trip. The transaction times "
-            "out after PBIRB_MCP_TRANSACTION_TIMEOUT_S seconds (default "
-            "600); call commit_editing_transaction to flush or "
-            "cancel_editing_transaction to discard. Refuses if an active "
-            "transaction already owns this path."
+            "Start an editing transaction on a report: later calls with its "
+            "transaction_id edit an in-memory copy, and nothing is saved until "
+            "commit_editing_transaction (or discarded by cancel). Expires after "
+            "PBIRB_MCP_TRANSACTION_TIMEOUT_S (default 600 s). One transaction per "
+            "file."
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=_transactions.start_editing_transaction,
@@ -978,13 +881,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="commit_editing_transaction",
         description=(
-            "Lint the in-memory tree, save to disk once (atomic .tmp + "
-            "rename), and deregister. Aborts (saved=False) if lint "
-            "surfaces any severity='error' issue — the transaction "
-            "stays OPEN so the caller can fix the offending state and "
-            "re-commit. Also refuses (saved=False, error) when the file "
-            "changed on disk since the transaction started, unless "
-            "force=true. Returns {transaction_id, path, saved, verify}."
+            "Save a transaction's edits in one atomic write after verifying them "
+            "(XSD + lint, new errors only). On errors nothing is saved and the "
+            "transaction stays open to fix. Refuses if the file changed on disk "
+            "meanwhile unless force=true."
         ),
         input_schema={
             "type": "object",
@@ -1005,11 +905,7 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="cancel_editing_transaction",
-        description=(
-            "Discard a transaction. The in-memory tree is dropped; the "
-            "on-disk file is unchanged from when the transaction was "
-            "started. Returns {transaction_id, path, discarded}."
-        ),
+        description=("Discard a transaction's edits; the file on disk stays as it was."),
         input_schema={
             "type": "object",
             "properties": {"transaction_id": {"type": "string"}},
@@ -1021,16 +917,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="apply_edits",
         description=(
-            "Atomic batch: open once → apply ops → lint → save once. "
-            "Opens an internal transaction against path, dispatches each "
-            "{tool, args} op through the JSON-RPC tools/call path with "
-            "transaction_id injected, and commits at the end. On any "
-            "op failure or lint-error at commit, rolls back — disk is "
-            "byte-identical to its pre-call state. "
-            "Compare with dry_run_edit (clones to tempfile, never "
-            "touches the real file): use dry_run_edit to preview a "
-            "plan, apply_edits to land it. Returns "
-            "{applied: [{tool, ok, result|error}], verify, committed}."
+            "Apply several edits atomically: runs {tool, args} ops in one "
+            "transaction, verifies, and saves once. If any op fails or verify "
+            "finds new errors nothing is saved. Ops omit `path`. Preview the same "
+            "ops with dry_run_edit."
         ),
         input_schema={
             "type": "object",
@@ -1061,19 +951,11 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="create_report",
         description=(
-            "Emit a minimal valid RDL from scratch at `path`. Refuses "
-            "if `path` exists (no clobbering). Default page_setup is "
-            "US Letter portrait with 1in margins; pass any subset of "
-            "{page_height, page_width, margin_top, margin_bottom, "
-            "margin_left, margin_right, body_width, body_height} to "
-            "override. `datasource` is a forward-compat hook — pass "
-            "{name, workspace_url, dataset_name, provider, "
-            "integrated_security} to wire a real PBI XMLA endpoint "
-            "(v0.4 commit 14); omit for a placeholder DataSource1 + "
-            "DataSet1 stub the caller fills in via subsequent tools. "
-            "Validates structurally + against the bundled XSD before "
-            "saving (atomic .tmp + rename). Returns "
-            "{path, validated, size_bytes}."
+            "Create a new, valid, empty report at path (refuses an existing "
+            "file). Page defaults to US Letter portrait, 1in margins; page_setup "
+            "overrides sizes. datasource {name, workspace_url, dataset_name, ...} "
+            "connects it to Power BI; omitted, a placeholder DataSource1 + "
+            "DataSet1 is written."
         ),
         input_schema={
             "type": "object",
@@ -1099,12 +981,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="get_expression_reference",
         description=(
-            "Return a static cheat-sheet of common RDL expression "
-            "patterns: globals, parameters, fields, aggregates, "
-            "conditionals, strings, dates. Each entry is {name, syntax, "
-            "example, description}. Call this when authoring a textbox "
-            "value or filter expression instead of guessing — and note "
-            "the explicit encoding hint for the `&` concat operator."
+            "Cheat sheet of RDL expression patterns (globals, parameters, fields, "
+            "aggregates, conditionals, strings, dates) with syntax and examples. "
+            "Use it when writing an expression instead of guessing."
         ),
         input_schema={
             "type": "object",
@@ -1117,10 +996,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="count_where",
         description=(
-            "Emit =Sum(IIf(<condition>, 1, 0)) — the SSRS conditional-count "
-            "idiom. condition is an RDL expression body (no leading '='). "
-            "Returns a complete top-level expression suitable for "
-            "set_textbox_value or any RDL <Value> sink."
+            "Build a conditional count expression: =Sum(IIf(condition, 1, 0)). "
+            "condition is an expression body without the leading '='."
         ),
         input_schema={
             "type": "object",
@@ -1141,9 +1018,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="sum_where",
         description=(
-            "Emit =Sum(IIf(<condition>, <field_expression>, 0)) — the SSRS "
-            "conditional-sum idiom. Both args are expression bodies "
-            "(no leading '=')."
+            "Build a conditional sum expression: =Sum(IIf(condition, "
+            "field_expression, 0)). Both arguments are expression bodies without "
+            "'='."
         ),
         input_schema={
             "type": "object",
@@ -1168,9 +1045,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="iif_format",
         description=(
-            "Emit =IIf(<condition>, <true_value>, <false_value>). All three "
-            "args are expression bodies (no leading '='); string literals "
-            "must already be quoted, e.g. true_value='\"Yes\"'."
+            "Build an =IIf(condition, true_value, false_value) expression, e.g. "
+            "for conditional text or colours. Arguments are expression bodies "
+            "without '='; quote string literals ('\"Yes\"')."
         ),
         input_schema={
             "type": "object",
@@ -1190,11 +1067,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_group_page_break",
         description=(
-            "Set <BreakLocation> on a tablix group's page-break rule. "
-            "location ∈ {None, Start, End, StartAndEnd, Between}. "
-            "Passing 'None' removes the <PageBreak> element (the "
-            "canonical 'no break' shape). Idempotent. Returns "
-            "{tablix, group, kind: 'Group', location, changed}."
+            "Set a page break on a tablix group: None (remove), Start, End, StartAndEnd or Between."
         ),
         input_schema={
             "type": "object",
@@ -1217,12 +1090,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_repeat_on_new_page",
         description=(
-            "Set <TablixMember>/<RepeatOnNewPage> on the member that "
-            "wraps the named group. Most common use: repeat a group "
-            "header row at the top of every page the group spans. "
-            "Setting repeat=False removes the element (False is "
-            "default). Returns {tablix, group, kind: 'TablixMember', "
-            "repeat, changed}."
+            "Repeat a group's header row on every page the group spans "
+            "(RepeatOnNewPage on its member); repeat=false removes it."
         ),
         input_schema={
             "type": "object",
@@ -1242,12 +1111,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_keep_together",
         description=(
-            "Set <KeepTogether> on a named Tablix / Rectangle / Chart / "
-            "Textbox / Map / Gauge. Tells the renderer 'don't split "
-            "this across pages if you can help it'. Best-effort — "
-            "items larger than a page are still split. keep=False "
-            "removes the element. Refuses for Image / Line / Subreport "
-            "and other kinds where the RDL XSD doesn't allow it."
+            "Keep a tablix, rectangle, chart, textbox, map or gauge on one page "
+            "when possible (KeepTogether); keep=false removes it."
         ),
         input_schema={
             "type": "object",
@@ -1266,11 +1131,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_keep_with_group",
         description=(
-            "Set <TablixMember>/<KeepWithGroup> on the member that "
-            "wraps the named group. value ∈ {None, Before, After}. "
-            "Typical use: a column-header row's member with 'After' "
-            "to glue it to the data rows that follow. value='None' "
-            "removes the element."
+            "Keep a group's member with the rows before or after it "
+            "(KeepWithGroup: None, Before, After), e.g. glue a header row to the "
+            "data that follows."
         ),
         input_schema={
             "type": "object",
@@ -1295,19 +1158,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_rectangle",
         description=(
-            "Add a <Rectangle> to <Body>/<ReportItems>. With no "
-            "contained_items the rectangle is empty (a visual frame). "
-            "With contained_items=[name1, name2, ...], each named "
-            "body item is MOVED into the rectangle's <ReportItems> "
-            "and its <Top>/<Left> recalculated so the on-screen "
-            "position is preserved. Every moved item must lie inside "
-            "the rectangle's box: a misfit is refused (naming each "
-            "item and how far it overflows) unless fit=true, which "
-            "grows the rectangle to enclose them. Refuses on duplicate "
-            "name or if any contained_item isn't in <Body>/<ReportItems>; "
-            "nothing is written on refusal. Returns {name, kind: "
-            "'Rectangle', moved}, plus {fitted, top, left, width, "
-            "height} when fit is passed."
+            "Add a rectangle to the body: an empty frame, or a container for "
+            "contained_items (moved in with their on-page position kept). Items "
+            "that don't fit are refused unless fit=true grows the rectangle."
         ),
         input_schema={
             "type": "object",
@@ -1348,13 +1201,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_list",
         description=(
-            "Add a List (single-cell repeating Tablix) bound to a "
-            "dataset. RDL has no distinct <List> element — Report "
-            "Builder's List is a Tablix with one column, one detail "
-            "row, and a Rectangle inside the cell. Items placed in "
-            "the rectangle repeat once per dataset row. The inner "
-            "rectangle is named '<name>_Rect' for subsequent lookup. "
-            "Returns {name, kind: 'Tablix', dataset, rectangle}."
+            "Add a list (a one-cell repeating tablix with a rectangle inside, "
+            "named '<name>_Rect') bound to a dataset; items placed in the "
+            "rectangle repeat once per row."
         ),
         input_schema={
             "type": "object",
@@ -1377,12 +1226,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_line",
         description=(
-            "Add a <Line> to <Body>/<ReportItems>. RDL Line semantics: "
-            "top/left is the start point; width/height is the offset "
-            "(vector) to the end point — horizontal line uses "
-            "height='0in', vertical uses width='0in'. Optional color, "
-            "line_thickness ('1pt' default), line_style "
-            "(Solid/Dashed/Dotted/Double/etc.). Returns {name, kind: 'Line'}."
+            "Add a line to the body. top/left is the start point and width/height "
+            "the offset to the end: height='0in' is horizontal, width='0in' "
+            "vertical. Optional color, line_thickness, line_style."
         ),
         input_schema={
             "type": "object",
@@ -1412,19 +1258,25 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="raw_xml_view",
         description=(
-            "Read-only XPath query against the report. Returns matched "
-            "elements as serialised XML strings. XPath context is "
-            "<Report> (the root); 'r:' is bound to the RDL namespace, "
-            "'rd:' to the rd namespace. Examples: "
-            "\"r:DataSources/r:DataSource[@Name='X']\" / "
-            "\".//r:Textbox[@Name='X']/r:Style\". Returns [] when "
-            "nothing matches; raises on malformed xpath."
+            "Read the raw XML matching an XPath (context: the Report root; 'r:' = "
+            "RDL namespace, 'rd:' = designer namespace), e.g. "
+            "\".//r:Textbox[@Name='X']/r:Style\". Output is capped at max_bytes."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "xpath": {"type": "string"},
+                "max_bytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 40000,
+                    "description": (
+                        "Cap on the total UTF-8 size of the returned XML (0 = no cap). "
+                        "Over the cap, the crossing element is cut and ends in a "
+                        "truncation marker; later matches are omitted and counted."
+                    ),
+                },
             },
             "required": ["path", "xpath"],
             "additionalProperties": False,
@@ -1435,13 +1287,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="raw_xml_replace",
         description=(
-            "Replace the single element matched by xpath with new "
-            "content. content is parsed with RDL as the default "
-            "namespace and 'rd:' bound, so bare names like "
-            "<Textbox><Value>x</Value></Textbox> work without explicit "
-            "xmlns. Refuses on zero matches, multiple matches, or if "
-            "the xpath targets the <Report> root. Saves atomically. "
-            "Returns {xpath, kind, changed}."
+            "Last resort: replace the one element an XPath matches with new XML "
+            "(RDL is the default namespace, 'rd:' is bound). Refuses zero or "
+            "several matches and the Report root. Prefer a dedicated tool."
         ),
         input_schema={
             "type": "object",
@@ -1477,19 +1325,17 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_textbox_action",
         description=(
-            "Set <Textbox>/<Action> to a Hyperlink (URL), Drillthrough "
-            "(another report + optional parameters), or BookmarkLink "
-            "(jump within document). target_expression accepts literal "
-            "text or =expression. drillthrough_parameters is a list of "
-            "{name, value} dicts wired into <Drillthrough>/<Parameters>. "
-            "Idempotent: same action_type + target + parameters → "
-            "{changed: false}, no save."
+            "Make a textbox clickable: a hyperlink (URL), a drillthrough to "
+            "another report (with parameters) or a bookmark link. "
+            "target_expression is text or an =expression. Or pass `cell` (tablix "
+            "+ column header/field/index + row) instead of textbox_name."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "textbox_name": {"type": "string"},
+                "cell": _columns.CELL_SCHEMA,
                 "action_type": {
                     "type": "string",
                     "enum": ["Hyperlink", "Drillthrough", "BookmarkLink"],
@@ -1502,21 +1348,19 @@ def register_all_tools(server: MCPServer) -> None:
             },
             "required": [
                 "path",
-                "textbox_name",
                 "action_type",
                 "target_expression",
             ],
             "additionalProperties": False,
         },
-        handler=actions.set_textbox_action,
+        handler=_columns.with_cell_target(actions.set_textbox_action),
         mutating=True,
     )
     server.register_tool(
         name="set_image_action",
         description=(
-            "Same shape as set_textbox_action but operates on a named "
-            "<Image>. action_type ∈ Hyperlink / Drillthrough / "
-            "BookmarkLink. Returns {image, kind, action_type, changed}."
+            "Make an image clickable: hyperlink, drillthrough or bookmark link "
+            "(as set_textbox_action)."
         ),
         input_schema={
             "type": "object",
@@ -1547,31 +1391,28 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_textbox_tooltip",
         description=(
-            "Set <Textbox>/<ToolTip>. Literal text or =expression. Pass "
-            "'' to clear. Idempotent. Returns {textbox, kind, changed: "
-            "bool}."
+            "Set or clear ('') a textbox's tooltip (text or =expression). Or pass "
+            "`cell` (tablix + column header/field/index + row) instead of "
+            "textbox_name."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "textbox_name": {"type": "string"},
+                "cell": _columns.CELL_SCHEMA,
                 "text_or_expression": {"type": "string"},
             },
-            "required": ["path", "textbox_name", "text_or_expression"],
+            "required": ["path", "text_or_expression"],
             "additionalProperties": False,
         },
-        handler=actions.set_textbox_tooltip,
+        handler=_columns.with_cell_target(actions.set_textbox_tooltip),
         mutating=True,
     )
     server.register_tool(
         name="set_document_map_label",
         description=(
-            "Set <DocumentMapLabel> on any named ReportItem (Textbox / "
-            "Image / Rectangle / Chart / Tablix / etc.). Surfaces in "
-            "the rendered report's navigable document-map / "
-            "table-of-contents pane. Pass '' to clear. Idempotent. "
-            "Returns {element, kind, changed: bool}."
+            "Set or clear ('') the document map (table of contents) label of any named report item."
         ),
         input_schema={
             "type": "object",
@@ -1589,12 +1430,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_chart_series_action",
         description=(
-            "Set <ChartSeries>/<Action> to a Hyperlink (URL), Drillthrough "
-            "(another report + optional parameters), or BookmarkLink. "
-            "Same kwarg surface as set_textbox_action / set_image_action; "
-            "the chart series is addressed by (chart_name, series_name). "
-            "Schema-aware insertion respects ChartSeries child order. "
-            "Idempotent on structural equality of the inner block."
+            "Make a chart series clickable: hyperlink, drillthrough or bookmark "
+            "link (as set_textbox_action), addressed by chart_name + series_name."
         ),
         input_schema={
             "type": "object",
@@ -1627,10 +1464,7 @@ def register_all_tools(server: MCPServer) -> None:
 
     server.register_tool(
         name="remove_query_parameter",
-        description=(
-            "Remove a query parameter from a dataset. Cleans up the empty "
-            "<QueryParameters/> block when removing the last one."
-        ),
+        description=("Remove a query parameter from a dataset."),
         input_schema={
             "type": "object",
             "properties": {
@@ -1648,9 +1482,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="list_tablix_filters",
         description=(
-            "List all filters on a named tablix in document order. Returns "
-            "expression, operator, and values per filter; index in the list "
-            "is the stable handle for remove_tablix_filter."
+            "List a tablix's filters in order: expression, operator, values. The "
+            "list index is the handle for remove_tablix_filter."
         ),
         input_schema={
             "type": "object",
@@ -1666,13 +1499,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_tablix_filter",
         description=(
-            "Append a <Filter> to a tablix. Operator must be one of the RDL "
-            "2016 enumeration (Equal, NotEqual, GreaterThan, In, Between, ...). "
-            "Returns the new filter's index for follow-up calls. Optional "
-            "field_format wraps the expression as Format(<body>, fmt) to "
-            "coerce typed fields for string-parameter comparison. The "
-            "response includes warnings for cross-checked field/parameter "
-            "type mismatches."
+            "Add a filter to one tablix (Equal, NotEqual, GreaterThan, In, "
+            "Between, Like, TopN, ...). field_format wraps the expression in "
+            "Format() for string parameters; warnings flag field/parameter type "
+            "mismatches. Returns the filter's index."
         ),
         input_schema={
             "type": "object",
@@ -1703,11 +1533,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_row_group",
         description=(
-            "Add a row group that wraps the entire current top-level row "
-            "hierarchy. Inserts a matching group-header row at body row 0 "
-            "with the group expression in the first cell. parent_group "
-            "(nesting under an existing group) is reserved for a future "
-            "commit and currently raises NotImplementedError."
+            "Group a tablix's rows: wraps the row hierarchy in a new outer group "
+            "and inserts a group header row showing the group expression."
         ),
         input_schema={
             "type": "object",
@@ -1730,15 +1557,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_row_group",
         description=(
-            "Remove a row group: its wrapped members move up to where the "
-            "group was and keep their body rows; the group's own header row "
-            "(found via the row hierarchy, any nesting depth) and its "
-            "add_subtotal_row subtotal rows are deleted. A group with no "
-            "header row (e.g. a Report Builder group wrapping just the data "
-            "row) is unwrapped without deleting any row. keep_subtotals=true "
-            "keeps subtotal rows (their aggregates then cover the parent "
-            "scope). Refuses the detail group, a group whose member is itself "
-            "a leaf, and a matrix group carrying a row-header cell."
+            "Remove a row group (ungroup): its rows move up a level; its header "
+            "row and subtotal rows are deleted (keep_subtotals=true keeps "
+            "subtotals). Refuses the detail group and a matrix group that has a "
+            "row-header cell."
         ),
         input_schema={
             "type": "object",
@@ -1757,26 +1579,11 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="convert_to_matrix",
         description=(
-            "Turn a grouped table into a Report Builder-shaped matrix "
-            "(run after insert_tablix_from_template + add_row_group + "
-            "add_column_group). The detail rows aggregate into the row "
-            "group: the detail row is kept and its =Fields!X.Value cells "
-            "become =<aggregate>(Fields!X.Value) (default Sum; cells that "
-            "already aggregate are left alone, complex ones are left with a "
-            "warning). Group captions become TablixHeader cells: the row "
-            "group's caption row moves into a row header; body columns that "
-            "only repeat a row/column group expression and the column-title "
-            "row are removed (with 2+ value columns left, the titles become "
-            "column headers instead). Rows such as totals/footers are kept. "
-            "Creates the TablixCorner (column-header depth x row-header "
-            "depth). Refuses: row_group that is the detail group or does "
-            "not enclose the detail rows, unknown column_group, a tablix "
-            "already without a detail group (second call), or a result "
-            "that would not be a consistent matrix — file untouched. "
-            "Returns {tablix, kind, changed, row_headers, column_headers, "
-            "aggregated, removed_rows, removed_columns, removed_textboxes, "
-            "corner_textboxes, warnings}. Then set_tablix_corner for the "
-            "top-left label."
+            "Turn a grouped table into a matrix (after add_row_group + "
+            "add_column_group): detail cells become aggregates (default Sum), "
+            "group captions become row/column headers, caption-only rows and "
+            "columns are deleted, and a corner is created. Then "
+            "set_tablix_corner. See docs/MATRIX-cookbook.md."
         ),
         input_schema={
             "type": "object",
@@ -1800,20 +1607,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_tablix_corner",
         description=(
-            "Set the value of a <TablixCorner> cell — the top-left block "
-            "of a matrix, column-header depth x row-header depth, that "
-            "holds the row-axis caption (e.g. 'Type'). Pass `text` for a "
-            "literal value OR `expression` for a VB.NET '=...' formula "
-            "(mutually exclusive); `row`/`col` (0-based, default 0/0) "
-            "pick the cell. The corner is created or resized to the "
-            "header depths first (new cells: '<tablix_name>_Corner' "
-            "textboxes); the value is set in place, keeping the cell "
-            "textbox's name and style; an identical call changes nothing "
-            "(changed: []). Refuses when the tablix has no row headers or "
-            "no column headers (run convert_to_matrix first), and for a "
-            "cell outside the corner, covered by a span, or not holding a "
-            "textbox. Returns {tablix, name, kind: 'TablixCorner', row, "
-            "col, changed}."
+            "Set the text (or =expression) of a matrix's top-left corner cell, "
+            "e.g. the row-axis caption. Creates or resizes the corner to the "
+            "header depths; row/col pick a cell. Needs row and column headers "
+            "(convert_to_matrix first)."
         ),
         input_schema={
             "type": "object",
@@ -1834,8 +1631,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_group_sort",
         description=(
-            "Replace a group's <SortExpressions> with a fresh list. Each "
-            "entry is an RDL expression, e.g. =Fields!Region.Value."
+            "Sort a row group: replaces its sort expressions, e.g. ['=Fields!Region.Value']."
         ),
         input_schema={
             "type": "object",
@@ -1862,11 +1658,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_group_visibility",
         description=(
-            "Set <Visibility> on a group's TablixMember. Accepts a Hidden "
-            "expression and an optional ToggleItem (a textbox name that "
-            "toggles the group expand/collapse). "
-            "Hidden must be true/false or an =expression. toggle_textbox must be an existing textbox in the same region/tablix scope and NOT in the rows/columns being hidden (e.g. use the parent group's header cell); omit it to keep the current toggle, pass null or "
-            " to remove it. Returns changed; no write when nothing changed."
+            "Hide or show a row group (Hidden: true/false or =expression), "
+            "optionally toggled by a textbox (drill-down) in the same "
+            "region/tablix, outside the hidden rows; omit it to keep the current "
+            "toggle, null or '' removes it."
         ),
         input_schema={
             "type": "object",
@@ -1893,18 +1688,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_column_group",
         description=(
-            "Add a column group that wraps the current top-level column "
-            "hierarchy. The group's caption is a TablixHeader on the new "
-            "group member (a 0.25in header row above the body, textbox "
-            "<group>_Header showing the group expression); body columns and "
-            "cells are not changed, so column-hierarchy leaves keep matching "
-            "body columns. If the tablix has row headers the TablixCorner "
-            "gains a row (or is created). Returns {tablix, group, "
-            "expression, header_textbox, header_textboxes, "
-            "corner_textboxes}. Refuses a tablix whose column leaves already "
-            "disagree with its body columns. parent_group nesting is "
-            "reserved for a future commit and currently raises "
-            "NotImplementedError."
+            "Group a tablix's columns (make it a matrix): wraps the column "
+            "hierarchy in a new group whose TablixHeader shows the group "
+            "expression; body columns are unchanged and the corner grows to match."
         ),
         input_schema={
             "type": "object",
@@ -1927,15 +1713,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_column_group",
         description=(
-            "Exact inverse of add_column_group: unwraps a column-axis "
-            "group's children back into its parent (its TablixHeader goes "
-            "with it) and shrinks the TablixCorner by that header row; body "
-            "columns are untouched. Unwrapped columns that sit beside other "
-            "columns get blank headers so header depth stays uniform. Also "
-            "removes the <group>_HeaderCol_<i> body column that older "
-            "versions of add_column_group inserted. Returns {tablix, "
-            "removed, removed_textboxes}. Errors if group_name only exists "
-            "on the row axis."
+            "Remove a column group (ungroup): its columns move up a level, its "
+            "header goes, and the corner shrinks; body columns are kept."
         ),
         input_schema={
             "type": "object",
@@ -1953,9 +1732,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_column_group_sort",
         description=(
-            "Replace a column-axis group's <SortExpressions> with a fresh "
-            "list. Mirrors set_group_sort but refuses up front if "
-            "group_name is on the row axis (use set_group_sort instead)."
+            "Sort a column group: replaces its sort expressions (set_group_sort is for row groups)."
         ),
         input_schema={
             "type": "object",
@@ -1977,12 +1754,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_column_group_visibility",
         description=(
-            "Set <Visibility> on a column-axis group's TablixMember. Accepts "
-            "a Hidden expression and an optional ToggleItem (textbox name "
-            "that toggles expand/collapse). Mirrors set_group_visibility "
-            "but refuses up front if group_name is on the row axis. "
-            "Hidden must be true/false or an =expression. toggle_textbox must be an existing textbox in the same region/tablix scope and NOT in the rows/columns being hidden (e.g. use the parent group's header cell); omit it to keep the current toggle, pass null or "
-            " to remove it. Returns changed; no write when nothing changed."
+            "Hide or show a column group (Hidden: true/false or =expression), "
+            "optionally toggled by a textbox outside the hidden columns; omit the "
+            "toggle to keep it, null or '' removes it."
         ),
         input_schema={
             "type": "object",
@@ -2007,21 +1781,11 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_tablix_column",
         description=(
-            "Append (or insert) a column into a tablix. column_name is the "
-            "textbox name placed in the data row's new cell — must be unique "
-            "report-wide. expression goes inside that textbox's TextRun "
-            "(typically =Fields!X.Value). For a tablix with >= 2 rows the "
-            "first row gets header_text (default = column_name) as a literal, "
-            "middle rows get blank cells, and the last row gets expression. "
-            "position is the 0-indexed body column; default appends at end. "
-            "width defaults to 1in. The column's hierarchy member is placed "
-            "so it owns that body column and stays outside every column "
-            "group: a position strictly inside a group is moved to just "
-            "before that group (the result's position/warnings say so) "
-            "unless inside_group names it. Existing columns keep their "
-            "group membership. A position inside a merged "
-            "(ColSpan) cell widens that span instead of adding a textbox "
-            "under it (refused if the data row is merged there)."
+            "Add a column to a tablix: header_text in the first row (default "
+            "column_name), `expression` (e.g. =Fields!X.Value) in the data row, "
+            "in a textbox named column_name. position is the 0-based body column "
+            "(default: end); a position inside a column group moves outside it "
+            "unless inside_group names it."
         ),
         input_schema={
             "type": "object",
@@ -2049,17 +1813,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_tablix_column",
         description=(
-            "Remove the tablix column whose body cell holds a textbox named "
-            "column_name: drops its TablixColumn, the cell at that index "
-            "from every row, and the column's own leaf in the column "
-            "hierarchy (found through any column groups, so leaves and "
-            "columns stay equal). Refuses the tablix's last column, and a "
-            "column that is the only column of a column group unless "
-            "remove_group=true (then the group member and its header go "
-            "too). Merged (ColSpan) cells shrink by one instead of losing their "
-            "contents. Refuses to delete a textbox a ToggleItem points at "
-            "unless force=true (which drops those toggles). Errors if no row "
-            "contains a textbox with the given name."
+            "Remove a tablix column: by the name of a textbox in it, or "
+            "column_ref {header | field | index}. Merged cells shrink instead. "
+            "Refuses the last column, a group's only column (unless "
+            "remove_group=true) and a toggle target (unless force=true)."
         ),
         input_schema={
             "type": "object",
@@ -2067,6 +1824,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "tablix_name": {"type": "string"},
                 "column_name": {"type": "string"},
+                "column_ref": _columns.COLUMN_REF_SCHEMA,
                 "remove_group": {"type": "boolean", "default": False},
                 "force": {
                     "type": "boolean",
@@ -2077,7 +1835,7 @@ def register_all_tools(server: MCPServer) -> None:
                     ),
                 },
             },
-            "required": ["path", "tablix_name", "column_name"],
+            "required": ["path", "tablix_name"],
             "additionalProperties": False,
         },
         handler=tablix_columns.remove_tablix_column,
@@ -2086,19 +1844,11 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_subtotal_row",
         description=(
-            "Add a subtotal row for a row-axis group. aggregates is a list "
-            "of {column, expression} entries; column matches against the "
-            "group's data-row textbox names (the same names add_tablix_column "
-            "uses as column_name — NOT field names). expression is the "
-            "aggregate (e.g. =Sum(Fields!X.Value)). Columns not listed get "
-            "blank cells. position='footer' (default) puts the row just after "
-            "the group's last row; 'header' at the group's first row (after "
-            "its own group-header row, if any). scope='group' (default) "
-            "places it inside the group: one subtotal per group instance. "
-            "scope='total' places it next to the group: once per parent "
-            "instance — a grand total for an outermost group (Report "
-            "Builder's Add Total). Existing rows keep their group binding. "
-            "Returns row_index and the emitted textbox names."
+            "Add a subtotal or grand-total row to a row group. aggregates is "
+            "[{column, expression}] (column = the data-row textbox name, or "
+            "column_ref) e.g. =Sum(Fields!X.Value). position footer|header; scope "
+            "'group' (per group) or 'total' (once, outside the group = grand "
+            "total)."
         ),
         input_schema={
             "type": "object",
@@ -2112,9 +1862,10 @@ def register_all_tools(server: MCPServer) -> None:
                         "type": "object",
                         "properties": {
                             "column": {"type": "string"},
+                            "column_ref": _columns.COLUMN_REF_SCHEMA,
                             "expression": {"type": "string"},
                         },
-                        "required": ["column", "expression"],
+                        "required": ["expression"],
                         "additionalProperties": False,
                     },
                 },
@@ -2138,17 +1889,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_subtotal_column",
         description=(
-            "Column-axis mirror of add_subtotal_row: adds a static column "
-            "member, a TablixColumn and a cell in every body row at the "
-            "column the new member owns. aggregates is a list of {row, "
-            "expression} entries where row is the 0-based body row index; "
-            "rows not listed get blank cells. position='after' (default — "
-            "just right of the group's last column) or 'before' (at its "
-            "first column). scope='group' (default) puts the column inside "
-            "the group (one per group instance); scope='total' next to the "
-            "group (once per parent instance — a grand total column for an "
-            "outermost group). Static columns beside the group stay "
-            "outside it. width defaults to '1in'."
+            "Add a subtotal or grand-total column to a column group. aggregates "
+            "is [{row, expression}] by 0-based body row. position after|before; "
+            "scope 'group' (per group) or 'total' (once, outside the group = "
+            "grand total)."
         ),
         input_schema={
             "type": "object",
@@ -2189,18 +1933,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_cell_span",
         description=(
-            "Set <ColSpan> on a tablix body cell (merge it with the cells "
-            "to its right). The cell is addressed by (row_index, "
-            "column_name) where column_name is the textbox name inside the "
-            "cell. At least one of row_span / col_span must be supplied; "
-            "both must be integers >= 1. col_span may not run past the last "
-            "column. Covered cells become empty placeholders: blank ones are "
-            "cleared, a covered cell with content is refused unless "
-            "force=true deletes it. Shrinking a span gives the uncovered "
-            "cells blank textboxes. row_span > 1 is refused (body cells "
-            "cannot span rows; RowSpan only applies in a TablixCorner); "
-            "pass 1 to reset. Returns {..., cleared, created} - the textbox "
-            "names deleted / created."
+            "Merge a tablix body cell with the cells to its right (col_span; 1 "
+            "resets). Address it by row_index + column_name (a textbox in the "
+            "column) or column_ref. A covered cell with content is refused unless "
+            "force=true deletes it. Body cells can't span rows."
         ),
         input_schema={
             "type": "object",
@@ -2209,11 +1945,12 @@ def register_all_tools(server: MCPServer) -> None:
                 "tablix_name": {"type": "string"},
                 "row_index": {"type": "integer", "minimum": 0},
                 "column_name": {"type": "string"},
+                "column_ref": _columns.COLUMN_REF_SCHEMA,
                 "row_span": {"type": ["integer", "null"], "minimum": 1},
                 "col_span": {"type": ["integer", "null"], "minimum": 1},
                 "force": {"type": "boolean", "default": False},
             },
-            "required": ["path", "tablix_name", "row_index", "column_name"],
+            "required": ["path", "tablix_name", "row_index"],
             "additionalProperties": False,
         },
         handler=tablix_cells.set_cell_span,
@@ -2222,17 +1959,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_static_row",
         description=(
-            "Add a static (no-group) row to a tablix. Each cell holds "
-            "literal text. cells is a list of strings, one per body column "
-            "(left to right); shorter list = blank trailing cells, longer "
-            "list errors. Cell textboxes are named row_name (col 0) and "
-            "row_name_<col_index> (others) — unique report-wide so row_name "
-            "must not clash with any existing textbox. position is the "
-            "0-indexed body row; default appends. The row stays outside "
-            "every row group: a position strictly inside a group is moved "
-            "to just before that group (the result's position/warnings say "
-            "so) unless inside_group names it. Existing rows keep their "
-            "group membership. height defaults to 0.25in."
+            "Add a static (ungrouped) row of literal text to a tablix: cells is "
+            "one string per column. position is the 0-based body row (default: "
+            "end); a position inside a group moves outside it unless inside_group "
+            "names it. Textboxes are named row_name, row_name_<col>."
         ),
         input_schema={
             "type": "object",
@@ -2262,17 +1992,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_static_column",
         description=(
-            "Add a static (no-group) column to a tablix. Each cell holds "
-            "literal text. cells is a list of strings, one per body row "
-            "(top to bottom); shorter list = blank trailing cells, longer "
-            "list errors. Cell textboxes are named column_name (row 0) and "
-            "column_name_<row_index> (others). position is the 0-indexed "
-            "body column; default appends. The column stays outside every "
-            "column group: a position strictly inside a group is moved to "
-            "just before that group (the result's position/warnings say "
-            "so) unless inside_group names it. In a matrix the new member "
-            "gets column-header cells matching its siblings. width "
-            "defaults to 1in."
+            "Add a static (ungrouped) column of literal text to a tablix: cells "
+            "is one string per row. position is the 0-based body column (default: "
+            "end); a position inside a column group moves outside it unless "
+            "inside_group names it."
         ),
         input_schema={
             "type": "object",
@@ -2304,10 +2027,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_body_item_position",
         description=(
-            "Move an existing named ReportItem inside <Body> to (top, left). "
-            "Preserves all other properties (size, style, group structure). "
-            "top and left are passed through verbatim — RDL accepts any size "
-            "unit (2cm, 0.75in, 108pt). Errors if no body item by that name."
+            "Move a named item in the report body to (top, left); any RDL size ('2cm', '0.75in')."
         ),
         input_schema={
             "type": "object",
@@ -2326,12 +2046,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_header_item_position",
         description=(
-            "Move an existing named ReportItem inside <PageHeader> to "
-            "(top, left). Errors if there is no <PageHeader> (call "
-            "set_page_header first) or no item by that name. Returns "
-            "`warnings` when the item now hangs below the band or past "
-            "the printable page width; grow_band=true grows the band "
-            "to fit instead (result gets band_height)."
+            "Move a named item in the page header to (top, left). Warns when it "
+            "hangs below the band or past the printable width; grow_band=true "
+            "grows the header instead."
         ),
         input_schema={
             "type": "object",
@@ -2357,12 +2074,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_footer_item_position",
         description=(
-            "Move an existing named ReportItem inside <PageFooter> to "
-            "(top, left). Errors if there is no <PageFooter> (call "
-            "set_page_footer first) or no item by that name. Returns "
-            "`warnings` when the item now hangs below the band or past "
-            "the printable page width; grow_band=true grows the band "
-            "to fit instead (result gets band_height)."
+            "Move a named item in the page footer to (top, left). Warns when it "
+            "hangs below the band or past the printable width; grow_band=true "
+            "grows the footer instead."
         ),
         input_schema={
             "type": "object",
@@ -2387,12 +2101,7 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="set_body_item_size",
-        description=(
-            "Resize an existing named ReportItem inside <Body>. At least "
-            "one of width / height must be supplied; missing fields are "
-            "left untouched. Same RDL size-string convention as the "
-            "position tools."
-        ),
+        description=("Resize a named item in the report body: width and/or height (RDL sizes)."),
         input_schema={
             "type": "object",
             "properties": {
@@ -2410,13 +2119,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_header_item_size",
         description=(
-            "Resize a named item inside <PageHeader>. Mirrors "
-            "set_body_item_size — at least one of width / height; "
-            "missing fields untouched; idempotent ({changed: false} "
-            "when nothing differs). Returns `warnings` when the item "
-            "outgrows the band or the printable page width; "
-            "grow_band=true grows the band to fit instead (result gets "
-            "band_height)."
+            "Resize a named item in the page header: width and/or height. Warns "
+            "when it outgrows the band or the printable width; grow_band=true "
+            "grows the header instead."
         ),
         input_schema={
             "type": "object",
@@ -2442,7 +2147,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_footer_item_size",
         description=(
-            "Resize a named item inside <PageFooter>. Same shape as set_header_item_size."
+            "Resize a named item in the page footer: width and/or height. Warns "
+            "when it outgrows the band or the printable width; grow_band=true "
+            "grows the footer instead."
         ),
         input_schema={
             "type": "object",
@@ -2470,121 +2177,109 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="list_body_items",
         description=(
-            "List every named ReportItem at the top level of <Body>. "
-            "Returns name, type (Tablix / Textbox / Image / Rectangle / "
-            "Subreport / Chart / etc.), top, left, width, height. Use "
-            "before set_body_item_position / set_body_item_size when you "
-            "don't already know what's in the body. Each entry has `parent` "
-            "(null at the top level); recursive=true also lists the items "
-            "inside each Rectangle, right after it, with parent = the "
-            "Rectangle's name (their top/left are relative to it)."
+            "List the named items in the report body: name, type, top, left, "
+            "width, height. recursive=true also lists items inside rectangles "
+            "(with parent; positions relative to it)."
         ),
         input_schema=_LIST_ITEMS_SCHEMA,
         handler=reader.list_body_items,
     )
     server.register_tool(
         name="list_header_items",
-        description="Same shape as list_body_items but for <PageHeader>.",
+        description=(
+            "List the named items in the page header: name, type, position, size "
+            "(like list_body_items)."
+        ),
         input_schema=_LIST_ITEMS_SCHEMA,
         handler=reader.list_header_items,
     )
     server.register_tool(
         name="list_footer_items",
-        description="Same shape as list_body_items but for <PageFooter>.",
+        description=(
+            "List the named items in the page footer: name, type, position, size "
+            "(like list_body_items)."
+        ),
         input_schema=_LIST_ITEMS_SCHEMA,
         handler=reader.list_footer_items,
     )
     server.register_tool(
         name="get_textbox",
         description=(
-            "Return effective state of a named Textbox: position, size, "
-            "Visibility, CanGrow, CanShrink, plus a nested style dict that "
-            "mirrors set_textbox_style's routing — "
-            "{box: {BackgroundColor, VerticalAlign, padding, ...}, "
-            "border: {Style, Color, Width}, paragraph: {TextAlign}, "
-            "run: {FontFamily, FontSize, FontWeight, Color, Format, ...}}. "
-            "Empty branches are dropped. runs[] entries each carry their own "
-            "per-run style. Searches the entire report; tablix-cell textboxes "
-            "have None for top/left/width/height. Top-level positioned items "
-            "with a missing <Top> or <Left> coerce to '0in' (RDL default)."
+            "Read a textbox anywhere in the report: value, position, size, "
+            "visibility, CanGrow/CanShrink, style grouped as box / border / "
+            "paragraph / run, and runs[] (accepted as-is by set_textbox_runs). "
+            "Tablix cells have no position."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
+                "response_format": RESPONSE_FORMAT_PARAM,
             },
             "required": ["path", "name"],
             "additionalProperties": False,
         },
-        handler=reader.get_textbox,
+        handler=with_response_format("get_textbox", reader.get_textbox),
     )
     server.register_tool(
         name="get_image",
         description=(
-            "Return effective state of a named Image: position, size, "
-            "Source (External / Embedded / Database), Value, Sizing "
-            "(AutoSize / Fit / FitProportional / Clip), MIMEType, Style, "
-            "Visibility."
+            "Read an image: position, size, source (External / Embedded / "
+            "Database), value, sizing, MIME type, style, visibility."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
+                "response_format": RESPONSE_FORMAT_PARAM,
             },
             "required": ["path", "name"],
             "additionalProperties": False,
         },
-        handler=reader.get_image,
+        handler=with_response_format("get_image", reader.get_image),
     )
     server.register_tool(
         name="get_rectangle",
-        description=(
-            "Return effective state of a named Rectangle: position, size, "
-            "names of contained ReportItems, Style, Visibility."
-        ),
+        description=("Read a rectangle: position, size, contained items, style, visibility."),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
+                "response_format": RESPONSE_FORMAT_PARAM,
             },
             "required": ["path", "name"],
             "additionalProperties": False,
         },
-        handler=reader.get_rectangle,
+        handler=with_response_format("get_rectangle", reader.get_rectangle),
     )
     server.register_tool(
         name="get_chart",
         description=(
-            "Return effective state of a named Chart: position, size, "
-            "dataset, palette, series list (name/type/subtype/value "
-            "expression/color), category groups (name/expression/label), "
-            "axes (category and value), legend, title, Style, Visibility. "
-            "Symmetric with get_textbox / get_image / get_rectangle."
+            "Read a chart: position, size, dataset, palette, series (type, value, "
+            "color), category groups, axes, legend, title, style, visibility."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
+                "response_format": RESPONSE_FORMAT_PARAM,
             },
             "required": ["path", "name"],
             "additionalProperties": False,
         },
-        handler=reader.get_chart,
+        handler=with_response_format("get_chart", reader.get_chart),
     )
 
     # ---- snapshot (v0.2 commit 14, v0.4 restore) --------------------------
     server.register_tool(
         name="backup_report",
         description=(
-            "Copy the report to <path>.bak.<UTC-timestamp>. Original is "
-            "untouched. Cheap explicit checkpoint to call before a "
-            "destructive batch (remove_*, rename_parameter, etc.). Returns "
-            "the backup path. Set PBIRB_MCP_AUTO_BACKUP=1 to opt into "
-            "automatic backups before destructive ops (off by default)."
+            "Back up a report to <path>.bak.<UTC timestamp> before a risky edit; "
+            "returns the backup path. Undo with restore_from_backup."
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=snapshot.backup_report,
@@ -2592,13 +2287,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="restore_from_backup",
         description=(
-            "Restore a backup file over its original target. target_path "
-            "defaults to the path implied by the backup's "
-            "<target>.bak.<UTC-timestamp> filename; pass target_path "
-            "explicitly when the backup name doesn't match that shape. "
-            "Refuses if target mtime is newer than backup (staleness "
-            "guard) — pass force=True to override. Returns "
-            "{source, restored_to, bytes_restored}."
+            "Restore a backup over its report (undo). target_path defaults to the "
+            "name the backup implies. Refuses when the report is newer than the "
+            "backup unless force=true."
         ),
         input_schema={
             "type": "object",
@@ -2618,9 +2309,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_parameter_prompt",
         description=(
-            "Write the <Prompt> text on a ReportParameter. Empty string "
-            "clears the <Prompt> element entirely; pass a single space ' ' "
-            "for blank-but-present."
+            "Set a report parameter's prompt text. '' removes the prompt; ' ' keeps a blank one."
         ),
         input_schema={
             "type": "object",
@@ -2638,11 +2327,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_parameter_type",
         description=(
-            "Set <DataType> on a ReportParameter. type ∈ {Boolean, "
-            "DateTime, Integer, Float, String}. Rejects with ValueError "
-            "if any existing literal default value would be incompatible "
-            "with the new type — fix defaults first via "
-            "set_parameter_default_values, then retry."
+            "Set a report parameter's data type: Boolean, DateTime, Integer, "
+            "Float or String. Refuses when an existing default value wouldn't fit "
+            "(fix it with set_parameter_default_values first)."
         ),
         input_schema={
             "type": "object",
@@ -2663,11 +2350,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_parameter",
         description=(
-            "Create a new ReportParameter with a minimal valid declaration. "
-            "Appends to <ReportParameters> (creating it if absent). Pair "
-            "with set_parameter_available_values / "
-            "set_parameter_default_values afterwards for value lists. "
-            "Booleans are only emitted when an explicit value is supplied."
+            "Add a report parameter (name, type, optional prompt and flags). Then "
+            "set its values with set_parameter_available_values / "
+            "set_parameter_default_values."
         ),
         input_schema={
             "type": "object",
@@ -2693,10 +2378,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_parameter",
         description=(
-            "Remove a ReportParameter by name. Refuses (lists offending "
-            "locators) if the parameter is still referenced anywhere in "
-            "the report by Parameters!<name>.Value or .Label. Pass "
-            "force=True to remove anyway."
+            "Remove a report parameter. Refuses while Parameters!<name> is still "
+            "referenced (lists where) unless force=true."
         ),
         input_schema={
             "type": "object",
@@ -2714,11 +2397,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="rename_parameter",
         description=(
-            "Rename a ReportParameter and rewrite every textual occurrence "
-            "of Parameters!<old_name>.Value / .Label across the entire "
-            "report. Case-sensitive. Atomic: collects all matches first, "
-            "then commits. Errors if new_name already exists or equals "
-            "old_name."
+            "Rename a report parameter and update every Parameters!<old>.Value / "
+            ".Label reference in the report. Refuses if new_name is taken."
         ),
         input_schema={
             "type": "object",
@@ -2736,15 +2416,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="sync_parameter_layout",
         description=(
-            "Bring <ReportParametersLayout>/<GridLayoutDefinition>/"
-            "<CellDefinitions> into sync with <ReportParameters>. Drops "
-            "cells whose ParameterName no longer exists; appends cells "
-            "for parameters that have no entry, placed at the next free "
-            "(row, col) slot. add_parameter / remove_parameter / "
-            "rename_parameter call this internally; the standalone tool "
-            "is for repairing legacy reports authored before v0.3.0 "
-            "where the layout drifted. No-op when the report has no "
-            "<ReportParametersLayout>. Returns {added, removed}."
+            "Repair the parameter pane layout: drop cells for removed parameters "
+            "and add cells for missing ones. No-op without a layout. "
+            "add/remove/rename_parameter already do this."
         ),
         input_schema=_PATH_ONLY_SCHEMA,
         handler=parameters.sync_parameter_layout,
@@ -2754,11 +2428,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_detail_row_visibility",
         description=(
-            "Set <Visibility> on the tablix's Details group, optionally with "
-            "a ToggleItem textbox name. Use to hide detail rows by expression "
-            "without restructuring the row hierarchy. "
-            "Hidden must be true/false or an =expression. toggle_textbox must be an existing textbox in the same region/tablix scope and NOT in the rows/columns being hidden (e.g. use the parent group's header cell); omit it to keep the current toggle, pass null or "
-            " to remove it. Returns changed; no write when nothing changed."
+            "Hide or show a tablix's detail rows (Hidden: true/false or "
+            "=expression), optionally toggled by a textbox outside them (e.g. a "
+            "group header cell); omit the toggle to keep it, null or '' removes "
+            "it."
         ),
         input_schema={
             "type": "object",
@@ -2776,10 +2449,7 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="set_row_height",
-        description=(
-            "Set the Height of the Nth body row (0-indexed) in a tablix. "
-            "Accepts any RDL size string ('0.25in', '1cm', '12pt')."
-        ),
+        description=("Set the height of a tablix body row (0-based row_index); any RDL size."),
         input_schema={
             "type": "object",
             "properties": {
@@ -2797,11 +2467,7 @@ def register_all_tools(server: MCPServer) -> None:
 
     server.register_tool(
         name="remove_tablix_filter",
-        description=(
-            "Remove a filter by index. Filters are anonymous in RDL, so use "
-            "list_tablix_filters first to find the right index. Removing the "
-            "last filter also drops the empty <Filters/> block."
-        ),
+        description=("Remove a tablix filter by its index from list_tablix_filters."),
         input_schema={
             "type": "object",
             "properties": {
@@ -2819,9 +2485,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_page_setup",
         description=(
-            "Update <Page> dimensions, margins, and column count on the "
-            "first ReportSection. All fields are optional — only what's "
-            "passed gets written. columns=1 strips the <Columns/> element."
+            "Set page size, margins and column count; only the fields passed are "
+            "written. columns=1 removes multi-column layout."
         ),
         input_schema={
             "type": "object",
@@ -2844,9 +2509,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_page_orientation",
         description=(
-            "Set page orientation by swapping PageHeight and PageWidth when "
-            "the current orientation doesn't match the requested one. "
-            "Idempotent. Accepts 'Portrait' or 'Landscape'."
+            "Set page orientation to Portrait or Landscape (swaps page width and height if needed)."
         ),
         input_schema={
             "type": "object",
@@ -2866,17 +2529,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_body_size",
         description=(
-            "Set the body's rendering region inside the page. "
-            "<Body>/<Height> and <ReportSection>/<Width> (the sibling "
-            "of <Body>) — both are RDL size strings (e.g. '14in', "
-            "'9in', '297mm'). Either or both kwargs required. "
-            "Distinct from set_page_setup (which sets the paper "
-            "chrome <Page>/<PageWidth>/<PageHeight>) and "
-            "set_body_item_size (size of items inside the body). "
-            "Use this when a wide tablix or chart needs the body "
-            "region expanded — without it the right edge is clipped "
-            "at preview time. Idempotent: same value → empty changed. "
-            "Returns {kind: 'Body', changed: list[str]}."
+            "Set the report body's height and/or width, e.g. widen it for a wide "
+            "tablix that gets clipped. Paper size is set_page_setup; item sizes "
+            "are set_body_item_size."
         ),
         input_schema={
             "type": "object",
@@ -2895,13 +2550,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="fit_page_to_body",
         description=(
-            "Fix a body wider than the page (lint body-wider-than-page: blank "
-            "pages after every page). mode='page' (default) widens PageWidth to "
-            "columns x body width + column spacing + left/right margins (a page "
-            "already wide enough is left alone). mode='body' shrinks the body "
-            "width (ReportSection Width) to the right edge of its rightmost item; "
-            "errors when even that exceeds the printable width. Returns {mode, "
-            "changed, page_width, body_width, printable_width}."
+            "Fix a body wider than the page (blank pages): mode='page' (default) "
+            "widens the page to fit; mode='body' shrinks the body to its "
+            "rightmost item (errors if that still doesn't fit)."
         ),
         input_schema={
             "type": "object",
@@ -2918,14 +2569,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="center_item",
         description=(
-            "Centre a named report item in its container by setting Left "
-            "(axis='horizontal', default), Top ('vertical') or both: "
-            "Left = (container width - item width) / 2. Container = the body "
-            "(body width) for body items, the printable width (page width minus "
-            "margins) for page header/footer items, the Rectangle for items "
-            "inside one. A Tablix is centred on the width its columns render at. "
-            "Errors when the item is larger than its container. Idempotent. "
-            "Returns {name, container, axis, top, left, changed, warnings}."
+            "Centre a named item in its container (the body, the printable width "
+            "for header and footer items, or its rectangle): axis horizontal "
+            "(default), vertical or both."
         ),
         input_schema={
             "type": "object",
@@ -3019,11 +2665,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_page_header",
         description=(
-            "Create or update <PageHeader>: height plus PrintOnFirstPage / "
-            "PrintOnLastPage flags. All fields optional — only what's "
-            "passed gets written, except that a section always gets a "
-            "Height (0.5in when none is given). Returns `warnings` when "
-            "the new height is shorter than the band's items."
+            "Add or update the page header: height and print on first/last page. "
+            "Only the fields passed are written (a new header gets 0.5in). Warns "
+            "when items no longer fit."
         ),
         input_schema=_SECTION_FLAGS_SCHEMA,
         handler=header_footer.set_page_header,
@@ -3031,7 +2675,10 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="set_page_footer",
-        description="Same as set_page_header, for <PageFooter>.",
+        description=(
+            "Add or update the page footer: height and print on first/last page "
+            "(like set_page_header)."
+        ),
         input_schema=_SECTION_FLAGS_SCHEMA,
         handler=header_footer.set_page_footer,
         mutating=True,
@@ -3039,16 +2686,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_header_textbox",
         description=(
-            "Add a Textbox to <PageHeader>/<ReportItems>. text accepts "
-            "static strings or RDL expressions (=Parameters!DateFrom.Value). "
-            "Pass raw text — encoding is handled; don't pre-encode XML "
-            "entities (use `&` not `&amp;`, including for the VB.NET "
-            "string-concat operator in expressions). Creates the band "
-            "when missing and grows its Height to max(0.5in, top + "
-            "height); returns band_height, plus `warnings` when an "
-            "existing band grew or the item passes the printable page "
-            "width. Fields!X needs an aggregate with a dataset scope "
-            'here, e.g. =First(Fields!X.Value, "DataSet1").'
+            "Add a textbox to the page header (created if missing; grows to fit). "
+            "text is literal or an =expression; Fields! needs an aggregate with a "
+            'dataset scope here, e.g. =First(Fields!X.Value, "DataSet1"). Pass '
+            "raw text: & not &amp;."
         ),
         input_schema=_TEXTBOX_SCHEMA,
         handler=header_footer.add_header_textbox,
@@ -3056,7 +2697,11 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="add_footer_textbox",
-        description="Same as add_header_textbox, for <PageFooter>.",
+        description=(
+            "Add a textbox to the page footer, e.g. a page number "
+            "(=Globals!PageNumber). Same arguments as add_header_textbox. Pass "
+            "raw text: & not &amp;."
+        ),
         input_schema=_TEXTBOX_SCHEMA,
         handler=header_footer.add_footer_textbox,
         mutating=True,
@@ -3064,10 +2709,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_header_image",
         description=(
-            "Add an Image to <PageHeader>/<ReportItems>. image_source is "
-            "External (URL in value), Embedded (EmbeddedImage Name in value), "
-            "or Database (=Fields!Photo.Value-style expression). Sizes "
-            "the band like add_header_textbox (band_height, warnings)."
+            "Add an image (logo) to the page header: image_source External (URL), "
+            "Embedded (name of an embedded image) or Database (=Fields! "
+            "expression). The header grows to fit."
         ),
         input_schema=_IMAGE_SCHEMA,
         handler=header_footer.add_header_image,
@@ -3075,24 +2719,21 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="add_footer_image",
-        description="Same as add_header_image, for <PageFooter>.",
+        description=("Add an image to the page footer (same arguments as add_header_image)."),
         input_schema=_IMAGE_SCHEMA,
         handler=header_footer.add_footer_image,
         mutating=True,
     )
     server.register_tool(
         name="remove_header_item",
-        description=(
-            "Remove a named Textbox or Image from <PageHeader>/<ReportItems>. "
-            "Empties the ReportItems block when the last item leaves."
-        ),
+        description=("Remove a named textbox or image from the page header."),
         input_schema=_NAMED_REMOVE_SCHEMA,
         handler=header_footer.remove_header_item,
         mutating=True,
     )
     server.register_tool(
         name="remove_footer_item",
-        description="Same as remove_header_item, for <PageFooter>.",
+        description=("Remove a named textbox or image from the page footer."),
         input_schema=_NAMED_REMOVE_SCHEMA,
         handler=header_footer.remove_footer_item,
         mutating=True,
@@ -3101,21 +2742,19 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_textbox_style",
         description=(
-            "Set styling on a named Textbox. Properties route to the right "
-            "nested Style node automatically: background_color, "
-            "border_*, vertical_align, padding_*, writing_mode go on "
-            "Textbox/Style; text_align on Paragraph/Style; font_*, color, "
-            "format on TextRun/Style; can_grow / can_shrink go DIRECTLY "
-            "on Textbox (not inside Style). All fields optional — only "
-            "what's passed gets written. Cell-level styling: every tablix "
-            "cell is a Textbox with a unique name, so use this tool with "
-            "the cell's textbox name (e.g. 'HeaderAmount')."
+            "Format a textbox or tablix cell: font, size, weight, color, number "
+            "format, alignment, background, borders, padding, "
+            "can_grow/can_shrink. Each property lands on the right RDL style "
+            "node; only those passed are written. A cell's textbox name works "
+            "(e.g. 'HeaderAmount'). Or pass `cell` (tablix + column "
+            "header/field/index + row) instead of textbox_name."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "textbox_name": {"type": "string"},
+                "cell": _columns.CELL_SCHEMA,
                 "font_family": {"type": ["string", "null"]},
                 "font_size": {
                     "type": ["string", "null"],
@@ -3177,42 +2816,28 @@ def register_all_tools(server: MCPServer) -> None:
                     ),
                 },
             },
-            "required": ["path", "textbox_name"],
+            "required": ["path"],
             "additionalProperties": False,
         },
-        handler=styling.set_textbox_style,
+        handler=_columns.with_cell_target(styling.set_textbox_style),
         mutating=True,
     )
     server.register_tool(
         name="set_textbox_runs",
         description=(
-            "Set a textbox's text runs for mixed styling within one "
-            "display — e.g. '**Asset(s):** value' with a bold prefix + "
-            "regular value in a single textbox — or for multi-paragraph "
-            "content. Each run is a dict with required 'text' (or "
-            "'value') and optional paragraph_index (default 0) / "
-            "font_family / font_size / font_weight / font_style / color / "
-            "format / text_decoration / markup_type, or a 'style' dict "
-            "keyed by RDL names (FontWeight, ...). Edits in place: run i "
-            "of paragraph j overwrites the existing run there and keeps "
-            "every field you don't pass (MarkupType, ToolTip, ActionInfo, "
-            "other style keys; pass a style key as null to remove it); "
-            "paragraph properties (TextAlign, ListStyle, indents) are "
-            "kept, new paragraphs inherit the previous one's. Refuses "
-            "(file untouched) when existing paragraphs would be left "
-            "unaddressed, unless drop_extra_paragraphs=true. "
-            "get_textbox.runs[] is accepted verbatim, so feeding it back "
-            "is a no-op. Returns {textbox, kind, runs, paragraphs, "
-            "changed}. "
-            "Pass raw text in each run's `text` — encoding is handled; "
-            "don't pre-encode XML entities (use `&` not `&amp;`, "
-            "including for the VB.NET string-concat operator)."
+            "Set rich text in a textbox: several runs with their own style (e.g. "
+            "a bold label + plain value) and/or several paragraphs. Edits runs in "
+            "place, keeping what you don't pass; get_textbox runs[] feed back "
+            "as-is. Refuses to drop paragraphs unless drop_extra_paragraphs=true. "
+            "Pass raw text: & not &amp;. Or pass `cell` (tablix + column "
+            "header/field/index + row) instead of textbox_name."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "textbox_name": {"type": "string"},
+                "cell": _columns.CELL_SCHEMA,
                 "runs": {
                     "type": "array",
                     "minItems": 1,
@@ -3273,49 +2898,40 @@ def register_all_tools(server: MCPServer) -> None:
                     ),
                 },
             },
-            "required": ["path", "textbox_name", "runs"],
+            "required": ["path", "runs"],
             "additionalProperties": False,
         },
-        handler=styling.set_textbox_runs,
+        handler=_columns.with_cell_target(styling.set_textbox_runs),
         mutating=True,
     )
     server.register_tool(
         name="set_textbox_value",
         description=(
-            "Replace the text content of a single-run textbox. value can "
-            "be raw text or an =expression. Use this for the everyday "
-            "'change the textbox content' case (swap a literal label, "
-            "update a stale parameter reference, replace a broken "
-            "aggregate). Refuses with a redirect to set_textbox_runs when "
-            "the textbox has multiple text runs or paragraphs (multi-run "
-            "content needs the rich-text editor). Idempotent: identical value → "
-            "{changed: false} no-op. Returns {textbox, kind, changed}. "
-            "Pass raw text — encoding is handled; don't pre-encode XML "
-            "entities (use `&` not `&amp;`, including for the VB.NET "
-            "string-concat operator in expressions)."
+            "Change a textbox's text or =expression (a label, a field, a broken "
+            "aggregate). For a textbox with several runs or paragraphs use "
+            "set_textbox_runs. Pass raw text: & not &amp;. Or pass `cell` (tablix "
+            "+ column header/field/index + row) instead of textbox_name."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "textbox_name": {"type": "string"},
+                "cell": _columns.CELL_SCHEMA,
                 "value": {"type": "string"},
             },
-            "required": ["path", "textbox_name", "value"],
+            "required": ["path", "value"],
             "additionalProperties": False,
         },
-        handler=styling.set_textbox_value,
+        handler=_columns.with_cell_target(styling.set_textbox_value),
         mutating=True,
     )
     server.register_tool(
         name="set_textbox_style_bulk",
         description=(
-            "Apply the same style kwargs to every named textbox in one "
-            "call. Same kwarg surface as set_textbox_style. Missing names "
-            "land in skipped rather than raising. Returns {textboxes, "
-            "skipped, changed} where changed is the union of sub-paths "
-            "affected across all textboxes. Pair with find_textboxes_by_"
-            "style to discover names by current style."
+            "Format many textboxes at once with the same style arguments as "
+            "set_textbox_style; unknown names are listed in skipped. `cells` adds "
+            "tablix cells by column. Pair with find_textboxes_by_style."
         ),
         input_schema={
             "type": "object",
@@ -3325,6 +2941,7 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": "array",
                     "items": {"type": "string"},
                 },
+                "cells": {"type": "array", "items": _columns.CELL_SCHEMA},
                 "font_family": {"type": ["string", "null"]},
                 "font_size": {"type": ["string", "null"]},
                 "font_weight": {"type": ["string", "null"]},
@@ -3344,22 +2961,18 @@ def register_all_tools(server: MCPServer) -> None:
                 "can_grow": {"type": ["boolean", "null"]},
                 "can_shrink": {"type": ["boolean", "null"]},
             },
-            "required": ["path", "textbox_names"],
+            "required": ["path"],
             "additionalProperties": False,
         },
-        handler=styling.set_textbox_style_bulk,
+        handler=_columns.with_cells_target(styling.set_textbox_style_bulk),
         mutating=True,
     )
     server.register_tool(
         name="find_textboxes_by_style",
         description=(
-            "Search for textboxes matching one or more style filters. "
-            "Filters AND together (every supplied filter must match). "
-            "Returns [{name, location, matched_fields}] where location "
-            "is best-effort 'body' / 'header' / 'footer' / "
-            "'tablix:<name>' / 'rectangle:<name>'. Returns [] when no "
-            "filters supplied. Pair with set_textbox_style_bulk for "
-            "discovery+apply patterns (e.g. 'recolor every red textbox')."
+            "Find textboxes by current style (all filters must match), e.g. every "
+            "red or bold one. Returns name, location and the matched fields; pair "
+            "with set_textbox_style_bulk."
         ),
         input_schema={
             "type": "object",
@@ -3392,12 +3005,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="find_textbox_by_value",
         description=(
-            "Find every Textbox whose <Value> text matches a Python "
-            "regex pattern. Searches Body / PageHeader / PageFooter. "
-            "A textbox with multiple matching runs surfaces once per "
-            "match. Returns [{textbox, value, region}]. Useful for "
-            "finding stale =Parameters!Old.Value references after "
-            "rename_parameter, or any cross-cutting expression edit."
+            "Find textboxes whose text or expression matches a regex, in the "
+            "body, header and footer; e.g. stale =Parameters!Old.Value "
+            "references."
         ),
         input_schema={
             "type": "object",
@@ -3416,18 +3026,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="style_tablix_row",
         description=(
-            "Apply the same style kwargs to every cell in a tablix row "
-            "in ONE call. Replaces the 12-individual-set_textbox_style-"
-            "calls-per-row pattern. row accepts: integer (0-based body "
-            "row index), 'header' (first leaf with KeepWithGroup=After "
-            "— the column header row), 'details' (the Details leaf "
-            "row), '<group>_header' (header row of a named row group), "
-            "'<group>_footer' (footer row when present, e.g. after "
-            "add_subtotal_row). Same style kwargs as set_textbox_style "
-            "(font_*, color, background_color, border_*, padding_*, "
-            "writing_mode, can_grow, can_shrink, etc.). Delegates "
-            "writes to set_textbox_style_bulk. Returns {tablix, row, "
-            "row_index, kind, cells, changed, skipped}."
+            "Format every cell of a tablix row at once (same style arguments as "
+            "set_textbox_style). row: a 0-based index, 'header', 'details', "
+            "'<group>_header' or '<group>_footer'."
         ),
         input_schema={
             "type": "object",
@@ -3517,12 +3118,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_body_textbox",
         description=(
-            "Add a Textbox to <Body>/<ReportItems>. text accepts static "
-            "strings or RDL expressions (e.g. =Globals!ReportName). "
-            "Coexists with the existing tablix; rejects names already in use. "
-            "Pass raw text — encoding is handled; don't pre-encode XML "
-            "entities (use `&` not `&amp;`, including for the VB.NET "
-            "string-concat operator in expressions)."
+            "Add a textbox to the report body (literal text or an =expression, "
+            "e.g. =Globals!ReportName). Refuses a name in use. Pass raw text: & "
+            "not &amp;."
         ),
         input_schema=_BODY_TEXTBOX_SCHEMA,
         handler=body.add_body_textbox,
@@ -3531,9 +3129,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_body_image",
         description=(
-            "Add an Image to <Body>/<ReportItems>. image_source: "
-            "External (URL), Embedded (EmbeddedImage Name), Database "
-            "(=Fields!Photo.Value)."
+            "Add an image to the report body: image_source External (URL), "
+            "Embedded (name of an embedded image) or Database (=Fields! "
+            "expression)."
         ),
         input_schema=_BODY_IMAGE_SCHEMA,
         handler=body.add_body_image,
@@ -3542,9 +3140,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_body_item",
         description=(
-            "Remove a named item (Textbox, Image, or Tablix) from "
-            "<Body>/<ReportItems>. Destructive but explicit — raises if "
-            "the name doesn't match anything."
+            "Remove a named item (textbox, image, tablix, chart, ...) from the report body."
         ),
         input_schema={
             "type": "object",
@@ -3562,20 +3158,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="insert_tablix_from_template",
         description=(
-            "Build and append a basic Tablix to <Body>/<ReportItems>. One "
-            "column per entry in `columns`: a field name of the dataset, or "
-            '{"field": <field name>, "header": <caption>} for a display '
-            "caption that is not an identifier (e.g. 'Unit Price (USD)'). "
-            "The header row shows the caption (default: the field name), the "
-            "detail row binds to =Fields!<field>.Value. dataset_name must "
-            "already exist and every field must be declared in it (unknown "
-            "fields are refused, listing the available ones). The tablix "
-            "name must be unused report-wide; generated textbox and detail "
-            "group names are suffixed until unique. "
-            "`width` is the tablix outer width — each column defaults to "
-            "1in regardless, so for a 3-column tablix the columns sum to "
-            "3in even if you pass width=10cm. Resize columns afterwards "
-            "via direct edits or future column-width tools."
+            "Add a table to the body bound to a dataset: one column per entry in "
+            "`columns` (a field name, or {field, header} for a caption); a header "
+            "row plus a detail row of =Fields!X.Value. Every field must exist in "
+            "the dataset. Each column is 1in wide (set_column_width after)."
         ),
         input_schema={
             "type": "object",
@@ -3624,14 +3210,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="insert_chart_from_template",
         description=(
-            "Build and append a basic Column chart to <Body>/<ReportItems>. "
-            "Single category axis grouped by category_field; single Y series "
-            "Sum(Fields!<value_field>.Value). dataset_name must already exist. "
-            "The series is Column/Plain; change it post-insert with "
-            "set_chart_series_type (RDL Types: Column, Bar, Line, Area, "
-            "Shape, Scatter, Range, Polar — e.g. a pie chart is "
-            "Shape/Pie, a doughnut Shape/Doughnut, a stepped line "
-            "Line/Stepped)."
+            "Add a chart to the body bound to a dataset: a column chart of "
+            "Sum(value_field) by category_field. Change its type with "
+            "set_chart_series_type (bar, line, area, pie = Shape/Pie, doughnut, "
+            "scatter, ...)."
         ),
         input_schema={
             "type": "object",
@@ -3665,22 +3247,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_chart_series",
         description=(
-            "Append a new <ChartSeries> to a named chart. value_field is "
-            "the dataset field whose Sum becomes the Y expression "
-            "(=Sum(Fields!<value_field>.Value)). series_type defaults to "
-            "Column; combine series of different types in one chart for "
-            "combo charts (e.g. Bar + Line). series_subtype defaults to "
-            "the type's default (Plain; Pie for Shape). The pair must be "
-            "a real RDL Type/Subtype (see set_chart_series_type); "
-            "shorthands like Pie or Bubble are normalised and the "
-            "canonical type/subtype returned. Also creates the series' ChartSeriesHierarchy member "
-            "(<ChartMember><Label>series_name</Label>, the legend text; a "
-            "sibling of any dynamic series group) and one ChartDataPoint "
-            "per category leaf, so series and members stay matched by "
-            "position. Trailing series that lack a member (files written "
-            "by older versions) get one first, listed in repaired_members. "
-            "Refuses if series_name is already used by a series or a "
-            "derived series."
+            "Add a series to a chart: =Sum(Fields!value_field.Value), type "
+            "default Column (mix types for a combo chart, e.g. bars + a line). "
+            "series_subtype must be a real RDL pair (see set_chart_series_type; "
+            "shorthands like Pie are normalised). Refuses a name in use."
         ),
         input_schema={
             "type": "object",
@@ -3709,16 +3279,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_chart_series",
         description=(
-            "Remove a named <ChartSeries> from a chart together with its "
-            "ChartSeriesHierarchy leaf member; parent members left empty "
-            "are pruned (their groups listed in pruned_groups), so the "
-            "remaining series keep their own labels and groups. Refuses "
-            "to remove the last remaining series (use remove_body_item to "
-            "drop the whole chart instead). Refuses when a derived series "
-            "(ChartDerivedSeries) uses it as SourceChartSeriesName unless "
-            "cascade=true, which removes those derived series too. Returns "
-            "{chart, removed, remaining, removed_derived, pruned_groups, "
-            "repaired_members}."
+            "Remove a series from a chart (with its legend member). Refuses the "
+            "last series (use remove_body_item for the chart) and a series a "
+            "derived series uses unless cascade=true."
         ),
         input_schema={
             "type": "object",
@@ -3737,25 +3300,11 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_chart_series_type",
         description=(
-            "Update <Type> and optionally <Subtype> on a named "
-            "ChartSeries. Combo charts work by setting different "
-            "types per series in the same chart (e.g. one Bar series "
-            "and one Line series). Only real RDL pairs are written — "
-            "Column/Bar: Plain|Stacked|PercentStacked; Line: "
-            "Plain|Smooth|Stepped; Area: Plain|Smooth|Stacked|"
-            "PercentStacked; Shape: Pie|ExplodedPie|Doughnut|"
-            "ExplodedDoughnut|Funnel|Pyramid|TreeMap|Sunburst; Scatter: "
-            "Plain|Bubble; Range: Plain|Smooth|Column|Bar|Stock|"
-            "Candlestick|BoxPlot|ErrorBar; Polar: Plain|Radar. "
-            "Shorthands are normalised (Pie -> Shape/Pie, Bubble -> "
-            "Scatter/Bubble, Radar -> Polar/Radar, Stock -> Range/Stock, "
-            "SmoothLine -> Line/Smooth, subtype 100 -> PercentStacked). "
-            "series_subtype null/omitted keeps the existing subtype when "
-            "it suits the new type, otherwise resets it to the type's "
-            "default (Plain; Pie for Shape) and reports 'Subtype' in "
-            "changed. Returns {chart, series, kind, type, subtype, "
-            "changed: list[str]} with the canonical pair — changed is "
-            "empty when inputs match existing values."
+            "Change a chart series' type: Column, Bar, Line, Area, Shape (pie, "
+            "doughnut, funnel, pyramid), Scatter (bubble), Range, Polar (radar), "
+            "with a subtype such as Stacked, PercentStacked or Smooth. Shorthands "
+            "like Pie or SmoothLine are normalised. Set per series for a combo "
+            "chart."
         ),
         input_schema={
             "type": "object",
@@ -3782,21 +3331,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_chart_series_grouping",
         description=(
-            "Promote a chart's static ChartMember to a dynamic-fanout "
-            "series. Writes <ChartSeriesHierarchy>/<ChartMembers>/"
-            "<ChartMember>/<Group Name='<series>_Group'>/<GroupExpressions>/"
-            "<GroupExpression>. At render time, one rendered series is "
-            "produced per distinct value of the group expression — the "
-            "'13 violation types unknown at design time' fan-out. "
-            "group_field='Type' is a shorthand for "
-            "=Fields!Type.Value; group_expression accepts any VB.NET. "
-            "Mutually exclusive. replace=False (default) refuses if "
-            "the ChartMember already has a <Group>; pass replace=True "
-            "to overwrite. Operates on the FIRST ChartMember in the "
-            "hierarchy (v0.4 commit 21 scope; multi-member chains "
-            "aren't reachable from any v0.4 tool). Returns "
-            "{chart, series, kind: 'ChartGroup', group_name, "
-            "expression, changed}."
+            "Split a chart series into one series per value of a field (dynamic "
+            "series), e.g. one line per Region: group_field or group_expression. "
+            "replace=true overwrites an existing grouping."
         ),
         input_schema={
             "type": "object",
@@ -3817,14 +3354,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_chart_axis",
         description=(
-            "Configure a chart axis: title (Caption), format (numeric/"
-            "date format string in <Style>/<Format>), min/max range, "
-            "log_scale, interval, visible. axis ∈ {Category, Value}; "
-            "axis_name defaults to 'Primary' (the only axis the template "
-            "emits — pass a real name for secondary axes). "
-            "All field args are optional; pass '' to clear an element. "
-            "Returns {chart, axis, axis_name, kind, changed: list[str]} "
-            "with the affected sub-element names."
+            "Format a chart axis (Category or Value): title, number/date format, "
+            "min/max, interval, log scale, visible. '' clears a field. axis_name "
+            "defaults to 'Primary'."
         ),
         input_schema={
             "type": "object",
@@ -3857,13 +3389,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_chart_legend",
         description=(
-            "Configure a chart legend: position (TopLeft / TopCenter / "
-            "TopRight / LeftTop / LeftCenter / LeftBottom / RightTop / "
-            "RightCenter / RightBottom / BottomLeft / BottomCenter / "
-            "BottomRight) and visible (writes <Hidden>true|false</Hidden>). "
-            "legend_name defaults to 'Default' (the only one the template "
-            "emits). Returns {chart, legend, kind, changed: list[str]}; "
-            "no-op short-circuit when nothing supplied."
+            "Show/hide a chart legend and set its position (TopLeft ... "
+            "BottomRight, e.g. BottomCenter)."
         ),
         input_schema={
             "type": "object",
@@ -3883,18 +3410,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_chart_data_labels",
         description=(
-            "Configure <ChartDataLabel> on one or all series in a chart. "
-            "When series_name is None, the change applies to every "
-            "series; otherwise only the named series. "
-            "visible writes <Visible>true|false</Visible>; "
-            "visible_expression writes the same element with a VB.NET "
-            "=IIf(...) expression (mutually exclusive with visible). "
-            "format writes <Style>/<Format>; pass '' to clear. "
-            "v0.4: position ∈ Auto/Top/TopLeft/TopCenter/TopRight/Left/"
-            "Center/Right/BottomLeft/BottomCenter/BottomRight/Bottom/"
-            "Outside; use_value_as_label ∈ true/false; font_weight + "
-            "color write to <Style>/<FontWeight> and <Style>/<Color> "
-            "(pass '' to clear). Returns {chart, series, kind, changed}."
+            "Show/hide and format data labels on one series or all: visible (or "
+            "an =expression), number format, position, use_value_as_label, font "
+            "weight and color; '' clears."
         ),
         input_schema={
             "type": "object",
@@ -3936,11 +3454,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_chart_palette",
         description=(
-            "Set <Palette> on a chart. palette ∈ Default / EarthTones / "
-            "Excel / GrayScale / Light / Pastel / SemiTransparent / "
-            "Berry / Chocolate / Fire / SeaGreen / BrightPastel. Pass "
-            "'' to clear (RB falls back to its built-in default palette). "
-            "Returns {chart, kind, changed: bool}."
+            "Set a chart's colour palette (Default, EarthTones, Excel, GrayScale, "
+            "Light, Pastel, SemiTransparent, Berry, Chocolate, Fire, SeaGreen, "
+            "BrightPastel); '' clears."
         ),
         input_schema={
             "type": "object",
@@ -3958,11 +3474,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_series_color",
         description=(
-            "Write <Color> into a named series's <Style> block, "
-            "overriding the chart palette for just that series. color "
-            "accepts a named color ('Red'), a hex string ('#FF0000'), "
-            "or an =expression. Pass '' to clear (series falls back to "
-            "the palette). Returns {chart, series, kind, changed: bool}."
+            "Set one chart series' colour (name, #hex or =expression), overriding "
+            "the palette; '' clears."
         ),
         input_schema={
             "type": "object",
@@ -3980,12 +3493,7 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="set_chart_title",
-        description=(
-            "Update <ChartTitle>/<Caption>. text can be literal text or "
-            "an =expression. title_name defaults to 'Default' (the only "
-            "title the template emits). Returns {chart, title, kind, "
-            "changed: bool}."
-        ),
+        description=("Set a chart's title text (or =expression)."),
         input_schema={
             "type": "object",
             "properties": {
@@ -4018,14 +3526,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_parameter_available_values",
         description=(
-            "Set or clear <ValidValues> on a report parameter. "
-            "source='static' with a non-empty static_values writes a list "
-            "of <ParameterValue> entries (each entry can be a string or "
-            "{value, label} dict). source='static' with static_values=[] "
-            "or omitted CLEARS the <ValidValues> element entirely (mirrors "
-            "set_parameter_prompt('') and returns cleared=true). "
-            "source='query' writes a <DataSetReference> to a lookup "
-            "dataset. Replaces any existing <ValidValues> block."
+            "Set a parameter's dropdown values: source='static' with values "
+            "(strings or {value, label}), or source='query' from a lookup dataset "
+            "(also how cascading parameters are wired). Static with no values "
+            "clears the list."
         ),
         input_schema={
             "type": "object",
@@ -4050,14 +3554,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_parameter_default_values",
         description=(
-            "Set or clear <DefaultValue> on a report parameter. "
-            "source='static' with a non-empty static_values writes a "
-            "<Values> list of expressions. source='static' with "
-            "static_values=[] or omitted CLEARS the <DefaultValue> element "
-            "entirely (mirrors set_parameter_prompt('') and returns "
-            "cleared=true). source='query' writes a <DataSetReference> "
-            "with ValueField only (no LabelField — defaults are values, "
-            "not display strings). Replaces any existing block."
+            "Set a parameter's default value(s): source='static' with values, or "
+            "source='query' from a dataset field. Static with no values clears "
+            "the default."
         ),
         input_schema={
             "type": "object",
@@ -4082,13 +3581,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="update_parameter_advanced",
         description=(
-            "Toggle the four boolean flags on a report parameter: "
-            "multi_value, hidden, allow_null (writes <Nullable>), "
-            "allow_blank. Each is independently optional. With no flags "
-            "passed it's a no-op. Cascading parameters are NOT a flag — "
-            "use set_parameter_available_values(source='query') + "
-            "add_query_parameter on the lookup dataset to wire a "
-            "dependency on another parameter."
+            "Set a parameter's flags: multi_value, hidden, allow_null, "
+            "allow_blank (each optional). Cascading parameters use "
+            "set_parameter_available_values(source='query')."
         ),
         input_schema={
             "type": "object",
@@ -4110,13 +3605,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_embedded_image",
         description=(
-            "Read a real image file off disk, base64-encode it, and store "
-            "it under <EmbeddedImages>. Reference it later with "
-            "image_source='Embedded' + value=<name>. Supported MIME types: "
-            "image/bmp, image/gif, image/jpeg, image/png, image/x-png. "
-            "The file's magic bytes are sniffed and must match mime_type — "
-            "claiming PNG bytes as image/jpeg is rejected here rather than "
-            "letting Report Builder fail at preview time."
+            "Embed an image file (logo) in the report from disk (bmp, gif, jpeg, "
+            "png; the bytes must match mime_type). Then use it with "
+            "image_source='Embedded', value=name."
         ),
         input_schema={
             "type": "object",
@@ -4146,10 +3637,7 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="list_embedded_images",
-        description=(
-            "List embedded images in the report by name and MIME type. "
-            "Returns an empty list when <EmbeddedImages> is absent."
-        ),
+        description=("List the report's embedded images: name and MIME type."),
         input_schema={
             "type": "object",
             "properties": {"path": {"type": "string"}},
@@ -4161,11 +3649,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_embedded_image",
         description=(
-            "Remove a named embedded image. Refuses (lists offending Image "
-            'elements) when any <Image Source="Embedded"><Value>=name> '
-            "still references it; pass force=True to remove anyway and "
-            "accept the dangling references. Drops the empty "
-            "<EmbeddedImages/> block when removing the last entry."
+            "Remove an embedded image. Refuses while an image still uses it unless force=true."
         ),
         input_schema={
             "type": "object",
@@ -4184,11 +3668,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_alternating_row_color",
         description=(
-            "Zebra-stripe a tablix's detail row by writing "
-            "BackgroundColor=IIf(RowNumber(Nothing) Mod 2, color_a, color_b) "
-            "on every detail cell's Textbox. Walks the row hierarchy to "
-            "find the Details leaf — works after add_row_group nests the "
-            "structure deeper. Replaces any existing BackgroundColor."
+            "Zebra-stripe a tablix's detail rows: alternating background colours "
+            "color_a / color_b on every detail cell (replaces their background "
+            "colour)."
         ),
         input_schema={
             "type": "object",
@@ -4213,19 +3695,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_conditional_row_color",
         description=(
-            "Color every cell of a tablix's detail row based on the value "
-            "of one of its fields. Builds a Switch(...) expression mapping "
-            "field values to colors and writes it as BackgroundColor on "
-            "every detail cell. value_expression is the field reference "
-            "(e.g. 'Fields!Status.Value' — a leading '=' is accepted). "
-            "color_map is an ordered dict of value->color (e.g. "
-            '{"Red":"#FF0000","Yellow":"#FFFF00"}); first match '
-            "wins. Unmatched values fall back to default_color "
-            "(default 'Transparent'). When case_sensitive is False "
-            "(default), wraps the field reference in UCase() and uppercases "
-            "the keys for case-insensitive matching. Walks the row "
-            "hierarchy to find the Details leaf — works after add_row_group "
-            "nests the structure. Replaces any existing BackgroundColor."
+            "Colour a tablix's detail rows by a field's value: color_map {value: "
+            "colour} (first match wins, else default_color) becomes a Switch() "
+            "background on every detail cell. Case-insensitive unless "
+            "case_sensitive=true."
         ),
         input_schema={
             "type": "object",
@@ -4267,19 +3740,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_element_visibility",
         description=(
-            "Set <Visibility> on any named ReportItem (Tablix, Textbox, "
-            "Image, Rectangle, Subreport, Chart, Line, Map, GaugePanel). "
-            "For group-level visibility use set_group_visibility; for "
-            "detail-row use set_detail_row_visibility. hidden_expression "
-            "is 'true' / 'false' or an =expression (required unless "
-            "clear). toggle_textbox names the textbox that toggles "
-            "expand/collapse: it must exist, not be the item or inside "
-            "it, be in the same region (body/header/footer), and if it "
-            "is a tablix cell the item must be inside that tablix. Omit "
-            "toggle_textbox to keep the existing toggle; pass '' or null "
-            "to remove it. clear=true removes <Visibility>. Invalid "
-            "input is refused with the file untouched. Returns {element, "
-            "kind, hidden_expression, toggle_textbox, changed}."
+            "Hide or show any named report item (tablix, textbox, image, "
+            "rectangle, chart, ...): hidden_expression true/false or =expression, "
+            "optional toggle_textbox (drill-down), clear=true removes visibility. "
+            "Groups and detail rows have their own tools."
         ),
         input_schema={
             "type": "object",

@@ -14,9 +14,17 @@ layout containers, positioning, styling, page setup, pagination, advanced
 parameters, embedded images, interactivity (actions, tooltips, document
 map), transactions, and validation.
 
-The server speaks JSON-RPC 2.0 over stdio. It opens an `.rdl` from disk,
-mutates it in place via lxml, validates structure, and writes atomically — a
-failed save never leaves a half-written report or scrubs the original.
+The server speaks MCP (JSON-RPC 2.0) over stdio, MCP protocol revisions
+2024-11-05 through 2026-07-28. It opens an `.rdl` from disk, mutates it in
+place via lxml, validates structure, and writes atomically — a failed save
+never leaves a half-written report or scrubs the original.
+
+> **Security defaults.** The `pbirb-mcp` server only opens files under the
+> directory it was started in, and refuses destructive tools (removals,
+> `convert_to_matrix`, `raw_xml_replace`, `restore_from_backup`) until the
+> call carries `confirm=true`. MCP clients often start servers in `/` or in
+> their own app directory, so **set `PBIRB_MCP_ALLOWED_ROOTS` to your
+> reports folder** (see [Security defaults](#security-defaults)).
 
 ## Stability
 
@@ -60,7 +68,7 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 Verify the binary works:
 
 ```bash
-printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n' \
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}' \
   | .venv/bin/pbirb-mcp
 ```
 
@@ -77,17 +85,27 @@ or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
   "mcpServers": {
     "pbirb": {
       "command": "uvx",
-      "args": ["pbirb-mcp"]
+      "args": ["pbirb-mcp"],
+      "env": {
+        "PBIRB_MCP_ALLOWED_ROOTS": "/Users/you/Reports"
+      }
     }
   }
 }
 ```
 
+Claude Desktop may start the server with its working directory set to `/` or
+to the app's own directory, and by default the server only opens files under
+its working directory — so set `PBIRB_MCP_ALLOWED_ROOTS` to the folder(s)
+holding your reports (on Windows e.g. `"C:\\Users\\you\\Reports"`; separate
+several with `:` on macOS/Linux, `;` on Windows). See
+[Security defaults](#security-defaults).
+
 Restart Claude Desktop. The hammer icon should show `pbirb` and the 140+ tools
 listed below.
 
-To enable file logging, add an `env` block — but keep it platform-appropriate.
-`PBIRB_MCP_LOG_FILE` takes an OS-native path: a Unix path like
+To enable file logging, add `PBIRB_MCP_LOG_FILE` to the `env` block — but keep
+it platform-appropriate: it takes an OS-native path, so a Unix path like
 `/tmp/pbirb-mcp.log` only works on macOS/Linux. On Windows use a Windows path
 (e.g. `%TEMP%\\pbirb-mcp.log`). See [Logging](#logging). When unset, logs go to
 stderr, which Claude Desktop captures in its MCP debug pane on every platform.
@@ -132,6 +150,108 @@ In any chat, ask the model:
 The model should call `describe_report`, `get_datasets`, and `get_parameters`
 and summarise the result. If it doesn't, your client probably hasn't loaded
 the server — check the client's MCP debug log.
+
+---
+
+## Configuration
+
+### Security defaults
+
+The `pbirb-mcp` command (what MCP clients launch) is locked down by default:
+
+- **File access is limited to the working directory.** Every path argument
+  (`path` and every `*_path`) must resolve — symlinks and `..` followed —
+  inside an allowed root, or the call is refused with `PathNotAllowed`
+  before anything is read or written. Set `PBIRB_MCP_ALLOWED_ROOTS` to the
+  directories to allow (`os.pathsep`-separated: `:` on macOS/Linux, `;` on
+  Windows); `*` means unrestricted. Clients such as Claude Desktop may start
+  the server in `/` or their app directory, so set it explicitly (see the
+  config example in the Quick start).
+- **Destructive tools need `confirm=true`.** Tools that delete report
+  content or overwrite a file (every `remove_*`, `convert_to_matrix`,
+  `raw_xml_replace`, `restore_from_backup`, and an `apply_edits` batch that
+  contains one) are refused with `ConfirmationRequired` until the call
+  carries `confirm=true`; 2026-07-28 clients that support elicitation are
+  asked to confirm instead. `PBIRB_MCP_REQUIRE_CONFIRM=0` turns this off.
+- **Audit log (opt-in).** `PBIRB_MCP_AUDIT_LOG=/path/to/audit.jsonl` appends
+  one JSON line per edit and per transaction commit.
+
+An `MCPServer` embedded in Python (tests, the eval harness, library use)
+defaults to unrestricted roots and no confirmation; the same environment
+variables opt it in.
+
+### Toolsets and read-only mode
+
+By default the server lists every tool. To give the model fewer tool
+definitions to read (and fewer to choose from), enable only the toolsets a
+task needs, and/or run read-only:
+
+```json
+{
+  "mcpServers": {
+    "pbirb": {
+      "command": "uvx",
+      "args": ["pbirb-mcp", "--toolsets", "data,parameters", "--read-only"]
+    }
+  }
+}
+```
+
+| Toolset | Covers |
+|---------|--------|
+| `core` | Always on: `describe_report`, `validate_report` / `verify_report` / `lint_report`, `apply_edits`, `dry_run_edit`, transactions, expression helpers |
+| `data` | Data sources, datasets, DAX queries, query parameters, fields, dataset filters |
+| `parameters` | Report parameters: declarations, available/default values, prompts, pane layout |
+| `tablix` | Tables and matrices: groups, columns, rows, subtotals, spans, filters, sorting, group visibility, pagination |
+| `chart` | Charts: series, axes, legend, data labels, palette, colours, title |
+| `style` | Textbox text and formatting, finding textboxes, row styling |
+| `layout` | Page setup, body/header/footer items, positions and sizes, containers, images, embedded images, element visibility |
+| `interactivity` | Actions (links, drill-through, bookmarks), tooltips, document map |
+| `admin` | `create_report`, `duplicate_report`, backups, the raw-XML escape hatch |
+
+- `--toolsets` takes comma-separated names, `all`, or `default`
+  (`PBIRB_MCP_TOOLSETS` sets the same; the flag wins). Unknown names are
+  an error. `pbirb-mcp --list-toolsets` prints every toolset's tools.
+- `--read-only` (or `PBIRB_MCP_READ_ONLY=1`) exposes only tools published
+  with `readOnlyHint: true` — readers, validation, expression helpers and
+  `dry_run_edit`, which previews an edit on a temp copy.
+- The limits are enforced when a tool is *called*, not only in
+  `tools/list`: a call outside the enabled toolsets, or an edit in
+  read-only mode, returns an `isError` result (`ToolNotEnabled` /
+  `ReadOnlyMode`) naming the setting to change. `apply_edits` /
+  `dry_run_edit` ops are held to the same toolsets.
+
+Every tool also carries MCP annotations (`readOnlyHint`, `destructiveHint`,
+`idempotentHint`, `openWorldHint: false`) and a display `title`, so clients
+can auto-approve the readers and flag the destructive tools.
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PBIRB_MCP_ALLOWED_ROOTS` | `pbirb-mcp`: the working directory; embedded `MCPServer`: unrestricted | Directories report paths must be inside (`os.pathsep`-separated); `*` = unrestricted. See [Security defaults](#security-defaults). |
+| `PBIRB_MCP_REQUIRE_CONFIRM` | `pbirb-mcp`: on; embedded: off | Destructive tools need `confirm=true`. `0` / `false` turns it off. |
+| `PBIRB_MCP_AUDIT_LOG` | off | File to append one JSON line to per edit and per transaction commit. |
+| `PBIRB_MCP_TOOLSETS` | every toolset | Comma-separated toolsets to expose (`--toolsets` overrides it). See [Toolsets](#toolsets-and-read-only-mode). |
+| `PBIRB_MCP_READ_ONLY` | off | `1` exposes only read-only tools (`--read-only` turns it on). |
+| `PBIRB_MCP_AUTO_VERIFY` | off | `1` runs `verify_report` after every successful edit outside a transaction; the result becomes `{result, verify}`. Transactions verify at commit. |
+| `PBIRB_MCP_TRANSACTION_TIMEOUT_S` | `600` | Seconds an editing transaction lives without a commit or cancel; an expired one is discarded (nothing saved). |
+| `PBIRB_MCP_LOG_LEVEL` | `WARNING` | `DEBUG` / `INFO` / `WARNING` / `ERROR`. |
+| `PBIRB_MCP_LOG_FILE` | stderr | Log file path (see [Logging](#logging)). |
+| `PBIRB_MCP_AUTO_BACKUP` | — | **Not implemented yet** ([#63](https://github.com/mafaq229/pbirb-mcp/issues/63)): setting it has no effect. Call `backup_report` before a risky edit. |
+
+Truthy values are `1`, `true`, `yes`, `on` (case-insensitive).
+
+### Logging
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PBIRB_MCP_LOG_LEVEL` | `WARNING` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+| `PBIRB_MCP_LOG_FILE` | stderr | Path to a log file; otherwise logs go to stderr (where Claude Desktop captures them in its MCP debug pane) |
+
+```bash
+PBIRB_MCP_LOG_LEVEL=DEBUG PBIRB_MCP_LOG_FILE=/tmp/pbirb-mcp.log pbirb-mcp
+```
 
 ---
 
@@ -182,14 +302,17 @@ designer and renders in Preview against the bound dataset.
 
 ## Tool reference
 
-143 tools, grouped by RDL concern. The highlights of each group are tabled
+The tools, grouped by RDL concern. The highlights of each group are tabled
 below; the authoritative, always-current list with full schemas is the
-server's `tools/list` output, visible to the LLM at registration time. Every
-tool takes a `path` argument (absolute path to the `.rdl`).
+server's `tools/list` output (`pbirb-mcp --list-toolsets` prints the names by
+toolset), and [docs/TOOLS.md](docs/TOOLS.md) has every tool's full behaviour
+notes. Every report tool takes a `path` argument (absolute path to the
+`.rdl`).
 
-Most mutating tools also accept an optional `transaction_id` so a multi-step
-edit batches into a single atomic save — see [Transactions](#transactions--validation)
-and [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md).
+Every tool that takes a report path also accepts an optional
+`transaction_id`, so a multi-step edit batches into a single atomic save —
+see [Transactions](#transactions--validation) and
+[docs/TRANSACTIONS.md](docs/TRANSACTIONS.md).
 
 ### Read-only inventory
 
@@ -390,7 +513,7 @@ Reference an embedded image with
 |------|--------------|
 | `create_report` | Scratch-create a minimal valid `.rdl` to start from |
 | `duplicate_report` | Copy a report to a new path |
-| `backup_report` / `restore_from_backup` | Snapshot a report and roll back to it |
+| `backup_report` / `restore_from_backup` | Snapshot a report and roll back to it (backups are manual: `PBIRB_MCP_AUTO_BACKUP` is not implemented yet) |
 
 ### Expression helpers
 
@@ -412,7 +535,7 @@ Batch many edits into one atomic save, and check correctness before/after.
 | `start_editing_transaction` / `commit_editing_transaction` / `cancel_editing_transaction` | Open an in-memory transaction, verify (XSD + lint, new errors only) and save once, or discard. See [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md). |
 | `apply_edits` | Apply a list of tool calls in one transaction |
 | `dry_run_edit` | Preview an edit's effect without writing to disk |
-| `validate_report` / `verify_report` | Structural validation (and opt-in XSD validation against the bundled `reportdefinition.xsd`) |
+| `validate_report` / `verify_report` | Structural + XSD validation against the bundled `reportdefinition.xsd`; `verify_report` adds lint |
 | `lint_report` | Surface warnings/errors Report Builder would flag |
 
 ### Raw XML escape hatch
@@ -495,11 +618,14 @@ git history).
 
 ```
 pbirb-mcp/
-├── pbirb_mcp_server.py         # Entry point (logging + main())
+├── pbirb_mcp_server.py         # Entry point (CLI flags, logging, main())
 ├── pbirb_mcp/
-│   ├── server.py               # JSON-RPC stdio dispatch
-│   ├── tools.py                # Tool registry — wires ops into the server
+│   ├── protocol.py             # MCP protocol on the official SDK (stdio, versions)
+│   ├── server.py               # Tool registry + dispatcher, annotations
+│   ├── tools.py                # Tool definitions — wires ops into the server
 │   ├── core/
+│   │   ├── security.py         # Allowed roots, confirmation, audit log
+│   │   ├── toolsets.py         # Toolsets + read-only mode
 │   │   ├── document.py         # RDLDocument: open/save (lxml), atomic write
 │   │   ├── xpath.py            # Namespace-aware XPath helpers
 │   │   ├── ids.py              # Stable element addressing
@@ -542,7 +668,7 @@ pbirb-mcp/
 └── tests/
     ├── fixtures/
     │   └── pbi_paginated_minimal.rdl  # Hand-tuned to match Report Builder's emitted style
-    └── test_*.py               # 1188 tests — every tool plus round-trip invariants
+    └── test_*.py               # every tool plus round-trip invariants
 ```
 
 ### Hard rules (enforced by tests)
@@ -584,21 +710,6 @@ pbirb-mcp/
 
 ---
 
-## Logging
-
-Two environment variables control the logger:
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `PBIRB_MCP_LOG_LEVEL` | `WARNING` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
-| `PBIRB_MCP_LOG_FILE` | stderr | Path to a log file; otherwise logs go to stderr (where Claude Desktop captures them in its MCP debug pane) |
-
-```bash
-PBIRB_MCP_LOG_LEVEL=DEBUG PBIRB_MCP_LOG_FILE=/tmp/pbirb-mcp.log pbirb-mcp
-```
-
----
-
 ## Development
 
 ### Running tests
@@ -607,13 +718,14 @@ PBIRB_MCP_LOG_LEVEL=DEBUG PBIRB_MCP_LOG_FILE=/tmp/pbirb-mcp.log pbirb-mcp
 .venv/bin/python -m pytest tests/ -v
 ```
 
-The suite is fast (~1.7s for 1188 tests) so re-run on every change.
+The suite is fast (well under a minute) so re-run on every change.
 
 ### Smoke testing the live binary
 
 ```bash
 printf '%s\n' \
-  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
   | .venv/bin/pbirb-mcp
 ```
@@ -642,8 +754,10 @@ deserialiser nits.
 1. Write tests first under `tests/test_*.py`.
 2. Implement in the appropriate `pbirb_mcp/ops/*.py` module (or create a
    new one).
-3. Register in `pbirb_mcp/tools.py` with a clear `description` and
-   strict `inputSchema`.
+3. Register in `pbirb_mcp/tools.py` with a short `description` (purpose
+   first, at most 400 characters, no release history — longer notes go in
+   [docs/TOOLS.md](docs/TOOLS.md)) and a strict `inputSchema`; add it to a
+   toolset in `pbirb_mcp/core/toolsets.py`.
 4. Run the full suite and a JSON-RPC smoke against the fixture.
 5. Open the modified RDL in Report Builder.
 

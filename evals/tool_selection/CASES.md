@@ -1,64 +1,76 @@
 # Eval cases
 
-55 cases. Generated from `cases.py` by `harness.py cases`; edit that file, not this one.
+65 cases. Generated from `cases.py` by `harness.py cases`; edit that file, not this one.
 
-| id | category | difficulty | source | reference solution | tools in subset arm |
-|---|---|---|---|---|---|
-| d01 | data | easy | feedback | `remove_data_source` → `remove_data_source` | 31 |
-| d02 | data | medium | synth | `rename_data_source` | 31 |
-| d03 | data | easy | synth | `add_calculated_field` | 31 |
-| d04 | data | medium | synth | `add_dataset_filter` | 31 |
-| d05 | data | hard | feedback | `update_dataset_query` → `add_dataset_field` | 31 |
-| d06 | data | easy | synth | `set_datasource_connection` | 32 |
-| d07 | data | medium | synth | `add_query_parameter` → `add_query_parameter` | 31 |
-| d08 | data | easy | synth | `remove_dataset_field` | 31 |
-| p01 | parameters | easy | feedback | `set_parameter_type` → `set_parameter_type` | 29 |
-| p02 | parameters | easy | synth | `set_parameter_prompt` | 29 |
-| p03 | parameters | medium | synth | `set_parameter_available_values` | 29 |
-| p04 | parameters | easy | synth | `update_parameter_advanced` | 29 |
-| p05 | parameters | medium | synth | `set_parameter_default_values` → `set_parameter_default_values` | 29 |
-| p06 | parameters | medium | synth | `add_parameter` → `set_parameter_default_values` | 29 |
-| p07 | parameters | easy | synth | `rename_parameter` | 29 |
-| p08 | parameters | medium | synth | `set_parameter_layout` | 29 |
-| t01 | tablix | hard | synth | `add_row_group` → `add_subtotal_row` | 45 |
-| t02 | tablix | medium | synth | `add_tablix_column` | 45 |
-| t03 | tablix | easy | synth | `remove_tablix_column` | 45 |
-| t04 | tablix | easy | synth | `set_column_width` | 45 |
-| t05 | tablix | medium | synth | `set_group_sort` | 45 |
-| t06 | tablix | hard | feedback | `add_row_group` → `add_column_group` → `convert_to_matrix` → `set_tablix_corner` | 45 |
-| t07 | tablix | medium | synth | `add_tablix_filter` | 45 |
-| s01 | style | medium | synth | `style_tablix_row` | 28 |
-| s02 | style | medium | synth | `set_alternating_row_color` | 28 |
-| s03 | style | hard | synth | `set_textbox_style_bulk` | 28 |
-| s04 | style | easy | synth | `set_textbox_style_bulk` | 28 |
-| s05 | style | easy | synth | `set_textbox_style` | 28 |
-| s06 | style | easy | synth | `set_textbox_style` | 28 |
-| s07 | style | medium | synth | `set_textbox_runs` | 28 |
-| s08 | style | hard | feedback | `set_textbox_runs` | 28 |
-| s09 | style | easy | synth | `set_textbox_style_bulk` | 28 |
-| l01 | layout | easy | synth | `set_page_orientation` | 49 |
-| l02 | layout | easy | feedback | `set_body_item_position` | 49 |
-| l03 | layout | medium | feedback | `set_page_footer` → `add_footer_textbox` | 49 |
-| l04 | layout | hard | feedback | `set_page_header` → `add_header_textbox` | 49 |
-| l05 | layout | hard | feedback | `set_page_setup` → `set_body_size` | 49 |
-| l06 | layout | easy | synth | `add_line` | 49 |
-| l07 | layout | medium | synth | `set_element_visibility` | 49 |
-| l08 | layout | hard | synth | `add_embedded_image` → `set_page_header` → `add_header_image` | 49 |
-| c01 | chart | medium | feedback | `set_chart_series_type` | 27 |
-| c02 | chart | hard | feedback | `set_chart_series_grouping` | 27 |
-| c03 | chart | hard | feedback | `set_chart_data_labels` | 27 |
-| c04 | chart | easy | synth | `set_chart_title` → `set_chart_legend` | 27 |
-| c05 | chart | easy | synth | `add_chart_series` | 27 |
-| c06 | chart | medium | synth | `set_chart_axis` | 27 |
-| i01 | interactivity | hard | synth | `set_textbox_action` | 23 |
-| i02 | interactivity | easy | synth | `set_textbox_tooltip` | 23 |
-| q01 | question | easy | synth | `get_parameters`; must not edit | 15 |
-| q02 | question | medium | synth | `list_data_sources`; must not edit | 15 |
-| q03 | question | medium | feedback | `verify_report`; must not edit | 15 |
-| q04 | question | easy | synth | `get_datasets`; must not edit | 15 |
-| x01 | decline | easy | synth | must not edit | 15 |
-| x02 | decline | easy | synth | must not edit | 15 |
-| x03 | decline | easy | synth | must not edit | 15 |
+Every edit case is also graded by the structural gate (XSD + lint errors the edit introduced, see `CONTEXT.md`). A known gap is a request no tool can do correctly yet; its oracle is not replayed by `selftest`.
+
+| id | category | difficulty | source | fixture | reference solution | tools in subset arm |
+|---|---|---|---|---|---|---|
+| d01 | data | easy | feedback | fleet_utilization.rdl | `remove_data_source` → `remove_data_source` | 31 |
+| d02 | data | medium | synth | fleet_utilization.rdl | `rename_data_source` | 31 |
+| d03 | data | easy | synth | fleet_utilization.rdl | `add_calculated_field` | 31 |
+| d04 | data | medium | synth | fleet_utilization.rdl | `add_dataset_filter` | 31 |
+| d05 | data | hard | feedback | fleet_utilization.rdl | `update_dataset_query` → `add_dataset_field` | 31 |
+| d06 | data | easy | synth | fleet_utilization.rdl | `set_datasource_connection` | 32 |
+| d07 | data | medium | synth | fleet_utilization.rdl | `add_query_parameter` → `add_query_parameter` | 31 |
+| d08 | data | easy | synth | fleet_utilization.rdl | `remove_dataset_field` | 31 |
+| p01 | parameters | easy | feedback | fleet_utilization.rdl | `set_parameter_type` → `set_parameter_type` | 29 |
+| p02 | parameters | easy | synth | fleet_utilization.rdl | `set_parameter_prompt` | 29 |
+| p03 | parameters | medium | synth | fleet_utilization.rdl | `set_parameter_available_values` | 29 |
+| p04 | parameters | easy | synth | fleet_utilization.rdl | `update_parameter_advanced` | 29 |
+| p05 | parameters | medium | synth | fleet_utilization.rdl | `set_parameter_default_values` → `set_parameter_default_values` | 29 |
+| p06 | parameters | medium | synth | fleet_utilization.rdl | `add_parameter` → `set_parameter_default_values` | 29 |
+| p07 | parameters | easy | synth | fleet_utilization.rdl | `rename_parameter` | 29 |
+| p08 | parameters | medium | synth | fleet_utilization.rdl | `set_parameter_layout` | 29 |
+| t01 | tablix | hard | synth | fleet_utilization.rdl | `add_row_group` → `add_subtotal_row` | 45 |
+| t02 | tablix | medium | synth | fleet_utilization.rdl | `add_tablix_column` | 45 |
+| t03 | tablix | easy | synth | fleet_utilization.rdl | `remove_tablix_column` | 45 |
+| t04 | tablix | easy | synth | fleet_utilization.rdl | `set_column_width` | 45 |
+| t05 | tablix | medium | synth | fleet_utilization.rdl | `set_group_sort` | 45 |
+| t06 | tablix | hard | feedback | fleet_utilization.rdl | `add_row_group` → `add_column_group` → `convert_to_matrix` → `set_tablix_corner` | 45 |
+| t07 | tablix | medium | synth | fleet_utilization.rdl | `add_tablix_filter` | 45 |
+| s01 | style | medium | synth | fleet_utilization.rdl | `style_tablix_row` | 28 |
+| s02 | style | medium | synth | fleet_utilization.rdl | `set_alternating_row_color` | 28 |
+| s03 | style | hard | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 28 |
+| s04 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 28 |
+| s05 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style` | 28 |
+| s06 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style` | 28 |
+| s07 | style | medium | synth | fleet_utilization.rdl | `set_textbox_runs` | 28 |
+| s08 | style | hard | feedback | fleet_utilization.rdl | `set_textbox_runs` | 28 |
+| s09 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 28 |
+| l01 | layout | easy | synth | fleet_utilization.rdl | `set_page_orientation` | 50 |
+| l02 | layout | easy | feedback | fleet_utilization.rdl | `set_body_item_position` | 50 |
+| l03 | layout | medium | feedback | fleet_utilization.rdl | `set_page_footer` → `add_footer_textbox` | 50 |
+| l04 | layout | hard | feedback | fleet_utilization.rdl | `set_page_header` → `add_header_textbox` | 50 |
+| l05 | layout | hard | feedback | fleet_utilization.rdl | `set_page_setup` → `set_body_size` | 50 |
+| l06 | layout | easy | synth | fleet_utilization.rdl | `add_line` | 50 |
+| l07 | layout | medium | synth | fleet_utilization.rdl | `set_element_visibility` | 50 |
+| l08 | layout | hard | synth | fleet_utilization.rdl | `add_embedded_image` → `set_page_header` → `add_header_image` | 50 |
+| c01 | chart | medium | feedback | fleet_utilization.rdl | `set_chart_series_type` | 27 |
+| c02 | chart | hard | feedback | fleet_utilization.rdl | `set_chart_series_grouping` | 27 |
+| c03 | chart | hard | feedback | fleet_utilization.rdl | `set_chart_data_labels` | 27 |
+| c04 | chart | easy | synth | fleet_utilization.rdl | `set_chart_title` → `set_chart_legend` | 27 |
+| c05 | chart | easy | synth | fleet_utilization.rdl | `add_chart_series` | 27 |
+| c06 | chart | medium | synth | fleet_utilization.rdl | `set_chart_axis` | 27 |
+| i01 | interactivity | hard | synth | fleet_utilization.rdl | `set_textbox_action` | 23 |
+| i02 | interactivity | easy | synth | fleet_utilization.rdl | `set_textbox_tooltip` | 23 |
+| t08 | tablix | hard | synth | fleet_utilization.rdl | `add_row_group` → `add_row_group` | 45 |
+| t09 | tablix | medium | synth | fleet_utilization.rdl | `add_static_row` → `set_cell_span` | 45 |
+| t10 | tablix | hard | synth | fleet_rb.rdl | `add_subtotal_row` | 45 |
+| t11 | tablix | medium | synth | fleet_utilization.rdl | `add_column_group` | 45 |
+| t12 | tablix | medium | synth | fleet_rb.rdl | _known gap_ (#67) | 45 |
+| t13 | tablix | easy | synth | fleet_utilization.rdl | _known gap_ (#66) | 45 |
+| s10 | style | hard | synth | fleet_rb.rdl | `set_textbox_runs` | 28 |
+| c07 | chart | medium | synth | fleet_utilization.rdl | `add_chart_series` → `remove_chart_series` | 27 |
+| c08 | chart | easy | synth | fleet_rb.rdl | `remove_chart_series` | 27 |
+| p09 | parameters | medium | synth | fleet_rb.rdl | `rename_parameter` | 29 |
+| q01 | question | easy | synth | fleet_utilization.rdl | `get_parameters`; must not edit | 15 |
+| q02 | question | medium | synth | fleet_utilization.rdl | `list_data_sources`; must not edit | 15 |
+| q03 | question | medium | feedback | bare_action_under_textbox.rdl | `verify_report`; must not edit | 15 |
+| q04 | question | easy | synth | fleet_utilization.rdl | `get_datasets`; must not edit | 15 |
+| x01 | decline | easy | synth | fleet_utilization.rdl | must not edit | 15 |
+| x02 | decline | easy | synth | fleet_utilization.rdl | must not edit | 15 |
+| x03 | decline | easy | synth | fleet_utilization.rdl | must not edit | 15 |
 
 ## d01 · data · easy
 
@@ -346,6 +358,68 @@ Clicking an asset name in the table should open the 'AssetDetail' report for tha
 
 ```text
 Show the asset's ID as a tooltip when hovering over its name in the table.
+```
+
+## t08 · tablix · hard
+
+```text
+Group the table rows by site, and within each site by equipment type.
+```
+
+## t09 · tablix · medium
+
+```text
+Add a title row above the table's column headings that says 'Fleet assets', merged across the full width of the table.
+```
+
+## t10 · tablix · hard
+
+```text
+Add a subtotal row at the end of each site showing that site's total operating hours and idle hours. Keep the grand total row at the bottom.
+```
+
+## t11 · tablix · medium
+
+```text
+Repeat the table's columns side by side once per site, with the site name as a heading above each block of columns.
+```
+
+## t12 · tablix · medium
+
+```text
+When the table runs onto more than one page, repeat the column heading row at the top of every page.
+```
+Known gap: #67: no tool sets RepeatOnNewPage on the static column-header member; set_repeat_on_new_page only addresses members that wrap a group
+
+## t13 · tablix · easy
+
+```text
+Sort the table rows by asset name in reverse alphabetical order, Z to A.
+```
+Known gap: #66: set_group_sort takes no sort direction, and negating the expression can't reverse a text sort
+
+## s10 · style · hard
+
+```text
+In the Utilization column heading, add ' (%)' after the word Utilization in a smaller 8pt, non-bold font. Keep the heading's white-on-navy look and everything else about the cell as it is.
+```
+
+## c07 · chart · medium
+
+```text
+Change the chart to show idle hours instead of operating hours.
+```
+
+## c08 · chart · easy
+
+```text
+Take the idle hours series off the chart.
+```
+
+## p09 · parameters · medium
+
+```text
+Rename the Site parameter to SiteFilter everywhere it's used.
 ```
 
 ## q01 · question · easy

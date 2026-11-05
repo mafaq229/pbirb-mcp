@@ -123,6 +123,11 @@ state. See `docs/TRANSACTIONS.md` for the full atomicity contract.
 
 ### `convert_to_matrix(path, tablix_name, row_group, column_group, aggregate='Sum')`
 
+It deletes the caption rows and columns the matrix no longer needs, so it
+is a destructive tool (`destructiveHint`): the `pbirb-mcp` server refuses
+it — or an `apply_edits` batch that contains it — until the call carries
+`confirm=true` (see `PBIRB_MCP_REQUIRE_CONFIRM` in the README).
+
 Turns the grouped table into Report Builder's matrix shape:
 
 - **Row headers.** Every row group around the detail rows gets a

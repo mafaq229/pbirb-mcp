@@ -150,8 +150,8 @@ walking each dataset's `<QueryParameters>` block manually.
   with `=` instead of `IN`. The PBI Query Designer accepts the
   ill-formed shape but the runtime errors at preview.
 
-Run `verify_report` to surface all three plus the other 12 rules in
-one call.
+Run `verify_report` to surface all three plus every other lint rule
+(and the XSD check) in one call.
 
 ## v0.4 — `add_data_source(provider="pbidataset")`
 
