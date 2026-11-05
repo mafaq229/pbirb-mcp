@@ -1713,91 +1713,104 @@ def _palette_color(value: object, field: str) -> str:
 # ---- set_series_color -----------------------------------------------------
 
 
+SERIES_COLOR_TARGETS: tuple[str, ...] = ("series", "point")
+
+
+def _has_style_color(host: etree._Element) -> bool:
+    style = find_child(host, "Style")
+    return style is not None and find_child(style, "Color") is not None
+
+
+def _insert_series_style(series: etree._Element, style: etree._Element) -> None:
+    # ChartSeries child order: ChartDataPoints, Type, Subtype, EmptyPoints,
+    # Style, ChartItemInLegend, ChartDataLabel, ChartMarker, ...
+    for anchor_local in ("EmptyPoints", "Subtype", "Type", "ChartDataPoints"):
+        anchor = find_child(series, anchor_local)
+        if anchor is not None:
+            anchor.addnext(style)
+            return
+    series.insert(0, style)
+
+
+def _write_style_color(host: etree._Element, value: str, insert_style: Any) -> None:
+    """Set (``value``) or clear (``""``) ``host/Style/Color``. Clearing
+    keeps the ``<Style>`` element, even when it is left empty (Report
+    Builder writes ``<Style />`` on series and points itself)."""
+    style = find_child(host, "Style")
+    if value == "":
+        if style is not None:
+            remove_child_if_present(style, "Color")
+        return
+    if style is None:
+        style = etree.Element(q("Style"))
+        insert_style(host, style)
+    set_text_if_different(style, "Color", value)
+
+
 def set_series_color(
     path: str,
     chart_name: str,
     series_name: str,
     color: str,
+    target: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Write ``<Color>`` into a named series's ``<Style>`` block.
+    """Set the colour of one chart series, overriding the chart palette.
 
-    Overrides the chart palette for this single series. Pass ``""`` to
-    clear the explicit color (the series falls back to the palette).
+    ``color`` is a named colour (``"Red"``), ``#RRGGBB`` / ``#AARRGGBB``
+    or an ``=expression`` (e.g. a per-category ``=IIf(...)`` on the
+    points); surrounding whitespace is trimmed, anything else is refused.
+    ``""`` clears the colour (the series falls back to the palette; the
+    ``<Style>`` element itself is kept).
 
-    The color value can be any RDL color string Report Builder accepts:
-    a named color (``"Red"``), a hex string (``"#FF0000"``), or an
-    expression (``"=IIf(...)"``).
+    ``target`` picks where it is written: ``"series"``
+    (``ChartSeries/Style/Color``) or ``"point"`` (``Style/Color`` of every
+    ``ChartDataPoint`` — what Report Builder's Series Properties > Fill
+    writes, and a point colour wins over the series one at render time).
+    Default: ``"point"`` when a data point already has a colour, else
+    ``"series"``. A series-level colour that a point colour still
+    overrides is reported in ``warnings``.
 
-    Returns ``{chart, series, kind, changed: bool}``.
+    Returns ``{chart, series, kind, target, changed: bool, warnings}``.
     """
+    if target is not None and target not in SERIES_COLOR_TARGETS:
+        raise ValueError(
+            f"target {target!r} not valid; expected one of {list(SERIES_COLOR_TARGETS)}"
+        )
+    value = "" if color == "" else _palette_color(color, "color")
+
     doc = RDLDocument.open(path)
     chart = _resolve_chart(doc, chart_name)
-    sc = _series_collection(chart)
-    series = _find_series(sc, series_name)
+    series = _find_series(_series_collection(chart), series_name)
+    points = chart_shape.data_points(series)
+    if target is None:
+        target = "point" if any(_has_style_color(p) for p in points) else "series"
+    if target == "point" and not points:
+        raise ValueError(
+            f"series {series_name!r} has no ChartDataPoint to colour; use target='series'"
+        )
 
-    style = find_child(series, "Style")
-    if color == "":
-        if style is None:
-            return {
-                "chart": chart_name,
-                "series": series_name,
-                "kind": "ChartSeries",
-                "changed": False,
-            }
-        existing = find_child(style, "Color")
-        if existing is None:
-            return {
-                "chart": chart_name,
-                "series": series_name,
-                "kind": "ChartSeries",
-                "changed": False,
-            }
-        style.remove(existing)
-        if len(list(style)) == 0:
-            series.remove(style)
-        doc.save()
-        return {
-            "chart": chart_name,
-            "series": series_name,
-            "kind": "ChartSeries",
-            "changed": True,
-        }
-
-    if style is None:
-        style = etree.Element(q("Style"))
-        # ChartSeries child order: Type, Subtype, EmptyPoints, Style,
-        # ChartItemInLegend, ChartDataLabel, ChartMarker, ...
-        # Insert after Subtype (always present) — that places Style
-        # in the right position relative to the children we emit.
-        anchor = find_child(series, "Subtype")
-        if anchor is None:
-            anchor = find_child(series, "Type")
-        if anchor is not None:
-            anchor.addnext(style)
+    warnings: list[str] = []
+    with ChangeTracker(series) as tracker:
+        if target == "series":
+            _write_style_color(series, value, _insert_series_style)
+            if value != "" and any(_has_style_color(p) for p in points):
+                warnings.append(
+                    f"series {series_name!r}: its data point(s) have their own Style/Color, "
+                    "which overrides the series colour at render time; pass target='point' "
+                    "to change the colour that shows"
+                )
         else:
-            series.append(style)
-
-    encoded = encode_text(color)
-    existing = find_child(style, "Color")
-    if existing is not None:
-        if existing.text == encoded:
-            return {
-                "chart": chart_name,
-                "series": series_name,
-                "kind": "ChartSeries",
-                "changed": False,
-            }
-        existing.text = encoded
-    else:
-        new = etree.SubElement(style, q("Color"))
-        new.text = encoded
-
-    doc.save()
+            for point in points:
+                _write_style_color(point, value, _insert_in_chart_data_point_order)
+    if tracker.changed:
+        doc.save()
     return {
         "chart": chart_name,
         "series": series_name,
         "kind": "ChartSeries",
-        "changed": True,
+        "target": target,
+        "changed": tracker.changed,
+        "warnings": warnings,
     }
 
 

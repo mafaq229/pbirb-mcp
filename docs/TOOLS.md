@@ -530,7 +530,7 @@ Set `<Palette>` on a chart. palette ∈ Default / EarthTones / Excel / GrayScale
 
 *idempotent*
 
-Write `<Color>` into a named series's `<Style>` block, overriding the chart palette for just that series. color accepts a named color ('Red'), a hex string ('#FF0000'), or an =expression. Pass '' to clear (series falls back to the palette). Returns {chart, series, kind, changed: bool}.
+Set one chart series' colour, overriding the chart palette for just that series. color accepts a named color ('Red'), '#RRGGBB' / '#AARRGGBB', or an =expression; whitespace around a literal is trimmed and anything else is refused. Pass '' to clear (the colour falls back to the palette; the `<Style>` element itself is kept). target picks where it is written: 'series' (`ChartSeries/Style/Color`) or 'point' (`Style/Color` of every ChartDataPoint — what Report Builder's Series Properties > Fill writes, and a point colour wins over the series one at render time; an =expression there can colour per category). Default: 'point' when a data point already has a colour, else 'series'; a series colour still overridden by a point colour is reported in warnings. Returns {chart, series, kind, target, changed: bool, warnings}.
 
 ### `set_chart_title`
 
@@ -874,7 +874,7 @@ Set `<DocumentMapLabel>` on any named ReportItem (Textbox / Image / Rectangle / 
 
 *idempotent*
 
-Set `<ChartSeries>/<Action>` to a Hyperlink (URL), Drillthrough (another report + optional parameters), or BookmarkLink. Same kwarg surface as set_textbox_action / set_image_action; the chart series is addressed by (chart_name, series_name). Schema-aware insertion respects ChartSeries child order. Idempotent on structural equality of the inner block.
+Set the click action of a chart series to a Hyperlink (URL), Drillthrough (another report + optional parameters), or BookmarkLink. It is written as `ActionInfo/Actions/Action` on the series' template `ChartDataPoint` (RDL has no ActionInfo on ChartSeries; a legacy series-level one is migrated). Same kwarg surface as set_textbox_action / set_image_action; the chart series is addressed by (chart_name, series_name). drillthrough_parameters are refused unless action_type is Drillthrough. action_type 'None' removes the action (every data point's ActionInfo plus any legacy series-level one) and takes no target_expression; changed is false when there was none. Idempotent on structural equality of the inner block.
 
 ## `admin`
 

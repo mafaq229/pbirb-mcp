@@ -27,6 +27,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import chart_shape
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import (
@@ -580,7 +581,7 @@ def set_chart_series_action(
     chart_name: str,
     series_name: str,
     action_type: str,
-    target_expression: str,
+    target_expression: Optional[str] = None,
     drillthrough_parameters: Optional[list[dict[str, str]]] = None,
 ) -> dict[str, Any]:
     """Set the click-through action for a chart series's data points.
@@ -604,6 +605,12 @@ def set_chart_series_action(
       shape) by removing them — re-running the setter on an upgraded
       report self-heals it.
 
+    ``drillthrough_parameters`` are only valid with ``Drillthrough`` (a
+    Hyperlink or BookmarkLink has no parameters; they used to be dropped
+    silently). ``action_type="None"`` removes the series' action — the
+    ``ActionInfo`` of its data points and any legacy series-level one —
+    and takes no target or parameters.
+
     Returns ``{chart, series, kind: 'ChartSeries', action_type,
     changed: bool}``.
     """
@@ -615,6 +622,18 @@ def set_chart_series_action(
         _series_collection,
     )
 
+    if action_type == "None":
+        if target_expression not in (None, "") or drillthrough_parameters:
+            raise ValueError(
+                "action_type='None' removes the action; target_expression and "
+                "drillthrough_parameters must be omitted"
+            )
+        return _clear_chart_series_action(path, chart_name, series_name)
+    if drillthrough_parameters and action_type != "Drillthrough":
+        raise ValueError(
+            f"drillthrough_parameters are only valid with action_type='Drillthrough'; "
+            f"a {action_type} action has no parameters"
+        )
     new_action_info = _build_action_info_xml(
         action_type, target_expression, drillthrough_parameters
     )
@@ -657,6 +676,32 @@ def set_chart_series_action(
         "kind": "ChartSeries",
         "action_type": action_type,
         "changed": True,
+    }
+
+
+def _clear_chart_series_action(path: str, chart_name: str, series_name: str) -> dict[str, Any]:
+    """``set_chart_series_action(action_type='None')``: drop every
+    ``ActionInfo`` of the series' data points plus legacy series-level
+    ``Action`` / ``ActionInfo``. No save when there was none."""
+    from pbirb_mcp.ops.chart import _find_series, _resolve_chart, _series_collection
+
+    doc = RDLDocument.open(path)
+    chart = _resolve_chart(doc, chart_name)
+    series = _find_series(_series_collection(chart), series_name)
+    removed = False
+    for host in [series, *chart_shape.data_points(series)]:
+        for local in ("ActionInfo", "Action"):
+            for node in find_children(host, local):
+                host.remove(node)
+                removed = True
+    if removed:
+        doc.save()
+    return {
+        "chart": chart_name,
+        "series": series_name,
+        "kind": "ChartSeries",
+        "action_type": "None",
+        "changed": removed,
     }
 
 

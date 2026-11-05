@@ -1671,7 +1671,8 @@ def register_all_tools(server: MCPServer) -> None:
         name="set_chart_series_action",
         description=(
             "Make a chart series clickable: hyperlink, drillthrough or bookmark "
-            "link (as set_textbox_action), addressed by chart_name + series_name."
+            "link (as set_textbox_action), addressed by chart_name + series_name; "
+            "action_type None removes it."
         ),
         input_schema={
             "type": "object",
@@ -1681,12 +1682,13 @@ def register_all_tools(server: MCPServer) -> None:
                 "series_name": {"type": "string"},
                 "action_type": {
                     "type": "string",
-                    "enum": ["Hyperlink", "Drillthrough", "BookmarkLink"],
+                    "enum": ["Hyperlink", "Drillthrough", "BookmarkLink", "None"],
                 },
-                "target_expression": {"type": "string"},
+                "target_expression": {"type": ["string", "null"], "default": None},
                 "drillthrough_parameters": {
                     "type": "array",
                     "items": _DRILLTHROUGH_PARAM_ITEM,
+                    "description": "Drillthrough only.",
                 },
             },
             "required": [
@@ -1694,7 +1696,6 @@ def register_all_tools(server: MCPServer) -> None:
                 "chart_name",
                 "series_name",
                 "action_type",
-                "target_expression",
             ],
             "additionalProperties": False,
         },
@@ -3881,6 +3882,12 @@ def register_all_tools(server: MCPServer) -> None:
                 "chart_name": {"type": "string"},
                 "series_name": {"type": "string"},
                 "color": {"type": "string"},
+                "target": {
+                    "type": ["string", "null"],
+                    "enum": [*chart.SERIES_COLOR_TARGETS, None],
+                    "default": None,
+                    "description": "Default: point if a data point has a colour, else series.",
+                },
             },
             "required": ["path", "chart_name", "series_name", "color"],
             "additionalProperties": False,

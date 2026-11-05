@@ -989,6 +989,31 @@ VARIANTS: list[tuple[str, Case]] = [
     ),
     ("set_chart_palette", Case({"chart_name": CH, "palette": ""}, fixture=CHART)),
     (
+        "set_series_color",
+        Case(
+            {"chart_name": CH, "series_name": "Amount", "color": "Green", "target": "point"},
+            fixture=CHART,
+        ),
+    ),
+    (
+        "set_chart_series_action",
+        Case(
+            {"chart_name": CH, "series_name": "Amount", "action_type": "None"},
+            fixture=CHART,
+            setup=[
+                (
+                    "set_chart_series_action",
+                    {
+                        "chart_name": CH,
+                        "series_name": "Amount",
+                        "action_type": "Hyperlink",
+                        "target_expression": "http://example.com",
+                    },
+                )
+            ],
+        ),
+    ),
+    (
         "insert_chart_from_template",
         Case(
             {
