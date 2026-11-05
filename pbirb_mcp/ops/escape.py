@@ -33,6 +33,7 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
+from pbirb_mcp.core.mutation import fingerprint
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, XPATH_NS
 
 
@@ -75,9 +76,11 @@ def raw_xml_replace(path: str, xpath: str, content: str) -> dict[str, Any]:
     * ``content`` doesn't parse as XML, contains zero elements, or
       contains more than one top-level element.
 
-    Returns ``{xpath, kind, changed: True}`` on success — ``kind`` is
-    the local name of the new element so callers can confirm the swap
-    landed where expected.
+    Returns ``{xpath, kind, changed}`` on success — ``kind`` is the
+    local name of the new element so callers can confirm the swap landed
+    where expected; ``changed`` is False (and the file is left alone)
+    when ``content`` has the same content as the element it replaces
+    (layout whitespace is ignored).
     """
     if not isinstance(content, str) or not content.strip():
         raise ValueError("content must be a non-empty XML string")
@@ -113,14 +116,17 @@ def raw_xml_replace(path: str, xpath: str, content: str) -> dict[str, Any]:
         raise ValueError(f"content must contain exactly one XML element; got {len(children)}")
     new_node = children[0]
 
-    parent = target.getparent()
-    new_node.tail = target.tail
-    parent.replace(target, new_node)
-    doc.save()
+    # The same content (layout whitespace aside) is a no-op: keep the
+    # original element and leave the file alone.
+    changed = fingerprint(new_node) != fingerprint(target)
+    if changed:
+        new_node.tail = target.tail
+        target.getparent().replace(target, new_node)
+        doc.save()
     return {
         "xpath": xpath,
         "kind": etree.QName(new_node.tag).localname,
-        "changed": True,
+        "changed": changed,
     }
 
 

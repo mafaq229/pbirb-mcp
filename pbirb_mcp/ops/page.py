@@ -23,6 +23,7 @@ from lxml import etree
 
 from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.mutation import remove_child_if_present, set_text_if_different
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
 
 _VALID_ORIENTATIONS = ("Portrait", "Landscape")
@@ -80,27 +81,9 @@ def printable_width_in(page: etree._Element) -> Optional[float]:
     return total
 
 
-def _set_or_create_text_in_order(page: etree._Element, local: str, value: str) -> None:
-    existing = find_child(page, local)
-    if existing is not None:
-        existing.text = value
-        return
-
-    new_node = etree.Element(q(local))
-    new_node.text = value
-    new_idx = _PAGE_CHILD_ORDER.index(local)
-    for i, child in enumerate(list(page)):
-        child_local = etree.QName(child).localname
-        if child_local in _PAGE_CHILD_ORDER and _PAGE_CHILD_ORDER.index(child_local) > new_idx:
-            page.insert(i, new_node)
-            return
-    page.append(new_node)
-
-
-def _remove_if_present(page: etree._Element, local: str) -> None:
-    existing = find_child(page, local)
-    if existing is not None:
-        page.remove(existing)
+def _set_or_create_text_in_order(page: etree._Element, local: str, value: str) -> bool:
+    """Write ``<local>`` into ``<Page>`` in XSD order; ``True`` iff changed."""
+    return set_text_if_different(page, local, value, order=_PAGE_CHILD_ORDER)
 
 
 # ---- set_page_setup -------------------------------------------------------
@@ -142,19 +125,19 @@ def set_page_setup(
 
     changed: list[str] = []
     for local, value in updates:
-        if value is None:
-            continue
-        _set_or_create_text_in_order(page, local, value)
-        changed.append(local)
+        if value is not None and _set_or_create_text_in_order(page, local, value):
+            changed.append(local)
 
     if columns is not None:
         if columns == 1:
-            _remove_if_present(page, "Columns")
+            columns_changed = remove_child_if_present(page, "Columns")
         else:
-            _set_or_create_text_in_order(page, "Columns", str(columns))
-        changed.append("Columns")
+            columns_changed = _set_or_create_text_in_order(page, "Columns", str(columns))
+        if columns_changed:
+            changed.append("Columns")
 
-    doc.save()
+    if changed:
+        doc.save()
     return {"path": str(doc.path), "changed": changed}
 
 

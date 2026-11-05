@@ -211,13 +211,13 @@ class TestStandaloneSyncTool:
         _inject_layout(rdl_path, ["DateFrom", "DateTo"], columns_per_row=4)
         before_bytes = rdl_path.read_bytes()
         result = sync_parameter_layout(path=str(rdl_path))
-        assert result == {"added": [], "removed": []}
+        assert result == {"added": [], "removed": [], "changed": False}
         # In-sync → file untouched.
         assert rdl_path.read_bytes() == before_bytes
 
     def test_no_layout_block_no_op(self, rdl_path):
         result = sync_parameter_layout(path=str(rdl_path))
-        assert result == {"added": [], "removed": []}
+        assert result == {"added": [], "removed": [], "changed": False}
 
 
 # ---- in_sync invariant after CRUD ---------------------------------------

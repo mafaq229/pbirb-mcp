@@ -104,6 +104,28 @@ class TestRawXmlReplace:
         )
         assert names[0].text == "Replaced"
 
+    def test_identical_content_reports_no_change_and_keeps_file(self, rdl_path):
+        # #61: replacing an element with what's already there is a no-op.
+        st = rdl_path.stat()
+        before = (rdl_path.read_bytes(), st.st_ino, st.st_mtime_ns)
+        result = raw_xml_replace(
+            path=str(rdl_path),
+            xpath="r:ReportSections/r:ReportSection/r:Body/r:Height",
+            content="<Height>2in</Height>",
+        )
+        assert result["changed"] is False
+        st = rdl_path.stat()
+        assert (rdl_path.read_bytes(), st.st_ino, st.st_mtime_ns) == before
+
+    def test_layout_only_difference_is_no_change(self, rdl_path):
+        # The same subtree written compact matches the pretty-printed one.
+        result = raw_xml_replace(
+            path=str(rdl_path),
+            xpath=".//r:Tablix[@Name='MainTable']/r:Style",
+            content="<Style><Border><Style>None</Style></Border></Style>",
+        )
+        assert result["changed"] is False
+
     def test_default_namespace_injected_for_bare_content(self, rdl_path):
         # Replace a Style element with new content using the BARE form
         # (no xmlns declaration). The wrapper injects RDL as default

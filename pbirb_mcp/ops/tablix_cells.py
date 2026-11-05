@@ -40,6 +40,7 @@ from pbirb_mcp.core import names, tablix_spans
 from pbirb_mcp.core.columns import resolve_column
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
+from pbirb_mcp.core.mutation import ChangeTracker
 from pbirb_mcp.core.tablix_headers import new_textbox
 from pbirb_mcp.core.xpath import find_child, find_children, q
 
@@ -226,6 +227,7 @@ def set_cell_span(
             "the cell is malformed and cannot accept spans."
         )
 
+    tracker = ChangeTracker(row)
     # Repair v0.2 legacy placement before reading / writing spans.
     had_legacy_col_span = find_child(target, "ColSpan") is not None
     _migrate_legacy_span_placement(target)
@@ -319,7 +321,9 @@ def set_cell_span(
                 etree.SubElement(cell, q("CellContents")).append(new_textbox(name))
                 created.append(name)
 
-    doc.save()
+    changed = tracker.check()
+    if changed:
+        doc.save()
     return {
         "tablix": tablix_name,
         "row_index": row_index,
@@ -329,6 +333,7 @@ def set_cell_span(
         "col_span": col_span,
         "cleared": cleared,
         "created": created,
+        "changed": changed,
     }
 
 

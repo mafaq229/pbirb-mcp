@@ -168,6 +168,30 @@ class TestPartialUpdate:
         set_textbox_style(path=str(rdl_path), textbox_name="HeaderProductID")
         assert rdl_path.read_bytes() == before
 
+    def test_identical_repeat_reports_no_change_and_keeps_file(self, rdl_path):
+        # #61: a second identical call must not report (or write) a change.
+        kwargs = dict(
+            textbox_name="HeaderAmount",
+            font_weight="Bold",
+            background_color="#EEEEEE",
+            border_style="Solid",
+            text_align="Right",
+        )
+        first = set_textbox_style(path=str(rdl_path), **kwargs)
+        assert "run.FontWeight" in first["changed"]
+        st = rdl_path.stat()
+        before = (rdl_path.read_bytes(), st.st_ino, st.st_mtime_ns)
+        assert set_textbox_style(path=str(rdl_path), **kwargs)["changed"] == []
+        st = rdl_path.stat()
+        assert (rdl_path.read_bytes(), st.st_ino, st.st_mtime_ns) == before
+
+    def test_changed_lists_only_fields_that_differ(self, rdl_path):
+        set_textbox_style(path=str(rdl_path), textbox_name="HeaderAmount", font_weight="Bold")
+        result = set_textbox_style(
+            path=str(rdl_path), textbox_name="HeaderAmount", font_weight="Bold", color="Red"
+        )
+        assert result["changed"] == ["run.Color"]
+
     def test_repeat_set_overwrites_in_place(self, rdl_path):
         set_textbox_style(
             path=str(rdl_path),

@@ -1483,6 +1483,7 @@ class TestRefreshDatasetFieldsReportBuilderShape:
             "orphans": [],
             "unchanged": ["ProductID", "Product_Name", "Amount__USD_"],
             "warnings": [],
+            "changed": False,
         }
         assert rdl_path.read_bytes() == before
         # The lint rule agrees the dataset is in sync.

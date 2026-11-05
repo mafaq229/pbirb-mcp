@@ -248,3 +248,103 @@ class TestBatch:
         with RDLDocument.batch(tmp_rdl):
             pass
         assert call_count["n"] == 1
+
+
+class TestSkipUnchangedSave:
+    """#61: saving a document that wouldn't change the file doesn't
+    rewrite it (same inode, same mtime); anything else still writes."""
+
+    @staticmethod
+    def _state(path: Path) -> tuple:
+        st = path.stat()
+        return (path.read_bytes(), st.st_ino, st.st_mtime_ns)
+
+    def test_unchanged_save_keeps_file(self, tmp_rdl):
+        before = self._state(tmp_rdl)
+        doc = RDLDocument.open(tmp_rdl)
+        assert doc.save() is False
+        assert self._state(tmp_rdl) == before
+
+    def test_changed_save_writes(self, tmp_rdl):
+        before_ino = tmp_rdl.stat().st_ino
+        doc = RDLDocument.open(tmp_rdl)
+        doc.root.find(f".//{{{RDL_NS}}}CommandText").text = "EVALUATE 'Other'"
+        assert doc.save() is True
+        assert b"EVALUATE 'Other'" in tmp_rdl.read_bytes()
+        assert tmp_rdl.stat().st_ino != before_ino  # atomic replace
+
+    def test_change_reverted_before_save_is_a_noop(self, tmp_rdl):
+        before = self._state(tmp_rdl)
+        doc = RDLDocument.open(tmp_rdl)
+        cmd = doc.root.find(f".//{{{RDL_NS}}}CommandText")
+        original = cmd.text
+        cmd.text = "EVALUATE 'Other'"
+        cmd.text = original
+        assert doc.save() is False
+        assert self._state(tmp_rdl) == before
+
+    def test_second_save_after_write_is_a_noop(self, tmp_rdl):
+        doc = RDLDocument.open(tmp_rdl)
+        doc.root.find(f".//{{{RDL_NS}}}CommandText").text = "EVALUATE 'Other'"
+        assert doc.save() is True
+        after_first = self._state(tmp_rdl)
+        assert doc.save() is False
+        assert self._state(tmp_rdl) == after_first
+
+    def test_save_as_other_path_always_writes(self, tmp_rdl):
+        doc = RDLDocument.open(tmp_rdl)
+        out = tmp_rdl.parent / "copy.rdl"
+        assert doc.save_as(out) is True
+        assert out.read_bytes() == tmp_rdl.read_bytes()
+
+    def test_copy_to_always_writes(self, tmp_rdl):
+        out = tmp_rdl.parent / "copy.rdl"
+        shutil.copy(tmp_rdl, out)
+        before_ino = out.stat().st_ino
+        doc = RDLDocument.open(tmp_rdl).copy_to(out)
+        assert doc.save() is True
+        assert out.stat().st_ino != before_ino
+
+    def test_externally_modified_file_is_overwritten(self, tmp_rdl):
+        """An unchanged tree still writes when the file changed on disk
+        since it was read — the save means "make the file this tree"."""
+        doc = RDLDocument.open(tmp_rdl)
+        original = tmp_rdl.read_bytes()
+        tmp_rdl.write_bytes(original.replace(b"EVALUATE 'Sales'", b"EVALUATE 'Elsewhere'"))
+        assert doc.save() is True
+        assert tmp_rdl.read_bytes() == original
+
+    def test_deleted_file_is_written_again(self, tmp_rdl):
+        doc = RDLDocument.open(tmp_rdl)
+        original = tmp_rdl.read_bytes()
+        tmp_rdl.unlink()
+        assert doc.save() is True
+        assert tmp_rdl.read_bytes() == original
+
+    def test_c14n_guard_skips_form_only_difference(self, tmp_path):
+        """A source the byte-faithful writer doesn't reproduce exactly
+        (single-quoted attributes) is not rewritten by a no-op save."""
+        src = tmp_path / "quoted.rdl"
+        src.write_bytes(FIXTURE.read_bytes().replace(b'Name="MainDataset"', b"Name='MainDataset'"))
+        before = self._state(src)
+        doc = RDLDocument.open(src)
+        assert doc.to_bytes() != src.read_bytes()  # the precondition
+        assert doc.save() is False
+        assert self._state(src) == before
+
+    def test_c14n_guard_still_writes_real_change(self, tmp_path):
+        src = tmp_path / "quoted.rdl"
+        src.write_bytes(FIXTURE.read_bytes().replace(b'Name="MainDataset"', b"Name='MainDataset'"))
+        doc = RDLDocument.open(src)
+        doc.root.find(f".//{{{RDL_NS}}}CommandText").text = "EVALUATE 'Other'"
+        assert doc.save() is True
+        assert b"EVALUATE 'Other'" in src.read_bytes()
+
+    def test_restore_then_save_is_a_noop(self, tmp_rdl):
+        before = self._state(tmp_rdl)
+        doc = RDLDocument.open(tmp_rdl)
+        snap = doc.snapshot()
+        doc.root.find(f".//{{{RDL_NS}}}CommandText").text = "EVALUATE 'Other'"
+        doc.restore(snap)
+        assert doc.save() is False
+        assert self._state(tmp_rdl) == before

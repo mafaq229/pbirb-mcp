@@ -29,6 +29,7 @@ from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix, resolve_textbox
+from pbirb_mcp.core.mutation import set_text_if_different
 from pbirb_mcp.core.tablix_shape import NO_DETAIL_GROUP, data_row_index, detail_row_index
 from pbirb_mcp.core.xpath import find_child, find_children, q
 
@@ -140,25 +141,9 @@ def _ensure_style(parent: etree._Element) -> etree._Element:
     return style
 
 
-def _set_or_create_in_style(style: etree._Element, local: str, value: str) -> None:
-    encoded = encode_text(value)
-    existing = find_child(style, local)
-    if existing is not None:
-        existing.text = encoded
-        return
-    new_node = etree.Element(q(local))
-    new_node.text = encoded
-    if local in _STYLE_CHILD_ORDER:
-        new_idx = _STYLE_CHILD_ORDER.index(local)
-        for i, child in enumerate(list(style)):
-            child_local = etree.QName(child).localname
-            if (
-                child_local in _STYLE_CHILD_ORDER
-                and _STYLE_CHILD_ORDER.index(child_local) > new_idx
-            ):
-                style.insert(i, new_node)
-                return
-    style.append(new_node)
+def _set_or_create_in_style(style: etree._Element, local: str, value: str) -> bool:
+    """Write ``<local>`` into ``style`` in XSD order; ``True`` iff changed."""
+    return set_text_if_different(style, local, encode_text(value), order=_STYLE_CHILD_ORDER)
 
 
 def _ensure_border(style: etree._Element) -> etree._Element:
@@ -324,22 +309,16 @@ def set_textbox_style(
         for local, value in box_props.items():
             if value is None:
                 continue
-            _set_or_create_in_style(outer_style, local, value)
-            changed.append(f"box.{local}")
+            if _set_or_create_in_style(outer_style, local, value):
+                changed.append(f"box.{local}")
         if any(v is not None for v in border_props.values()):
             border = _ensure_border(outer_style)
             for local, value in border_props.items():
                 if value is None:
                     continue
                 # Border children share a small fixed sub-order.
-                encoded = encode_text(value)
-                existing = find_child(border, local)
-                if existing is not None:
-                    existing.text = encoded
-                else:
-                    new_node = etree.SubElement(border, q(local))
-                    new_node.text = encoded
-                changed.append(f"border.{local}")
+                if set_text_if_different(border, local, encode_text(value)):
+                    changed.append(f"border.{local}")
 
     # Paragraph + run levels.
     if any(v is not None for v in paragraph_props.values()) or any(
@@ -351,15 +330,15 @@ def set_textbox_style(
             for local, value in paragraph_props.items():
                 if value is None:
                     continue
-                _set_or_create_in_style(p_style, local, value)
-                changed.append(f"paragraph.{local}")
+                if _set_or_create_in_style(p_style, local, value):
+                    changed.append(f"paragraph.{local}")
         if any(v is not None for v in run_props.values()):
             r_style = _ensure_style(textrun)
             for local, value in run_props.items():
                 if value is None:
                     continue
-                _set_or_create_in_style(r_style, local, value)
-                changed.append(f"run.{local}")
+                if _set_or_create_in_style(r_style, local, value):
+                    changed.append(f"run.{local}")
 
     if changed:
         doc.save()
@@ -384,6 +363,7 @@ def set_alternating_row_color(
 
     Odd rows get ``color_a``; even rows get ``color_b``. The expression is
     written verbatim per cell, replacing any existing BackgroundColor.
+    Returns ``{tablix, row_index, expression, cells, changed}``.
     """
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
@@ -402,27 +382,35 @@ def set_alternating_row_color(
 
     cells_root = find_child(detail_row, "TablixCells")
     if cells_root is None:
-        return {"tablix": tablix_name, "row_index": detail_idx, "cells": []}
-    cells_touched: list[str] = []
+        return {"tablix": tablix_name, "row_index": detail_idx, "cells": [], "changed": False}
+    cells_touched, changed = _set_row_background(cells_root, expression)
+    if changed:
+        doc.save()
+    return {
+        "tablix": tablix_name,
+        "row_index": detail_idx,
+        "expression": expression,
+        "cells": cells_touched,
+        "changed": changed,
+    }
 
+
+def _set_row_background(cells_root: etree._Element, expression: str) -> tuple[list[str], bool]:
+    """Write ``BackgroundColor`` on every cell textbox of a row; returns
+    the textbox names and whether any value changed."""
+    cells_touched: list[str] = []
+    changed = False
     for cell in find_children(cells_root, "TablixCell"):
         contents = find_child(cell, "CellContents")
         textbox = find_child(contents, "Textbox") if contents is not None else None
         if textbox is None:
             continue
         outer_style = _ensure_style(textbox)
-        _set_or_create_in_style(outer_style, "BackgroundColor", expression)
+        changed |= _set_or_create_in_style(outer_style, "BackgroundColor", expression)
         name = textbox.get("Name")
         if name:
             cells_touched.append(name)
-
-    doc.save()
-    return {
-        "tablix": tablix_name,
-        "row_index": detail_idx,
-        "expression": expression,
-        "cells": cells_touched,
-    }
+    return cells_touched, changed
 
 
 def _normalise_value_expression(expr: str) -> str:
@@ -494,7 +482,7 @@ def set_conditional_row_color(
             case-insensitive.
 
     Returns the same shape as ``set_alternating_row_color``:
-    ``{tablix, row_index, expression, cells}``.
+    ``{tablix, row_index, expression, cells, changed}``.
     """
     if not color_map:
         raise ValueError("color_map must contain at least one value→color entry")
@@ -526,25 +514,17 @@ def set_conditional_row_color(
             "row_index": detail_idx,
             "expression": expression,
             "cells": [],
+            "changed": False,
         }
-    cells_touched: list[str] = []
-    for cell in find_children(cells_root, "TablixCell"):
-        contents = find_child(cell, "CellContents")
-        textbox = find_child(contents, "Textbox") if contents is not None else None
-        if textbox is None:
-            continue
-        outer_style = _ensure_style(textbox)
-        _set_or_create_in_style(outer_style, "BackgroundColor", expression)
-        name = textbox.get("Name")
-        if name:
-            cells_touched.append(name)
-
-    doc.save()
+    cells_touched, changed = _set_row_background(cells_root, expression)
+    if changed:
+        doc.save()
     return {
         "tablix": tablix_name,
         "row_index": detail_idx,
         "expression": expression,
         "cells": cells_touched,
+        "changed": changed,
     }
 
 

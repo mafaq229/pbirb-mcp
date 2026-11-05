@@ -19,6 +19,10 @@ Key behaviours:
   empty elements) and :meth:`RDLDocument.save_as` re-emits it, so a no-op
   open → save is byte-identical and a one-value edit changes one line.
   Elements inserted since open are indented to their parent's depth.
+* **No needless writes** (#61) — :meth:`RDLDocument.save` skips the write
+  when the document would serialise to the bytes already on disk, or to a
+  tree canonically equal (C14N) to the one parsed, and the file hasn't
+  been touched since. A no-op edit keeps the file's inode and mtime.
 """
 
 from __future__ import annotations
@@ -205,6 +209,30 @@ def indent_inserted(node: etree._Element, unit: str = "  ") -> None:
         node.tail = tail
 
 
+def _stat_signature(path: Path) -> Optional[tuple]:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+@dataclass
+class _DiskState:
+    """The file a document was read from or last written to (#61)."""
+
+    target: str  # resolve()d path
+    data: bytes
+    stat: Optional[tuple]
+
+
+def _canonical(tree: etree._ElementTree) -> Optional[bytes]:
+    try:
+        return etree.tostring(tree, method="c14n", with_comments=True)
+    except Exception:  # noqa: BLE001 — no canonical form, no shortcut
+        return None
+
+
 @dataclass
 class RDLDocument:
     """A loaded RDL document with namespace-aware tree access."""
@@ -224,6 +252,11 @@ class RDLDocument:
     # Elements the source wrote as `<X></X>`; re-emitted that way while
     # they stay empty.
     _expanded: list = field(default_factory=list, repr=False, compare=False)
+    # What this document last read from / wrote to disk: the file it
+    # belongs to, its bytes and its stat signature. save() skips the
+    # write when nothing would change (#61). None for documents built in
+    # memory or copied (copy_to) — those always write.
+    _on_disk: Optional[_DiskState] = field(default=None, repr=False, compare=False)
 
     # ---- construction --------------------------------------------------------
 
@@ -262,6 +295,7 @@ class RDLDocument:
         doc = cls(path=path, tree=tree, encoding=encoding, source_form=form)
         doc._expanded = expanded
         doc._remember_elements()
+        doc._on_disk = _DiskState(str(path.resolve()), raw, _stat_signature(path))
         return doc
 
     def _remember_elements(self) -> None:
@@ -350,8 +384,13 @@ class RDLDocument:
         if with_xsd:
             validate_against_xsd(self.tree)
 
-    def save(self) -> None:
-        self.save_as(self.path)
+    def save(self) -> bool:
+        """Write the document back to its own path.
+
+        Returns ``False`` (and leaves the file alone: same inode, same
+        mtime) when nothing would change — see :meth:`save_as`.
+        """
+        return self.save_as(self.path)
 
     @classmethod
     @contextlib.contextmanager
@@ -368,7 +407,8 @@ class RDLDocument:
         * Yields a live :class:`RDLDocument` parsed from ``path``.
         * Calls :meth:`save` exactly once when the ``with``-block exits
           cleanly — even when no mutations happened (an empty batch is
-          a valid round-trip check).
+          a valid round-trip check; the file itself is only rewritten
+          when the tree changed, see :meth:`save_as`).
         * On exception inside the ``with``-block, propagates the
           exception and does NOT call :meth:`save`. The file on disk
           stays byte-identical to its pre-call state.
@@ -386,7 +426,15 @@ class RDLDocument:
         else:
             doc.save()
 
-    def save_as(self, path: PathLike) -> None:
+    def save_as(self, path: PathLike) -> bool:
+        """Atomically write the document to ``path``; ``True`` when written.
+
+        Saving back to the file the document was read from (or last
+        written to) is skipped — returning ``False`` — when that file is
+        untouched since (same stat signature) and the document would
+        serialise to the same bytes, or to a tree C14N-equal to the one
+        on disk (#61). Saving to any other path always writes.
+        """
         # v0.4 transaction interception: while this document is inside
         # an active editing transaction, saving it back to its own path
         # silently no-ops. commit_editing_transaction clears the flag and
@@ -399,11 +447,14 @@ class RDLDocument:
         path = Path(path)
         target = str(path.resolve())
         if getattr(self, "_in_transaction", False) and target == str(self.path.resolve()):
-            return
+            return False
         _tx.check_writable(target, self)
+        data = self.to_bytes()
+        if self._unchanged_on_disk(target, data):
+            self.path = path
+            return False
         tmp = path.with_name(path.name + ".tmp")
         try:
-            data = self.to_bytes()
             with open(tmp, "wb") as fh:
                 fh.write(data)
         except Exception:
@@ -413,8 +464,35 @@ class RDLDocument:
             raise
         os.replace(tmp, path)
         self.path = path
+        self._on_disk = _DiskState(target, data, _stat_signature(path))
         if self._known is not None:
             self._remember_elements()
+        return True
+
+    def _unchanged_on_disk(self, target: str, data: bytes) -> bool:
+        """Would writing ``data`` to ``target`` leave the file as it is?"""
+        state = self._on_disk
+        if state is None or state.target != target or state.stat is None:
+            return False
+        if _stat_signature(Path(target)) != state.stat:
+            return False  # touched since we read/wrote it — write ours
+        if data == state.data:
+            return True
+        # Final guard: the bytes differ only in form (a source the
+        # byte-faithful writer doesn't reproduce exactly) but the tree is
+        # canonically the one on disk — no edit happened.
+        try:
+            parser = etree.XMLParser(
+                remove_blank_text=False,
+                remove_comments=False,
+                strip_cdata=False,
+                resolve_entities=False,
+            )
+            before = etree.parse(io.BytesIO(state.data), parser)
+        except etree.XMLSyntaxError:
+            return False
+        after = _canonical(self.tree)
+        return after is not None and after == _canonical(before)
 
     def to_bytes(self) -> bytes:
         """Serialise the tree in the source file's byte form."""

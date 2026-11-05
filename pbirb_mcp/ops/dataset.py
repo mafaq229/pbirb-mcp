@@ -28,6 +28,7 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset
+from pbirb_mcp.core.mutation import ChangeTracker, set_text_if_different
 from pbirb_mcp.core.names import MAX_IDENTIFIER_LENGTH, is_identifier, validate_identifier
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q
 from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
@@ -240,6 +241,7 @@ def update_dataset_query(
     dataset = resolve_dataset(doc, dataset_name)
     query = _query(dataset)
 
+    tracker = ChangeTracker(dataset)
     cmd = find_child(query, "CommandText")
     old_command_text = cmd.text if cmd is not None else None
     if cmd is None:
@@ -271,9 +273,10 @@ def update_dataset_query(
         result["mapped"] = mapped
         result["warnings"] = warnings
 
+    result["changed"] = tracker.check()
     if dry_run:
         result["dry_run"] = True
-    else:
+    elif result["changed"]:
         doc.save()
     return result
 
@@ -543,17 +546,16 @@ def update_query_parameter(
             f"QueryParameter {effective_name!r} not found in dataset {dataset_name!r}"
         )
 
-    value = find_child(qp, "Value")
-    if value is None:
-        value = etree.SubElement(qp, q("Value"))
-    value.text = encode_text(value_expression)
+    changed = set_text_if_different(qp, "Value", encode_text(value_expression))
 
-    doc.save()
+    if changed:
+        doc.save()
     result: dict[str, Any] = {
         "dataset": dataset_name,
         "name": effective_name,
         "value": value_expression,
         "normalised": normalised,
+        "changed": changed,
     }
     if warning is not None:
         result["warning"] = warning
@@ -1244,8 +1246,9 @@ def refresh_dataset_fields(
       and the warnings say why.
 
     Returns ``{added: [{name, data_field}], orphans: [{name,
-    data_field}], unchanged: [field names], warnings: [str]}``. The file
-    is only written when something is added.
+    data_field}], unchanged: [field names], warnings: [str], changed:
+    bool}``. The file is only written (``changed``) when something is
+    added.
     """
     doc = RDLDocument.open(path)
     dataset = resolve_dataset(doc, dataset_name)
@@ -1259,6 +1262,7 @@ def refresh_dataset_fields(
             "orphans": [],
             "unchanged": [],
             "warnings": [f"dataset {dataset_name!r} has no <CommandText>; nothing to refresh."],
+            "changed": False,
         }
 
     columns, parser_warnings = result_columns(command_text)
@@ -1278,7 +1282,13 @@ def refresh_dataset_fields(
             "no Fields added and no orphans reported: the DAX result columns could "
             "not be fully determined (see the warnings above)."
         )
-        return {"added": [], "orphans": [], "unchanged": unchanged, "warnings": warnings}
+        return {
+            "added": [],
+            "orphans": [],
+            "unchanged": unchanged,
+            "warnings": warnings,
+            "changed": False,
+        }
 
     fields_root = find_child(dataset, "Fields")
     taken = (
@@ -1317,6 +1327,7 @@ def refresh_dataset_fields(
         "orphans": orphans,
         "unchanged": unchanged,
         "warnings": warnings,
+        "changed": bool(added),
     }
 
 

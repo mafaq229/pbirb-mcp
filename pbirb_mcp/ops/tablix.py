@@ -25,6 +25,7 @@ from pbirb_mcp.core import names, tablix_headers, tablix_spans, units
 from pbirb_mcp.core.document import RDLDocument, indent_inserted
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_tablix
+from pbirb_mcp.core.mutation import changed_by, set_node_text
 from pbirb_mcp.core.tablix_shape import (
     NO_DETAIL_GROUP,
     column_leaves,
@@ -662,13 +663,14 @@ def set_group_sort(
             "for a column-axis group use set_column_group_sort."
         )
 
-    _apply_sort_to_member(member, sort_expressions)
-
-    doc.save()
+    changed = changed_by(member, _apply_sort_to_member, member, sort_expressions)
+    if changed:
+        doc.save()
     return {
         "tablix": tablix_name,
         "group": group_name,
         "sort_expressions": list(sort_expressions),
+        "changed": changed,
     }
 
 
@@ -910,10 +912,11 @@ def set_row_height(
         # Per RDL XSD, <Height> is the first child of <TablixRow>.
         height_node = etree.Element(q("Height"))
         row.insert(0, height_node)
-    height_node.text = height
+    changed = set_node_text(height_node, height)
 
-    doc.save()
-    return {"tablix": tablix_name, "row_index": row_index, "height": height}
+    if changed:
+        doc.save()
+    return {"tablix": tablix_name, "row_index": row_index, "height": height, "changed": changed}
 
 
 # ---- set_tablix_size -----------------------------------------------------
