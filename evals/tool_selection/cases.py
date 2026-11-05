@@ -1675,9 +1675,11 @@ def _detail(rows: list[tuple]) -> Optional[tuple]:
 
 
 def _t08(r: Rdl):
-    # Not checked: whether the column-header row stays above the groups.
-    # add_row_group wraps it too, so it repeats per group (#65, M5).
-    d = _detail(_rows(r))
+    rows = _rows(r)
+    d = _detail(rows)
+    # The column-heading row (literal "AssetName", not the =Fields! cell)
+    # must stay the first row, outside every group, so it renders once (#65).
+    headings = [i for i, (_m, _row, vals) in enumerate(rows) if "AssetName" in vals]
     exprs = r.group_expressions(d[0]) if d else []
     site = [i for i, e in enumerate(exprs) if "Fields!Site.Value" in e]
     kind = [i for i, e in enumerate(exprs) if "Fields!EquipmentType.Value" in e]
@@ -1688,6 +1690,11 @@ def _t08(r: Rdl):
         ok(
             site and kind and site[0] < kind[0],
             f"equipment type is not nested inside site: {exprs}",
+        ),
+        ok(headings == [0], f"column-heading row is not (only) the first row: rows {headings}"),
+        ok(
+            headings == [0] and not r.member_groups(rows[0][0]),
+            "column-heading row is inside a group, so it repeats per group",
         ),
         ok(ncols == 6, f"expected the 6 columns to stay, found {ncols}"),
     )
@@ -1874,22 +1881,24 @@ REVIEW_PATHS = [
         "hard",
         "synth",
         "Group the table rows by site, and within each site by equipment type.",
-        # Each add_row_group wraps the whole row hierarchy, so the inner group goes first.
+        # Outer group first, then the inner one nested inside it (#65). The
+        # column-heading row stays outside both groups.
         [
-            (
-                "add_row_group",
-                {
-                    "tablix_name": "FleetTable",
-                    "group_name": "TypeGroup",
-                    "group_expression": "=Fields!EquipmentType.Value",
-                },
-            ),
             (
                 "add_row_group",
                 {
                     "tablix_name": "FleetTable",
                     "group_name": "SiteGroup",
                     "group_expression": "=Fields!Site.Value",
+                },
+            ),
+            (
+                "add_row_group",
+                {
+                    "tablix_name": "FleetTable",
+                    "group_name": "TypeGroup",
+                    "group_expression": "=Fields!EquipmentType.Value",
+                    "parent_group": "SiteGroup",
                 },
             ),
         ],

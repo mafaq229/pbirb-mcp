@@ -184,8 +184,8 @@ class TestStyleTablixRowByRole:
 
 class TestStyleTablixRowByGroupRole:
     def test_group_header_after_add_row_group(self, rdl_path):
-        # Wrap the existing hierarchy in a Region group; this inserts a
-        # new header row at body row 0.
+        # Wrap the detail rows in a Region group; this inserts a new
+        # header row at body row 1, below the column headers (#65).
         add_row_group(
             path=str(rdl_path),
             tablix_name="MainTable",
@@ -199,7 +199,7 @@ class TestStyleTablixRowByGroupRole:
             background_color="#0000FF",
         )
         assert result["row"] == "Region_header"
-        assert result["row_index"] == 0
+        assert result["row_index"] == 1
         # add_row_group emits cell textbox names like 'Region_Header_<col>'.
         assert all(c.startswith("Region_Header_") for c in result["cells"])
 

@@ -644,6 +644,23 @@ CASES: dict[str, Case] = {
 # Further argument sets for branches the main case doesn't reach
 # (clearing, alternative sources, …). Same contract.
 VARIANTS: list[tuple[str, Case]] = [
+    # add_row_group's wrap / parent_group / header (#65): a repeat refuses
+    # the duplicate group name before touching the file.
+    ("add_row_group", Case({**ROW_GROUP[1], "header": "column"}, second="refuses")),
+    ("add_row_group", Case({**ROW_GROUP[1], "wrap": "all", "header": "none"}, second="refuses")),
+    (
+        "add_row_group",
+        Case(
+            {
+                "tablix_name": "MainTable",
+                "group_name": "SubGroup",
+                "group_expression": "=Fields!ProductID.Value",
+                "parent_group": "ProductGroup",
+            },
+            second="refuses",
+            setup=[ROW_GROUP],
+        ),
+    ),
     (
         "set_datasource_connection",
         Case(

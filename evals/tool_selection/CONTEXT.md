@@ -102,7 +102,7 @@ the structural gate and the cases below.
 
 | Path | Case | Fixture | Oracle |
 |---|---|---|---|
-| nested row groups | t08 | fleet | `add_row_group` ×2 (inner first; each wraps the whole hierarchy) |
+| nested row groups | t08 | fleet | `add_row_group` Site, then `add_row_group` Type with `parent_group` |
 | spans | t09 | fleet | `add_static_row` → `set_cell_span` |
 | subtotals on a Report Builder–shaped tablix | t10 | fleet_rb | `add_subtotal_row` on the header-less `Site` group, grand total kept last |
 | `add_column_group` | t11 | fleet | `add_column_group` |
@@ -118,8 +118,8 @@ the structural gate and the cases below.
   fails them. Both checks are reachable today only through `raw_xml_replace`. In real runs they count as
   failures, and `summarize()` prints `known-gap cases passed k/n`. When #66 / #67 land, add an oracle and
   drop `known_gap`.
-- **t08 is lenient on purpose.** `add_row_group` also wraps the column-header row, so the header repeats per
-  group (#65, M5). t08 checks only the nesting. Tighten it when #65 lands.
+- **t08 checks the column-heading row too** (since #65): it must stay the first row, outside both groups.
+  Before #65 `add_row_group` also wrapped that row, so it repeated per group and t08 checked only the nesting.
 - **Comparing with the baseline.** New runs have 65 cases, and two of them are known gaps (so the ceiling is
   96.9% until #66/#67 land). Compare against `baseline` / `v1` / `v2` on the original 55 ids (pass them with
   `--cases`, or filter `results.jsonl`), and report the new ten separately.
@@ -154,7 +154,8 @@ uv run --with anthropic==2.3.0 python -m evals.tool_selection.harness run \
   once. The hash was refreshed on 2026-11-03 after pre-commit's ruff-format pass, which was whitespace
   only, and again on 2026-11-05 for #60 (structural gate, 10 cases, `build_fleet_rb`), after reviewing that
   diff. That refresh ran `check_harness(approve=True)` directly, because `run --approve-harness` starts a
-  paid run straight after storing the hash. `selftest` and `cases` never check the hash.
+  paid run straight after storing the hash. `selftest` and `cases` never check the hash. Later refreshes,
+  the same way: #65 (t08 tightened, oracle nests with `parent_group`).
 - **`ANTHROPIC_BASE_URL`.** Inside a Claude Code session this is set to the session's own proxy. Unset it
   (and `ANTHROPIC_AUTH_TOKEN`) before running, or requests go to the wrong endpoint. The harness also
   raises `ServedModelMismatch` if the served model differs from `--model`.

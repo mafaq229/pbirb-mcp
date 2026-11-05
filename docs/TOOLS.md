@@ -349,13 +349,18 @@ Append a `<Filter>` to a tablix. Operator must be one of the RDL 2016 enumeratio
 
 ### `add_row_group`
 
-Add a row group that wraps the entire current top-level row hierarchy. Inserts a matching group-header row at body row 0 with the group expression in the first cell. parent_group (nesting under an existing group) is reserved for a future commit and currently raises NotImplementedError.
+Add a dynamic row group, like Report Builder's Add Group > Parent Group.
+
+- **Where:** `parent_group` names the existing row group the new one nests directly inside (default: the top level). `wrap` picks the members at that level it wraps: `"details"` (default) only the member on the path to the detail rows (on a matrix, the innermost group), so the column-header row and grand-total rows stay outside and render once; `"member:<group>"` that group's member wherever it is (`parent_group`, if given, must be its parent; `member:Details` adds the innermost parent of the detail rows); `"all"` every member at that level (the old behaviour: header/total rows then repeat per group).
+- **Header:** `"row"` inserts a group-header row (static member, `KeepWithGroup=After`, textboxes `<group>_Header_<i>`, the expression in the first cell) at the first wrapped row's index. `"column"` gives the group a row-header cell (`TablixHeader`, textbox `<group>_Header`): other rows get blank header cells so the header area stays rectangular, the `TablixCorner` is created/resized and the tablix `Width` grows by the header size. `"none"` adds no header. `"auto"` (default) is `"column"` when the tablix already has row-header cells (a matrix; `"row"`/`"none"` are refused there), else `"row"`.
+- Refuses (file untouched) duplicate names, unknown groups, a `parent_group` whose member is itself a leaf, and any result with a new tablix-shape problem.
+- Returns {tablix, group, expression, parent_group, wrap, header, wrapped, header_row, header_textboxes, corner_textboxes, changed}. `remove_row_group` is the inverse for every variant.
 
 ### `remove_row_group`
 
 *destructive*
 
-Remove a row group: its wrapped members move up to where the group was and keep their body rows; the group's own header row (found via the row hierarchy, any nesting depth) and its add_subtotal_row subtotal rows are deleted. A group with no header row (e.g. a Report Builder group wrapping just the data row) is unwrapped without deleting any row. keep_subtotals=true keeps subtotal rows (their aggregates then cover the parent scope). Refuses the detail group, a group whose member is itself a leaf, and a matrix group carrying a row-header cell.
+Remove a row group: its wrapped members move up to where the group was and keep their body rows; the group's own header row (found via the row hierarchy, any nesting depth) and its add_subtotal_row subtotal rows are deleted. A group with no header row (e.g. a Report Builder group wrapping just the data row) is unwrapped without deleting any row; a leading row of literal captions only (a wrapped column-title row) is kept unless add_row_group named it. keep_subtotals=true keeps subtotal rows (their aggregates then cover the parent scope). A group with a row-header cell (add_row_group header='column') loses it together with the blank header cells other rows got as padding; the corner and the tablix Width shrink back (`removed_textboxes` lists the textboxes). Refuses the detail group, a group whose member is itself a leaf, and a row-header group whose removal would drop non-blank header cells of other rows.
 
 ### `convert_to_matrix`
 

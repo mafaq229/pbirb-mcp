@@ -1694,8 +1694,11 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_row_group",
         description=(
-            "Group a tablix's rows: wraps the row hierarchy in a new outer group "
-            "and inserts a group header row showing the group expression."
+            "Group a tablix's rows (Report Builder's Add Parent Group): wraps the "
+            "detail rows (or wrap='member:<group>' / 'all') in a new group, at the "
+            "top level or inside parent_group; column-header and total rows stay "
+            "outside. header: 'row' (group header row), 'column' (row-header "
+            "cell), 'none'; 'auto' picks 'column' on a matrix, else 'row'."
         ),
         input_schema={
             "type": "object",
@@ -1707,7 +1710,23 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": "string",
                     "description": "RDL expression, e.g. =Fields!Region.Value",
                 },
-                "parent_group": {"type": ["string", "null"]},
+                "parent_group": {
+                    "type": ["string", "null"],
+                    "description": "Existing row group to nest the new group inside "
+                    "(default: top level).",
+                },
+                "wrap": {
+                    "type": "string",
+                    "default": "details",
+                    "description": "'details' (the member holding the detail rows), "
+                    "'member:<group>' (that group), or 'all' (every member at that level, "
+                    "header/total rows included).",
+                },
+                "header": {
+                    "type": "string",
+                    "enum": ["auto", "row", "column", "none"],
+                    "default": "auto",
+                },
             },
             "required": ["path", "tablix_name", "group_name", "group_expression"],
             "additionalProperties": False,
@@ -1720,8 +1739,9 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Remove a row group (ungroup): its rows move up a level; its header "
             "row and subtotal rows are deleted (keep_subtotals=true keeps "
-            "subtotals). Refuses the detail group and a matrix group that has a "
-            "row-header cell."
+            "subtotals); a row-header cell goes with its blank padding. Refuses "
+            "the detail group and a row-header group whose removal would drop "
+            "other header content."
         ),
         input_schema={
             "type": "object",

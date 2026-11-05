@@ -72,8 +72,10 @@ def _shape_plain(tmp_path):
 
 
 def _shape_one_row_group(tmp_path):
+    # wrap="all": G wraps the header row too (the pre-#65 default), so
+    # positions strictly inside a group with static members are covered.
     p = _copy(tmp_path)
-    add_row_group(str(p), "MainTable", "G", "=1")
+    add_row_group(str(p), "MainTable", "G", "=1", wrap="all")
     return p
 
 
