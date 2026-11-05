@@ -155,7 +155,11 @@ class TestChanges:
         textboxes = {a["name"] for a in out["added"] if a["kind"] == "Textbox"}
         assert len(textboxes) == 2
         # Nothing else in the tablix "changed" because of the shift.
-        assert out["changed"] == [] and out["removed"] == []
+        # #89: adding a column also grows Tablix/Width to the column sum.
+        assert [(c["kind"], c["name"], c["property"]) for c in out["changed"]] == [
+            ("Tablix", "MainTable", "Width")
+        ]
+        assert out["removed"] == []
 
     def test_removed_item(self, server, pair):
         base, report = pair
