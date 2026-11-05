@@ -449,7 +449,7 @@ Remove a filter by index. Filters are anonymous in RDL, so use list_tablix_filte
 
 ### `insert_tablix_from_template`
 
-Build and append a basic Tablix to `<Body>/<ReportItems>`. One column per entry in `columns`: a field name of the dataset, or {"field": `<field name>`, "header": `<caption>}` for a display caption that is not an identifier (e.g. 'Unit Price (USD)'). The header row shows the caption (default: the field name), the detail row binds to =Fields!`<field>.Value`. dataset_name must already exist and every field must be declared in it (unknown fields are refused, listing the available ones). The tablix name must be unused report-wide; generated textbox and detail group names are suffixed until unique. `width` is the tablix outer width — each column defaults to 1in regardless, so for a 3-column tablix the columns sum to 3in even if you pass width=10cm. Resize columns afterwards via direct edits or future column-width tools.
+Build and append a basic Tablix to `<Body>/<ReportItems>`. One column per entry in `columns`: a field name of the dataset, or {"field": `<field name>`, "header": `<caption>}` for a display caption that is not an identifier (e.g. 'Unit Price (USD)'). The header row shows the caption (default: the field name), the detail row binds to =Fields!`<field>.Value`. dataset_name must already exist and every field must be declared in it (unknown fields are refused, listing the available ones). The tablix name must be unused report-wide; generated textbox and detail group names are suffixed until unique. `width` is the tablix outer width — each column defaults to 1in regardless, so for a 3-column tablix the columns sum to 3in even if you pass width=10cm. Resize columns afterwards via direct edits or future column-width tools. `container` names a Rectangle in the body to put the tablix in instead (top/left relative to it; see add_body_textbox); inside a List's rectangle the list must be bound to the same dataset.
 
 ## `chart`
 
@@ -461,7 +461,7 @@ Return effective state of a named Chart: position, size, dataset, palette, serie
 
 ### `insert_chart_from_template`
 
-Build and append a basic Column chart to `<Body>/<ReportItems>`. Single category axis grouped by category_field; single Y series Sum(Fields!`<value_field>.Value`). dataset_name must already exist. The series is Column/Plain; change it post-insert with set_chart_series_type (RDL Types: Column, Bar, Line, Area, Shape, Scatter, Range, Polar — e.g. a pie chart is Shape/Pie, a doughnut Shape/Doughnut, a stepped line Line/Stepped).
+Build and append a basic Column chart to `<Body>/<ReportItems>`. Single category axis grouped by category_field; single Y series Sum(Fields!`<value_field>.Value`). dataset_name must already exist. The series is Column/Plain; change it post-insert with set_chart_series_type (RDL Types: Column, Bar, Line, Area, Shape, Scatter, Range, Polar — e.g. a pie chart is Shape/Pie, a doughnut Shape/Doughnut, a stepped line Line/Stepped). `container` names a Rectangle in the body to put the chart in instead, as for insert_tablix_from_template.
 
 ### `add_chart_series`
 
@@ -605,39 +605,49 @@ Read an embedded image's base64 `<ImageData>` for porting it to another report w
 
 ### `add_rectangle`
 
-Add a `<Rectangle>` to `<Body>/<ReportItems>`. With no contained_items the rectangle is empty (a visual frame). With contained_items=[name1, name2, ...], each named body item is MOVED into the rectangle's `<ReportItems>` and its `<Top>/<Left>` recalculated so the on-screen position is preserved. Every moved item must lie inside the rectangle's box: a misfit is refused (naming each item and how far it overflows) unless fit=true, which grows the rectangle to enclose them. Refuses on duplicate name or if any contained_item isn't in `<Body>/<ReportItems>`; nothing is written on refusal. Returns {name, kind: 'Rectangle', moved}, plus {fitted, top, left, width, height} when fit is passed.
+Add a `<Rectangle>` to `<Body>/<ReportItems>`. With no contained_items the rectangle is empty (a visual frame). With contained_items=[name1, name2, ...], each named body item is MOVED into the rectangle's `<ReportItems>` and its `<Top>/<Left>` recalculated so the on-screen position is preserved. Every moved item must lie inside the rectangle's box: a misfit is refused (naming each item and how far it overflows) unless fit=true, which grows the rectangle to enclose them. Refuses on duplicate name or if any contained_item isn't in `<Body>/<ReportItems>`; nothing is written on refusal. `container` names a Rectangle in the body (a List's `<name>_Rect` too) to add the new rectangle inside: top/left are then relative to it and contained_items must be that rectangle's items. Returns {name, kind: 'Rectangle', moved}, plus {fitted, top, left, width, height} when fit is passed, plus `container` (and `warnings` when the new rectangle overflows it) when given.
 
 ### `add_list`
 
-Add a List (single-cell repeating Tablix) bound to a dataset. RDL has no distinct `<List>` element — Report Builder's List is a Tablix with one column, one detail row, and a Rectangle inside the cell. Items placed in the rectangle repeat once per dataset row. The inner rectangle is named '`<name>_Rect'` for subsequent lookup. Returns {name, kind: 'Tablix', dataset, rectangle}.
+Add a List (single-cell repeating Tablix) bound to a dataset. RDL has no distinct `<List>` element — Report Builder's List is a Tablix with one column, one detail row, and a Rectangle inside the cell. Items placed in the rectangle repeat once per dataset row. The inner rectangle is named '`<name>_Rect'` (suffixed when taken — read it from the result). Fill it with `container='<name>_Rect'` on add_body_textbox / add_body_image / add_line / add_rectangle / insert_tablix_from_template / insert_chart_from_template, or move existing items in with move_report_item; their top/left are relative to the cell (width x height). Returns {name, kind: 'Tablix', dataset, rectangle, details_group}.
 
 ### `add_line`
 
-Add a `<Line>` to `<Body>/<ReportItems>`. RDL Line semantics: top/left is the start point; width/height is the offset (vector) to the end point — horizontal line uses height='0in', vertical uses width='0in'. Optional color, line_thickness ('1pt' default), line_style (Solid/Dashed/Dotted/Double/etc.). Returns {name, kind: 'Line'}.
+Add a `<Line>` to `<Body>/<ReportItems>`. RDL Line semantics: top/left is the start point; width/height is the offset (vector) to the end point — horizontal line uses height='0in', vertical uses width='0in'. Optional color, line_thickness ('1pt' default), line_style (Solid/Dashed/Dotted/Double/etc.). `container` names a Rectangle in the body to add it inside (see add_body_textbox). Returns {name, kind: 'Line'} (+ container, warnings).
+
+### `move_report_item`
+
+*idempotent*
+
+Move a report item into the body, page header, page footer or a Rectangle: `to` is 'body', 'header', 'footer' or the name of a Rectangle (at any depth, a List's `<name>_Rect` included). The item may come from anywhere — the body, a band, a Rectangle, a List's rectangle — and keeps its whole subtree (style, actions, visibility, nested items) and its name; it is no longer a remove plus a re-add. Without top/left it keeps its on-page position: its Top/Left are converted to the destination's coordinates (in the item's units) from the design-time layout — the header starts at the top margin, the body below the header, the footer above the bottom margin, a List cell at its tablix's position plus row-header width / column-header height and the cells before it. A move that would need a negative Top/Left is refused (pass top / left); either one given overrides that axis. A missing page header / footer is created (moving into a new header pushes the body down — a warning says so) and the band grows to hold the item (`band_height`, `warnings`). Refuses: a data region (Tablix, Chart, GaugePanel, Map, CustomReportItem) or Subreport — or a rectangle holding one — into the header / footer; an item whose `Fields!` references are not inside an aggregate with a dataset scope (e.g. `First(Fields!X.Value, "DataSet1")`) when it goes into the header / footer, or out of its data region into another dataset's or none (a body item moved into a List gains that list's scope and is allowed); a tablix cell's own content (move the items inside it instead); a Rectangle into itself. Idempotent: an item already in `to` at the requested position returns changed: false. Returns {name, kind, from, to, top, left, changed} (+ band_height, warnings); from/to are 'body', 'header', 'footer' or 'rectangle:`<Name>`'.
+
+### `ungroup_rectangle`
+
+Remove a Rectangle and move its items out to the rectangle's own container (body, band or outer rectangle), at the rectangle's place in the item order, keeping their on-page position: each child's Top/Left += the rectangle's, in the child's units — the inverse of add_rectangle(contained_items=...), restoring the pre-grouping coordinates. Warns (listing the items) when the rectangle had a Visibility, a border or background, an action, tooltip, bookmark, document-map label or page break, which no longer applies to them. Refuses a rectangle that fills a tablix cell (a List's): the cell must hold an item — use move_report_item on its items. Returns {name, moved, to, changed} (+ warnings).
 
 ### `set_body_item_position`
 
 *idempotent*
 
-Move an existing named ReportItem inside `<Body>` to (top, left). Preserves all other properties (size, style, group structure). top and left are passed through verbatim — RDL accepts any size unit (2cm, 0.75in, 108pt). Errors if no body item by that name.
+Move an existing named ReportItem inside `<Body>` to (top, left), at the body's top level or nested in a Rectangle / List cell (coordinates stay relative to that rectangle, as RDL defines them). Preserves all other properties (size, style, group structure). top and left are passed through verbatim — RDL accepts any size unit (2cm, 0.75in, 108pt). Errors if no body item by that name (naming the region it is in, if any) and for a tablix cell's own content. The result carries `parent` (the holding Rectangle, null at the top level) and `warnings` when a nested item now extends outside its rectangle.
 
 ### `set_header_item_position`
 
 *idempotent*
 
-Move an existing named ReportItem inside `<PageHeader>` to (top, left). Errors if there is no `<PageHeader>` (call set_page_header first) or no item by that name. Returns `warnings` when the item now hangs below the band or past the printable page width; grow_band=true grows the band to fit instead (result gets band_height).
+Move an existing named ReportItem inside `<PageHeader>` (also nested in a Rectangle there; see set_body_item_position) to (top, left). Errors if there is no `<PageHeader>` (call set_page_header first) or no item by that name. Returns `warnings` when the item now hangs below the band or past the printable page width; grow_band=true grows the band to fit instead (result gets band_height). For a nested item the band check measures its top-level rectangle.
 
 ### `set_footer_item_position`
 
 *idempotent*
 
-Move an existing named ReportItem inside `<PageFooter>` to (top, left). Errors if there is no `<PageFooter>` (call set_page_footer first) or no item by that name. Returns `warnings` when the item now hangs below the band or past the printable page width; grow_band=true grows the band to fit instead (result gets band_height).
+Move an existing named ReportItem inside `<PageFooter>` (also nested in a Rectangle there) to (top, left). Errors if there is no `<PageFooter>` (call set_page_footer first) or no item by that name. Returns `warnings` when the item now hangs below the band or past the printable page width; grow_band=true grows the band to fit instead (result gets band_height).
 
 ### `set_body_item_size`
 
 *idempotent*
 
-Resize an existing named ReportItem inside `<Body>`. At least one of width / height must be supplied; missing fields are left untouched. Same RDL size-string convention as the position tools.
+Resize an existing named ReportItem inside `<Body>`, also nested in a Rectangle / List cell (see set_body_item_position). At least one of width / height must be supplied; missing fields are left untouched. Same RDL size-string convention as the position tools.
 
 ### `set_header_item_size`
 
@@ -743,7 +753,7 @@ Same as add_header_image, for `<PageFooter>`.
 
 *destructive*
 
-Remove a named Textbox or Image from `<PageHeader>/<ReportItems>`. Empties the ReportItems block when the last item leaves.
+Remove a named item from `<PageHeader>`, at its top level or nested in a Rectangle there (the result then has `parent`). Empties the ReportItems block when the last item leaves.
 
 ### `remove_footer_item`
 
@@ -753,17 +763,17 @@ Same as remove_header_item, for `<PageFooter>`.
 
 ### `add_body_textbox`
 
-Add a Textbox to `<Body>/<ReportItems>`. text accepts static strings or RDL expressions (e.g. =Globals!ReportName). Coexists with the existing tablix; rejects names already in use. Pass raw text — encoding is handled; don't pre-encode XML entities (use `&` not `&amp;`, including for the VB.NET string-concat operator in expressions).
+Add a Textbox to `<Body>/<ReportItems>`. text accepts static strings or RDL expressions (e.g. =Globals!ReportName). Coexists with the existing tablix; rejects names already in use. Pass raw text — encoding is handled; don't pre-encode XML entities (use `&` not `&amp;`, including for the VB.NET string-concat operator in expressions). `container` names a Rectangle in the body — at any depth, a List's `<name>_Rect` (or a rectangle in another tablix cell) included — to add the textbox inside instead; top/left are then relative to that rectangle. Refuses a container that doesn't exist, isn't a Rectangle or sits in the page header / footer (add in the body, then move_report_item). The result then carries `container`, plus `warnings` when the item overflows the rectangle (or the List cell).
 
 ### `add_body_image`
 
-Add an Image to `<Body>/<ReportItems>`. image_source: External (URL), Embedded (EmbeddedImage Name), Database (=Fields!Photo.Value).
+Add an Image to `<Body>/<ReportItems>`, or inside the body Rectangle `container` (as for add_body_textbox). image_source: External (URL), Embedded (EmbeddedImage Name), Database (=Fields!Photo.Value).
 
 ### `remove_body_item`
 
 *destructive*
 
-Remove a named item (Textbox, Image, or Tablix) from `<Body>/<ReportItems>`. Destructive but explicit — raises if the name doesn't match anything.
+Remove a named item (Textbox, Image, Tablix, Chart, ...) from the body — at its top level or nested in a Rectangle / List cell (the result then has `parent`, the rectangle it left). Destructive but explicit — raises if the name doesn't match anything. A tablix cell's own content (e.g. a List's rectangle) is refused: the cell must hold an item.
 
 ### `add_embedded_image`
 

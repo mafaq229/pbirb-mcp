@@ -17,7 +17,7 @@ every column must be one of its ``<Field>`` names.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 from lxml import etree
 
@@ -26,7 +26,7 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import resolve_dataset
 from pbirb_mcp.core.xpath import q, qrd
-from pbirb_mcp.ops.body import _ensure_body_report_items, _resolve_body
+from pbirb_mcp.ops.containers import place
 
 # ---- shared cell builders -------------------------------------------------
 
@@ -120,6 +120,7 @@ def insert_tablix_from_template(
     left: str,
     width: str,
     height: str,
+    container: Optional[str] = None,
 ) -> dict[str, Any]:
     """Append a header-row + detail-row Tablix bound to ``dataset_name``.
 
@@ -129,6 +130,8 @@ def insert_tablix_from_template(
     must be unused report-wide; every generated name (header / detail
     textboxes ``<name>_Header_<field>`` / ``<name>_<field>``, the detail
     group ``Details`` → ``Details1`` ...) is suffixed until unique.
+    With ``container`` it goes inside that body Rectangle (#83; a List's
+    only when the list is bound to ``dataset_name``).
     """
     names.validate_identifier(name, "tablix")
     spec = _normalize_columns(columns)
@@ -201,13 +204,8 @@ def insert_tablix_from_template(
     border = etree.SubElement(style, q("Border"))
     etree.SubElement(border, q("Style")).text = "None"
 
-    # Append into Body/ReportItems.
-    body = _resolve_body(doc)
-    items = _ensure_body_report_items(body)
-    items.append(tablix)
-
-    doc.save()
-    return {
+    # Append into Body/ReportItems (or the container Rectangle's).
+    result = {
         "name": name,
         "kind": "Tablix",
         "columns": fields,
@@ -216,6 +214,7 @@ def insert_tablix_from_template(
         "detail_textboxes": detail_names,
         "details_group": details_group,
     }
+    return place(doc, tablix, container, result, dataset_name=dataset_name)
 
 
 # Chart template insertion moved to pbirb_mcp.ops.chart in v0.3.0

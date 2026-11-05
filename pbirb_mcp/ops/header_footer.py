@@ -31,7 +31,7 @@ from lxml import etree
 from pbirb_mcp.core import names, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
-from pbirb_mcp.core.ids import ElementNotFoundError
+from pbirb_mcp.core.ids import resolve_report_item
 from pbirb_mcp.core.xpath import find_child, q, qrd
 from pbirb_mcp.ops.page import _resolve_page, printable_width_in  # type: ignore[attr-defined]
 
@@ -414,24 +414,40 @@ def _add_image(
     return _place_item(doc, region, img, name)
 
 
+def resolve_removable_item(doc: RDLDocument, region: str, name: str) -> etree._Element:
+    """The item called ``name`` in ``region`` — at its top level or nested in
+    a Rectangle / List cell (#83) — for the ``remove_*_item`` tools. A
+    tablix cell's own content is refused: a cell must hold one item."""
+    item, container, _region = resolve_report_item(doc, name, region=region)
+    if etree.QName(container).localname == "CellContents":
+        raise ValueError(
+            f"{etree.QName(item).localname} {name!r} fills a tablix cell, which must hold "
+            "an item; remove or rebuild the tablix (or its column) instead"
+        )
+    return item
+
+
+def detach_item(item: etree._Element) -> etree._Element:
+    """Remove ``item`` from its ``<ReportItems>``, dropping that element when
+    it is left empty. Returns the element that held it (Body, PageHeader,
+    PageFooter or Rectangle)."""
+    items = item.getparent()
+    holder = items.getparent()
+    items.remove(item)
+    if len(list(items)) == 0:
+        holder.remove(items)
+    return holder
+
+
 def _remove_item(path: str, region: _Region, name: str) -> dict[str, Any]:
     doc = RDLDocument.open(path)
-    page = _resolve_page(doc)
-    section = find_child(page, region.section_local)
-    items = find_child(section, "ReportItems") if section is not None else None
-    target = None
-    if items is not None:
-        for el in list(items):
-            if el.get("Name") == name:
-                target = el
-                break
-    if target is None:
-        raise ElementNotFoundError(f"no item named {name!r} in {region.section_local}")
-    items.remove(target)
-    if len(list(items)) == 0:
-        section.remove(items)
+    target = resolve_removable_item(doc, region.name, name)
+    holder = detach_item(target)
     doc.save()
-    return {"region": region.name, "removed": name}
+    result: dict[str, Any] = {"region": region.name, "removed": name}
+    if etree.QName(holder).localname == "Rectangle":
+        result["parent"] = holder.get("Name")
+    return result
 
 
 # ---- public per-region wrappers (the actual tools) ------------------------

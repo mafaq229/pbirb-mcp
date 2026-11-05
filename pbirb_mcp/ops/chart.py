@@ -63,7 +63,7 @@ from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError, reso
 from pbirb_mcp.core.mutation import changed_by
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, find_children, q
 from pbirb_mcp.ops.actions import _insert_in_chart_data_point_order
-from pbirb_mcp.ops.body import _ensure_body_report_items, _resolve_body
+from pbirb_mcp.ops.containers import place
 
 # inputSchema descriptions for the series_type / series_subtype args of the
 # series tools, generated from the enum tables so they cannot drift.
@@ -134,12 +134,15 @@ def insert_chart_from_template(
     left: str,
     width: str,
     height: str,
+    container: Optional[str] = None,
 ) -> dict[str, Any]:
     """Insert a basic Column chart bound to ``dataset_name``.
 
     The chart has one category axis (grouped by ``category_field``) and
     one Y series (``=Sum(Fields!<value_field>.Value)``). Type defaults to
     Column; callers can change it post-insert via :func:`set_chart_series_type`.
+    With ``container`` it goes inside that body Rectangle (#83; a List's
+    only when the list is bound to ``dataset_name``).
     """
     names.validate_identifier(name, "chart")
     top, left, width, height = units.box(top, left, width, height)
@@ -212,12 +215,7 @@ def insert_chart_from_template(
     etree.SubElement(chart, q("Width")).text = width
     etree.SubElement(chart, q("Style"))
 
-    body = _resolve_body(doc)
-    items = _ensure_body_report_items(body)
-    items.append(chart)
-
-    doc.save()
-    return {
+    result = {
         "name": name,
         "kind": "Chart",
         "type": "Column",
@@ -225,6 +223,7 @@ def insert_chart_from_template(
         "value_field": value_field,
         "category_group": category_group,
     }
+    return place(doc, chart, container, result, dataset_name=dataset_name)
 
 
 _VALID_AXIS_KINDS = ("Category", "Value")

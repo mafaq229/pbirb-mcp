@@ -131,6 +131,7 @@ IDEMPOTENT_TOOLS = frozenset(
     {
         "center_item",
         "fit_page_to_body",
+        "move_report_item",
         "raw_xml_replace",
         "refresh_dataset_fields",
         "reorder_parameters",

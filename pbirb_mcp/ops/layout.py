@@ -22,7 +22,7 @@ Phase 11 will add the layout-container constructors (``add_rectangle``,
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from lxml import etree
 
@@ -31,6 +31,7 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_group
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, q
 from pbirb_mcp.ops.body import _ensure_body_report_items, _resolve_body
+from pbirb_mcp.ops.containers import fit_warnings, target_report_items
 from pbirb_mcp.ops.tablix import _insert_member_child
 
 # ---- set_group_page_break -----------------------------------------------
@@ -436,6 +437,7 @@ def add_rectangle(
     height: str,
     contained_items: list[str] | None = None,
     fit: bool = False,
+    container: Optional[str] = None,
 ) -> dict[str, Any]:
     """Add a ``<Rectangle Name=name>`` to ``<Body>/<ReportItems>``.
 
@@ -462,6 +464,10 @@ def add_rectangle(
     or if a name collision exists at the body level. Nothing is
     written on refusal.
 
+    With ``container`` (a Rectangle in the body, a List's ``<name>_Rect``
+    included) the rectangle is added inside that one instead: top / left
+    are relative to it and ``contained_items`` must be its items (#83).
+
     Returns ``{name, kind: 'Rectangle', moved: list[str]}``; with
     ``fit=True`` also ``{fitted: bool, top, left, width, height}`` —
     the rectangle's final box and whether it had to grow.
@@ -473,8 +479,7 @@ def add_rectangle(
 
     doc = RDLDocument.open(path)
     names.ensure_unique(doc, name)
-    body = _resolve_body(doc)
-    items = _ensure_body_report_items(body)
+    items = target_report_items(doc, container)
 
     # Resolve every contained item up front — fail before mutating the tree.
     children: list[etree._Element] = []
@@ -482,8 +487,9 @@ def add_rectangle(
         by_name = {el.get("Name"): el for el in list(items) if el.get("Name") is not None}
         missing = [n for n in contained_items if n not in by_name]
         if missing:
+            where = f"rectangle {container!r}" if container else "<Body>/<ReportItems>"
             raise ElementNotFoundError(
-                f"cannot move into rectangle — items not in <Body>/<ReportItems>: {missing}"
+                f"cannot move into rectangle — items not in {where}: {missing}"
             )
         children = [by_name[n] for n in contained_items]
 
@@ -569,6 +575,19 @@ def add_rectangle(
     }
     if fit:
         result.update(fitted=fitted, top=top, left=left, width=width, height=height)
+    return _in_container(result, rect, container)
+
+
+def _in_container(
+    result: dict[str, Any], item: etree._Element, container: Optional[str]
+) -> dict[str, Any]:
+    """Add ``container`` (and overflow ``warnings``) to an add tool's result."""
+    if container is None:
+        return result
+    result["container"] = container
+    warnings = fit_warnings(item)
+    if warnings:
+        result["warnings"] = warnings
     return result
 
 
@@ -588,8 +607,12 @@ def add_list(
 
     RDL doesn't have a distinct ``<List>`` element — what Report Builder
     surfaces as a List is a Tablix with one column, one detail row, and
-    a Rectangle inside the single cell. Items the user later places
-    inside the rectangle repeat once per dataset row.
+    a Rectangle inside the single cell. Items placed inside the rectangle
+    repeat once per dataset row: fill it with ``container=<rectangle>`` on
+    ``add_body_textbox`` / ``add_body_image`` / ``add_line`` /
+    ``add_rectangle`` / ``insert_*_from_template``, or move existing items
+    in with ``move_report_item(name, to=<rectangle>)`` (#83). Their top /
+    left are relative to the cell, which is ``width`` x ``height``.
 
     Returns ``{name, kind: 'Tablix', dataset, rectangle, details_group}``.
     The inner Rectangle is named ``<name>_Rect`` and the detail group
@@ -696,8 +719,11 @@ def add_line(
     color: str = "#000000",
     line_thickness: str = "1pt",
     line_style: str = "Solid",
+    container: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Add a ``<Line>`` to ``<Body>/<ReportItems>``.
+    """Add a ``<Line>`` to ``<Body>/<ReportItems>`` — or, with
+    ``container``, inside that body Rectangle (a List's included; top /
+    left relative to it, #83).
 
     RDL Line semantics: ``<Top>`` / ``<Left>`` is the start point;
     ``<Width>`` / ``<Height>`` is the offset (vector) to the end point.
@@ -727,8 +753,7 @@ def add_line(
 
     doc = RDLDocument.open(path)
     names.ensure_unique(doc, name)
-    body = _resolve_body(doc)
-    items = _ensure_body_report_items(body)
+    items = target_report_items(doc, container)
 
     line = etree.Element(q("Line"), Name=name)
     # Per RDL XSD Line child order: Style, Top, Left, Height, Width,
@@ -745,7 +770,7 @@ def add_line(
 
     items.append(line)
     doc.save()
-    return {"name": name, "kind": "Line"}
+    return _in_container({"name": name, "kind": "Line"}, line, container)
 
 
 __all__ = [

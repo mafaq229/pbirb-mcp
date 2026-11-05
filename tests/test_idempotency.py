@@ -141,6 +141,18 @@ BODY_BOX = (
         "height": "0.25in",
     },
 )
+# A rectangle holding the BODY_BOX textbox (#83).
+PANEL = (
+    "add_rectangle",
+    {
+        "name": "Panel",
+        "top": "3in",
+        "left": "0in",
+        "width": "2.5in",
+        "height": "0.5in",
+        "contained_items": ["Note"],
+    },
+)
 TB = "HeaderAmount"
 CH = "SalesByProduct"
 
@@ -408,6 +420,8 @@ CASES: dict[str, Case] = {
         {"name": "Rule", "top": "3in", "left": "0in", "width": "2in", "height": "0in"},
         second="refuses",
     ),
+    "move_report_item": Case({"name": "Note", "to": "header"}, setup=[BODY_BOX]),
+    "ungroup_rectangle": Case({"name": "Panel"}, second="refuses", setup=[BODY_BOX, PANEL]),
     "raw_xml_replace": Case(
         {
             "xpath": "r:ReportSections/r:ReportSection/r:Body/r:Height",
@@ -673,6 +687,43 @@ VARIANTS: list[tuple[str, Case]] = [
                 "format": "#,0",
             },
             second="refuses",
+        ),
+    ),
+    # ---- #83: nested items, container argument, moves ----
+    (
+        "set_body_item_position",
+        Case({"name": "Note", "top": "0.1in", "left": "0.1in"}, setup=[BODY_BOX, PANEL]),
+    ),
+    ("set_body_item_size", Case({"name": "Note", "width": "1in"}, setup=[BODY_BOX, PANEL])),
+    ("remove_body_item", Case({"name": "Note"}, second="refuses", setup=[BODY_BOX, PANEL])),
+    (
+        "add_body_textbox",
+        Case(
+            {**BODY_BOX[1], "name": "Inner", "top": "0in", "container": "Panel"},
+            second="refuses",
+            setup=[BODY_BOX, PANEL],
+        ),
+    ),
+    (
+        "add_line",
+        Case(
+            {
+                "name": "Rule",
+                "top": "0in",
+                "left": "0in",
+                "width": "1in",
+                "height": "0in",
+                "container": "Panel",
+            },
+            second="refuses",
+            setup=[BODY_BOX, PANEL],
+        ),
+    ),
+    ("move_report_item", Case({"name": "Note", "to": "body"}, setup=[BODY_BOX, PANEL])),
+    (
+        "move_report_item",
+        Case(
+            {"name": "Note", "to": "Panel", "top": "0in", "left": "0.5in"}, setup=[BODY_BOX, PANEL]
         ),
     ),
     ("set_page_setup", Case({"columns": 2, "margin_left": "0.5in"})),

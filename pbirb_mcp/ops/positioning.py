@@ -12,6 +12,11 @@ Containers covered:
 * ``set_header_item_position`` — items inside ``<Page>/<PageHeader>/<ReportItems>``.
 * ``set_footer_item_position`` — items inside ``<Page>/<PageFooter>/<ReportItems>``.
 
+Each also reaches items nested in that region's Rectangles (including a
+List's rectangle) — resolved by :func:`pbirb_mcp.core.ids.resolve_report_item`
+(#83). Their coordinates stay relative to the Rectangle, as RDL defines
+them; a nested item that now extends past its Rectangle returns a warning.
+
 The header / footer variants check the result against the band (#50,
 :func:`pbirb_mcp.ops.header_footer.fit_band`): an item whose bottom passes
 the band's ``<Height>`` returns a ``warnings`` entry, or — with
@@ -38,9 +43,10 @@ from lxml import etree
 
 from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.geometry import REPORT_ITEM_TAGS
-from pbirb_mcp.core.ids import ElementNotFoundError
+from pbirb_mcp.core.geometry import REPORT_ITEM_TAGS, local_name
+from pbirb_mcp.core.ids import ElementNotFoundError, item_container, resolve_report_item
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
+from pbirb_mcp.ops.containers import fit_warnings
 from pbirb_mcp.ops.header_footer import fit_band
 from pbirb_mcp.ops.page import _resolve_page  # type: ignore[attr-defined]
 
@@ -98,23 +104,29 @@ def _set_layout_value(item: etree._Element, local_name: str, value: str) -> bool
     return True
 
 
-# Item types we recognise as named ReportItems (every RDL ReportItem tag).
-_REPORT_ITEM_TAGS = REPORT_ITEM_TAGS
-
-
-def _find_named_item(container: etree._Element, name: str) -> Optional[etree._Element]:
-    """Find a direct child of ``container/ReportItems`` whose Name matches.
-    Returns None if absent."""
-    items = find_child(container, "ReportItems")
-    if items is None:
-        return None
-    for child in items:
-        if child.get("Name") != name:
-            continue
-        local = etree.QName(child).localname
-        if local in _REPORT_ITEM_TAGS:
-            return child
-    return None
+def _locate_item(
+    doc: RDLDocument,
+    region_el: etree._Element,
+    region: str,
+    name: str,
+) -> tuple[etree._Element, etree._Element]:
+    """``(item, band_item)`` for the item called ``name`` anywhere in the
+    region — at its top level or inside Rectangles / List cells (#83).
+    ``band_item`` is the item's top-level ancestor in the region (the item
+    itself when it isn't nested), the one the band check measures."""
+    item, container, _region = resolve_report_item(doc, name, region=region)
+    if local_name(container) == "CellContents":
+        raise ValueError(
+            f"{local_name(item)} {name!r} fills a tablix cell, which places and sizes "
+            "it; change the cell's row height / column width instead"
+        )
+    band_item = item
+    for anc in item.iterancestors():
+        if anc is region_el:
+            break
+        if local_name(anc) in REPORT_ITEM_TAGS:
+            band_item = anc
+    return item, band_item
 
 
 # ---- container resolvers -------------------------------------------------
@@ -180,27 +192,43 @@ def _move_named_item(
     left = units.validate_size(left, field="left")
     doc = RDLDocument.open(path)
     container = resolve_container(doc)
-    item = _find_named_item(container, name)
-    if item is None:
-        raise ElementNotFoundError(f"{container_label} has no named item {name!r}")
+    item, band_item = _locate_item(doc, container, container_label, name)
     changed_fields: list[str] = []
     if _set_layout_value(item, "Top", top):
         changed_fields.append("Top")
     if _set_layout_value(item, "Left", left):
         changed_fields.append("Left")
-    extras = _fit_chrome_band(doc, container, item, grow_band)
+    extras = _fit_chrome_band(doc, container, band_item, grow_band)
     if "band_height" in extras:
         changed_fields.append("BandHeight")
     if changed_fields:
         doc.save()
-    return {
+    return _result(name, item, container_label, {"top": top, "left": left}, changed_fields, extras)
+
+
+def _result(
+    name: str,
+    item: etree._Element,
+    container_label: str,
+    values: dict[str, Any],
+    changed_fields: list[str],
+    extras: dict[str, Any],
+) -> dict[str, Any]:
+    """The position / size tools' result. ``parent`` names the Rectangle
+    holding a nested item (``None`` at the region's top level)."""
+    parent = item_container(item)
+    warnings = list(extras.pop("warnings", [])) + fit_warnings(item)
+    result: dict[str, Any] = {
         "name": name,
         "container": container_label,
-        "top": top,
-        "left": left,
+        "parent": parent.get("Name") if local_name(parent) == "Rectangle" else None,
+        **values,
         "changed": bool(changed_fields),
         **extras,
     }
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def set_body_item_position(
@@ -274,9 +302,7 @@ def _resize_named_item(
     units.validate_optional_size(height, field="height", allow_negative=True)
     doc = RDLDocument.open(path)
     container = resolve_container(doc)
-    item = _find_named_item(container, name)
-    if item is None:
-        raise ElementNotFoundError(f"{container_label} has no named item {name!r}")
+    item, band_item = _locate_item(doc, container, container_label, name)
     line = etree.QName(item).localname == "Line"
     width = units.validate_optional_size(width, field="width", allow_negative=line, allow_zero=line)
     height = units.validate_optional_size(
@@ -287,19 +313,14 @@ def _resize_named_item(
         changed_fields.append("Width")
     if height is not None and _set_layout_value(item, "Height", height):
         changed_fields.append("Height")
-    extras = _fit_chrome_band(doc, container, item, grow_band)
+    extras = _fit_chrome_band(doc, container, band_item, grow_band)
     if "band_height" in extras:
         changed_fields.append("BandHeight")
     if changed_fields:
         doc.save()
-    return {
-        "name": name,
-        "container": container_label,
-        "width": width,
-        "height": height,
-        "changed": bool(changed_fields),
-        **extras,
-    }
+    return _result(
+        name, item, container_label, {"width": width, "height": height}, changed_fields, extras
+    )
 
 
 def set_body_item_size(

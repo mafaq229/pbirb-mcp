@@ -38,14 +38,14 @@ Every edit case is also graded by the structural gate (XSD + lint errors the edi
 | s07 | style | medium | synth | fleet_utilization.rdl | `set_textbox_runs` | 28 |
 | s08 | style | hard | feedback | fleet_utilization.rdl | `set_textbox_runs` | 28 |
 | s09 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 28 |
-| l01 | layout | easy | synth | fleet_utilization.rdl | `set_page_orientation` | 50 |
-| l02 | layout | easy | feedback | fleet_utilization.rdl | `set_body_item_position` | 50 |
-| l03 | layout | medium | feedback | fleet_utilization.rdl | `set_page_footer` → `add_footer_textbox` | 50 |
-| l04 | layout | hard | feedback | fleet_utilization.rdl | `set_page_header` → `add_header_textbox` | 50 |
-| l05 | layout | hard | feedback | fleet_utilization.rdl | `set_page_setup` → `set_body_size` | 50 |
-| l06 | layout | easy | synth | fleet_utilization.rdl | `add_line` | 50 |
-| l07 | layout | medium | synth | fleet_utilization.rdl | `set_element_visibility` | 50 |
-| l08 | layout | hard | synth | fleet_utilization.rdl | `add_embedded_image` → `set_page_header` → `add_header_image` | 50 |
+| l01 | layout | easy | synth | fleet_utilization.rdl | `set_page_orientation` | 51 |
+| l02 | layout | easy | feedback | fleet_utilization.rdl | `set_body_item_position` | 51 |
+| l03 | layout | medium | feedback | fleet_utilization.rdl | `set_page_footer` → `add_footer_textbox` | 51 |
+| l04 | layout | hard | feedback | fleet_utilization.rdl | `set_page_header` → `add_header_textbox` | 51 |
+| l05 | layout | hard | feedback | fleet_utilization.rdl | `set_page_setup` → `set_body_size` | 51 |
+| l06 | layout | easy | synth | fleet_utilization.rdl | `add_line` | 51 |
+| l07 | layout | medium | synth | fleet_utilization.rdl | `set_element_visibility` | 51 |
+| l08 | layout | hard | synth | fleet_utilization.rdl | `add_embedded_image` → `set_page_header` → `add_header_image` | 51 |
 | c01 | chart | medium | feedback | fleet_utilization.rdl | `set_chart_series_type` | 27 |
 | c02 | chart | hard | feedback | fleet_utilization.rdl | `set_chart_series_grouping` | 27 |
 | c03 | chart | hard | feedback | fleet_utilization.rdl | `set_chart_data_labels` | 27 |

@@ -35,6 +35,7 @@ from pbirb_mcp.ops import (
     validate,
     visibility,
 )
+from pbirb_mcp.ops import containers as _containers
 from pbirb_mcp.ops import dry_run as _dry_run
 from pbirb_mcp.ops import escape as _escape
 from pbirb_mcp.ops import expressions as _expressions
@@ -117,6 +118,16 @@ _SORT_EXPRESSIONS_SCHEMA: dict = {
     "description": (
         "Sort keys in order: '=expr' or {value, direction: Ascending|Descending}. "
         "A plain string for an existing key keeps its direction; [] removes the sort."
+    ),
+}
+
+
+# `container` of the body add tools (#83).
+_CONTAINER_PARAM: dict = {
+    "type": ["string", "null"],
+    "description": (
+        "Rectangle in the body to add inside (a List's <name>_Rect too); "
+        "top/left are then relative to it. Omit for the body."
     ),
 }
 
@@ -1205,7 +1216,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_rectangle",
         description=(
-            "Add a rectangle to the body: an empty frame, or a container for "
+            "Add a rectangle to the body (or a container rectangle): an empty frame, or a container for "
             "contained_items (moved in with their on-page position kept). Items "
             "that don't fit are refused unless fit=true grows the rectangle."
         ),
@@ -1237,6 +1248,7 @@ def register_all_tools(server: MCPServer) -> None:
                         "a misfit (default false)."
                     ),
                 },
+                "container": _CONTAINER_PARAM,
             },
             "required": ["path", "name", "top", "left", "width", "height"],
             "additionalProperties": False,
@@ -1250,7 +1262,8 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Add a list (a one-cell repeating tablix with a rectangle inside, "
             "named '<name>_Rect') bound to a dataset; items placed in the "
-            "rectangle repeat once per row."
+            "rectangle repeat once per row. Fill it with container='<name>_Rect' "
+            "on the add tools, or move_report_item."
         ),
         input_schema={
             "type": "object",
@@ -1292,11 +1305,67 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": "string",
                     "enum": list(_layout._VALID_LINE_STYLES),
                 },
+                "container": _CONTAINER_PARAM,
             },
             "required": ["path", "name", "top", "left", "width", "height"],
             "additionalProperties": False,
         },
         handler=_layout.add_line,
+        mutating=True,
+    )
+
+    server.register_tool(
+        name="move_report_item",
+        description=(
+            "Move a report item into the body, page header, page footer or a "
+            "rectangle (to='body' / 'header' / 'footer' / a Rectangle name, a "
+            "List's too), keeping its style, actions, visibility and on-page "
+            "position (top/left override). Refuses data regions, and Fields! "
+            "outside a scoped aggregate, in the header/footer."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "to": {
+                    "type": "string",
+                    "description": "'body', 'header', 'footer', or a Rectangle's name.",
+                },
+                "top": {
+                    "type": ["string", "null"],
+                    "description": "New Top in the destination; omit to keep the page position.",
+                },
+                "left": {
+                    "type": ["string", "null"],
+                    "description": "New Left in the destination; omit to keep the page position.",
+                },
+            },
+            "required": ["path", "name", "to"],
+            "additionalProperties": False,
+        },
+        handler=_containers.move_report_item,
+        mutating=True,
+    )
+
+    server.register_tool(
+        name="ungroup_rectangle",
+        description=(
+            "Remove a rectangle and move its items out to where it was, keeping "
+            "their on-page position (undoes add_rectangle's contained_items). "
+            "Warns when the rectangle's visibility, border or action no longer "
+            "applies to them."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+            },
+            "required": ["path", "name"],
+            "additionalProperties": False,
+        },
+        handler=_containers.ungroup_rectangle,
         mutating=True,
     )
 
@@ -2089,7 +2158,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_body_item_position",
         description=(
-            "Move a named item in the report body to (top, left); any RDL size ('2cm', '0.75in')."
+            "Move a named item in the report body, or inside one of its rectangles / lists "
+            "(coordinates relative to it), to (top, left); any RDL size ('2cm', '0.75in')."
         ),
         input_schema={
             "type": "object",
@@ -2108,7 +2178,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_header_item_position",
         description=(
-            "Move a named item in the page header to (top, left). Warns when it "
+            "Move a named item in the page header (or a rectangle in it) to (top, left). Warns when it "
             "hangs below the band or past the printable width; grow_band=true "
             "grows the header instead."
         ),
@@ -2136,7 +2206,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_footer_item_position",
         description=(
-            "Move a named item in the page footer to (top, left). Warns when it "
+            "Move a named item in the page footer (or a rectangle in it) to (top, left). Warns when it "
             "hangs below the band or past the printable width; grow_band=true "
             "grows the footer instead."
         ),
@@ -2163,7 +2233,10 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="set_body_item_size",
-        description=("Resize a named item in the report body: width and/or height (RDL sizes)."),
+        description=(
+            "Resize a named item in the report body, or inside one of its rectangles / "
+            "lists: width and/or height (RDL sizes)."
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -2181,7 +2254,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_header_item_size",
         description=(
-            "Resize a named item in the page header: width and/or height. Warns "
+            "Resize a named item in the page header (or a rectangle in it): width and/or height. Warns "
             "when it outgrows the band or the printable width; grow_band=true "
             "grows the header instead."
         ),
@@ -2209,7 +2282,7 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_footer_item_size",
         description=(
-            "Resize a named item in the page footer: width and/or height. Warns "
+            "Resize a named item in the page footer (or a rectangle in it): width and/or height. Warns "
             "when it outgrows the band or the printable width; grow_band=true "
             "grows the footer instead."
         ),
@@ -2827,14 +2900,14 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="remove_header_item",
-        description=("Remove a named textbox or image from the page header."),
+        description=("Remove a named item from the page header, also inside a rectangle."),
         input_schema=_NAMED_REMOVE_SCHEMA,
         handler=header_footer.remove_header_item,
         mutating=True,
     )
     server.register_tool(
         name="remove_footer_item",
-        description=("Remove a named textbox or image from the page footer."),
+        description=("Remove a named item from the page footer, also inside a rectangle."),
         input_schema=_NAMED_REMOVE_SCHEMA,
         handler=header_footer.remove_footer_item,
         mutating=True,
@@ -3185,6 +3258,7 @@ def register_all_tools(server: MCPServer) -> None:
             "left": {"type": "string"},
             "width": {"type": "string"},
             "height": {"type": "string"},
+            "container": _CONTAINER_PARAM,
         },
         "required": ["path", "name", "text", "top", "left", "width", "height"],
         "additionalProperties": False,
@@ -3203,6 +3277,7 @@ def register_all_tools(server: MCPServer) -> None:
             "left": {"type": "string"},
             "width": {"type": "string"},
             "height": {"type": "string"},
+            "container": _CONTAINER_PARAM,
         },
         "required": [
             "path",
@@ -3241,7 +3316,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_body_item",
         description=(
-            "Remove a named item (textbox, image, tablix, chart, ...) from the report body."
+            "Remove a named item (textbox, image, tablix, chart, ...) from the report body, "
+            "also inside a rectangle or list."
         ),
         input_schema={
             "type": "object",
@@ -3292,6 +3368,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "left": {"type": "string"},
                 "width": {"type": "string"},
                 "height": {"type": "string"},
+                "container": _CONTAINER_PARAM,
             },
             "required": [
                 "path",
@@ -3328,6 +3405,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "left": {"type": "string"},
                 "width": {"type": "string"},
                 "height": {"type": "string"},
+                "container": _CONTAINER_PARAM,
             },
             "required": [
                 "path",
