@@ -23,6 +23,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from pbirb_mcp.core.security import preview_path
 from pbirb_mcp.ops.lint import lint_report
 from pbirb_mcp.ops.validate import validate_report
 
@@ -168,14 +169,17 @@ def dry_run_edit(
                 )
                 break
             args["path"] = str(tmp_path)
-            resp = server.handle_request(
-                {
-                    "jsonrpc": "2.0",
-                    "id": i,
-                    "method": "tools/call",
-                    "params": {"name": tool, "arguments": args},
-                }
-            )
+            # The temp copy is the server's own file: allowed outside
+            # PBIRB_MCP_ALLOWED_ROOTS and kept out of the audit log (#57).
+            with preview_path(str(tmp_path)):
+                resp = server.handle_request(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": i,
+                        "method": "tools/call",
+                        "params": {"name": tool, "arguments": args},
+                    }
+                )
             # Two failure shapes to handle:
             # 1. JSON-RPC error envelope (e.g. unknown tool) — top-level
             #    `error` key, no `result`.

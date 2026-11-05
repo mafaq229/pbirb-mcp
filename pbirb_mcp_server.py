@@ -7,12 +7,19 @@ official MCP SDK (protocol revisions 2024-11-05 through 2026-07-28).
 Environment variables:
     PBIRB_MCP_LOG_LEVEL  DEBUG|INFO|WARNING|ERROR (default: WARNING)
     PBIRB_MCP_LOG_FILE   path to log file (default: stderr)
+    PBIRB_MCP_ALLOWED_ROOTS  directories (os.pathsep-separated) report paths
+                         must be inside; '*' = unrestricted (default: the
+                         working directory)
+    PBIRB_MCP_REQUIRE_CONFIRM  destructive tools need confirm=true (default: on)
+    PBIRB_MCP_AUDIT_LOG  append a JSON line per mutating call to this file
+                         (default: off)
 """
 
 import logging
 import os
 import sys
 
+from pbirb_mcp.core import security
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
 
@@ -40,6 +47,10 @@ def main() -> int:
     _configure_logging()
     logger = logging.getLogger("pbirb_mcp")
     logger.info("pbirb-mcp starting")
+    # An LLM client drives this process: sandbox file access to the working
+    # directory and require confirm=true for destructive edits unless the
+    # environment says otherwise (issue #57).
+    security.use_server_defaults()
     server = MCPServer()
     register_all_tools(server)
     server.run_stdio()

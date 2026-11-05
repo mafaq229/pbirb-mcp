@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import logging
 import threading
 from collections.abc import Mapping
@@ -50,7 +51,7 @@ from mcp.shared.exceptions import MCPError
 from mcp.shared.inbound import InboundLadderRejection, classify_inbound_request
 from mcp.shared.jsonrpc_dispatcher import handler_exception_to_error_data
 from mcp.shared.transport_context import TransportContext
-from mcp_types import PROTOCOL_VERSION_META_KEY
+from mcp_types import CLIENT_CAPABILITIES_META_KEY, PROTOCOL_VERSION_META_KEY
 from mcp_types.version import (
     HANDSHAKE_PROTOCOL_VERSIONS,
     LATEST_HANDSHAKE_VERSION,
@@ -111,7 +112,19 @@ def build_sdk_server(owner: MCPServer, *, name: str, version: str) -> Server[Any
         if not owner.has_tool(tool_name):
             # MCP spec: an unknown tool is Invalid params, not Method not found.
             raise MCPError(code=INVALID_PARAMS, message=f"unknown tool: {tool_name}")
-        call = {"name": tool_name, "arguments": params.arguments}
+        arguments = params.arguments
+        if (
+            ctx.protocol_version in MODERN_PROTOCOL_VERSIONS
+            and _client_can_elicit(ctx)
+            and owner.requires_confirmation(tool_name, arguments)
+        ):
+            # Issue #57, 2026-07-28: ask the user through the client
+            # (multi-round-trip `input_required`) instead of failing.
+            confirmed, outcome = _confirmation_round(tool_name, dict(arguments or {}), params)
+            if not confirmed:
+                return outcome
+            arguments = outcome
+        call = {"name": tool_name, "arguments": arguments}
         try:
             result = await anyio.to_thread.run_sync(_run_tool_serialized, owner, call)
         except Exception as exc:  # noqa: BLE001
@@ -128,6 +141,71 @@ def build_sdk_server(owner: MCPServer, *, name: str, version: str) -> Server[Any
         cache_hints={"tools/list": TOOLS_LIST_CACHE_HINT},
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
+    )
+
+
+CONFIRM_INPUT_KEY = "confirm"
+
+
+def _client_can_elicit(ctx: Any) -> bool:
+    """Did the 2026-07-28 request envelope declare the elicitation capability?"""
+    params = ctx.params if isinstance(ctx.params, Mapping) else {}
+    meta = params.get("_meta")
+    caps = meta.get(CLIENT_CAPABILITIES_META_KEY) if isinstance(meta, Mapping) else None
+    return isinstance(caps, Mapping) and isinstance(caps.get("elicitation"), Mapping)
+
+
+def _confirmation_round(
+    tool_name: str, arguments: dict[str, Any], params: types.CallToolRequestParams
+) -> tuple[bool, Any]:
+    """The confirmation step of a destructive call on 2026-07-28.
+
+    ``(True, arguments + confirm=True)`` when the client's retry carries
+    the user's acceptance for this exact call; otherwise ``(False,
+    result)`` with the ``input_required`` result to send (first round) or
+    an ``isError`` result (the user declined).
+    """
+    from pbirb_mcp.core import security
+
+    state = security.request_fingerprint(tool_name, arguments)
+    answer = (params.input_responses or {}).get(CONFIRM_INPUT_KEY)
+    if answer is not None and params.request_state == state:
+        accepted = (
+            isinstance(answer, types.ElicitResult)
+            and answer.action == "accept"
+            and (answer.content or {}).get("confirm") is True
+        )
+        if accepted:
+            return True, {**arguments, "confirm": True}
+        payload = {
+            "error_type": "ConfirmationDeclined",
+            "message": f"The user did not confirm {tool_name}; nothing was changed.",
+            "tool": tool_name,
+        }
+        return False, {
+            "resultType": "complete",
+            "content": [{"type": "text", "text": json.dumps(payload)}],
+            "isError": True,
+        }
+    target = arguments.get("path") or arguments.get("target_path") or "the report"
+    request = types.ElicitRequest(
+        params=types.ElicitRequestFormParams(
+            message=f"Allow the destructive edit {tool_name} on {target}?",
+            requested_schema={
+                "type": "object",
+                "properties": {
+                    "confirm": {
+                        "type": "boolean",
+                        "title": f"Run {tool_name}",
+                        "description": "This removes or overwrites report content.",
+                    }
+                },
+                "required": ["confirm"],
+            },
+        )
+    )
+    return False, types.InputRequiredResult(
+        input_requests={CONFIRM_INPUT_KEY: request}, request_state=state
     )
 
 

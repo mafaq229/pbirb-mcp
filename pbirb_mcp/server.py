@@ -19,6 +19,7 @@ callers see no shape change.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -73,6 +74,58 @@ TRANSACTION_CONTROL_TOOLS = frozenset(
     {"start_editing_transaction", "commit_editing_transaction", "cancel_editing_transaction"}
 )
 
+# Tools that delete report content or overwrite a file (issue #57). The one
+# place this is defined: confirmation (`confirm=true`, see
+# pbirb_mcp.core.security) keys off it, and tool annotations
+# (destructiveHint, #54) should too. Every `remove_*` tool must be listed
+# (tests/test_security.py checks).
+DESTRUCTIVE_TOOLS = frozenset(
+    {
+        "remove_body_item",
+        "remove_calculated_field",
+        "remove_chart_series",
+        "remove_column_group",
+        "remove_data_source",
+        "remove_dataset_field",
+        "remove_dataset_filter",
+        "remove_embedded_image",
+        "remove_footer_item",
+        "remove_header_item",
+        "remove_parameter",
+        "remove_query_parameter",
+        "remove_row_group",
+        "remove_tablix_column",
+        "remove_tablix_filter",
+        # Replaces an arbitrary element with caller-supplied XML.
+        "raw_xml_replace",
+        # Copies a backup over the report.
+        "restore_from_backup",
+    }
+)
+
+# Tools that take `confirm`: the destructive ones, plus apply_edits, which
+# needs it when any of its ops is destructive.
+_CONFIRMABLE_TOOLS = DESTRUCTIVE_TOOLS | {"apply_edits"}
+
+_CONFIRM_PARAM = {
+    "type": "boolean",
+    "default": False,
+    "description": (
+        "Set true to run this destructive edit. Without it the server may refuse "
+        "and ask for confirmation (PBIRB_MCP_REQUIRE_CONFIRM; on by default for "
+        "the pbirb-mcp server). Confirm with the user first."
+    ),
+}
+
+# Tools that write report files without being registered mutating=True
+# (commit saves the transaction's tree); audited too.
+_AUDITED_EXTRA_TOOLS = frozenset({"commit_editing_transaction"})
+
+# Nesting depth of tool calls in this context: apply_edits / dry_run_edit
+# dispatch their ops as nested calls (depth >= 1), which skip the
+# confirmation gate — the top-level batch call is gated instead.
+_CALL_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("pbirb_mcp_call_depth", default=0)
+
 _TRANSACTION_ID_PARAM = {
     "type": "string",
     "description": (
@@ -114,6 +167,14 @@ def _success(result: Any) -> dict:
     return {
         "content": [{"type": "text", "text": text}],
         "structuredContent": structured_content(json.loads(text)),
+    }
+
+
+def _failure(payload: dict) -> dict:
+    """An ``isError`` ``CallToolResult`` carrying ``payload`` as JSON text."""
+    return {
+        "content": [{"type": "text", "text": json.dumps(payload, default=str)}],
+        "isError": True,
     }
 
 
@@ -169,6 +230,10 @@ class MCPServer:
         if routable and "transaction_id" not in props:
             props["transaction_id"] = _TRANSACTION_ID_PARAM
             schema["properties"] = props
+        # Destructive tools (and apply_edits) take `confirm` (issue #57).
+        if name in _CONFIRMABLE_TOOLS and "confirm" not in props:
+            props["confirm"] = _CONFIRM_PARAM
+            schema["properties"] = props
         self._tools[name] = Tool(
             name,
             description,
@@ -187,6 +252,29 @@ class MCPServer:
 
     def has_tool(self, name: str) -> bool:
         return name in self._tools
+
+    def requires_confirmation(self, name: str, arguments: Any) -> bool:
+        """Would this call be refused for want of ``confirm=true`` (issue #57)?
+
+        True for a top-level call (not an op nested inside apply_edits /
+        dry_run_edit) of a destructive tool — or of apply_edits with a
+        destructive op — while confirmation is required
+        (``PBIRB_MCP_REQUIRE_CONFIRM``), and ``confirm`` isn't true.
+        """
+        from pbirb_mcp.core import security
+
+        if _CALL_DEPTH.get() > 0 or not security.confirmation_required():
+            return False
+        args = arguments if isinstance(arguments, dict) else {}
+        if args.get("confirm") is True:
+            return False
+        if name in DESTRUCTIVE_TOOLS:
+            return True
+        if name == "apply_edits" and isinstance(args.get("ops"), list):
+            return any(
+                isinstance(op, dict) and op.get("tool") in DESTRUCTIVE_TOOLS for op in args["ops"]
+            )
+        return False
 
     # ---- protocol -----------------------------------------------------------
 
@@ -290,10 +378,21 @@ class MCPServer:
             validate_arguments(tool.input_schema, arguments)
         except InvalidArguments as exc:
             payload = {"error_type": "InvalidArguments", "message": str(exc), **exc.payload}
-            return {
-                "content": [{"type": "text", "text": json.dumps(payload, default=str)}],
-                "isError": True,
-            }
+            return _failure(payload)
+
+        # Issue #57: file-access sandbox, then the confirmation gate —
+        # both before the handler, so a refused call never touches a file.
+        from pbirb_mcp.core import security
+
+        try:
+            security.check_paths(arguments)
+        except security.PathNotAllowed as exc:
+            return _failure({"error_type": "PathNotAllowed", "message": str(exc), **exc.payload})
+        if self.requires_confirmation(name, arguments):
+            return _failure(security.confirmation_payload(name, arguments))
+        if name in _CONFIRMABLE_TOOLS:
+            arguments.pop("confirm", None)  # the gate's, not the handler's
+        audited = tool.mutating or name in _AUDITED_EXTRA_TOOLS
 
         # Per MCP spec, tool-handler exceptions are surfaced in the result
         # content with `isError: true`, NOT as JSON-RPC errors. JSON-RPC errors
@@ -302,6 +401,7 @@ class MCPServer:
         # clients to render them as opaque "Tool execution failed" strings,
         # hiding the rich messages tools already raise (locators in
         # remove_parameter, missing-column hints in add_subtotal_row, etc.).
+        depth = _CALL_DEPTH.set(_CALL_DEPTH.get() + 1)
         try:
             if in_transaction:
                 from pbirb_mcp.core import transactions as _tx
@@ -327,6 +427,14 @@ class MCPServer:
                     result = tool.handler(**arguments)
         except Exception as exc:  # noqa: BLE001
             logger.exception("tool %s raised", name)
+            if audited:
+                security.audit(
+                    name,
+                    arguments,
+                    ok=False,
+                    error_type=type(exc).__name__,
+                    in_transaction=in_transaction,
+                )
             payload = {
                 "error_type": type(exc).__name__,
                 "message": str(exc) or repr(exc),
@@ -336,10 +444,12 @@ class MCPServer:
             extra = getattr(exc, "payload", None)
             if isinstance(extra, dict):
                 payload.update(extra)
-            return {
-                "content": [{"type": "text", "text": json.dumps(payload, default=str)}],
-                "isError": True,
-            }
+            return _failure(payload)
+        finally:
+            _CALL_DEPTH.reset(depth)
+
+        if audited:
+            security.audit(name, arguments, ok=True, result=result, in_transaction=in_transaction)
 
         # Auto-verify (Phase 7 commit 34): when PBIRB_MCP_AUTO_VERIFY is on
         # and the tool is registered mutating=True, run verify_report
