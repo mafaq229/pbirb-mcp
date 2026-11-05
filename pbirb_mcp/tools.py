@@ -2182,7 +2182,7 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": ["string", "null"],
                     "description": "Column group to insert inside (the column then repeats per "
                     "instance); position must be within or just past its "
-                    "columns.",
+                    "columns. Default: outside every group.",
                 },
                 "header_name": {
                     "type": ["string", "null"],
@@ -2371,7 +2371,8 @@ def register_all_tools(server: MCPServer) -> None:
                 "inside_group": {
                     "type": ["string", "null"],
                     "description": "Row group to insert inside (the row then repeats per "
-                    "instance); position must be within or just past its rows.",
+                    "instance); position must be within or just past its rows. "
+                    "Default: outside every group.",
                 },
             },
             "required": ["path", "tablix_name", "row_name"],
@@ -2403,7 +2404,7 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": ["string", "null"],
                     "description": "Column group to insert inside (the column then repeats per "
                     "instance); position must be within or just past its "
-                    "columns.",
+                    "columns. Default: outside every group.",
                 },
             },
             "required": ["path", "tablix_name", "column_name"],
