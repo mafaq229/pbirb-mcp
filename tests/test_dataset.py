@@ -2127,3 +2127,171 @@ class TestUpdateQueryParameterPbiDatasetDefence:
         ds_view = get_datasets(path=str(rdl_path))[0]
         legacy = next(p for p in ds_view["query_parameters"] if p["name"] == "@DateFrom")
         assert legacy["value"] == "=Today()"
+
+
+# ---- #94: filter arity, FilterValue DataType, field_format warning ---------
+
+
+def _typed_filter_fixture(rdl_path: Path) -> None:
+    from pbirb_mcp.ops.parameters import add_parameter
+
+    add_dataset_field(str(rdl_path), "MainDataset", "Qty", "Sales[Qty]", "System.Int64")
+    add_dataset_field(
+        str(rdl_path), "MainDataset", "OrderDate", "Sales[OrderDate]", "System.DateTime"
+    )
+    add_parameter(str(rdl_path), "Month", "String", prompt="Month")
+
+
+class TestDatasetFilterArity:
+    @pytest.mark.parametrize(
+        "operator,values",
+        [
+            ("Between", ["10"]),
+            ("Between", ["1", "2", "3"]),
+            ("Equal", ["a", "b", "c"]),
+            ("TopN", ["ten"]),
+            ("TopN", ["5", "6"]),
+            ("TopPercent", ["half"]),
+            ("NotEqual", ["1", "2"]),
+        ],
+    )
+    def test_wrong_arity_or_count_refused_without_writing(self, rdl_path, operator, values):
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError):
+            add_dataset_filter(
+                str(rdl_path), "MainDataset", "=Fields!ProductID.Value", operator, values
+            )
+        assert rdl_path.read_bytes() == before
+
+    @pytest.mark.parametrize(
+        "operator,values",
+        [
+            ("Between", ["1", "10"]),
+            ("In", ["a"]),
+            ("In", ["a", "b", "c"]),
+            ("TopN", ["5"]),
+            ("TopN", ["=Parameters!DateFrom.Value"]),
+            ("TopPercent", ["12.5"]),
+        ],
+    )
+    def test_valid_arity_accepted(self, rdl_path, operator, values):
+        add_dataset_filter(
+            str(rdl_path), "MainDataset", "=Fields!ProductID.Value", operator, values
+        )
+        assert list_dataset_filters(str(rdl_path), "MainDataset")[0]["values"] == values
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_wrong_case_operator_gets_a_hint(self, rdl_path):
+        with pytest.raises(ValueError, match="did you mean 'Equal'"):
+            add_dataset_filter(str(rdl_path), "MainDataset", "=1", "equal", ["1"])
+
+    def test_schema_enumerates_operators_and_data_types(self):
+        from pbirb_mcp.ops.filter_types import FILTER_OPERATORS
+
+        srv = MCPServer()
+        register_all_tools(srv)
+        listing = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        tools = {t["name"]: t for t in listing["result"]["tools"]}
+        for name in ("add_dataset_filter", "add_tablix_filter"):
+            props = tools[name]["inputSchema"]["properties"]
+            assert props["operator"]["enum"] == list(FILTER_OPERATORS)
+            assert "Integer" in props["value_data_type"]["enum"]
+
+
+class TestDatasetFilterValueDataType:
+    def test_writes_data_type_attribute_and_reads_it_back(self, rdl_path):
+        _typed_filter_fixture(rdl_path)
+        result = add_dataset_filter(
+            str(rdl_path),
+            "MainDataset",
+            "=Fields!Qty.Value",
+            "GreaterThan",
+            ["50"],
+            value_data_type="Integer",
+        )
+        assert result["warnings"] == []
+        assert result["data_type"] == "Integer"
+        assert '<FilterValue DataType="Integer">50</FilterValue>' in rdl_path.read_text("utf-8")
+        assert validate_report(str(rdl_path))["valid"]
+        assert list_dataset_filters(str(rdl_path), "MainDataset")[0]["data_type"] == "Integer"
+        assert get_dataset(str(rdl_path), "MainDataset")["filters"][0]["data_type"] == "Integer"
+
+    def test_data_type_unset_reads_none(self, rdl_path):
+        add_dataset_filter(
+            str(rdl_path), "MainDataset", "=Fields!ProductName.Value", "Equal", ["x"]
+        )
+        assert list_dataset_filters(str(rdl_path), "MainDataset")[0]["data_type"] is None
+        assert "DataType=" not in rdl_path.read_text("utf-8")
+
+    def test_literal_must_match_data_type(self, rdl_path):
+        with pytest.raises(ValueError, match="not a valid Integer"):
+            add_dataset_filter(
+                str(rdl_path),
+                "MainDataset",
+                "=Fields!ProductID.Value",
+                "Equal",
+                ["fifty"],
+                value_data_type="Integer",
+            )
+
+    def test_int_field_vs_string_literal_warns(self, rdl_path):
+        _typed_filter_fixture(rdl_path)
+        result = add_dataset_filter(
+            str(rdl_path), "MainDataset", "=Fields!Qty.Value", "GreaterThan", ["50"]
+        )
+        assert len(result["warnings"]) == 1
+        assert "value_data_type='Integer'" in result["warnings"][0]
+
+    def test_date_field_vs_literal_suggests_datetime(self, rdl_path):
+        _typed_filter_fixture(rdl_path)
+        result = add_dataset_filter(
+            str(rdl_path), "MainDataset", "=Fields!OrderDate.Value", "GreaterThan", ["2024-01-01"]
+        )
+        assert "value_data_type='DateTime'" in result["warnings"][0]
+
+    def test_expression_value_string_field_and_topn_do_not_warn(self, rdl_path):
+        _typed_filter_fixture(rdl_path)
+        r1 = add_dataset_filter(
+            str(rdl_path), "MainDataset", "=Fields!Qty.Value", "GreaterThan", ["=50"]
+        )
+        r2 = add_dataset_filter(
+            str(rdl_path), "MainDataset", "=Fields!ProductName.Value", "Equal", ["x"]
+        )
+        r3 = add_dataset_filter(str(rdl_path), "MainDataset", "=Fields!Qty.Value", "TopN", ["5"])
+        assert r1["warnings"] == r2["warnings"] == r3["warnings"] == []
+
+    def test_field_format_clears_the_mismatch_warning(self, rdl_path):
+        _typed_filter_fixture(rdl_path)
+        result = add_dataset_filter(
+            str(rdl_path),
+            "MainDataset",
+            "=Fields!OrderDate.Value",
+            "Equal",
+            ["=Parameters!Month.Value"],
+            field_format="MMM yyyy",
+        )
+        assert result["expression"] == '=Format(Fields!OrderDate.Value, "MMM yyyy")'
+        assert result["warnings"] == []
+
+    def test_unwrapped_mismatch_still_warns(self, rdl_path):
+        _typed_filter_fixture(rdl_path)
+        result = add_dataset_filter(
+            str(rdl_path),
+            "MainDataset",
+            "=Fields!OrderDate.Value",
+            "Equal",
+            ["=Parameters!Month.Value"],
+        )
+        assert len(result["warnings"]) == 1
+        assert "filter type mismatch" in result["warnings"][0]
+
+    @pytest.mark.parametrize(
+        "expression",
+        ["=CStr(Fields!OrderDate.Value)", "=Fields!OrderDate.Value.ToString()"],
+    )
+    def test_other_string_coercions_skip_the_check(self, rdl_path, expression):
+        _typed_filter_fixture(rdl_path)
+        result = add_dataset_filter(
+            str(rdl_path), "MainDataset", expression, "Equal", ["=Parameters!Month.Value"]
+        )
+        assert result["warnings"] == []

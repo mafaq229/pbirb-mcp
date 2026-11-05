@@ -55,29 +55,12 @@ from pbirb_mcp.ops import visibility as _visibility
 from pbirb_mcp.ops.filter_types import (
     _canonical_typename_group,
     encode_filter_texts,
+    filter_to_dict,
     type_mismatch_warnings,
+    validate_filter,
     wrap_with_format,
+    write_filter,
 )
-
-# RDL 2016 FilterOperator enumeration.
-_VALID_OPERATORS = frozenset(
-    {
-        "Equal",
-        "NotEqual",
-        "GreaterThan",
-        "GreaterThanOrEqual",
-        "LessThan",
-        "LessThanOrEqual",
-        "Like",
-        "TopN",
-        "BottomN",
-        "TopPercent",
-        "BottomPercent",
-        "In",
-        "Between",
-    }
-)
-
 
 # Per RDL XSD, on a Tablix the <Filters> block sits between <DataSetName>
 # (which we always have) and <SortExpressions>. We try to insert immediately
@@ -111,21 +94,6 @@ def _ensure_filters_block(tablix: etree._Element) -> etree._Element:
     return block
 
 
-def _filter_to_dict(filter_node: etree._Element) -> dict[str, Any]:
-    expr = find_child(filter_node, "FilterExpression")
-    op = find_child(filter_node, "Operator")
-    values_root = find_child(filter_node, "FilterValues")
-    values: list[str] = []
-    if values_root is not None:
-        for v in find_children(values_root, "FilterValue"):
-            values.append(v.text or "")
-    return {
-        "expression": expr.text if expr is not None else None,
-        "operator": op.text if op is not None else None,
-        "values": values,
-    }
-
-
 # ---- list_tablix_filters --------------------------------------------------
 
 
@@ -135,7 +103,7 @@ def list_tablix_filters(path: str, tablix_name: str) -> list[dict[str, Any]]:
     filters_root = find_child(tablix, "Filters")
     if filters_root is None:
         return []
-    return [_filter_to_dict(f) for f in find_children(filters_root, "Filter")]
+    return [filter_to_dict(f) for f in find_children(filters_root, "Filter")]
 
 
 # ---- add_tablix_filter ----------------------------------------------------
@@ -148,8 +116,12 @@ def add_tablix_filter(
     operator: str,
     values: list[str],
     field_format: Optional[str] = None,
+    value_data_type: Optional[str] = None,
 ) -> dict[str, Any]:
     """Append a ``<Filter>`` to a tablix's ``<Filters>`` block.
+
+    Operator, arity and ``value_data_type`` are checked and written as
+    in :func:`pbirb_mcp.ops.dataset.add_dataset_filter` (#94).
 
     ``field_format`` (Phase 8 commit 36): when provided, the filter
     expression is wrapped as ``=Format(<body>, "<field_format>")``.
@@ -162,12 +134,7 @@ def add_tablix_filter(
     against a ``Parameters!Y.Value`` in the values and their declared
     types differ. Best-effort, silent when either side isn't readable.
     """
-    if operator not in _VALID_OPERATORS:
-        raise ValueError(
-            f"unknown filter operator {operator!r}; valid operators are: {sorted(_VALID_OPERATORS)}"
-        )
-    if not values:
-        raise ValueError("at least one filter value is required")
+    validate_filter(operator, values, value_data_type)
 
     effective_expression = (
         wrap_with_format(expression, field_format) if field_format else expression
@@ -184,7 +151,14 @@ def add_tablix_filter(
     if ds_name_node is not None and ds_name_node.text:
         try:
             dataset = resolve_dataset(doc, ds_name_node.text)
-            warnings = type_mismatch_warnings(doc.root, dataset, effective_expression, values)
+            warnings = type_mismatch_warnings(
+                doc.root,
+                dataset,
+                effective_expression,
+                values,
+                operator=operator,
+                value_data_type=value_data_type,
+            )
         except Exception:  # noqa: BLE001 — ElementNotFoundError is fine to swallow
             warnings = []
 
@@ -194,16 +168,7 @@ def add_tablix_filter(
         effective_expression, values
     )
     warnings.extend(entity_warnings)
-
-    filter_node = etree.SubElement(filters_root, q("Filter"))
-    expr_node = etree.SubElement(filter_node, q("FilterExpression"))
-    expr_node.text = written_expression
-    op_node = etree.SubElement(filter_node, q("Operator"))
-    op_node.text = operator
-    values_root = etree.SubElement(filter_node, q("FilterValues"))
-    for v in written_values:
-        v_node = etree.SubElement(values_root, q("FilterValue"))
-        v_node.text = v
+    write_filter(filters_root, written_expression, operator, written_values, value_data_type)
 
     new_index = len(find_children(filters_root, "Filter")) - 1
     doc.save()
@@ -213,6 +178,7 @@ def add_tablix_filter(
         "expression": written_expression,
         "operator": operator,
         "values": written_values,
+        "data_type": value_data_type,
         "formatted": field_format is not None,
         "warnings": warnings,
     }

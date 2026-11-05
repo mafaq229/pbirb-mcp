@@ -43,8 +43,11 @@ from pbirb_mcp.ops import expr_walk
 from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
 from pbirb_mcp.ops.filter_types import (
     encode_filter_texts,
+    filter_to_dict,
     type_mismatch_warnings,
+    validate_filter,
     wrap_with_format,
+    write_filter,
 )
 
 
@@ -626,28 +629,6 @@ def remove_query_parameter(path: str, dataset_name: str, name: str) -> dict[str,
 # ---- dataset-level filters ------------------------------------------------
 
 
-# Same enum as tablix.py — DRY would move it to a shared constant, but
-# the cross-module import would create a cycle (tablix imports nothing
-# from dataset today; we keep it duplicated rather than restructuring).
-_VALID_FILTER_OPERATORS = frozenset(
-    {
-        "Equal",
-        "NotEqual",
-        "GreaterThan",
-        "GreaterThanOrEqual",
-        "LessThan",
-        "LessThanOrEqual",
-        "Like",
-        "TopN",
-        "BottomN",
-        "TopPercent",
-        "BottomPercent",
-        "In",
-        "Between",
-    }
-)
-
-
 # Per RDL XSD, the <Filters> block on a DataSet sits AFTER <Fields>
 # (which itself follows <Query>) and BEFORE the rd:* metadata children.
 _DATASET_FILTERS_PRECEDED_BY = ("Fields", "Query")
@@ -683,22 +664,6 @@ def _ensure_dataset_filters_block(dataset: etree._Element) -> etree._Element:
     return block
 
 
-def _filter_to_dict(filter_node: etree._Element) -> dict[str, Any]:
-    """Return a JSON-friendly read-back shape for one ``<Filter>``."""
-    expr = find_child(filter_node, "FilterExpression")
-    op = find_child(filter_node, "Operator")
-    values_root = find_child(filter_node, "FilterValues")
-    values: list[str] = []
-    if values_root is not None:
-        for v in find_children(values_root, "FilterValue"):
-            values.append(v.text or "")
-    return {
-        "expression": expr.text if expr is not None else None,
-        "operator": op.text if op is not None else None,
-        "values": values,
-    }
-
-
 def list_dataset_filters(path: str, dataset_name: str) -> list[dict[str, Any]]:
     """List dataset-level ``<Filter>`` entries in document order. The
     list index is the stable handle for :func:`remove_dataset_filter`."""
@@ -707,7 +672,7 @@ def list_dataset_filters(path: str, dataset_name: str) -> list[dict[str, Any]]:
     filters_root = find_child(dataset, "Filters")
     if filters_root is None:
         return []
-    return [_filter_to_dict(f) for f in find_children(filters_root, "Filter")]
+    return [filter_to_dict(f) for f in find_children(filters_root, "Filter")]
 
 
 def add_dataset_filter(
@@ -717,13 +682,22 @@ def add_dataset_filter(
     operator: str,
     values: list[str],
     field_format: Optional[str] = None,
+    value_data_type: Optional[str] = None,
 ) -> dict[str, Any]:
     """Append a ``<Filter>`` to the dataset's ``<Filters>`` block.
 
     Operator must be one of the RDL 2016 FilterOperator enum values
     (Equal, NotEqual, GreaterThan, GreaterThanOrEqual, LessThan,
     LessThanOrEqual, Like, In, Between, TopN, BottomN, TopPercent,
-    BottomPercent). values must be non-empty.
+    BottomPercent). Arity is checked (#94,
+    :func:`pbirb_mcp.ops.filter_types.validate_filter`): Between takes 2
+    values, In one or more, every other operator exactly 1; TopN-style
+    operators take a number or an expression.
+
+    ``value_data_type`` (Boolean / DateTime / Integer / Float / String)
+    writes ``<FilterValue DataType="...">`` so a literal compares with a
+    typed field; without it a numeric / date field compared with bare
+    literals warns.
 
     DataSet-level filters apply to every consumer of the dataset (every
     Tablix / Chart bound to it). For per-tablix filtering use
@@ -738,13 +712,7 @@ def add_dataset_filter(
     the expression against ``Parameters!Y.Value`` references in the
     values; mismatches surface as ``warnings`` in the response.
     """
-    if operator not in _VALID_FILTER_OPERATORS:
-        raise ValueError(
-            f"unknown filter operator {operator!r}; valid operators are: "
-            f"{sorted(_VALID_FILTER_OPERATORS)}"
-        )
-    if not values:
-        raise ValueError("at least one filter value is required")
+    validate_filter(operator, values, value_data_type)
 
     effective_expression = (
         wrap_with_format(expression, field_format) if field_format else expression
@@ -752,23 +720,21 @@ def add_dataset_filter(
 
     doc = RDLDocument.open(path)
     dataset = resolve_dataset(doc, dataset_name)
-    warnings = type_mismatch_warnings(doc.root, dataset, effective_expression, values)
+    warnings = type_mismatch_warnings(
+        doc.root,
+        dataset,
+        effective_expression,
+        values,
+        operator=operator,
+        value_data_type=value_data_type,
+    )
     filters_root = _ensure_dataset_filters_block(dataset)
 
     written_expression, written_values, entity_warnings = encode_filter_texts(
         effective_expression, values
     )
     warnings.extend(entity_warnings)
-
-    filter_node = etree.SubElement(filters_root, q("Filter"))
-    expr_node = etree.SubElement(filter_node, q("FilterExpression"))
-    expr_node.text = written_expression
-    op_node = etree.SubElement(filter_node, q("Operator"))
-    op_node.text = operator
-    values_root = etree.SubElement(filter_node, q("FilterValues"))
-    for v in written_values:
-        v_node = etree.SubElement(values_root, q("FilterValue"))
-        v_node.text = v
+    write_filter(filters_root, written_expression, operator, written_values, value_data_type)
 
     new_index = len(find_children(filters_root, "Filter")) - 1
     doc.save()
@@ -778,6 +744,7 @@ def add_dataset_filter(
         "expression": written_expression,
         "operator": operator,
         "values": written_values,
+        "data_type": value_data_type,
         "formatted": field_format is not None,
         "warnings": warnings,
     }
@@ -867,7 +834,7 @@ def dataset_to_dict(dataset: etree._Element) -> dict[str, Any]:
     filters: list[dict[str, Any]] = []
     filters_root = find_child(dataset, "Filters")
     if filters_root is not None:
-        filters = [_filter_to_dict(f) for f in find_children(filters_root, "Filter")]
+        filters = [filter_to_dict(f) for f in find_children(filters_root, "Filter")]
 
     return {
         "name": dataset.get("Name"),

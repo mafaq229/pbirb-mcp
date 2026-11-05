@@ -201,3 +201,79 @@ class TestToolRegistration:
             "list_tablix_filters",
             "remove_tablix_filter",
         } <= names
+
+
+# ---- #94: arity, value_data_type, typed-literal warning --------------------
+
+
+def _add_int64_field(rdl_path: Path) -> None:
+    from pbirb_mcp.ops.dataset import add_dataset_field
+
+    add_dataset_field(str(rdl_path), "MainDataset", "Qty", "Sales[Qty]", "System.Int64")
+
+
+class TestTablixFilterTyping:
+    @pytest.mark.parametrize(
+        "operator,values",
+        [
+            ("Between", ["10"]),
+            ("Between", ["1", "2", "3"]),
+            ("Equal", ["a", "b", "c"]),
+            ("TopN", ["ten"]),
+            ("TopN", ["5", "6"]),
+        ],
+    )
+    def test_arity_refused(self, rdl_path, operator, values):
+        with pytest.raises(ValueError):
+            add_tablix_filter(
+                str(rdl_path), "MainTable", "=Fields!ProductID.Value", operator, values
+            )
+        assert list_tablix_filters(str(rdl_path), "MainTable") == []
+
+    def test_int64_field_vs_string_literal_warns(self, rdl_path):
+        _add_int64_field(rdl_path)
+        result = add_tablix_filter(
+            str(rdl_path), "MainTable", "=Fields!Qty.Value", "GreaterThan", ["50"]
+        )
+        assert len(result["warnings"]) == 1
+        assert "value_data_type='Integer'" in result["warnings"][0]
+
+    def test_value_data_type_written_validated_and_read_back(self, rdl_path):
+        from pbirb_mcp.ops.validate import validate_report
+
+        _add_int64_field(rdl_path)
+        result = add_tablix_filter(
+            str(rdl_path),
+            "MainTable",
+            "=Fields!Qty.Value",
+            "GreaterThan",
+            ["50"],
+            value_data_type="Integer",
+        )
+        assert result["warnings"] == []
+        assert '<FilterValue DataType="Integer">50</FilterValue>' in rdl_path.read_text("utf-8")
+        assert validate_report(str(rdl_path))["valid"]
+        assert list_tablix_filters(str(rdl_path), "MainTable")[0]["data_type"] == "Integer"
+
+    def test_server_rejects_lowercase_operator(self, rdl_path):
+        srv = MCPServer()
+        register_all_tools(srv)
+        resp = srv.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "add_tablix_filter",
+                    "arguments": {
+                        "path": str(rdl_path),
+                        "tablix_name": "MainTable",
+                        "expression": "=1",
+                        "operator": "equal",
+                        "values": ["1"],
+                    },
+                },
+            }
+        )
+        assert resp["result"]["isError"] is True
+        assert list_tablix_filters(str(rdl_path), "MainTable") == []

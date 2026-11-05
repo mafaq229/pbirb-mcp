@@ -181,11 +181,13 @@ Rename a `<DataSource>` and rewrite every DataSet/Query/DataSourceName that name
 
 *read-only*
 
-List dataset-level filters in document order. Returns [{expression, operator, values}]; index in the list is the stable handle for remove_dataset_filter. DataSet filters apply to every consumer of the dataset (every Tablix / Chart bound to it); use list_tablix_filters for per-tablix filtering.
+List dataset-level filters in document order. Returns [{expression, operator, values, data_type}] (data_type: the `<FilterValue DataType>`, null when unset); index in the list is the stable handle for remove_dataset_filter. DataSet filters apply to every consumer of the dataset (every Tablix / Chart bound to it); use list_tablix_filters for per-tablix filtering.
 
 ### `add_dataset_filter`
 
-Append a `<Filter>` to the named dataset's `<Filters>` block. operator ∈ Equal / NotEqual / GreaterThan / LessThan / GreaterThanOrEqual / LessThanOrEqual / Like / In / Between / TopN / BottomN / TopPercent / BottomPercent. values must be non-empty (single-value filters use a one-element list). Returns the new filter's index for later removal. Optional field_format wraps the expression as Format(`<body>`, fmt) to coerce typed fields for string-parameter comparison. Response includes warnings for field/parameter type mismatches detected via best-effort cross-check.
+Append a `<Filter>` to the named dataset's `<Filters>` block. operator ∈ Equal / NotEqual / GreaterThan / LessThan / GreaterThanOrEqual / LessThanOrEqual / Like / In / Between / TopN / BottomN / TopPercent / BottomPercent (case-sensitive; the schema enumerates them). Arity is checked: Between takes exactly 2 values (low, high), In one or more, every other operator exactly 1; TopN / BottomN take an integer literal or an `=`-expression, TopPercent / BottomPercent a number or an expression. Returns the new filter's index for later removal. Optional field_format wraps the expression as Format(`<body>`, fmt) to coerce typed fields for string-parameter comparison.
+
+value_data_type (Boolean / DateTime / Integer / Float / String) writes `<FilterValue DataType="...">` on every value, so a literal such as `50` compares as an Integer instead of a String; Integer / Float / Boolean literals are checked against the type. Response `warnings` (best-effort): a `Fields!X.Value` whose rd:TypeName group differs from a `Parameters!Y` value's DataType; a numeric or date field compared with bare literal values and no value_data_type (Report Builder's run-time "comparison failed") — the warning names the DataType to pass. Fields wrapped in Format( / CStr( / .ToString compare as strings and are not checked (so field_format clears the warning), nor are TopN-style counts.
 
 Text handling: a literal value or expression (no leading `=`) is written verbatim — `R&amp;D` stays `R&amp;D`. An `=`-expression is entity-decoded (`="A &amp; B"` → `="A & B"`, the guard against double-encoded expressions) and the rewrite is reported in `warnings`. `expression` / `values` in the response echo what was written.
 
@@ -367,11 +369,11 @@ Set `<TablixMember>/<KeepWithGroup>` on a static row's member. value ∈ {None, 
 
 *read-only*
 
-List all filters on a named tablix in document order. Returns expression, operator, and values per filter; index in the list is the stable handle for remove_tablix_filter.
+List all filters on a named tablix in document order. Returns expression, operator, values and data_type (`<FilterValue DataType>`, null when unset) per filter; index in the list is the stable handle for remove_tablix_filter.
 
 ### `add_tablix_filter`
 
-Append a `<Filter>` to a tablix. Operator must be one of the RDL 2016 enumeration (Equal, NotEqual, GreaterThan, In, Between, ...). Returns the new filter's index for follow-up calls. Optional field_format wraps the expression as Format(`<body>`, fmt) to coerce typed fields for string-parameter comparison. The response includes warnings for cross-checked field/parameter type mismatches. Literals (no leading `=`) are written verbatim; `=`-expressions are entity-decoded with a warning; the response echoes what was written (same rules as add_dataset_filter).
+Append a `<Filter>` to a tablix. Operator must be one of the RDL 2016 enumeration (Equal, NotEqual, GreaterThan, In, Between, ...). Returns the new filter's index for follow-up calls. Optional field_format wraps the expression as Format(`<body>`, fmt) to coerce typed fields for string-parameter comparison. Arity, value_data_type and the type warnings work as in add_dataset_filter (checked against the tablix's dataset). Literals (no leading `=`) are written verbatim; `=`-expressions are entity-decoded with a warning; the response echoes what was written (same rules as add_dataset_filter).
 
 ### `add_row_group`
 

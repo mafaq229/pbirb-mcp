@@ -46,6 +46,7 @@ from pbirb_mcp.ops import lint as _lint
 from pbirb_mcp.ops import rename as _rename
 from pbirb_mcp.ops import scratch as _scratch
 from pbirb_mcp.ops import transactions as _transactions
+from pbirb_mcp.ops.filter_types import FILTER_OPERATORS, FILTER_VALUE_DATA_TYPES
 from pbirb_mcp.ops.response_format import RESPONSE_FORMAT_PARAM, with_response_format
 
 if TYPE_CHECKING:
@@ -62,6 +63,16 @@ _PATH_ONLY_SCHEMA: dict = {
     },
     "required": ["path"],
     "additionalProperties": False,
+}
+
+
+# add_dataset_filter / add_tablix_filter (#94).
+_FILTER_OPERATOR_SCHEMA: dict = {"type": "string", "enum": list(FILTER_OPERATORS)}
+_FILTER_VALUE_DATA_TYPE_SCHEMA: dict = {
+    "type": ["string", "null"],
+    "enum": [*FILTER_VALUE_DATA_TYPES, None],
+    "default": None,
+    "description": 'Writes <FilterValue DataType="..."> so literals compare as that type.',
 }
 
 
@@ -452,11 +463,10 @@ def register_all_tools(server: MCPServer) -> None:
         name="add_dataset_filter",
         description=(
             "Add a filter to a dataset (applies to every tablix/chart using it). "
-            "Operators: Equal, NotEqual, GreaterThan, LessThan, "
-            "GreaterThanOrEqual, LessThanOrEqual, Like, In, Between, TopN, "
-            "BottomN, TopPercent, BottomPercent; values is a non-empty list. "
-            "field_format wraps the expression in Format() for string parameters. "
-            "Returns the filter's index."
+            "values: 2 for Between, 1+ for In, else 1. value_data_type types "
+            "literal values for numeric/date fields. field_format wraps the "
+            "expression in Format() for string parameters. Returns the filter's "
+            "index."
         ),
         input_schema={
             "type": "object",
@@ -467,7 +477,7 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": "string",
                     "description": "FilterExpression — usually a Fields! reference.",
                 },
-                "operator": {"type": "string"},
+                "operator": _FILTER_OPERATOR_SCHEMA,
                 "values": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -480,6 +490,7 @@ def register_all_tools(server: MCPServer) -> None:
                         "the expression as Format(<body>, '<fmt>')."
                     ),
                 },
+                "value_data_type": _FILTER_VALUE_DATA_TYPE_SCHEMA,
             },
             "required": [
                 "path",
@@ -1805,10 +1816,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="add_tablix_filter",
         description=(
-            "Add a filter to one tablix (Equal, NotEqual, GreaterThan, In, "
-            "Between, Like, TopN, ...). field_format wraps the expression in "
-            "Format() for string parameters; warnings flag field/parameter type "
-            "mismatches. Returns the filter's index."
+            "Add a filter to one tablix. values: 2 for Between, 1+ for In, else "
+            "1. value_data_type types literal values for numeric/date fields. "
+            "field_format wraps the expression in Format() for string parameters; "
+            "warnings flag type mismatches. Returns the filter's index."
         ),
         input_schema={
             "type": "object",
@@ -1816,7 +1827,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "tablix_name": {"type": "string"},
                 "expression": {"type": "string"},
-                "operator": {"type": "string"},
+                "operator": _FILTER_OPERATOR_SCHEMA,
                 "values": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -1829,6 +1840,7 @@ def register_all_tools(server: MCPServer) -> None:
                         "the expression as Format(<body>, '<fmt>')."
                     ),
                 },
+                "value_data_type": _FILTER_VALUE_DATA_TYPE_SCHEMA,
             },
             "required": ["path", "tablix_name", "expression", "operator", "values"],
             "additionalProperties": False,
