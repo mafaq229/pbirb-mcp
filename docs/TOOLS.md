@@ -614,7 +614,7 @@ Replace the text content of a single-run textbox. value can be raw text or an =e
 
 *idempotent*
 
-Apply the same style kwargs to every named textbox in one call. Same kwarg surface, routing (every run / paragraph) and validation as set_textbox_style; a bad value is refused before any textbox is written. Missing names land in skipped rather than raising. Returns {textboxes, skipped, changed} where changed is the union of sub-paths affected across all textboxes. Pair with find_textboxes_by_style to discover names by current style. cells (a list of {tablix, header | field | index, row}) adds tablix cells picked by column header or field.
+Apply the same style kwargs to every named textbox in one call. Same kwarg surface, routing (every run / paragraph) and validation as set_textbox_style; a bad value is refused before any textbox is written. The report is opened once, every name is resolved before anything is written (a name repeated in the input counts once), and the file is saved once, only if something changed. A name with no textbox lands in skipped and a name several textboxes share lands in ambiguous; the rest are still styled. strict=true refuses the whole call (nothing written) when any name is skipped or ambiguous. Returns {textboxes, skipped, ambiguous, changed} where changed is the union of sub-paths affected across all textboxes. Pair with find_textboxes_by_style to discover names by current style. cells (a list of {tablix, header | field | index, row}) adds tablix cells picked by column header or field.
 
 ### `find_textboxes_by_style`
 

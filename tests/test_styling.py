@@ -612,7 +612,7 @@ class TestSetTextboxStyleBulk:
             textbox_names=[],
             background_color="#000000",
         )
-        assert result == {"textboxes": [], "skipped": [], "changed": []}
+        assert result == {"textboxes": [], "skipped": [], "ambiguous": [], "changed": []}
         assert (rdl_path).read_bytes() == before
 
     def test_no_style_kwargs_no_op(self, rdl_path):
@@ -850,7 +850,12 @@ class TestEveryRunAndParagraph:
 
         name = _two_run_textbox(rdl_path)
         out = set_textbox_style_bulk(str(rdl_path), [name, "Missing"], font_style="Italic")
-        assert out == {"textboxes": [name], "skipped": ["Missing"], "changed": ["run.FontStyle"]}
+        assert out == {
+            "textboxes": [name],
+            "skipped": ["Missing"],
+            "ambiguous": [],
+            "changed": ["run.FontStyle"],
+        }
         assert all(s["FontStyle"] == "Italic" for s in _run_styles(rdl_path, name))
         row = style_tablix_row(str(rdl_path), "MainTable", 0, text_decoration="Underline")
         assert row["changed"] == ["run.TextDecoration"]

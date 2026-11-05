@@ -29,7 +29,12 @@ from lxml import etree
 from pbirb_mcp.core import style_values, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
-from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix, resolve_textbox
+from pbirb_mcp.core.ids import (
+    AmbiguousElementError,
+    ElementNotFoundError,
+    resolve_tablix,
+    resolve_textbox,
+)
 from pbirb_mcp.core.mutation import set_text_if_different
 from pbirb_mcp.core.tablix_shape import (
     NO_DETAIL_GROUP,
@@ -360,24 +365,47 @@ def _apply_textbox_style(textbox: etree._Element, props: dict[str, dict[str, Any
     return changed
 
 
-def _style_textboxes(
-    doc: RDLDocument, names: list[str], props: dict[str, dict[str, Any]]
-) -> tuple[list[str], list[str], list[str]]:
-    """Apply ``props`` to each named textbox of ``doc`` (in memory).
-    Returns ``(affected, skipped, changed)``: names that resolved, names
-    that didn't, and the sorted union of changed sub-paths."""
-    affected: list[str] = []
+def _resolve_textbox_names(
+    doc: RDLDocument, names: list[str]
+) -> tuple[list[tuple[str, etree._Element]], list[str], list[str]]:
+    """Resolve every name before anything is written. Names are
+    de-duplicated (first occurrence kept) and sorted into ``(resolved
+    [(name, textbox)], skipped (not found), ambiguous (several
+    matches))``, each in input order."""
+    resolved: list[tuple[str, etree._Element]] = []
     skipped: list[str] = []
-    union_changed: set[str] = set()
-    for name in names:
+    ambiguous: list[str] = []
+    for name in dict.fromkeys(names):
         try:
-            textbox = resolve_textbox(doc, name)
+            resolved.append((name, resolve_textbox(doc, name)))
+        except AmbiguousElementError:
+            ambiguous.append(name)
         except ElementNotFoundError:
             skipped.append(name)
-            continue
-        affected.append(name)
+    return resolved, skipped, ambiguous
+
+
+def _refuse_unresolved(tool: str, skipped: list[str], ambiguous: list[str]) -> None:
+    """``strict=True``: refuse (before any write) when a name did not
+    resolve to exactly one textbox."""
+    if not skipped and not ambiguous:
+        return
+    parts = []
+    if skipped:
+        parts.append(f"not found: {skipped}")
+    if ambiguous:
+        parts.append(f"ambiguous (several textboxes share the name): {ambiguous}")
+    error = AmbiguousElementError if ambiguous else ElementNotFoundError
+    raise error(f"{tool} strict=true: {'; '.join(parts)}; nothing was written")
+
+
+def _style_elements(textboxes: list[etree._Element], props: dict[str, dict[str, Any]]) -> list[str]:
+    """Apply ``props`` to each textbox (in memory); the sorted union of
+    changed sub-paths."""
+    union_changed: set[str] = set()
+    for textbox in textboxes:
         union_changed.update(_apply_textbox_style(textbox, props))
-    return affected, skipped, sorted(union_changed)
+    return sorted(union_changed)
 
 
 def set_textbox_style(
@@ -1156,31 +1184,46 @@ def set_textbox_value(
 def set_textbox_style_bulk(
     path: str,
     textbox_names: list[str],
+    strict: bool = False,
     **style: Any,
 ) -> dict[str, Any]:
     """Apply the same style kwargs to every named textbox in one call.
 
     Same kwarg surface (:data:`STYLE_KWARGS`), routing and validation as
     :func:`set_textbox_style`; every value is checked before the file is
-    opened. Missing names land in ``skipped`` rather than raising; the
-    textboxes that resolve are styled and saved together.
+    opened. The document is opened once, every name is resolved before
+    anything is written (names repeated in the input count once), and
+    the file is saved once, only if something changed. A name with no
+    textbox lands in ``skipped`` and one shared by several textboxes in
+    ``ambiguous``; the others are still styled. With ``strict=True`` any
+    skipped or ambiguous name refuses the whole call before any write.
 
-    Returns ``{textboxes: [names], skipped: [names], changed: list[str]}``
-    where ``changed`` is the **union** of sub-paths affected across all
-    textboxes (e.g. ``["box.PaddingTop", "run.FontWeight"]``). Empty
-    ``textbox_names`` and all-None kwargs both short-circuit to a no-op.
+    Returns ``{textboxes, skipped, ambiguous, changed}`` — the names
+    styled, not found and ambiguous (input order), and the **union** of
+    sub-paths affected across all textboxes (e.g. ``["box.PaddingTop",
+    "run.FontWeight"]``). Empty ``textbox_names`` and all-None kwargs
+    both short-circuit to a no-op without opening the file.
     """
+    if not isinstance(strict, bool):
+        raise ValueError(f"strict: expected true or false; got {strict!r}")
     props = _style_props(style, "set_textbox_style_bulk")
-    if not textbox_names:
-        return {"textboxes": [], "skipped": [], "changed": []}
-    if _no_style(props):
-        return {"textboxes": list(textbox_names), "skipped": [], "changed": []}
+    names = list(dict.fromkeys(textbox_names or []))
+    if not names or _no_style(props):
+        return {"textboxes": names, "skipped": [], "ambiguous": [], "changed": []}
 
     doc = RDLDocument.open(path)
-    affected, skipped, changed = _style_textboxes(doc, list(textbox_names), props)
+    resolved, skipped, ambiguous = _resolve_textbox_names(doc, names)
+    if strict:
+        _refuse_unresolved("set_textbox_style_bulk", skipped, ambiguous)
+    changed = _style_elements([textbox for _name, textbox in resolved], props)
     if changed:
         doc.save()
-    return {"textboxes": affected, "skipped": skipped, "changed": changed}
+    return {
+        "textboxes": [name for name, _textbox in resolved],
+        "skipped": skipped,
+        "ambiguous": ambiguous,
+        "changed": changed,
+    }
 
 
 # ---- style_tablix_row ----------------------------------------------------
@@ -1375,20 +1418,20 @@ def _resolve_row_index(tablix: etree._Element, row: object) -> int:
     return idx
 
 
-def _row_cell_textbox_names(tablix: etree._Element, row_index: int) -> list[str]:
-    """Return the textbox names of every cell in a body row, in column
-    order. Cells without a Textbox child (rare) are skipped."""
+def _row_cell_textboxes(tablix: etree._Element, row_index: int) -> list[etree._Element]:
+    """The named textbox of every cell in a body row, in column order.
+    Cells without a Textbox child (rare) are skipped."""
     body = find_child(tablix, "TablixBody")
     rows_root = find_child(body, "TablixRows") if body is not None else None
     rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
     target_row = rows[row_index]
     cells_root = find_child(target_row, "TablixCells")
     cells = find_children(cells_root, "TablixCell") if cells_root is not None else []
-    out: list[str] = []
+    out: list[etree._Element] = []
     for cell in cells:
         tb = cell.find(f"{q('CellContents')}/{q('Textbox')}")
         if tb is not None and tb.get("Name") is not None:
-            out.append(tb.get("Name"))
+            out.append(tb)
     return out
 
 
@@ -1460,31 +1503,22 @@ def style_tablix_row(
 
     Returns ``{tablix, row, row_index, kind: 'TablixRow', cells:
     list[str], changed: list[str], skipped: list[str]}``.
-    ``cells`` is the list of textbox names that resolved (column order);
-    ``skipped`` lists names that didn't resolve (rare — e.g. malformed
-    cells without a Textbox child). ``row_index`` is ``None`` for the
-    header-area roles.
+    ``cells`` is the list of the row's textbox names (column order; cells
+    holding no textbox are left out); the cells' own elements are styled,
+    so ``skipped`` is always empty (kept for compatibility).
+    ``row_index`` is ``None`` for the header-area roles.
     """
     props = _style_props(style, "style_tablix_row")
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
-    header_cells = _header_cell_textboxes(tablix, row)
+    textboxes = _header_cell_textboxes(tablix, row)
     row_index: Optional[int] = None
-    if header_cells is not None:
-        cells = [tb.get("Name") for tb in header_cells if tb.get("Name")]
-        skipped: list[str] = []
-        union: set[str] = set()
-        if not _no_style(props):
-            for tb in header_cells:
-                union.update(_apply_textbox_style(tb, props))
-        changed = sorted(union)
-    else:
+    if textboxes is None:
         row_index = _resolve_row_index(tablix, row)
-        cell_names = _row_cell_textbox_names(tablix, row_index)
-        if _no_style(props):
-            cells, skipped, changed = list(cell_names), [], []
-        else:
-            cells, skipped, changed = _style_textboxes(doc, cell_names, props)
+        textboxes = _row_cell_textboxes(tablix, row_index)
+    # The cells' own elements are styled — never re-resolved by name, so
+    # a cell whose name is duplicated elsewhere is still reached.
+    changed = [] if _no_style(props) else _style_elements(textboxes, props)
     if changed:
         doc.save()
     return {
@@ -1492,9 +1526,9 @@ def style_tablix_row(
         "row": row,
         "row_index": row_index,
         "kind": "TablixRow",
-        "cells": cells,
+        "cells": [tb.get("Name") for tb in textboxes],
         "changed": changed,
-        "skipped": skipped,
+        "skipped": [],
     }
 
 

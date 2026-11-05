@@ -3355,8 +3355,9 @@ def register_all_tools(server: MCPServer) -> None:
         name="set_textbox_style_bulk",
         description=(
             "Format many textboxes at once with the same style arguments as "
-            "set_textbox_style; unknown names are listed in skipped. `cells` adds "
-            "tablix cells by column. Pair with find_textboxes_by_style."
+            "set_textbox_style; unknown names are listed in skipped, duplicated "
+            "ones in ambiguous (strict=true refuses both). `cells` adds tablix "
+            "cells by column. Pair with find_textboxes_by_style."
         ),
         input_schema={
             "type": "object",
@@ -3367,6 +3368,7 @@ def register_all_tools(server: MCPServer) -> None:
                     "items": {"type": "string"},
                 },
                 "cells": {"type": "array", "items": _columns.CELL_SCHEMA},
+                "strict": {"type": "boolean", "default": False},
                 "font_family": {"type": ["string", "null"]},
                 "font_size": {"type": ["string", "null"]},
                 "font_weight": {"type": ["string", "null"]},
