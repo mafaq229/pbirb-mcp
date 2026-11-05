@@ -57,7 +57,8 @@ ALWAYS_ON = "core"
 # interactivity). tests/test_toolsets.py checks every registered tool is in
 # exactly one.
 TOOLSETS: dict[str, frozenset[str]] = {
-    # Always on: inventory, validation, batches, transactions, expression helpers.
+    # Always on: inventory, validation, comparison, batches, transactions,
+    # expression helpers.
     "core": frozenset(
         {
             "describe_report",
@@ -66,6 +67,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "lint_report",
             "apply_edits",
             "dry_run_edit",
+            "diff_report",
             "start_editing_transaction",
             "commit_editing_transaction",
             "cancel_editing_transaction",

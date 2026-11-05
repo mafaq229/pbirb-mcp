@@ -60,9 +60,9 @@ def _diff(before_text: str, after_text: str, label_before: str, label_after: str
 # produced a 303 KB diff (~76k tokens), past what MCP clients show.
 DRY_RUN_MAX_DIFF_BYTES = 40_000
 
-# `diff` modes (issue #84): the unified text diff, the touched element
-# paths, or no diff (diff_stats only).
-DIFF_MODES = ("unified", "summary", "none")
+# `diff` modes: the unified text diff, the touched element paths (#84),
+# diff_report's semantic entries (#87), or no diff (diff_stats only).
+DIFF_MODES = ("unified", "summary", "semantic", "none")
 
 
 def _diff_stats(diff: str) -> dict[str, Any]:
@@ -121,17 +121,31 @@ def _cap_lines(lines: list[str], max_bytes: int) -> tuple[list[str], bool]:
     return kept, False  # pragma: no cover — the whole list fitted above
 
 
-def _summary_lines(before: bytes, after: bytes) -> list[str]:
-    """``"<change> <element path>"`` for every element the ops touched."""
-    from pbirb_mcp.ops.diff import semantic_diff, summary_paths
+def _semantic(before: bytes, after: bytes) -> Any:
+    """:func:`pbirb_mcp.ops.diff.semantic_diff` of two report byte strings,
+    or the parse error message when the ops left the file unparseable."""
+    from pbirb_mcp.ops.diff import semantic_diff
 
     parser = etree.XMLParser(resolve_entities=False)
     try:
         a = etree.fromstring(before, parser)
         b = etree.fromstring(after, parser)
     except etree.XMLSyntaxError as exc:
-        return [f"unparseable result: {exc}"]
-    return summary_paths(semantic_diff(a, b))
+        return f"unparseable result: {exc}"
+    return semantic_diff(a, b)
+
+
+def _structural_diff(mode: str, before: bytes, after: bytes, max_bytes: int) -> tuple[Any, bool]:
+    """``diff=summary`` (path lines) / ``diff=semantic`` (diff_report's
+    lists) of ``before`` → ``after``, capped at ``max_bytes``."""
+    from pbirb_mcp.ops.diff import LISTS, bounded, summary_paths
+
+    sem = _semantic(before, after) if before != after else {k: [] for k in LISTS}
+    if mode == "summary":
+        return _cap_lines([sem] if isinstance(sem, str) else summary_paths(sem), max_bytes)
+    if isinstance(sem, str):
+        return {"error": sem}, False
+    return bounded(sem, max_bytes=max_bytes)
 
 
 def _verify_file(path: Path, baseline: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -195,11 +209,13 @@ def dry_run_edit(
     ``diff`` selects the change report: ``"unified"`` (the default) — a
     unified text diff; ``"summary"`` — a list of ``"<change> <element
     path>"`` lines (e.g. ``changed Textbox[Title]/Paragraphs/Paragraph/
-    TextRuns/TextRun/Value``); ``"none"`` — no diff. Either diff is capped
-    at ``max_diff_bytes`` (``0`` = no cap), marker included: a capped
-    unified diff ends on a whole line followed by an explicit ``\\
-    pbirb-mcp: diff truncated ...`` line, a capped summary with a ``"...
-    N more"`` line, and ``diff_truncated`` is true. ``diff_stats`` (lines
+    TextRuns/TextRun/Value``); ``"semantic"`` — diff_report's ``{counts,
+    added, removed, changed, moved, reordered}``; ``"none"`` — no diff. Any
+    diff is capped at ``max_diff_bytes`` (``0`` = no cap), marker included:
+    a capped unified diff ends on a whole line followed by an explicit
+    ``\\ pbirb-mcp: diff truncated ...`` line, a capped summary with a
+    ``"... N more"`` line, a capped semantic diff keeps its full
+    ``counts``; ``diff_truncated`` is then true. ``diff_stats`` (lines
     added/removed, hunks of the text diff) is always present.
 
     ``summary=True`` drops each op's ``result``/``result_text``, reduces
@@ -338,9 +354,10 @@ def dry_run_edit(
         }
         if diff == "unified":
             out["diff"], out["diff_truncated"] = _cap_diff(text_diff, max_diff_bytes)
-        elif diff == "summary":
-            lines = _summary_lines(original_bytes, after_bytes) if text_diff else []
-            out["diff"], out["diff_truncated"] = _cap_lines(lines, max_diff_bytes)
+        elif diff in ("summary", "semantic"):
+            out["diff"], out["diff_truncated"] = _structural_diff(
+                diff, original_bytes, after_bytes, max_diff_bytes
+            )
         out["diff_stats"] = _diff_stats(text_diff)
         out["verify"] = _verify_summary(verify) if summary else verify
         return out

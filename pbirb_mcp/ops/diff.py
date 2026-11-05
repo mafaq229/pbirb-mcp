@@ -1,4 +1,5 @@
-"""Semantic diff of two report trees (issues #84, #87).
+"""Semantic diff of two report trees: the ``diff_report`` tool and
+``dry_run_edit``'s ``diff=summary`` / ``diff=semantic`` (issues #84, #87).
 
 Text diffs of RDL are dominated by layout, attribute order, BOM/newline
 form and element order. This module compares two ``<Report>`` trees at the
@@ -46,6 +47,7 @@ from __future__ import annotations
 import difflib
 import functools
 import hashlib
+import json
 from typing import Any, Optional
 
 from lxml import etree
@@ -206,7 +208,7 @@ class _Side:
         while elem is not None:
             if id(elem) in self.key:
                 out.add(elem.get("Name"))
-            elif _local(elem) in _ANCHORS:
+            elif _local(elem) in _ANCHORS or elem is self.root:
                 out.add(_local(elem))
             elem = elem.getparent()
         return out
@@ -435,4 +437,104 @@ def summary_paths(result: dict[str, list]) -> list[str]:
     return [x for x in lines if not (x in seen or seen.add(x))]
 
 
-__all__ = ["LISTS", "public_entries", "semantic_diff", "summary_paths"]
+def bounded(
+    result: dict[str, list], *, max_entries: int = 0, max_bytes: int = 0
+) -> tuple[dict[str, Any], bool]:
+    """The public lists of ``result`` plus ``counts`` (always the full
+    numbers), keeping at most ``max_entries`` entries and ``max_bytes`` of
+    JSON (``0`` = no limit) in list order. Returns ``(diff, truncated)``."""
+    public = public_entries(result)
+    out: dict[str, Any] = {"counts": {k: len(public[k]) for k in LISTS}}
+    out.update({k: [] for k in LISTS})
+    used = len(json.dumps(out).encode("utf-8"))
+    kept = 0
+    truncated = False
+    for k in LISTS:
+        for entry in public[k]:
+            cost = len(json.dumps(entry).encode("utf-8")) + 2
+            if (max_entries and kept >= max_entries) or (max_bytes and used + cost > max_bytes):
+                truncated = True
+                break
+            out[k].append(entry)
+            kept += 1
+            used += cost
+        if truncated:
+            break
+    return out, truncated
+
+
+# Default cap on diff_report's entries: a report rebuilt from scratch can
+# differ in thousands of places; the counts are always complete.
+DIFF_REPORT_MAX_ENTRIES = 200
+
+
+def _scope_exists(root: etree._Element, scope: str) -> bool:
+    if scope in _ANCHORS or scope == "Report":
+        return True
+    return any(isinstance(e.tag, str) and e.get("Name") == scope for e in root.iter())
+
+
+def diff_report(
+    path: str,
+    baseline_path: str,
+    scope: Optional[str] = None,
+    ignore_ids: bool = True,
+    max_entries: int = DIFF_REPORT_MAX_ENTRIES,
+) -> dict[str, Any]:
+    """What changed in ``path`` relative to ``baseline_path`` (e.g. a backup,
+    or another version of the report), at the RDL level.
+
+    Returns ``{path, baseline_path, identical, counts, added, removed,
+    changed, moved, reordered, truncated}`` — the lists as described in the
+    module docstring (``added`` = in ``path`` but not in ``baseline_path``).
+    ``identical`` is true when every list is empty: layout, attribute
+    order, comments, BOM / newline form and (``ignore_ids``, the default)
+    the designer's ``rd:*ID`` elements never count.
+
+    ``scope`` keeps only the changes at or inside one named node (a report
+    item, group, dataset, data source, parameter, field, ...) or one of
+    ``Body`` / ``Page`` / ``PageHeader`` / ``PageFooter`` / ``ReportSection``;
+    an unknown name raises :class:`ElementNotFoundError`. ``max_entries``
+    caps the entries returned (``0`` = no cap; ``counts`` stays complete
+    and ``truncated`` says entries were left out).
+
+    Read-only. Inside the editing transaction that holds ``path``, the
+    transaction's uncommitted tree is compared.
+    """
+    from pbirb_mcp.core.document import RDLDocument
+    from pbirb_mcp.core.ids import ElementNotFoundError
+
+    if isinstance(max_entries, bool) or not isinstance(max_entries, int) or max_entries < 0:
+        raise ValueError("max_entries must be a non-negative integer (0 = no cap)")
+    after = RDLDocument.open(path)
+    before = RDLDocument.open(baseline_path)
+    result = semantic_diff(before.root, after.root, ignore_ids=ignore_ids)
+    if scope is not None:
+        if not isinstance(scope, str) or not scope:
+            raise ValueError("scope must be a non-empty name")
+        if not (_scope_exists(after.root, scope) or _scope_exists(before.root, scope)):
+            raise ElementNotFoundError(
+                f"scope {scope!r}: no element of that name in either report (use a report "
+                "item / group / dataset / parameter name, or Body / Page / PageHeader / "
+                "PageFooter)"
+            )
+        result = {k: [e for e in result[k] if scope in e["_chain"]] for k in LISTS}
+    out, truncated = bounded(result, max_entries=max_entries)
+    return {
+        "path": str(path),
+        "baseline_path": str(baseline_path),
+        "identical": not any(out["counts"].values()),
+        **out,
+        "truncated": truncated,
+    }
+
+
+__all__ = [
+    "DIFF_REPORT_MAX_ENTRIES",
+    "LISTS",
+    "bounded",
+    "diff_report",
+    "public_entries",
+    "semantic_diff",
+    "summary_paths",
+]

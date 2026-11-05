@@ -37,6 +37,7 @@ from pbirb_mcp.ops import (
     visibility,
 )
 from pbirb_mcp.ops import containers as _containers
+from pbirb_mcp.ops import diff as _diff
 from pbirb_mcp.ops import dry_run as _dry_run
 from pbirb_mcp.ops import escape as _escape
 from pbirb_mcp.ops import expressions as _expressions
@@ -943,9 +944,9 @@ def register_all_tools(server: MCPServer) -> None:
         name="dry_run_edit",
         description=(
             "Preview edits without changing the report: runs {tool, args} ops on "
-            "a temp copy and returns per-op results, a diff and a verify report "
-            "shaped like apply_edits'. Ops omit `path`. Stops at the first failing "
-            "op. diff=summary lists the touched elements; max_diff_bytes caps it."
+            "a temp copy and returns per-op results and verify as apply_edits "
+            "would, plus a diff. Ops omit `path`. Stops at the first failing op. "
+            "max_diff_bytes caps the diff."
         ),
         input_schema={
             "type": "object",
@@ -974,10 +975,10 @@ def register_all_tools(server: MCPServer) -> None:
                 },
                 "diff": {
                     "type": "string",
-                    "enum": ["unified", "summary", "none"],
+                    "enum": list(_dry_run.DIFF_MODES),
                     "description": (
                         "unified (default): text diff; summary: touched element "
-                        "paths; none: diff_stats only."
+                        "paths; semantic: diff_report's lists; none: diff_stats only."
                     ),
                 },
                 "max_diff_bytes": {
@@ -991,6 +992,46 @@ def register_all_tools(server: MCPServer) -> None:
             "additionalProperties": False,
         },
         handler=_dry_run.dry_run_edit,
+    )
+
+    server.register_tool(
+        name="diff_report",
+        description=(
+            "Semantic diff of two versions of a report (e.g. backup vs current): "
+            "what was added, removed, changed, moved or reordered, matched by name; "
+            "layout, attribute order and newline form are ignored."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "The report (after)."},
+                "baseline_path": {
+                    "type": "string",
+                    "description": "The version to compare against (before).",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": (
+                        "Only changes in this named item / dataset / parameter, or Body, "
+                        "Page, PageHeader, PageFooter."
+                    ),
+                },
+                "ignore_ids": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Ignore rd:ReportID / rd:DataSourceID.",
+                },
+                "max_entries": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": _diff.DIFF_REPORT_MAX_ENTRIES,
+                    "description": "Cap on the entries returned (0 = no cap); counts stay complete.",
+                },
+            },
+            "required": ["path", "baseline_path"],
+            "additionalProperties": False,
+        },
+        handler=_diff.diff_report,
     )
 
     # ---- v0.4 transactions (commit 10) -----------------------------------
@@ -1551,10 +1592,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="raw_xml_view",
         description=(
-            "Read the raw XML matching an XPath (context: the Report root; 'r:' = "
-            "RDL namespace, 'rd:', 'am:', 'df:' bound), e.g. "
-            "\".//r:Textbox[@Name='X']/r:Style\". Returns typed matches (element "
-            "XML, attributes, text) or a count()/string() value; capped at max_bytes."
+            "Read what an XPath matches (context: the Report root; r:, rd:, am:, "
+            "df: bound), e.g. \".//r:Textbox[@Name='X']/r:Style\": element XML, "
+            "attributes, text, or a count()/string() value. Capped at max_bytes."
         ),
         input_schema={
             "type": "object",
@@ -1582,9 +1622,8 @@ def register_all_tools(server: MCPServer) -> None:
         name="raw_xml_replace",
         description=(
             "Last resort: replace the one element an XPath matches with new XML "
-            "of the same element (RDL is the default namespace). Refuses zero or "
-            "several matches, the Report root and results that fail the XSD. "
-            "Prefer a dedicated tool."
+            "of the same element (RDL default namespace). Refuses zero or several "
+            "matches, the root and XSD-invalid results."
         ),
         input_schema={
             "type": "object",
@@ -1613,9 +1652,9 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="raw_xml_insert",
         description=(
-            "Last resort: insert new XML elements into (append/prepend) or next to "
-            "(before/after) the one element an XPath matches. Refuses results that "
-            "fail the XSD and duplicate item names. Prefer a dedicated tool."
+            "Last resort: insert XML elements into (append/prepend) or beside "
+            "(before/after) the one element an XPath matches. Refuses XSD-invalid "
+            "results and duplicate names."
         ),
         input_schema={
             "type": "object",
@@ -1642,9 +1681,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="raw_xml_remove",
         description=(
-            "Last resort: remove the element an XPath matches (every match with "
-            "all=true). Refuses the Report root and results that fail the XSD. "
-            "Prefer a dedicated remove_* tool."
+            "Last resort: remove the element an XPath matches (all=true: every "
+            "match). Refuses the Report root and XSD-invalid results."
         ),
         input_schema={
             "type": "object",
