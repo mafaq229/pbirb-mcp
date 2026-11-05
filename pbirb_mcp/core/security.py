@@ -50,6 +50,7 @@ __all__ = [
     "check_paths",
     "confirmation_payload",
     "confirmation_required",
+    "is_preview_path",
     "path_arguments",
     "preview_path",
     "request_fingerprint",
@@ -134,6 +135,16 @@ def preview_path(path: str) -> Iterator[None]:
 
 def _is_preview(resolved: str) -> bool:
     return resolved in _PREVIEW_PATHS.get()
+
+
+def is_preview_path(path: Any) -> bool:
+    """Is ``path`` a server-made preview copy (see :func:`preview_path`)?"""
+    if not isinstance(path, str) or not path or not _PREVIEW_PATHS.get():
+        return False
+    try:
+        return _is_preview(str(Path(path).resolve()))
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def path_arguments(arguments: dict[str, Any]) -> list[tuple[str, str]]:

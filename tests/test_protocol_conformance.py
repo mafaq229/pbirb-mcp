@@ -27,9 +27,11 @@ MODERN_META = {
 
 
 class StdioClient:
-    def __init__(self, cwd: Path = ROOT, env: dict | None = None) -> None:
+    def __init__(
+        self, cwd: Path = ROOT, env: dict | None = None, args: tuple[str, ...] = ()
+    ) -> None:
         self.proc = subprocess.Popen(
-            [sys.executable, str(ROOT / "pbirb_mcp_server.py")],
+            [sys.executable, str(ROOT / "pbirb_mcp_server.py"), *args],
             cwd=str(cwd),
             env=env,
             stdin=subprocess.PIPE,

@@ -116,6 +116,7 @@ def build_sdk_server(owner: MCPServer, *, name: str, version: str) -> Server[Any
         if (
             ctx.protocol_version in MODERN_PROTOCOL_VERSIONS
             and _client_can_elicit(ctx)
+            and owner.is_enabled(tool_name)  # else refused at dispatch (#56)
             and owner.requires_confirmation(tool_name, arguments)
         ):
             # Issue #57, 2026-07-28: ask the user through the client

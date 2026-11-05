@@ -112,6 +112,8 @@ These have all bitten us before. Re-check every PR:
    `destructiveHint`); one whose identical repeat call is a no-op in
    `tests/test_idempotency.py` belongs in `IDEMPOTENT_TOOLS`
    (`idempotentHint`). `tests/test_annotations.py` checks all three.
+   Add the tool to one toolset in `pbirb_mcp/core/toolsets.py`
+   (`tests/test_toolsets.py` fails until you do).
 6. **Manual smoke in Report Builder?** Drove the new tool against a
    copy of `tests/fixtures/pbi_paginated_minimal.rdl`, opened the
    resulting `.rdl` in Power BI Report Builder on Windows, confirmed no

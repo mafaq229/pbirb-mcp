@@ -135,6 +135,55 @@ the server — check the client's MCP debug log.
 
 ---
 
+## Configuration
+
+### Toolsets and read-only mode
+
+By default the server lists every tool. To give the model fewer tool
+definitions to read (and fewer to choose from), enable only the toolsets a
+task needs, and/or run read-only:
+
+```json
+{
+  "mcpServers": {
+    "pbirb": {
+      "command": "uvx",
+      "args": ["pbirb-mcp", "--toolsets", "data,parameters", "--read-only"]
+    }
+  }
+}
+```
+
+| Toolset | Covers |
+|---------|--------|
+| `core` | Always on: `describe_report`, `validate_report` / `verify_report` / `lint_report`, `apply_edits`, `dry_run_edit`, transactions, expression helpers |
+| `data` | Data sources, datasets, DAX queries, query parameters, fields, dataset filters |
+| `parameters` | Report parameters: declarations, available/default values, prompts, pane layout |
+| `tablix` | Tables and matrices: groups, columns, rows, subtotals, spans, filters, sorting, group visibility, pagination |
+| `chart` | Charts: series, axes, legend, data labels, palette, colours, title |
+| `style` | Textbox text and formatting, finding textboxes, row styling |
+| `layout` | Page setup, body/header/footer items, positions and sizes, containers, images, embedded images, element visibility |
+| `interactivity` | Actions (links, drill-through, bookmarks), tooltips, document map |
+| `admin` | `create_report`, `duplicate_report`, backups, the raw-XML escape hatch |
+
+- `--toolsets` takes comma-separated names, `all`, or `default`
+  (`PBIRB_MCP_TOOLSETS` sets the same; the flag wins). Unknown names are
+  an error. `pbirb-mcp --list-toolsets` prints every toolset's tools.
+- `--read-only` (or `PBIRB_MCP_READ_ONLY=1`) exposes only tools published
+  with `readOnlyHint: true` — readers, validation, expression helpers and
+  `dry_run_edit`, which previews an edit on a temp copy.
+- The limits are enforced when a tool is *called*, not only in
+  `tools/list`: a call outside the enabled toolsets, or an edit in
+  read-only mode, returns an `isError` result (`ToolNotEnabled` /
+  `ReadOnlyMode`) naming the setting to change. `apply_edits` /
+  `dry_run_edit` ops are held to the same toolsets.
+
+Every tool also carries MCP annotations (`readOnlyHint`, `destructiveHint`,
+`idempotentHint`, `openWorldHint: false`) and a display `title`, so clients
+can auto-approve the readers and flag the destructive tools.
+
+---
+
 ## Working with a report
 
 The recommended flow is **read first, then edit by name**. Every mutating

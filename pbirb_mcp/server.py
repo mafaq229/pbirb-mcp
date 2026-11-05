@@ -23,8 +23,9 @@ import contextvars
 import json
 import logging
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +286,12 @@ class Tool:
     # Display name and MCP ToolAnnotations (issue #54); see tool_annotations.
     title: str = ""
     annotations: Optional[dict] = None
+    # The toolset it belongs to (issue #56; pbirb_mcp.core.toolsets).
+    toolset: str = "core"
+
+    @property
+    def read_only(self) -> bool:
+        return bool(self.annotations and self.annotations.get("readOnlyHint"))
 
 
 def _success(result: Any) -> dict:
@@ -309,12 +316,23 @@ def _failure(payload: dict) -> dict:
 
 
 class MCPServer:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        toolsets: Union[str, Iterable[str], None] = None,
+        read_only: Optional[bool] = None,
+    ) -> None:
+        """``toolsets`` / ``read_only`` — which tools this server lists and
+        accepts (issue #56; see :mod:`pbirb_mcp.core.toolsets`). ``None``
+        reads ``PBIRB_MCP_TOOLSETS`` / ``PBIRB_MCP_READ_ONLY``; unset, every
+        tool is on."""
+        from pbirb_mcp.core.toolsets import resolve_policy
         from pbirb_mcp.protocol import AdapterState
 
         self._tools: dict[str, Tool] = {}
         self._sdk_server = None
         self._adapter_state = AdapterState()
+        self.toolset_policy = resolve_policy(toolsets, read_only)
 
     def register_tool(
         self,
@@ -350,6 +368,7 @@ class MCPServer:
         """
         from pbirb_mcp.core.argcheck import client_schema
         from pbirb_mcp.core.output_schemas import default_output_schema
+        from pbirb_mcp.core.toolsets import toolset_of
 
         if name in self._tools:
             raise ValueError(f"tool already registered: {name}")
@@ -382,6 +401,7 @@ class MCPServer:
             output_schema=output_schema or default_output_schema(name, handler, mutating=mutating),
             title=title or tool_title(name),
             annotations=tool_annotations(name, mutating=mutating),
+            toolset=toolset_of(name),
         )
 
     def is_batchable(self, name: str) -> bool:
@@ -390,6 +410,10 @@ class MCPServer:
 
     def has_tool(self, name: str) -> bool:
         return name in self._tools
+
+    def toolset_of(self, name: str) -> str:
+        """The toolset of a registered tool (issue #56)."""
+        return self._tools[name].toolset
 
     def requires_confirmation(self, name: str, arguments: Any) -> bool:
         """Would this call be refused for want of ``confirm=true`` (issue #57)?
@@ -445,7 +469,17 @@ class MCPServer:
 
     # ---- handlers -----------------------------------------------------------
 
+    def is_enabled(self, name: str) -> bool:
+        """Is ``name`` listed and callable under this server's toolset /
+        read-only policy (issue #56)?"""
+        tool = self._tools.get(name)
+        return tool is not None and self.toolset_policy.lists(
+            tool.toolset, read_only_tool=tool.read_only
+        )
+
     def _tools_list(self) -> list[dict]:
+        """The ``tools/list`` entries: every tool the policy enables, in
+        registration order."""
         return [
             {
                 "name": tool.name,
@@ -456,6 +490,7 @@ class MCPServer:
                 **({"annotations": tool.annotations} if tool.annotations else {}),
             }
             for tool in self._tools.values()
+            if self.is_enabled(tool.name)
         ]
 
     def _tools_call(self, params: dict) -> dict:
@@ -468,6 +503,25 @@ class MCPServer:
         name = params["name"]
         arguments = params.get("arguments") or {}
         tool = self._tools[name]
+
+        # Issue #56: toolsets / read-only mode, enforced at dispatch (not
+        # just hidden from tools/list). An op of a batch (apply_edits /
+        # dry_run_edit) is held to the policy of the top-level call, not to
+        # the policy of the server the batch dispatches it through.
+        from pbirb_mcp.core import security
+        from pbirb_mcp.core import toolsets as _toolsets
+
+        outer_policy = _toolsets.active_policy()
+        policy = outer_policy if outer_policy is not None else self.toolset_policy
+        refusal = policy.refusal(
+            tool.toolset,
+            name,
+            read_only_tool=tool.read_only,
+            nested=outer_policy is not None,
+            preview_only=security.is_preview_path(arguments.get("path")),
+        )
+        if refusal is not None:
+            return _failure(refusal)
 
         # v0.4 commit 9 — transaction routing. When `transaction_id` is in
         # arguments AND the tool is an EDIT tool (i.e. its schema declares
@@ -522,8 +576,6 @@ class MCPServer:
 
         # Issue #57: file-access sandbox, then the confirmation gate —
         # both before the handler, so a refused call never touches a file.
-        from pbirb_mcp.core import security
-
         try:
             security.check_paths(arguments)
         except security.PathNotAllowed as exc:
@@ -542,6 +594,7 @@ class MCPServer:
         # hiding the rich messages tools already raise (locators in
         # remove_parameter, missing-column hints in add_subtotal_row, etc.).
         depth = _CALL_DEPTH.set(_CALL_DEPTH.get() + 1)
+        policy_token = _toolsets.push(policy)
         try:
             if in_transaction:
                 from pbirb_mcp.core import transactions as _tx
@@ -586,6 +639,7 @@ class MCPServer:
                 payload.update(extra)
             return _failure(payload)
         finally:
+            _toolsets.pop(policy_token)
             _CALL_DEPTH.reset(depth)
 
         if audited:
