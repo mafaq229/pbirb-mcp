@@ -24,6 +24,8 @@ from pbirb_mcp.core.geometry import PAGE_DEFAULTS, REPORT_ITEM_TAGS, size_unit
 from pbirb_mcp.core.tablix_shape import is_detail_group, is_dynamic_group
 from pbirb_mcp.core.units import format_size, to_inches
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q, qrd
+from pbirb_mcp.ops.dataset import dataset_to_dict
+from pbirb_mcp.ops.parameters import _cell_parameter_name, _cell_slot
 from pbirb_mcp.ops.styling import _resolve_row_index
 from pbirb_mcp.ops.tablix import read_sort
 
@@ -372,64 +374,86 @@ def _filter_dict(filter_node: etree._Element) -> dict[str, Any]:
 
 
 def get_datasets(path: str) -> list[dict[str, Any]]:
+    """Every ``<DataSet>``, each entry exactly what ``get_dataset`` returns
+    for it (#97: built by the same :func:`dataset.dataset_to_dict`)."""
     doc = RDLDocument.open(path)
-    out: list[dict[str, Any]] = []
-    for ds in doc.root.iter(f"{{{RDL_NS}}}DataSet"):
-        query = find_child(ds, "Query")
-        command_text = None
-        data_source = None
-        query_parameters: list[dict[str, Any]] = []
-        if query is not None:
-            command_text = _text(find_child(query, "CommandText"))
-            data_source = _text(find_child(query, "DataSourceName"))
-            qp_root = find_child(query, "QueryParameters")
-            if qp_root is not None:
-                for qp in find_children(qp_root, "QueryParameter"):
-                    query_parameters.append(
-                        {
-                            "name": qp.get("Name"),
-                            "value": _text(find_child(qp, "Value")),
-                        }
-                    )
-
-        fields: list[dict[str, Any]] = []
-        fields_root = find_child(ds, "Fields")
-        if fields_root is not None:
-            for f in find_children(fields_root, "Field"):
-                # Calculated fields carry <Value> instead of <DataField>;
-                # the reader surfaces both so consumers can disambiguate.
-                fields.append(
-                    {
-                        "name": f.get("Name"),
-                        "data_field": _text(find_child(f, "DataField")),
-                        "value": _text(find_child(f, "Value")),
-                        "type_name": _rd_text(f, "TypeName"),
-                    }
-                )
-
-        filters = []
-        filters_root = find_child(ds, "Filters")
-        if filters_root is not None:
-            filters = [_filter_dict(f) for f in find_children(filters_root, "Filter")]
-
-        out.append(
-            {
-                "name": ds.get("Name"),
-                "data_source": data_source,
-                "command_text": command_text,
-                "fields": fields,
-                "query_parameters": query_parameters,
-                "filters": filters,
-            }
-        )
-    return out
+    return [dataset_to_dict(ds) for ds in doc.root.iter(f"{{{RDL_NS}}}DataSet")]
 
 
 # ---- get_parameters --------------------------------------------------------
 
 
+def _dataset_reference_dict(ref: etree._Element, *, with_label: bool) -> dict[str, Any]:
+    out = {
+        "source": "query",
+        "dataset": _text(find_child(ref, "DataSetName")),
+        "value_field": _text(find_child(ref, "ValueField")),
+    }
+    if with_label:
+        out["label_field"] = _text(find_child(ref, "LabelField"))
+    return out
+
+
+def _parameter_default_values(parameter: etree._Element) -> Optional[dict[str, Any]]:
+    """``{source: 'static', values}`` / ``{source: 'query', dataset,
+    value_field}`` for ``<DefaultValue>``; ``None`` when absent."""
+    default_value = find_child(parameter, "DefaultValue")
+    if default_value is None:
+        return None
+    ref = find_child(default_value, "DataSetReference")
+    if ref is not None:
+        return _dataset_reference_dict(ref, with_label=False)
+    values_root = find_child(default_value, "Values")
+    values = (
+        [_text(v) for v in find_children(values_root, "Value")] if values_root is not None else []
+    )
+    return {"source": "static", "values": values}
+
+
+def _parameter_valid_values(parameter: etree._Element) -> Optional[dict[str, Any]]:
+    """``{source: 'static', values: [{value, label}]}`` / ``{source: 'query',
+    dataset, value_field, label_field}`` for ``<ValidValues>``; ``None``
+    when absent."""
+    valid_values = find_child(parameter, "ValidValues")
+    if valid_values is None:
+        return None
+    ref = find_child(valid_values, "DataSetReference")
+    if ref is not None:
+        return _dataset_reference_dict(ref, with_label=True)
+    pvs = find_child(valid_values, "ParameterValues")
+    values = [
+        {
+            "value": _text(find_child(pv, "Value")),
+            "label": _text(find_child(pv, "Label")),
+        }
+        for pv in (find_children(pvs, "ParameterValue") if pvs is not None else [])
+    ]
+    return {"source": "static", "values": values}
+
+
+def _parameter_layout_cells(root: etree._Element) -> dict[str, dict[str, Optional[int]]]:
+    """Parameter name -> ``{row, column}`` of its first ``<CellDefinition>``
+    in ``<ReportParametersLayout>`` (0-based, as RDL stores them)."""
+    layout = find_child(root, "ReportParametersLayout")
+    grid = find_child(layout, "GridLayoutDefinition") if layout is not None else None
+    cells_root = find_child(grid, "CellDefinitions") if grid is not None else None
+    cells: dict[str, dict[str, Optional[int]]] = {}
+    if cells_root is None:
+        return cells
+    for cell in find_children(cells_root, "CellDefinition"):
+        name = _cell_parameter_name(cell)
+        if name is not None and name not in cells:
+            row, column = _cell_slot(cell)
+            cells[name] = {"row": row, "column": column}
+    return cells
+
+
 def get_parameters(path: str) -> list[dict[str, Any]]:
+    """Every ``<ReportParameter>``: type, prompt, flags, plus (#97) its
+    ``default_values``, ``valid_values`` and parameter-pane ``layout``
+    cell (each ``None`` when not set)."""
     doc = RDLDocument.open(path)
+    layout_cells = _parameter_layout_cells(doc.root)
     out: list[dict[str, Any]] = []
     for p in doc.root.iter(f"{{{RDL_NS}}}ReportParameter"):
         out.append(
@@ -441,6 +465,9 @@ def get_parameters(path: str) -> list[dict[str, Any]]:
                 "allow_blank": _text(find_child(p, "AllowBlank")) == "true",
                 "multi_value": _text(find_child(p, "MultiValue")) == "true",
                 "hidden": _text(find_child(p, "Hidden")) == "true",
+                "default_values": _parameter_default_values(p),
+                "valid_values": _parameter_valid_values(p),
+                "layout": layout_cells.get(p.get("Name")),
             }
         )
     return out

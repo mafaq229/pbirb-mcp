@@ -830,7 +830,12 @@ def get_dataset(path: str, name: str) -> dict[str, Any]:
     fields), query parameters, dataset-level filters, and any
     rd:DesignerState marker."""
     doc = RDLDocument.open(path)
-    dataset = resolve_dataset(doc, name)
+    return dataset_to_dict(resolve_dataset(doc, name))
+
+
+def dataset_to_dict(dataset: etree._Element) -> dict[str, Any]:
+    """Read-back shape for one ``<DataSet>`` — shared by ``get_dataset`` and
+    every ``reader.get_datasets`` entry so the two can't drift (#97)."""
     query = find_child(dataset, "Query")
     command_text = None
     data_source = None

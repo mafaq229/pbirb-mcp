@@ -215,6 +215,7 @@ class TestResponseFormat:
             "fields": ["ProductID", "ProductName", "Amount"],
             "query_parameters": [],
             "filter_count": 0,
+            "designer_state_present": False,
         }
 
     def test_concise_get_tablixes(self, server):

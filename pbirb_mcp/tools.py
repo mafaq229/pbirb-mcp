@@ -167,8 +167,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="get_parameters",
         description=(
-            "Read the report parameters: name, data type, prompt and flags "
-            "(multi-value, hidden, nullable, allow blank)."
+            "Read the report parameters: name, data type, prompt, flags, default "
+            "values, valid values (static or query) and parameter-pane cell."
         ),
         input_schema=_READER_SCHEMA,
         handler=with_response_format("get_parameters", reader.get_parameters),

@@ -103,7 +103,7 @@ Emit =IIf(`<condition>`, `<true_value>`, `<false_value>`). All three args are ex
 
 *read-only*
 
-Full DAX command text, fields, query parameters, and dataset-level filters for every DataSet in the report.
+Full DAX command text, fields, query parameters, and dataset-level filters for every DataSet in the report. Each entry is exactly the get_dataset shape (including designer_state_present). `response_format: "concise"` keeps name, data_source, field and query-parameter names, filter_count and designer_state_present.
 
 ### `update_dataset_query`
 
@@ -219,7 +219,7 @@ Remove a query parameter from a dataset. Cleans up the empty `<QueryParameters/>
 
 *read-only*
 
-Report parameter declarations: name, data type, prompt, flags.
+Report parameter declarations: name, data_type, prompt, flags (nullable, allow_blank, multi_value, hidden), plus `default_values` — {source: 'static', values: [...]} or {source: 'query', dataset, value_field} — `valid_values` — {source: 'static', values: [{value, label}]} or {source: 'query', dataset, value_field, label_field} — and `layout`, the parameter's {row, column} cell (0-based) in `<ReportParametersLayout>`; each is null when not set. `response_format: "concise"` keeps name, data_type, prompt, multi_value, hidden, layout, default_values_source and valid_values_source.
 
 ### `reorder_parameters`
 
