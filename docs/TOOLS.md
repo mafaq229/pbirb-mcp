@@ -11,6 +11,12 @@ deletes content or overwrites a file; the `pbirb-mcp` server asks for
 `confirm=true`), **idempotent** (`idempotentHint`: an identical repeat call
 changes nothing).
 
+Edit results: every tool that writes a report returns `changed` — `false`
+(or `[]`) when the call was a no-op and the file was left untouched,
+otherwise `true` or the list of what changed — plus `warnings` when there
+are any. With `PBIRB_MCP_AUTO_VERIFY` on, the result is nested as
+`{result, verify}`.
+
 Saving: every tool that writes a report writes a temp file next to it and
 renames it over the report, so a failed save leaves the report as it was.
 Through a symlink the link's target is updated and the link stays a link;

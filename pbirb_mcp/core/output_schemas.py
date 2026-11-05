@@ -52,10 +52,10 @@ OBJECT_RESULT: dict = {"type": "object"}
 # A tool that writes the report. `changed` is a boolean, or the list of
 # what changed; most writers also echo the path and the element they
 # touched. With PBIRB_MCP_AUTO_VERIFY on, the outcome is nested as
-# {result, verify}.
+# {result, verify}. (Documented once in docs/TOOLS.md rather than in the
+# schema, which ~115 tools share — keeps tools/list small.)
 EDIT_RESULT: dict = {
     "type": "object",
-    "description": "`changed`: boolean or list. PBIRB_MCP_AUTO_VERIFY on: {result, verify}.",
     "properties": {
         "changed": {"type": ["boolean", "array"]},
         "warnings": {"type": "array"},
