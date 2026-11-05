@@ -451,11 +451,15 @@ class TestSetGroupSort:
             sort_expressions=["=Fields!Amount.Value", "=Fields!ProductName.Value"],
         )
         out = get_tablixes(path=str(rdl_path))[0]
-        # sort_expressions are returned as a flat list across the tablix.
-        assert "=Fields!Amount.Value" in out["sort_expressions"]
-        assert "=Fields!ProductName.Value" in out["sort_expressions"]
+        # Group sorts are reported on their member (#69); the tablix-level
+        # sort_expressions stay empty.
+        assert out["sort_expressions"] == []
+        region = next(m for m in out["row_members"] if m["group"] == "Region")
         # The old "Region" sort must be gone.
-        assert "=Fields!Region.Value" not in out["sort_expressions"]
+        assert [s["value"] for s in region["sort"]] == [
+            "=Fields!Amount.Value",
+            "=Fields!ProductName.Value",
+        ]
 
     def test_unknown_group_raises(self, rdl_path):
         with pytest.raises(ElementNotFoundError):

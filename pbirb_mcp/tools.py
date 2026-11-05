@@ -154,9 +154,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="get_tablixes",
         description=(
-            "Read every tablix (table/matrix): columns, row and column groups, "
-            "sort expressions, filters and visibility. Read it before editing a "
-            "tablix."
+            "Read every tablix (table/matrix): columns, rows, cells with spans, "
+            "header and corner cells, the row/column member tree (groups, sorts, "
+            "visibility) with row roles, filters and visibility. Read it before "
+            "editing a tablix."
         ),
         input_schema=_READER_SCHEMA,
         handler=with_response_format("get_tablixes", reader.get_tablixes),

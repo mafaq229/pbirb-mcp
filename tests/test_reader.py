@@ -560,6 +560,161 @@ class TestGetTablixes:
         assert out[0]["visibility"] is None
 
 
+# ---- get_tablixes structure (#69) ------------------------------------------
+
+# Shaped like the review's "RAG Report": 6 merged band cells over 28
+# columns (IVMSBand ColSpan=8), 22 placeholders in the band row.
+RAG_BANDS = (("IVMSBand", 8), ("B2", 5), ("B3", 4), ("B4", 4), ("B5", 3), ("B6", 4))
+
+
+def _matrix(path: Path) -> Path:
+    from pbirb_mcp.ops.tablix import add_row_group, convert_to_matrix, set_tablix_corner
+    from pbirb_mcp.ops.tablix_columns import add_column_group
+
+    add_row_group(str(path), "MainTable", "RG", "=Fields!ProductName.Value")
+    add_column_group(str(path), "MainTable", "CG", "=Fields!ProductID.Value")
+    convert_to_matrix(str(path), "MainTable", row_group="RG", column_group="CG")
+    set_tablix_corner(str(path), "MainTable", text="Corner")
+    return path
+
+
+class TestGetTablixesStructure:
+    def test_spans_read_from_cell_contents_and_placeholders_covered(self, tmp_path):
+        from tests._band_fixture import build_band_report
+
+        path = build_band_report(tmp_path / "rag.rdl", RAG_BANDS)
+        cells = get_tablixes(str(path))[0]["cells"]
+        assert len([c for c in cells if c["col_span"] > 1]) == 6
+        (ivms,) = [c for c in cells if c["textbox_name"] == "IVMSBand"]
+        assert (ivms["row"], ivms["col"], ivms["col_span"]) == (0, 0, 8)
+        covered = [c for c in cells if "covered_by" in c]
+        assert len(covered) == 22
+        assert all(c["textbox_name"] is None and c["row"] == 0 for c in covered)
+        assert [c["covered_by"] for c in covered if c["col"] < 8] == [[0, 0]] * 7
+        # B2 starts at column 8: column 9 is its first placeholder.
+        assert next(c for c in covered if c["col"] == 9)["covered_by"] == [0, 8]
+        assert "covered_by" not in ivms
+
+    def test_legacy_span_location_and_row_span(self, rdl_path):
+        from lxml import etree
+
+        from pbirb_mcp.core.xpath import q
+
+        tree = etree.parse(str(rdl_path))
+        rows = list(tree.getroot().iter(q("TablixRow")))
+        header_cells = list(rows[0].iter(q("TablixCell")))
+        # Pre-2010 layout: ColSpan directly on the TablixCell.
+        etree.SubElement(header_cells[0], q("ColSpan")).text = "2"
+        # RowSpan on CellContents covering the data row below.
+        contents = header_cells[2].find(q("CellContents"))
+        etree.SubElement(contents, q("RowSpan")).text = "2"
+        tree.write(str(rdl_path), xml_declaration=True, encoding="utf-8")
+        cells = get_tablixes(str(rdl_path))[0]["cells"]
+        by_pos = {(c["row"], c["col"]): c for c in cells}
+        assert by_pos[(0, 0)]["col_span"] == 2
+        assert by_pos[(0, 1)]["covered_by"] == [0, 0]
+        assert by_pos[(0, 2)]["row_span"] == 2
+        assert by_pos[(1, 2)]["covered_by"] == [0, 2]
+
+    def test_header_and_corner_cells_listed(self, rdl_path):
+        t = get_tablixes(str(_matrix(rdl_path)))[0]
+        assert [c["textbox_name"] for c in t["corner_cells"]] == ["MainTable_Corner"]
+        assert t["corner_cells"][0]["row"] == 0 and t["corner_cells"][0]["col"] == 0
+        headers = {(h["axis"], h["group"]): h for h in t["header_cells"]}
+        assert headers[("column", "CG")]["textbox_name"] == "CG_Header"
+        assert headers[("column", "CG")]["level"] == 0
+        assert headers[("row", "RG")]["textbox_name"]
+        assert headers[("row", "RG")]["size"]
+        names = {c["textbox_name"] for c in t["cells"]}
+        assert "MainTable_Corner" not in names  # corner/header cells aren't body cells
+
+    def test_descending_sort_under_its_member(self, rdl_path):
+        text = rdl_path.read_text(encoding="utf-8")
+        rdl_path.write_text(
+            text.replace(
+                '<Group Name="Details" />',
+                '<Group Name="Details" /><SortExpressions><SortExpression>'
+                "<Value>=Fields!Amount.Value</Value><Direction>Descending</Direction>"
+                "</SortExpression></SortExpressions>",
+            ),
+            encoding="utf-8",
+        )
+        t = get_tablixes(str(rdl_path))[0]
+        # sort_expressions is the tablix-level sort only.
+        assert t["sort_expressions"] == [] and t["sort"] == []
+        details = next(m for m in t["row_members"] if m["group"] == "Details")
+        assert details["kind"] == "details"
+        assert details["sort"] == [{"value": "=Fields!Amount.Value", "direction": "Descending"}]
+        # The old flat keys are kept.
+        assert t["row_groups"] == [{"name": "Details", "expressions": []}]
+
+    def test_tablix_level_sort(self, rdl_path):
+        from lxml import etree
+
+        from pbirb_mcp.core.xpath import q
+
+        tree = etree.parse(str(rdl_path))
+        tablix = next(tree.getroot().iter(q("Tablix")))
+        block = etree.Element(q("SortExpressions"))
+        sort = etree.SubElement(block, q("SortExpression"))
+        etree.SubElement(sort, q("Value")).text = "=Fields!ProductName.Value"
+        tablix.find(q("DataSetName")).addnext(block)
+        tree.write(str(rdl_path), xml_declaration=True, encoding="utf-8")
+        t = get_tablixes(str(rdl_path))[0]
+        assert t["sort_expressions"] == ["=Fields!ProductName.Value"]
+        assert t["sort"] == [{"value": "=Fields!ProductName.Value", "direction": "Ascending"}]
+
+    def test_member_tree_and_leaves(self, rdl_path):
+        from pbirb_mcp.ops.tablix import add_row_group
+
+        add_row_group(str(rdl_path), "MainTable", "Region", "=Fields!ProductName.Value")
+        t = get_tablixes(str(rdl_path))[0]
+        (region,) = [m for m in t["row_members"] if m["group"] == "Region"]
+        assert region["kind"] == "group"
+        assert region["expressions"] == ["=Fields!ProductName.Value"]
+        kinds = [c["kind"] for c in region["children"]]
+        assert kinds[-1] == "details" and "static" in kinds
+        assert len(t["row_leaves"]) == len(t["rows"])
+        assert [leaf["index"] for leaf in t["row_leaves"]] == list(range(len(t["rows"])))
+        details_leaf = next(leaf for leaf in t["row_leaves"] if leaf["kind"] == "details")
+        assert details_leaf["groups"] == ["Region", "Details"]
+        assert len(t["column_leaves"]) == len(t["columns"])
+        assert all(m["kind"] == "static" for m in t["column_members"])
+        assert [r["height"] for r in t["rows"]] and all(r["height"] for r in t["rows"])
+
+    def test_row_leaf_roles_resolve_via_style_tablix_row(self, rdl_path):
+        from pbirb_mcp.ops.styling import style_tablix_row
+        from pbirb_mcp.ops.tablix import add_row_group
+        from pbirb_mcp.ops.tablix_subtotals import add_subtotal_row
+
+        add_row_group(str(rdl_path), "MainTable", "Region", "=Fields!ProductName.Value")
+        add_subtotal_row(
+            str(rdl_path),
+            "MainTable",
+            "Region",
+            [{"column": "Amount", "expression": "=Sum(Fields!Amount.Value)"}],
+        )
+        leaves = get_tablixes(str(rdl_path))[0]["row_leaves"]
+        roles = {role: leaf["index"] for leaf in leaves for role in leaf["roles"]}
+        assert {"header", "details", "Region_header", "Region_footer"} <= set(roles)
+        for leaf in leaves:
+            assert leaf["role"] == (leaf["roles"][0] if leaf["roles"] else None)
+        for role, index in roles.items():
+            out = style_tablix_row(str(rdl_path), "MainTable", role, font_weight="Bold")
+            assert out["row_index"] == index, role
+
+    def test_concise_view_counts(self, rdl_path):
+        from pbirb_mcp.ops.response_format import with_response_format
+
+        reader = with_response_format("get_tablixes", get_tablixes)
+        (t,) = reader(path=str(_matrix(rdl_path)), response_format="concise")
+        full = get_tablixes(str(rdl_path))[0]
+        assert t["row_count"] == len(full["rows"])
+        assert t["header_cell_count"] == len(full["header_cells"]) == 2
+        assert t["corner_cell_count"] == 1
+        assert "row_members" not in t and "cells" not in t
+
+
 # ---- registration / JSON-RPC integration ----------------------------------
 
 

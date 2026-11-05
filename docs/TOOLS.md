@@ -283,7 +283,17 @@ Toggle the four boolean flags on a report parameter: multi_value, hidden, allow_
 
 *read-only*
 
-Tablix layout with stable IDs: columns, row/column groups, sort expressions, filters, visibility. Required input for any tablix edit.
+Tablix layout with stable IDs: columns, row/column groups, sort expressions, filters, visibility. Required input for any tablix edit. Per tablix:
+
+- `columns` (widths) and `rows` (heights), one per body column / row.
+- `cells`: every body cell `{row, col, textbox_name, row_span, col_span}`. Spans are read from `<CellContents>` (falling back to the pre-2010 `<TablixCell>` location); a cell inside another cell's span (a placeholder) also carries `covered_by: [row, col]`, its owner.
+- `header_cells`: the `TablixHeader` textboxes of both hierarchies, `{axis: row|column, level (0 = outermost), group (null on a static member), textbox_name, size, leaves: [first, last]}`. `corner_cells`: the `TablixCorner` grid, same shape as `cells`.
+- `row_members` / `column_members`: the member tree, each node `{group (null for a static member), kind: static|group|details, expressions, keep_with_group, repeat_on_new_page, visibility, sort: [{value, direction}], page_break, header?, children, leaf_index (leaves only)}`.
+- `row_leaves` / `column_leaves`: one per body row / column, `{index, path (child positions from the top), kind, groups (enclosing group names)}`; row leaves add `roles`, the `style_tablix_row` row names that resolve to that row (`header`, `details`, `<group>_header`, `<group>_footer`), and `role` (the first, or null).
+- `row_groups` / `column_groups`: flat `{name, expressions}` lists (every group, nested ones included).
+- `sort_expressions` / `sort`: the tablix's own `<SortExpressions>` only (values / `{value, direction}`); group sorts are on their member nodes.
+
+`response_format: "concise"` keeps names, position, counts and the flat group names.
 
 ### `set_column_width`
 

@@ -83,6 +83,33 @@ SPECIFIC: dict[str, dict] = {
         },
         "required": ["path", "data_sources", "datasets", "parameters", "tablixes", "charts"],
     },
+    # Both views: `detailed` (every key) and `concise` (name, position,
+    # counts, flat group names) — so only `name` is required.
+    "get_tablixes": wrapped(
+        {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "columns": {"type": "array", "items": {"type": "object"}},
+                    "rows": {"type": "array", "items": {"type": "object"}},
+                    "row_groups": {"type": "array"},
+                    "column_groups": {"type": "array"},
+                    "sort_expressions": {"type": "array", "items": {"type": "string"}},
+                    "sort": {"type": "array", "items": {"type": "object"}},
+                    "cells": {"type": "array", "items": {"type": "object"}},
+                    "header_cells": {"type": "array", "items": {"type": "object"}},
+                    "corner_cells": {"type": "array", "items": {"type": "object"}},
+                    "row_members": {"type": "array", "items": {"type": "object"}},
+                    "column_members": {"type": "array", "items": {"type": "object"}},
+                    "row_leaves": {"type": "array", "items": {"type": "object"}},
+                    "column_leaves": {"type": "array", "items": {"type": "object"}},
+                },
+                "required": ["name"],
+            },
+        }
+    ),
     "validate_report": {
         "type": "object",
         "properties": {
