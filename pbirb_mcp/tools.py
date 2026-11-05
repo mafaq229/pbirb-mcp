@@ -1552,8 +1552,9 @@ def register_all_tools(server: MCPServer) -> None:
         name="raw_xml_view",
         description=(
             "Read the raw XML matching an XPath (context: the Report root; 'r:' = "
-            "RDL namespace, 'rd:' = designer namespace), e.g. "
-            "\".//r:Textbox[@Name='X']/r:Style\". Output is capped at max_bytes."
+            "RDL namespace, 'rd:', 'am:', 'df:' bound), e.g. "
+            "\".//r:Textbox[@Name='X']/r:Style\". Returns typed matches (element "
+            "XML, attributes, text) or a count()/string() value; capped at max_bytes."
         ),
         input_schema={
             "type": "object",
@@ -1581,8 +1582,9 @@ def register_all_tools(server: MCPServer) -> None:
         name="raw_xml_replace",
         description=(
             "Last resort: replace the one element an XPath matches with new XML "
-            "(RDL is the default namespace, 'rd:' is bound). Refuses zero or "
-            "several matches and the Report root. Prefer a dedicated tool."
+            "of the same element (RDL is the default namespace). Refuses zero or "
+            "several matches, the Report root and results that fail the XSD. "
+            "Prefer a dedicated tool."
         ),
         input_schema={
             "type": "object",
@@ -1595,11 +1597,70 @@ def register_all_tools(server: MCPServer) -> None:
                         "XML for the replacement element. Exactly one top-level element."
                     ),
                 },
+                "allow_kind_change": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Allow a different element (name or namespace) than the target.",
+                },
             },
             "required": ["path", "xpath", "content"],
             "additionalProperties": False,
         },
         handler=_escape.raw_xml_replace,
+        mutating=True,
+    )
+
+    server.register_tool(
+        name="raw_xml_insert",
+        description=(
+            "Last resort: insert new XML elements into (append/prepend) or next to "
+            "(before/after) the one element an XPath matches. Refuses results that "
+            "fail the XSD and duplicate item names. Prefer a dedicated tool."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "xpath": {"type": "string"},
+                "content": {
+                    "type": "string",
+                    "description": "XML of one or more elements (RDL default namespace).",
+                },
+                "position": {
+                    "type": "string",
+                    "enum": list(_escape.INSERT_POSITIONS),
+                    "default": "append",
+                },
+            },
+            "required": ["path", "xpath", "content"],
+            "additionalProperties": False,
+        },
+        handler=_escape.raw_xml_insert,
+        mutating=True,
+    )
+
+    server.register_tool(
+        name="raw_xml_remove",
+        description=(
+            "Last resort: remove the element an XPath matches (every match with "
+            "all=true). Refuses the Report root and results that fail the XSD. "
+            "Prefer a dedicated remove_* tool."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "xpath": {"type": "string"},
+                "all": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Remove every match instead of refusing several.",
+                },
+            },
+            "required": ["path", "xpath"],
+            "additionalProperties": False,
+        },
+        handler=_escape.raw_xml_remove,
         mutating=True,
     )
 

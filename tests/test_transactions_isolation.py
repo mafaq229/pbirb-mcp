@@ -152,7 +152,7 @@ def test_validate_inside_transaction_sees_transaction_tree(server, rdl):
         "raw_xml_replace",
         path=str(rdl),
         xpath=".//r:Textbox[@Name='HeaderAmount']/r:CanGrow",
-        content="<Bogus/>",
+        content="<CanGrow>maybe</CanGrow>",
         transaction_id=tx,
     )
     assert not is_error
@@ -170,7 +170,7 @@ def test_verify_report_inside_transaction_reports_xsd_error(server, rdl):
         "raw_xml_replace",
         path=str(rdl),
         xpath=".//r:Textbox[@Name='HeaderAmount']/r:CanGrow",
-        content="<Bogus/>",
+        content="<CanGrow>maybe</CanGrow>",
         transaction_id=tx,
     )
     payload, _ = _call(server, "verify_report", path=str(rdl), transaction_id=tx)

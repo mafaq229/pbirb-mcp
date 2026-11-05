@@ -265,6 +265,8 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "restore_from_backup",
             "raw_xml_view",
             "raw_xml_replace",
+            "raw_xml_insert",
+            "raw_xml_remove",
         }
     ),
 }

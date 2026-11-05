@@ -978,19 +978,31 @@ Emit a minimal valid RDL from scratch at `path`. Refuses if `path` exists (no cl
 
 *read-only*
 
-Read-only XPath query against the report. Returns matched elements as serialised XML strings. XPath context is `<Report>` (the root); 'r:' is bound to the RDL namespace, 'rd:' to the rd namespace. Examples: "r:DataSources/r:DataSource[@Name='X']" / ".//r:Textbox[@Name='X']/r:Style". Returns [] when nothing matches; raises on malformed xpath. Output is capped at max_bytes (default 40000); a capped result ends in an explicit '`<!-- pbirb-mcp: truncated ... -->'` marker.
+Read-only XPath query against the report. XPath context is `<Report>` (the root); 'r:' is bound to the RDL namespace, 'rd:' to the report designer namespace, 'am:' / 'df:' / 'cl:' to Report Builder's authoring-metadata / default-font-family / component-library namespaces, plus every prefix the root declares. Examples: "r:DataSources/r:DataSource[@Name='X']" / ".//r:Textbox[@Name='X']/r:Style" / "//am:AuthoringMetadata" / "//r:Textbox/@Name" / "count(//r:Textbox)". Raises on malformed xpath.
+
+A node-set XPath returns `{kind: "nodes", count, matches, truncated}`, each match typed: `{kind: "element", xml}` (the element alone — no trailing whitespace, only the namespace declarations it uses, so it pastes into raw_xml_replace), `{kind: "attribute", name, value, element}`, `{kind: "text", value}` or `{kind: "comment", value}`; no match is `count: 0, matches: []`. A number / string / boolean XPath (`count()`, `string()`, `boolean()`, comparisons) returns `{kind: "number"|"string"|"boolean", value}`. Output is capped at max_bytes (default 40000, 0 = no cap): the match that crosses the cap is cut, ends in an explicit `<!-- pbirb-mcp: truncated ... -->` marker and carries `truncated: true`; later matches are left out (the marker counts them) and the result's `truncated` is true.
 
 ### `raw_xml_replace`
 
 *destructive, idempotent*
 
-Replace the single element matched by xpath with new content. content is parsed with RDL as the default namespace and 'rd:' bound, so bare names like `<Textbox><Value>x</Value></Textbox>` work without explicit xmlns. Refuses on zero matches, multiple matches, or if the xpath targets the `<Report>` root. Saves atomically. Returns {xpath, kind, changed}.
+Replace the single element matched by xpath with new content. content is parsed with RDL as the default namespace and the raw_xml_view prefixes bound, so bare names like `<Textbox><Value>x</Value></Textbox>` (or `<rd:DefaultName>`) work without explicit xmlns. The replacement must be the same element as the target — same namespace and local name — unless allow_kind_change=true (so a `<PageWidth xmlns="urn:x">`, which the XSD accepts as an extension element, can't silently stand in for the real PageWidth). Refuses on zero matches, multiple matches, a non-element match, the `<Report>` root, a report item / group name already used elsewhere, and — outside an editing transaction — a result with XSD / structural errors the report didn't have (inside one, commit_editing_transaction verifies the end state). Content equal to the target (layout whitespace and attribute order aside) is a no-op: changed=false and the file is not rewritten. Saves atomically. Returns {xpath, kind, changed}.
+
+### `raw_xml_insert`
+
+Insert the element(s) in content relative to the single element xpath matches: position `append` (last children, the default), `prepend` (first children), `before` / `after` (siblings; refused for the `<Report>` root). content is one or more elements, parsed as for raw_xml_replace, and inserted in order and indented to fit the file's layout. The bundled RDL 2016 XSD orders children only inside collections (`<Fields>`, `<TablixMembers>`, ...), which hold one element type, so every position is XSD-correct wherever the element is allowed at all. Refuses on zero or several matches, a non-element match, content that isn't XML elements, report item / group names already in the report, and — outside an editing transaction — a result with XSD / structural errors the report didn't have. Not idempotent: an identical second call inserts another copy (or refuses its duplicate names). Returns {xpath, position, inserted, changed}; `inserted` lists the new elements' local names.
+
+### `raw_xml_remove`
+
+*destructive*
+
+Remove the element xpath matches, keeping the surrounding layout. Several matches are refused unless all=true, which removes every match (a match nested in another goes with it). Refuses on zero matches, a non-element match (attributes, text), the `<Report>` root, and — outside an editing transaction — a result with XSD / structural errors the report didn't have (e.g. removing a required element). Prefer the dedicated remove_* tools, which also clean up references. Returns {xpath, removed, count, changed}; `removed` lists the removed elements' local names.
 
 ### `backup_report`
 
 Copy the report to `<dest_dir>/<name>.bak.<UTC-timestamp>[-<n>][.<label>]`; the report is untouched. `dest_dir` (an existing folder) defaults to the report's folder; `label` (1-64 letters, digits, `-`, `_`) tags the name, e.g. `report.rdl.bak.20261105-101500.before-cleanup`. A sidecar `<backup>.meta.json` records `{source, sha1, size_bytes, source_mtime_ns, label, created, reason, in_transaction}`, so restore_from_backup finds the report even from another folder. The backup keeps the report's permission bits (plus owner-write); its mtime is the time of the backup. Called with a `transaction_id`, the backup holds the transaction's edited (not yet committed) state. Returns {source, backup, size_bytes, label, created, in_transaction}. Nothing is rotated or deleted.
 
-With `PBIRB_MCP_AUTO_BACKUP` on, the server takes a backup like this by itself before every removal (`remove_*`), `rename_data_source`, `rename_parameter`, `rename_report_item`, `update_dataset_query`, `refresh_dataset_fields`, `raw_xml_replace` and `convert_to_matrix`, and adds its path to the result as `auto_backup`. When the newest backup already holds the file's bytes it is reused, so a repeated call — or every op of one transaction, whose file doesn't change until commit — shares one backup: the state before the edits.
+With `PBIRB_MCP_AUTO_BACKUP` on, the server takes a backup like this by itself before every removal (`remove_*`), `rename_data_source`, `rename_parameter`, `rename_report_item`, `update_dataset_query`, `refresh_dataset_fields`, `raw_xml_replace`, `raw_xml_remove` and `convert_to_matrix`, and adds its path to the result as `auto_backup`. When the newest backup already holds the file's bytes it is reused, so a repeated call — or every op of one transaction, whose file doesn't change until commit — shares one backup: the state before the edits.
 
 ### `list_backups`
 

@@ -197,8 +197,9 @@ class TestMutatingFlagRouting:
             "raw_xml_replace",
             {
                 "path": str(rdl_path),
-                "xpath": ".//r:Textbox[@Name='HeaderAmount']/r:CanGrow",
-                "content": "<Bogus>1</Bogus>",
+                "xpath": ".//r:Textbox[@Name='Amount']//r:TextRun/r:Value",
+                # XSD-valid, but a lint error (missing-field-reference).
+                "content": "<Value>=Fields!Typo.Value</Value>",
             },
         )
         assert set(out) == {"result", "verify"}

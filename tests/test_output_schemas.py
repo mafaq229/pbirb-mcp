@@ -258,20 +258,26 @@ class TestRawXmlViewCap:
         text = result["content"][0]["text"]
         # ~25k tokens is ~100 KB; the default lands well under.
         assert len(text) < 60_000
-        items = json.loads(text)
+        out = json.loads(text)
+        assert out["truncated"] is True
+        assert out["count"] == 81
+        items = [m["xml"] for m in out["matches"]]
         assert len(items) < 81
         assert "<!-- pbirb-mcp: truncated" in items[-1]
         assert "later match(es) omitted" in items[-1]
+        assert out["matches"][-1]["truncated"] is True
         assert sum(len(i.encode()) for i in items[:-1]) <= 40_000
 
     def test_max_bytes_zero_disables_cap(self, server, tmp_path):
         big = _big_report(tmp_path, copies=30)
-        items = json.loads(
+        out = json.loads(
             _call(server, "raw_xml_view", path=str(big), xpath=".//r:Tablix", max_bytes=0)[
                 "content"
             ][0]["text"]
         )
+        items = [m["xml"] for m in out["matches"]]
         assert len(items) == 31
+        assert out["truncated"] is False
         assert not any("pbirb-mcp: truncated" in i for i in items)
         for item in items:
             etree.fromstring(item)  # every element whole
@@ -285,10 +291,10 @@ class TestRawXmlViewCap:
     def test_cut_marker_reports_sizes(self):
         from pbirb_mcp.ops.escape import raw_xml_view
 
-        out = raw_xml_view(str(CHART), ".//r:Textbox", max_bytes=100)
+        out = raw_xml_view(str(CHART), ".//r:Textbox", max_bytes=100)["matches"]
         assert len(out) == 1
-        assert out[0].endswith("-->")
-        assert "showing 100 of" in out[0]
+        assert out[0]["xml"].endswith("-->")
+        assert "showing 100 of" in out[0]["xml"]
 
     def test_negative_max_bytes_rejected(self, server):
         result = _call(server, "raw_xml_view", path=str(CHART), xpath=".", max_bytes=-1)

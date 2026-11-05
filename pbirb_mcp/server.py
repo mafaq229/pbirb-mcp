@@ -107,6 +107,8 @@ DESTRUCTIVE_TOOLS = frozenset(
         "convert_to_matrix",
         # Replaces an arbitrary element with caller-supplied XML.
         "raw_xml_replace",
+        # Removes arbitrary elements by XPath.
+        "raw_xml_remove",
         # Copies a backup over the report.
         "restore_from_backup",
     }
@@ -226,6 +228,8 @@ _TITLE_OVERRIDES = {
     "apply_edits": "Apply edits atomically",
     "raw_xml_view": "View raw XML",
     "raw_xml_replace": "Replace raw XML",
+    "raw_xml_insert": "Insert raw XML",
+    "raw_xml_remove": "Remove raw XML",
     "lint_report": "Lint report",
 }
 _TITLE_WORDS = {"xml": "XML", "rdl": "RDL", "dax": "DAX", "iif": "IIf"}

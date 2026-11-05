@@ -74,10 +74,15 @@ MUTATING_PREFIXES = (
     "create_",
     "apply_",
     "raw_xml_replace",
+    "raw_xml_insert",
+    "raw_xml_remove",
     "restore_",
     "refresh_",
     "commit_",
 )
+
+# The escape-hatch writers, reported as the `raw_xml` metric.
+RAW_XML_WRITERS = frozenset({"raw_xml_replace", "raw_xml_insert", "raw_xml_remove"})
 
 COMMON_TOOLS = [
     "describe_report",
@@ -340,7 +345,7 @@ def grade(case: Case, ws: Workspace, calls: list[dict], answer: str) -> tuple[di
             "success": 1.0 if passed else 0.0,
             "corrupted": 1.0 if corrupt else 0.0,
             "right_tool": right_tool,
-            "raw_xml": 1.0 if "raw_xml_replace" in called else 0.0,
+            "raw_xml": 1.0 if set(called) & RAW_XML_WRITERS else 0.0,
             "tool_errors": float(sum(1 for c in calls if c["is_error"])),
         },
         explanation,
@@ -605,6 +610,29 @@ _SERIES = (
     "<Type>Column</Type><Subtype>Plain</Subtype></ChartSeries>"
 )
 
+
+def _write_over(xpath: str, content: str):
+    """A scripted step that writes ``content`` over the element ``xpath``
+    matches straight into the file. raw_xml_replace refuses the duplicate
+    names and XSD errors these corruptions need (#85), so they bypass the
+    tools, as a model editing the file by other means would."""
+
+    def step(report: Path) -> None:
+        from lxml import etree
+
+        from evals.tool_selection.cases import NS
+
+        tree = etree.parse(str(report))
+        target = tree.xpath(xpath, namespaces=NS)[0]
+        ns = NS["r"]
+        new = etree.fromstring(f'<w xmlns="{ns}">{content}</w>')[0]
+        new.tail = target.tail
+        target.getparent().replace(target, new)
+        tree.write(str(report), xml_declaration=True, encoding="utf-8")
+
+    return step
+
+
 CORRUPT: dict[str, Any] = {
     # A second series with no ChartSeriesHierarchy member.
     "c05": [
@@ -623,27 +651,21 @@ CORRUPT: dict[str, Any] = {
     # The label is right, but a second textbox now carries its name.
     "s07": [
         BY_ID["s07"].oracle[0],
-        (
-            "raw_xml_replace",
-            {
-                "xpath": "//r:Textbox[@Name='TotalHoursValue']",
-                "content": '<Textbox Name="TotalHoursLabel"><Paragraphs><Paragraph><TextRuns>'
-                "<TextRun><Value>=Sum(Fields!OperatingHours.Value)</Value><Style /></TextRun>"
-                "</TextRuns><Style /></Paragraph></Paragraphs><Top>1.3in</Top><Left>4in</Left>"
-                "<Height>0.25in</Height><Width>1in</Width><Style /></Textbox>",
-            },
+        _write_over(
+            "//r:Textbox[@Name='TotalHoursValue']",
+            '<Textbox Name="TotalHoursLabel"><Paragraphs><Paragraph><TextRuns>'
+            "<TextRun><Value>=Sum(Fields!OperatingHours.Value)</Value><Style /></TextRun>"
+            "</TextRuns><Style /></Paragraph></Paragraphs><Top>1.3in</Top><Left>4in</Left>"
+            "<Height>0.25in</Height><Width>1in</Width><Style /></Textbox>",
         ),
     ],
     # A line carrying an element the RDL schema doesn't allow there.
     "l06": [
         BY_ID["l06"].oracle[0],
-        (
-            "raw_xml_replace",
-            {
-                "xpath": "//r:Line[@Name='TitleRule']",
-                "content": '<Line Name="TitleRule"><Top>0.45in</Top><Left>0in</Left>'
-                "<Height>0in</Height><Width>6in</Width><Caption>rule</Caption></Line>",
-            },
+        _write_over(
+            "//r:Line[@Name='TitleRule']",
+            '<Line Name="TitleRule"><Top>0.45in</Top><Left>0in</Left>'
+            "<Height>0in</Height><Width>6in</Width><Caption>rule</Caption></Line>",
         ),
     ],
 }
@@ -662,7 +684,11 @@ def run_scripted(case: Case, ws: Workspace, mode: str) -> dict:
             script = script[case.id]
         if callable(script):
             script = script(ws.report)
-        for name, args in script:
+        for step in script:
+            if callable(step):  # a direct file edit (see _write_over)
+                step(ws.report)
+                continue
+            name, args = step
             args = json.loads(ws.render(json.dumps(args)))
             out, is_err = runner.call(name, {"path": str(ws.report), **args})
             calls.append({"name": name, "is_error": is_err})

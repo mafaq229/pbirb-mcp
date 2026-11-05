@@ -465,6 +465,20 @@ CASES: dict[str, Case] = {
             "content": "<Height>3in</Height>",
         }
     ),
+    # The repeat would emit the textbox name again (#85).
+    "raw_xml_insert": Case(
+        {
+            "xpath": "r:ReportSections/r:ReportSection/r:Body/r:ReportItems",
+            "content": (
+                '<Textbox Name="RawBox"><Paragraphs><Paragraph><TextRuns><TextRun>'
+                "<Value>x</Value></TextRun></TextRuns></Paragraph></Paragraphs>"
+                "<Top>3in</Top><Left>0in</Left><Height>0.25in</Height><Width>1in</Width>"
+                "</Textbox>"
+            ),
+        },
+        second="refuses",
+    ),
+    "raw_xml_remove": Case({"xpath": "rd:ReportUnitType"}, second="refuses"),
     # ---- actions ----
     "set_textbox_action": Case(
         {"textbox_name": TB, "action_type": "Hyperlink", "target_expression": "http://example.com"}
@@ -1224,6 +1238,7 @@ VARIANTS: list[tuple[str, Case]] = [
                     "raw_xml_replace",
                     {
                         "xpath": ".//r:DataSet[@Name='MainDataset']/r:Query/rd:UseGenericDesigner",
+                        "allow_kind_change": True,
                         "content": (
                             '<rd:DesignerState xmlns:rd="http://schemas.microsoft.com/'
                             'SQLServer/reporting/reportdesigner"><QueryDefinition xmlns='

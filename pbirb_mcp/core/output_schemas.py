@@ -136,16 +136,25 @@ SPECIFIC: dict[str, dict] = {
         },
         "required": ["issues"],
     },
-    "raw_xml_view": wrapped(
-        {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": (
-                "Matched elements as XML strings. When the output exceeds max_bytes the "
-                "last string ends in a '<!-- pbirb-mcp: truncated ... -->' marker."
-            ),
-        }
-    ),
+    "raw_xml_view": {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": ["nodes", "number", "string", "boolean"]},
+            "count": {"type": "integer"},
+            "matches": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": (
+                    "Typed matches: {kind: element, xml} / {kind: attribute, name, value, "
+                    "element} / {kind: text, value}. Past max_bytes the crossing match ends "
+                    "in a '<!-- pbirb-mcp: truncated ... -->' marker."
+                ),
+            },
+            "truncated": {"type": "boolean"},
+            "value": {"type": ["number", "string", "boolean", "null"]},
+        },
+        "required": ["kind"],
+    },
     "dry_run_edit": {
         "type": "object",
         "properties": {
