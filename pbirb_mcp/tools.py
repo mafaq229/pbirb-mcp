@@ -2948,11 +2948,20 @@ def register_all_tools(server: MCPServer) -> None:
         ],
         "additionalProperties": False,
     }
+    _REMOVE_FORCE = {
+        "type": "boolean",
+        "default": False,
+        "description": (
+            "Remove even if other items still reference it or what it holds "
+            "(ReportItems!, ToggleItem, scopes); they are left dangling."
+        ),
+    }
     _NAMED_REMOVE_SCHEMA = {
         "type": "object",
         "properties": {
             "path": {"type": "string"},
             "name": {"type": "string"},
+            "force": _REMOVE_FORCE,
         },
         "required": ["path", "name"],
         "additionalProperties": False,
@@ -3022,14 +3031,20 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="remove_header_item",
-        description=("Remove a named item from the page header, also inside a rectangle."),
+        description=(
+            "Remove a named item from the page header, also inside a rectangle. "
+            "Refuses while other items reference it unless force."
+        ),
         input_schema=_NAMED_REMOVE_SCHEMA,
         handler=header_footer.remove_header_item,
         mutating=True,
     )
     server.register_tool(
         name="remove_footer_item",
-        description=("Remove a named item from the page footer, also inside a rectangle."),
+        description=(
+            "Remove a named item from the page footer, also inside a rectangle. "
+            "Refuses while other items reference it unless force."
+        ),
         input_schema=_NAMED_REMOVE_SCHEMA,
         handler=header_footer.remove_footer_item,
         mutating=True,
@@ -3453,17 +3468,10 @@ def register_all_tools(server: MCPServer) -> None:
         name="remove_body_item",
         description=(
             "Remove a named item (textbox, image, tablix, chart, ...) from the report body, "
-            "also inside a rectangle or list."
+            "also inside a rectangle or list, with everything in it (listed in also_removed). "
+            "Refuses while other items reference it unless force."
         ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "name": {"type": "string"},
-            },
-            "required": ["path", "name"],
-            "additionalProperties": False,
-        },
+        input_schema=_NAMED_REMOVE_SCHEMA,
         handler=body.remove_body_item,
         mutating=True,
     )

@@ -1018,3 +1018,119 @@ class TestPageChromeRules:
         _save(doc)
         set_page_footer(str(rdl_path), print_on_last_page=False)
         assert lint_report(str(rdl_path), rules=["page-section-missing-height"])["issues"] == []
+
+
+# ---- removal leaves dangling report-item references (#105) -------------------
+
+
+class TestDanglingReferencesAfterForcedRemoval:
+    """remove_body_item(force=True) leaves ReportItems!X / ToggleItem in place;
+    the existing undefined-report-item and dangling-toggle-item rules catch
+    them (#105 needed no new rule)."""
+
+    def _setup(self, rdl_path):
+        from pbirb_mcp.ops.body import add_body_textbox
+        from pbirb_mcp.ops.visibility import set_element_visibility
+
+        for name, text, top in (
+            ("Src", "hello", "1.2in"),
+            ("Echo", "=ReportItems!Src.Value", "1.5in"),
+            ("Toggle", "+", "1.8in"),
+        ):
+            add_body_textbox(str(rdl_path), name, text, top, "0.5in", "2in", "0.2in")
+        set_element_visibility(str(rdl_path), "MainTable", "true", "Toggle")
+
+    def test_clean_before_removal(self, rdl_path):
+        self._setup(rdl_path)
+        rules = ["undefined-report-item", "dangling-toggle-item"]
+        assert lint_report(str(rdl_path), rules=rules)["issues"] == []
+
+    def test_both_reported_after_forced_removal(self, rdl_path):
+        from pbirb_mcp.ops.body import remove_body_item
+
+        self._setup(rdl_path)
+        remove_body_item(str(rdl_path), "Src", force=True)
+        remove_body_item(str(rdl_path), "Toggle", force=True)
+        issues = lint_report(str(rdl_path))["issues"]
+        by_rule = {i["rule"]: i for i in issues}
+        assert set(by_rule) == {"undefined-report-item", "dangling-toggle-item"}
+        assert by_rule["undefined-report-item"]["severity"] == "error"
+        assert "Src" in by_rule["undefined-report-item"]["message"]
+        assert "Toggle" in by_rule["dangling-toggle-item"]["message"]
+        assert "MainTable" in by_rule["dangling-toggle-item"]["location"]
+
+
+class TestFindInboundReferences:
+    """pbirb_mcp.ops.expr_walk.find_inbound_references (#105) — the helper the
+    remove_*_item guards and rename_report_item share."""
+
+    def _root(self, rdl_path, edit):
+        doc = RDLDocument.open(rdl_path)
+        edit(doc.root)
+        return doc.root
+
+    def test_every_reference_kind(self, rdl_path):
+        from pbirb_mcp.ops import expr_walk
+
+        def edit(root):
+            amount = root.find(f".//{q('Textbox')}[@Name='Amount']")
+            value = amount.find(f".//{q('Value')}")
+            value.text = '=RowNumber("Details") & ReportItems("ProductID").Value'
+            etree.SubElement(amount, q("RepeatWith")).text = " MainTable "
+            sort = etree.SubElement(amount, q("UserSort"))
+            etree.SubElement(sort, q("SortExpression")).text = "=Fields!Amount.Value"
+            etree.SubElement(sort, q("SortExpressionScope")).text = "Details"
+            etree.SubElement(sort, q("SortTarget")).text = "MainTable"
+
+        root = self._root(rdl_path, edit)
+        refs = expr_walk.find_inbound_references(root, {"Details", "ProductID", "MainTable"})
+        got = [(r.kind, r.name, r.text) for r in refs]
+        assert got == [
+            ("scope", "Details", 'RowNumber("Details")'),
+            ("report_items", "ProductID", 'ReportItems("ProductID").Value'),
+            ("repeat_with", "MainTable", "MainTable"),
+            ("sort_scope", "Details", "Details"),
+            ("sort_target", "MainTable", "MainTable"),
+        ]
+        assert refs[0].locator.startswith("Tablix[Name='MainTable']>Textbox[Name='Amount']")
+
+    def test_dataset_named_scope_and_lookup_are_not_item_references(self, rdl_path):
+        from pbirb_mcp.ops import expr_walk
+
+        def edit(root):
+            value = root.find(f".//{q('Textbox')}[@Name='Amount']//{q('Value')}")
+            value.text = (
+                '=Sum(Fields!Amount.Value, "MainDataset") + '
+                'Lookup(1, 1, Fields!Amount.Value, "MainTable")'
+            )
+
+        root = self._root(rdl_path, edit)
+        assert expr_walk.find_inbound_references(root, ["MainDataset", "MainTable"]) == []
+
+    def test_single_name_and_empty(self, rdl_path):
+        from pbirb_mcp.ops import expr_walk
+
+        root = RDLDocument.open(rdl_path).root
+        assert expr_walk.find_inbound_references(root, "Amount") == []
+        assert expr_walk.find_inbound_references(root, []) == []
+
+    def test_rewrite_references_keeps_quoting_and_whitespace(self, rdl_path):
+        from pbirb_mcp.ops import expr_walk
+
+        def edit(root):
+            amount = root.find(f".//{q('Textbox')}[@Name='Amount']")
+            amount.find(f".//{q('Value')}").text = (
+                '=ReportItems!ProductID.Value & ReportItems("ProductID").Value '
+                '& RowNumber("Details") & "ProductID"'
+            )
+            etree.SubElement(amount, q("RepeatWith")).text = " MainTable "
+
+        root = self._root(rdl_path, edit)
+        refs = expr_walk.find_inbound_references(root, {"ProductID", "Details", "MainTable"})
+        changes = expr_walk.rewrite_references(
+            refs, {"ProductID": "Code", "Details": "Rows", "MainTable": "Sales"}
+        )
+        assert [c[2] for c in changes] == [
+            '=ReportItems!Code.Value & ReportItems("Code").Value & RowNumber("Rows") & "ProductID"',
+            " Sales ",
+        ]

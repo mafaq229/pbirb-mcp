@@ -790,6 +790,25 @@ VARIANTS: list[tuple[str, Case]] = [
     ),
     ("set_body_item_size", Case({"name": "Note", "width": "1in"}, setup=[BODY_BOX, PANEL])),
     ("remove_body_item", Case({"name": "Note"}, second="refuses", setup=[BODY_BOX, PANEL])),
+    # ---- #105: removing a referenced item needs force ----
+    (
+        "remove_body_item",
+        Case(
+            {"name": "Note", "force": True},
+            second="refuses",
+            setup=[
+                BODY_BOX,
+                (
+                    "add_body_textbox",
+                    {**BODY_BOX[1], "name": "Echo", "text": "=ReportItems!Note.Value"},
+                ),
+            ],
+        ),
+    ),
+    (
+        "remove_header_item",
+        Case({"name": "HdrBox", "force": True}, second="refuses", setup=[HEADER, HEADER_BOX]),
+    ),
     (
         "add_body_textbox",
         Case(

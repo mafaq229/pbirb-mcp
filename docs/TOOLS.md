@@ -770,7 +770,7 @@ Same as add_header_image, for `<PageFooter>`.
 
 *destructive*
 
-Remove a named item from `<PageHeader>`, at its top level or nested in a Rectangle there (the result then has `parent`). Empties the ReportItems block when the last item leaves.
+Remove a named item from `<PageHeader>`, at its top level or nested in a Rectangle there (the result then has `parent`). Empties the ReportItems block when the last item leaves. Everything inside goes too; `also_removed` names those report items and groups. Refuses while anything outside the removed subtree still references the item or one of those — `ReportItems!X` / `ReportItems("X")`, a `<ToggleItem>`, the scope string of an aggregate / `RowNumber` / `RunningValue` / `InScope` …, `<RepeatWith>`, a UserSort `<SortExpressionScope>` / `<SortTarget>`, `<DomainScope>` — and lists each; force=true removes it anyway, leaves those references in place and returns them as `dangling_refs` [{kind, name, location, text}] (lint_report flags them as undefined-report-item, dangling-toggle-item, unknown-aggregate-scope). Returns {region, removed, kind, parent?, also_removed, dangling_refs}.
 
 ### `remove_footer_item`
 
@@ -790,7 +790,7 @@ Add an Image to `<Body>/<ReportItems>`, or inside the body Rectangle `container`
 
 *destructive*
 
-Remove a named item (Textbox, Image, Tablix, Chart, ...) from the body — at its top level or nested in a Rectangle / List cell (the result then has `parent`, the rectangle it left). Destructive but explicit — raises if the name doesn't match anything. A tablix cell's own content (e.g. a List's rectangle) is refused: the cell must hold an item.
+Remove a named item (Textbox, Image, Tablix, Chart, ...) from the body — at its top level or nested in a Rectangle / List cell (the result then has `parent`, the rectangle it left). Destructive but explicit — raises if the name doesn't match anything. A tablix cell's own content (e.g. a List's rectangle) is refused: the cell must hold an item. Everything inside goes too; `also_removed` names those report items and groups. Refuses while anything outside the removed subtree still references the item or one of those — `ReportItems!X` / `ReportItems("X")`, a `<ToggleItem>`, the scope string of an aggregate / `RowNumber` / `RunningValue` / `InScope` …, `<RepeatWith>`, a UserSort `<SortExpressionScope>` / `<SortTarget>`, `<DomainScope>` — and lists each; force=true removes it anyway, leaves those references in place and returns them as `dangling_refs` [{kind, name, location, text}] (lint_report flags them as undefined-report-item, dangling-toggle-item, unknown-aggregate-scope). Returns {removed, kind, parent?, also_removed, dangling_refs}.
 
 ### `add_embedded_image`
 

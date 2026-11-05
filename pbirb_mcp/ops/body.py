@@ -7,7 +7,8 @@ so a body textbox emits the same shape as a header textbox.
 
 ``remove_body_item`` is willing to remove tablixes too — that's the
 explicit "redesign" workflow. It raises a clear error on unknown names so
-typos don't silently delete the wrong item.
+typos don't silently delete the wrong item, reports what went with the
+item, and refuses while other items still reference it (#105).
 
 The add tools take ``container`` — a Rectangle in the body, a List's
 ``<name>_Rect`` included — to add inside it instead (#83,
@@ -29,6 +30,7 @@ from pbirb_mcp.ops.header_footer import (
     _build_image,
     _build_textbox,
     detach_item,
+    removal_impact,
     resolve_removable_item,
 )
 from pbirb_mcp.ops.images import check_image_source
@@ -119,18 +121,28 @@ def add_body_image(
 # ---- remove_body_item -----------------------------------------------------
 
 
-def remove_body_item(path: str, name: str) -> dict[str, Any]:
+def remove_body_item(path: str, name: str, force: bool = False) -> dict[str, Any]:
     """Remove the body item ``name`` — at the body's top level or nested in a
-    Rectangle / List cell (#83). Returns ``{removed, kind}`` plus ``parent``
-    (the Rectangle it left) for a nested item."""
+    Rectangle / List cell (#83) — with everything inside it.
+
+    Returns ``{removed, kind, also_removed, dangling_refs}`` plus ``parent``
+    (the Rectangle it left) for a nested item: ``also_removed`` names the
+    report items and groups that went with it (a Rectangle's contents, a
+    tablix's cell textboxes and groups). Refuses while anything outside the
+    removed subtree still references it or them (``ReportItems!X``,
+    ``ToggleItem``, a scope string, ``RepeatWith``, a UserSort target), listing
+    each, unless ``force``: the references are then left in place and listed
+    in ``dangling_refs`` (#105, :func:`header_footer.removal_impact`)."""
     doc = RDLDocument.open(path)
     target = resolve_removable_item(doc, "body", name)
     kind = etree.QName(target).localname
+    impact = removal_impact(doc, target, force=force)
     holder = detach_item(target)
     doc.save()
     result: dict[str, Any] = {"removed": name, "kind": kind}
     if etree.QName(holder).localname == "Rectangle":
         result["parent"] = holder.get("Name")
+    result.update(impact)
     return result
 
 
