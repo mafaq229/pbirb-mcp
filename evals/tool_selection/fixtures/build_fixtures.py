@@ -5,7 +5,7 @@ on (see .local/feedback): a Power BI dataset source with a DAX query, two
 leftover data sources nobody uses, date parameters mistyped as String, a
 title textbox, a detail tablix and a column chart on a portrait page.
 
-Run from the repo root:  uv run python evals/tool_selection/fixtures/build_fixtures.py
+Run from the repo root:  uv run python evals/tool_selection/fixtures/build_fixtures.py [all|rb]
 """
 
 from __future__ import annotations
@@ -186,6 +186,122 @@ def build_fleet(path: Path) -> None:
     print(json.dumps(verdict, indent=1)[:800])
 
 
+def _report_builder_groups(path: Path, tablix: str, group: str, expression: str) -> None:
+    """Reshape ``tablix``'s row hierarchy the way Report Builder writes it:
+    the detail member wrapped in a dynamic ``group`` that has no
+    group-header row of its own (a parent group added without a header;
+    ``add_row_group`` always inserts a header row, so no tool produces
+    this), and ``KeepWithGroup=Before`` on the trailing static total row."""
+    from lxml import etree
+
+    from pbirb_mcp.core.document import RDLDocument
+    from pbirb_mcp.core.xpath import find_child, find_children, q
+
+    doc = RDLDocument.open(path)
+    t = next(x for x in doc.root.iter(q("Tablix")) if x.get("Name") == tablix)
+    members = find_child(find_child(t, "TablixRowHierarchy"), "TablixMembers")
+    top = find_children(members, "TablixMember")
+    detail = next(m for m in top if find_child(m, "Group") is not None)
+    wrapper = etree.Element(q("TablixMember"))
+    g = etree.SubElement(wrapper, q("Group"), Name=group)
+    etree.SubElement(
+        etree.SubElement(g, q("GroupExpressions")), q("GroupExpression")
+    ).text = expression
+    sort = etree.SubElement(etree.SubElement(wrapper, q("SortExpressions")), q("SortExpression"))
+    etree.SubElement(sort, q("Value")).text = expression
+    inner = etree.SubElement(wrapper, q("TablixMembers"))
+    detail.addprevious(wrapper)
+    inner.append(detail)
+    total = top[-1]
+    assert total is not detail and find_child(total, "Group") is None
+    etree.SubElement(total, q("KeepWithGroup")).text = "Before"
+    doc.save()
+
+
+def build_fleet_rb(src: Path, path: Path) -> None:
+    """The fleet report after a Report Builder session.
+
+    Starts from ``src`` (fleet_utilization.rdl) and adds the shapes the eval's
+    original cases never touched: a styled column-header row, the detail rows
+    wrapped in a Site group with no group-header row, a static grand-total
+    row (Report Builder's "Add Total"), a two-series chart, and a Site
+    parameter referenced from the title, a table filter, the query and the
+    parameter-prompt layout.
+    """
+    shutil.copy(src, path)
+    d = Driver()
+    p = str(path)
+    dataset = "DataSet1"
+    d.call(
+        "style_tablix_row",
+        path=p,
+        tablix_name="FleetTable",
+        row="header",
+        font_family="Segoe UI",
+        font_weight="Bold",
+        color="#FFFFFF",
+        background_color="#1F3864",
+        border_style="Solid",
+        border_color="#BFBFBF",
+        text_align="Center",
+    )
+    d.call(
+        "add_static_row",
+        path=p,
+        tablix_name="FleetTable",
+        row_name="FleetTable_Total",
+        cells=[
+            "Total",
+            "",
+            "",
+            "=Sum(Fields!OperatingHours.Value)",
+            "=Sum(Fields!IdleHours.Value)",
+            "",
+        ],
+    )
+    _report_builder_groups(path, "FleetTable", "Site", "=Fields!Site.Value")
+    d.call(
+        "set_textbox_runs",
+        path=p,
+        textbox_name="ReportTitle",
+        runs=[
+            {"text": "Fleet Utilization: ", "font_weight": "Bold"},
+            {"text": "=Parameters!Site.Value"},
+        ],
+    )
+    d.call(
+        "add_tablix_filter",
+        path=p,
+        tablix_name="FleetTable",
+        expression="=Fields!Site.Value",
+        operator="Equal",
+        values=["=Parameters!Site.Value"],
+    )
+    d.call(
+        "add_query_parameter",
+        path=p,
+        dataset_name=dataset,
+        name="Site",
+        value_expression="=Parameters!Site.Value",
+    )
+    d.call(
+        "set_parameter_layout",
+        path=p,
+        rows=1,
+        columns=3,
+        parameter_order=["DateFrom", "DateTo", "Site"],
+    )
+    d.call(
+        "add_chart_series",
+        path=p,
+        chart_name="HoursBySite",
+        series_name="IdleHours",
+        value_field="IdleHours",
+    )
+    verdict = d.call("verify_report", path=p)
+    print(json.dumps(verdict, indent=1)[:800])
+
+
 def write_logo(path: Path) -> None:
     """A 64x24 solid-navy PNG, written by hand so no imaging library is needed."""
     width, height = 64, 24
@@ -205,19 +321,29 @@ def write_logo(path: Path) -> None:
     path.write_bytes(png)
 
 
-def main() -> int:
+def main(argv: list[str]) -> int:
+    """``build_fixtures.py [all|rb]``. ``rb`` rebuilds only fleet_rb.rdl from
+    the committed fleet_utilization.rdl: rebuilding the fleet report itself
+    mints new DataSourceID / ReportID GUIDs, which changes every case's
+    starting file."""
+    what = argv[0] if argv else "all"
+    if what not in ("all", "rb"):
+        sys.exit("usage: build_fixtures.py [all|rb]")
     out = HERE / "fleet_utilization.rdl"
-    if out.exists():
-        out.unlink()
-    build_fleet(out)
-    write_logo(HERE / "logo.png")
-    shutil.copy(
-        HERE.parents[2] / "tests" / "fixtures" / "known_bad" / "bare_action_under_textbox.rdl",
-        HERE / "bare_action_under_textbox.rdl",
-    )
-    print(f"wrote {out.relative_to(HERE.parents[2])}, logo.png, bare_action_under_textbox.rdl")
+    rb = HERE / "fleet_rb.rdl"
+    if what == "all":
+        if out.exists():
+            out.unlink()
+        build_fleet(out)
+        write_logo(HERE / "logo.png")
+        shutil.copy(
+            HERE.parents[2] / "tests" / "fixtures" / "known_bad" / "bare_action_under_textbox.rdl",
+            HERE / "bare_action_under_textbox.rdl",
+        )
+    build_fleet_rb(out, rb)
+    print(f"wrote fixtures ({what}) in {HERE.relative_to(HERE.parents[2])}")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

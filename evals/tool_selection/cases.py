@@ -27,6 +27,11 @@ from lxml import etree
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FLEET = "fleet_utilization.rdl"
+# The fleet report after a Report Builder session: styled header row, detail
+# rows inside a Site group with no header row, a static grand-total row, two
+# chart series, and the Site parameter used in the title, a table filter, the
+# query and the prompt layout (fixtures/build_fixtures.py: build_fleet_rb).
+FLEET_RB = "fleet_rb.rdl"
 BAD_ACTION = "bare_action_under_textbox.rdl"
 
 NS = {
@@ -91,6 +96,35 @@ class Rdl:
         found = self.x(f"//r:Chart[@Name='{name}']")
         return found[0] if found else None
 
+    def body_rows(self, tablix: str) -> list:
+        return self.x(f"//r:Tablix[@Name='{tablix}']/r:TablixBody/r:TablixRows/r:TablixRow")
+
+    def row_members(self, tablix: str) -> list:
+        """Leaf members of the row hierarchy, in order: one per body row."""
+        return self.x(
+            f"//r:Tablix[@Name='{tablix}']/r:TablixRowHierarchy"
+            "//r:TablixMember[not(r:TablixMembers)]"
+        )
+
+    def member_groups(self, member) -> list:
+        """The <Group>s enclosing a hierarchy member (itself included), outermost first."""
+        return self.x("ancestor-or-self::r:TablixMember/r:Group", member)
+
+    def group_expressions(self, member) -> list[str]:
+        """GroupExpressions of the enclosing groups, outermost first (a
+        detail group without one contributes "")."""
+        return [
+            " ".join(self.texts("./r:GroupExpressions/r:GroupExpression", g))
+            for g in self.member_groups(member)
+        ]
+
+    def row_values(self, row) -> list[str]:
+        """Text of each cell in a body row (all runs joined; "" for an empty cell)."""
+        return [
+            "".join(self.texts(".//r:TextRun/r:Value", c))
+            for c in self.x("./r:TablixCells/r:TablixCell", row)
+        ]
+
 
 def inches(size: Optional[str]) -> Optional[float]:
     if not size:
@@ -139,6 +173,11 @@ class Case:
     answer_must_mention: list[list[str]] = field(
         default_factory=list
     )  # AND of ORs, case-insensitive
+    # Why no tool can do this correctly yet, starting with the issue that
+    # fixes it ("#66: ..."). The case still runs and counts in success; the
+    # selftest skips its oracle (there is none that passes honestly) but
+    # still checks that doing nothing fails it.
+    known_gap: Optional[str] = None
 
     @property
     def tags(self) -> list[str]:
@@ -1593,8 +1632,422 @@ DECLINE = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# paths the 2026-11-03 review found broken (#60)
+#
+# The 55 cases above happened to avoid every path with a known critical bug.
+# These exercise each one; the structural gate in harness.py fails any of
+# them that returns success but leaves the file broken.
+# ---------------------------------------------------------------------------
+
+_TOTALS = [
+    {"column": "FleetTable_OperatingHours", "expression": "=Sum(Fields!OperatingHours.Value)"},
+    {"column": "FleetTable_IdleHours", "expression": "=Sum(Fields!IdleHours.Value)"},
+]
+
+
+def _rows(r: Rdl, tablix: str = "FleetTable") -> list[tuple]:
+    """(leaf member, body row, cell values) per body row."""
+    return [
+        (m, row, r.row_values(row)) for m, row in zip(r.row_members(tablix), r.body_rows(tablix))
+    ]
+
+
+def _detail(rows: list[tuple]) -> Optional[tuple]:
+    hits = [x for x in rows if "=Fields!AssetName.Value" in x[2]]
+    return hits[0] if hits else None
+
+
+def _t08(r: Rdl):
+    # Not checked: whether the column-header row stays above the groups.
+    # add_row_group wraps it too, so it repeats per group (#65, M5).
+    d = _detail(_rows(r))
+    exprs = r.group_expressions(d[0]) if d else []
+    site = [i for i, e in enumerate(exprs) if "Fields!Site.Value" in e]
+    kind = [i for i, e in enumerate(exprs) if "Fields!EquipmentType.Value" in e]
+    ncols = len(r.x("//r:Tablix[@Name='FleetTable']/r:TablixBody/r:TablixColumns/r:TablixColumn"))
+    return all_of(
+        ok(d is not None, "detail row (=Fields!AssetName.Value) not found"),
+        ok(site and kind, f"detail rows are not inside a Site and an EquipmentType group: {exprs}"),
+        ok(
+            site and kind and site[0] < kind[0],
+            f"equipment type is not nested inside site: {exprs}",
+        ),
+        ok(ncols == 6, f"expected the 6 columns to stay, found {ncols}"),
+    )
+
+
+def _t09(r: Rdl):
+    rows = _rows(r)
+    if len(rows) < 2:
+        return (False, "table has fewer than two rows")
+    member, first, values = rows[0]
+    cells = r.x("./r:TablixCells/r:TablixCell", first)
+    span = r.text("./r:CellContents/r:ColSpan", cells[0]) if cells else None
+    return all_of(
+        ok(values[:1] == ["Fleet assets"], f"first row: {values}"),
+        ok(span == "6", f"title cell spans {span or 1} column(s), not all 6"),
+        ok(not r.member_groups(member), "title row is inside a group, so it repeats"),
+        ok("AssetName" in rows[1][2], "column headings are no longer right below the title"),
+    )
+
+
+def _t10(r: Rdl):
+    rows = _rows(r)
+    d = _detail(rows)
+
+    def groups(m):
+        return [e.strip() for e in r.group_expressions(m)]
+
+    subtotal = [
+        i
+        for i, (m, _row, vals) in enumerate(rows)
+        if groups(m) == ["=Fields!Site.Value"]
+        and any(re.search(r"Sum\(Fields!OperatingHours\.Value", v) for v in vals)
+        and any(re.search(r"Sum\(Fields!IdleHours\.Value", v) for v in vals)
+    ]
+    last = rows[-1] if rows else None
+    return all_of(
+        ok(
+            d is not None and groups(d[0])[:1] == ["=Fields!Site.Value"],
+            "detail rows left the Site group",
+        ),
+        ok(subtotal, "no row inside the Site group with Sum() of operating and idle hours"),
+        ok(
+            subtotal and d is not None and subtotal[0] > rows.index(d),
+            "the site subtotal is not after the detail rows",
+        ),
+        ok(
+            last is not None and not r.member_groups(last[0]) and "Total" in last[2],
+            "the grand-total row is no longer the last row, outside every group",
+        ),
+    )
+
+
+def _t11(r: Rdl):
+    t = "//r:Tablix[@Name='FleetTable']"
+    ncols = len(r.x(f"{t}/r:TablixBody/r:TablixColumns/r:TablixColumn"))
+    grp = r.x(
+        f"{t}/r:TablixColumnHierarchy//r:TablixMember"
+        "[r:Group/r:GroupExpressions/r:GroupExpression[contains(., 'Fields!Site.Value')]]"
+    )
+    if not grp:
+        return (False, "no column group on Site")
+    leaves = len(r.x(".//r:TablixMember[not(r:TablixMembers)]", grp[0]))
+    heading = " ".join(r.texts("./r:TablixHeader//r:TextRun/r:Value", grp[0]))
+    return all_of(
+        ok(leaves == ncols == 6, f"site group covers {leaves} of {ncols} columns, expected all 6"),
+        ok("Fields!Site.Value" in heading, f"site heading above the columns: {heading!r}"),
+    )
+
+
+def _series_labels(r: Rdl) -> list[str]:
+    return r.texts("//r:Chart[@Name='HoursBySite']/r:ChartSeriesHierarchy//r:ChartMember/r:Label")
+
+
+def _c07(r: Rdl):
+    ys = [" ".join(r.texts(".//r:ChartDataPointValues/r:Y", s)) for s in _series(r)]
+    labels = _series_labels(r)
+    return all_of(
+        ok(len(ys) == 1 and "IdleHours" in ys[0], f"series values: {ys}"),
+        ok(not any("OperatingHours" in x for x in labels), f"legend labels: {labels}"),
+    )
+
+
+def _c08(r: Rdl):
+    names = [s.get("Name") for s in _series(r)]
+    labels = _series_labels(r)
+    return all_of(
+        ok(names == ["OperatingHours"], f"series: {names}"),
+        ok(labels == ["OperatingHours"], f"legend labels: {labels}"),
+    )
+
+
+def _s10(r: Rdl):
+    tb = r.textbox("FleetTable_Header_Utilization")
+    if tb is None:
+        return (False, "Utilization heading textbox missing")
+    runs = r.x(".//r:TextRun", tb)
+
+    def st(run, prop):
+        return r.text(f"./r:Style/r:{prop}", run)
+
+    first = runs[0] if runs else None
+    pct = [x for x in runs[1:] if "(%)" in (r.text("./r:Value", x) or "")]
+    return all_of(
+        ok(
+            first is not None and r.text("./r:Value", first) == "Utilization",
+            "first run is not 'Utilization'",
+        ),
+        ok(
+            first is not None
+            and st(first, "FontWeight") == "Bold"
+            and norm_color(st(first, "Color")) == "#ffffff"
+            and st(first, "FontFamily") == "Segoe UI",
+            "'Utilization' lost its bold white Segoe UI style",
+        ),
+        ok(pct, "no separate ' (%)' run after 'Utilization'"),
+        ok(pct and st(pct[0], "FontWeight") in (None, "Normal"), "' (%)' is bold"),
+        ok(pct and inches(st(pct[0], "FontSize")) == inches("8pt"), "' (%)' is not 8pt"),
+        ok(
+            pct and norm_color(st(pct[0], "Color")) == "#ffffff",
+            "' (%)' is not white on the navy cell",
+        ),
+        ok(
+            norm_color(r.box_style(tb, "BackgroundColor")) == "#1f3864"
+            and r.text("./r:Style/r:Border/r:Style", tb) == "Solid",
+            "the cell's background or border was lost",
+        ),
+        ok(
+            r.text(".//r:Paragraph/r:Style/r:TextAlign", tb) == "Center",
+            "heading no longer centred",
+        ),
+    )
+
+
+def _t12(r: Rdl):
+    members = r.row_members("FleetTable")
+    hdr = members[0] if members else None
+    return all_of(
+        ok(
+            hdr is not None and not r.member_groups(hdr), "first row is no longer the static header"
+        ),
+        ok(
+            hdr is not None and (r.text("./r:RepeatOnNewPage", hdr) or "").lower() == "true",
+            "column-header row's member has no RepeatOnNewPage=true",
+        ),
+        ok(
+            hdr is not None and r.text("./r:KeepWithGroup", hdr) == "After",
+            "header lost KeepWithGroup=After",
+        ),
+    )
+
+
+def _t13(r: Rdl):
+    sorts = r.x("//r:Tablix[@Name='FleetTable']/r:TablixRowHierarchy//r:SortExpression")
+    hit = [
+        s
+        for s in sorts
+        if "AssetName" in (r.text("./r:Value", s) or "")
+        and r.text("./r:Direction", s) == "Descending"
+    ]
+    return ok(hit, "no Descending sort on asset name")
+
+
+def _p09(r: Rdl):
+    p = r.param("SiteFilter")
+    left = re.findall(r"Parameters!Site\.", r.raw)
+    refs = len(re.findall(r"Parameters!SiteFilter\.", r.raw))
+    cells = r.texts("//r:ReportParametersLayout//r:CellDefinition/r:ParameterName")
+    return all_of(
+        ok(p is not None and r.param("Site") is None, "parameter not renamed"),
+        ok(not left, f"{len(left)} expression(s) still use Parameters!Site"),
+        ok(
+            refs >= 3,
+            f"{refs} reference(s) to SiteFilter; the title, table filter and query use it",
+        ),
+        ok("SiteFilter" in cells and "Site" not in cells, f"prompt layout cells: {cells}"),
+        ok(p is not None and r.text("./r:Prompt", p) == "Site", "prompt text changed"),
+    )
+
+
+REVIEW_PATHS = [
+    Case(
+        "t08",
+        "tablix",
+        "hard",
+        "synth",
+        "Group the table rows by site, and within each site by equipment type.",
+        # Each add_row_group wraps the whole row hierarchy, so the inner group goes first.
+        [
+            (
+                "add_row_group",
+                {
+                    "tablix_name": "FleetTable",
+                    "group_name": "TypeGroup",
+                    "group_expression": "=Fields!EquipmentType.Value",
+                },
+            ),
+            (
+                "add_row_group",
+                {
+                    "tablix_name": "FleetTable",
+                    "group_name": "SiteGroup",
+                    "group_expression": "=Fields!Site.Value",
+                },
+            ),
+        ],
+        _t08,
+    ),
+    Case(
+        "t09",
+        "tablix",
+        "medium",
+        "synth",
+        "Add a title row above the table's column headings that says 'Fleet assets', "
+        "merged across the full width of the table.",
+        [
+            (
+                "add_static_row",
+                {
+                    "tablix_name": "FleetTable",
+                    "row_name": "FleetTable_Title",
+                    "cells": ["Fleet assets"],
+                    "position": 0,
+                },
+            ),
+            (
+                "set_cell_span",
+                {
+                    "tablix_name": "FleetTable",
+                    "row_index": 0,
+                    "column_name": "FleetTable_Title",
+                    "col_span": 6,
+                },
+            ),
+        ],
+        _t09,
+    ),
+    Case(
+        "t10",
+        "tablix",
+        "hard",
+        "synth",
+        "Add a subtotal row at the end of each site showing that site's total operating hours "
+        "and idle hours. Keep the grand total row at the bottom.",
+        [
+            (
+                "add_subtotal_row",
+                {"tablix_name": "FleetTable", "group_name": "Site", "aggregates": _TOTALS},
+            )
+        ],
+        _t10,
+        fixture=FLEET_RB,
+    ),
+    Case(
+        "t11",
+        "tablix",
+        "medium",
+        "synth",
+        "Repeat the table's columns side by side once per site, with the site name as a heading "
+        "above each block of columns.",
+        [
+            (
+                "add_column_group",
+                {
+                    "tablix_name": "FleetTable",
+                    "group_name": "SiteColumns",
+                    "group_expression": "=Fields!Site.Value",
+                },
+            )
+        ],
+        _t11,
+    ),
+    Case(
+        "t12",
+        "tablix",
+        "medium",
+        "synth",
+        "When the table runs onto more than one page, repeat the column heading row at the top "
+        "of every page.",
+        [],
+        _t12,
+        fixture=FLEET_RB,
+        known_gap="#67: no tool sets RepeatOnNewPage on the static column-header member; "
+        "set_repeat_on_new_page only addresses members that wrap a group",
+    ),
+    Case(
+        "t13",
+        "tablix",
+        "easy",
+        "synth",
+        "Sort the table rows by asset name in reverse alphabetical order, Z to A.",
+        [],
+        _t13,
+        known_gap="#66: set_group_sort takes no sort direction, and negating the expression "
+        "can't reverse a text sort",
+    ),
+    Case(
+        "s10",
+        "style",
+        "hard",
+        "synth",
+        "In the Utilization column heading, add ' (%)' after the word Utilization in a smaller "
+        "8pt, non-bold font. Keep the heading's white-on-navy look and everything else about "
+        "the cell as it is.",
+        [
+            (
+                "set_textbox_runs",
+                {
+                    "textbox_name": "FleetTable_Header_Utilization",
+                    "runs": [
+                        {"text": "Utilization"},
+                        {
+                            "text": " (%)",
+                            "font_weight": "Normal",
+                            "font_size": "8pt",
+                            "color": "#FFFFFF",
+                        },
+                    ],
+                },
+            )
+        ],
+        _s10,
+        fixture=FLEET_RB,
+    ),
+    Case(
+        "c07",
+        "chart",
+        "medium",
+        "synth",
+        "Change the chart to show idle hours instead of operating hours.",
+        [
+            (
+                "add_chart_series",
+                {
+                    "chart_name": "HoursBySite",
+                    "series_name": "IdleHours",
+                    "value_field": "IdleHours",
+                },
+            ),
+            ("remove_chart_series", {"chart_name": "HoursBySite", "series_name": "OperatingHours"}),
+        ],
+        _c07,
+    ),
+    Case(
+        "c08",
+        "chart",
+        "easy",
+        "synth",
+        "Take the idle hours series off the chart.",
+        [("remove_chart_series", {"chart_name": "HoursBySite", "series_name": "IdleHours"})],
+        _c08,
+        fixture=FLEET_RB,
+    ),
+    Case(
+        "p09",
+        "parameters",
+        "medium",
+        "synth",
+        "Rename the Site parameter to SiteFilter everywhere it's used.",
+        [("rename_parameter", {"old_name": "Site", "new_name": "SiteFilter"})],
+        _p09,
+        fixture=FLEET_RB,
+    ),
+]
+
+
 CASES: list[Case] = (
-    DATA + PARAMETERS + TABLIX + STYLE + LAYOUT + CHART + INTERACTIVITY + QUESTION + DECLINE
+    DATA
+    + PARAMETERS
+    + TABLIX
+    + STYLE
+    + LAYOUT
+    + CHART
+    + INTERACTIVITY
+    + REVIEW_PATHS
+    + QUESTION
+    + DECLINE
 )
 BY_ID = {c.id: c for c in CASES}
 assert len(BY_ID) == len(CASES), "duplicate case ids"

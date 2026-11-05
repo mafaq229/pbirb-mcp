@@ -84,3 +84,23 @@ jobs:
           # Structural check — survives whitespace / key-order changes that
           # `json.dumps` defaults shift between Python versions.
           jq -e '.result.serverInfo.name == "pbirb-mcp"' /tmp/init.json
+
+  eval-selftest:
+    name: Tool-selection eval selftest (offline)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      # Offline and free: replays the scripted oracle / null / wrong /
+      # corrupt solutions through the in-process MCP server and grades
+      # them, structural gate included. No API key, no model calls. Same
+      # interpreter and SDK pin as evals/tool_selection/CONTEXT.md (the
+      # harness needs Python >= 3.10).
+      - name: harness selftest
+        run: uv run --python 3.13 --with anthropic==2.3.0 python -m evals.tool_selection.harness selftest
