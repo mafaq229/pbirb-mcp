@@ -39,7 +39,9 @@ Core rules (19):
   :mod:`pbirb_mcp.ops.vbexpr`, so literals and comments don't count).
 * ``dangling-embedded-image`` (error) — ``Image`` or (#47)
   ``Style/BackgroundImage`` with ``Source=Embedded`` whose ``Value``
-  doesn't name an ``<EmbeddedImage>``.
+  doesn't name an ``<EmbeddedImage>``; (warning, #81) an ``=`` expression
+  ``Value`` with an identifier-shaped string literal that names none
+  (:func:`pbirb_mcp.ops.embedded_images.iter_embedded_image_refs`).
 * ``dangling-data-source-reference`` (error) —
   ``<DataSet>/<Query>/<DataSourceName>`` doesn't match a real
   ``<DataSource>``.
@@ -89,7 +91,7 @@ from lxml import etree
 from pbirb_mcp.core import names
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, find_designer_statement, q
-from pbirb_mcp.ops import expr_walk, vbexpr
+from pbirb_mcp.ops import embedded_images, expr_walk, vbexpr
 from pbirb_mcp.ops.dataset import _is_pbidataset_dataset
 from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
 
@@ -499,37 +501,47 @@ def _rule_dangling_embedded_image(doc: RDLDocument) -> list[Issue]:
                 declared.add(entry.get("Name"))
     issues: list[Issue] = []
     # <Image> report items and Style/<BackgroundImage> (#47) share the
-    # Source/Value shape.
-    for img in doc.root.iter(q("Image"), q("BackgroundImage")):
-        source = find_child(img, "Source")
-        if source is None or (source.text or "").strip() != "Embedded":
+    # Source/Value shape; iter_embedded_image_refs (#81) is the same walk
+    # remove_embedded_image refuses on. A literal Value is a definite
+    # reference (error); a string literal inside an =expression Value
+    # (=IIf(..., "LogoA", "LogoB")) is a possible one (warning). Only
+    # literals that are valid image names count, so URLs, captions and
+    # other strings in such expressions don't.
+    for ref in embedded_images.iter_embedded_image_refs(doc.root):
+        if ref.ref in declared:
             continue
-        value = find_child(img, "Value")
-        ref = (value.text or "").strip() if value is not None else ""
-        # The Value element holds either a literal name (e.g. "Logo") or an
-        # expression (e.g. "=Fields!X.Value"). Skip expressions — we can't
-        # statically resolve them.
-        if not ref or ref.startswith("="):
+        if ref.is_expression and not names.is_identifier(ref.ref):
             continue
-        if ref in declared:
-            continue
-        if etree.QName(img).localname == "BackgroundImage":
-            location = _ancestor_chain(img)
-            what = "BackgroundImage"
+        if ref.kind == "BackgroundImage":
+            location = _ancestor_chain(ref.element)
+            if location == "(unnamed)":  # e.g. the Body's own background
+                location = embedded_images.ref_locator(ref)
         else:
+            img = ref.element
             location = f"Image[Name={img.get('Name')!r}]" if img.get("Name") else "Image"
-            what = "Image"
-        issues.append(
-            {
+        if ref.is_expression:
+            issue: Issue = {
+                "severity": "warning",
+                "rule": "dangling-embedded-image",
+                "location": location,
+                "message": (
+                    f"{ref.kind} Source=Embedded expression may pick {ref.ref!r}, which "
+                    "isn't in <EmbeddedImages>"
+                ),
+                "suggestion": "add the image via add_embedded_image or fix the expression",
+            }
+        else:
+            issue = {
                 "severity": "error",
                 "rule": "dangling-embedded-image",
                 "location": location,
                 "message": (
-                    f"{what} Source=Embedded references {ref!r}, which isn't in <EmbeddedImages>"
+                    f"{ref.kind} Source=Embedded references {ref.ref!r}, which isn't in "
+                    "<EmbeddedImages>"
                 ),
                 "suggestion": "add the image via add_embedded_image or fix the Value reference",
             }
-        )
+        issues.append(issue)
     return issues
 
 

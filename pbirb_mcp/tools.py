@@ -3875,7 +3875,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_embedded_image",
         description=(
-            "Remove an embedded image. Refuses while an image still uses it unless force=true."
+            "Remove an embedded image. Refuses while an image, a background image or "
+            "an image expression still uses it, unless force=true."
         ),
         input_schema={
             "type": "object",

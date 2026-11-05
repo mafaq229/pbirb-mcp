@@ -795,7 +795,7 @@ List embedded images in the report by name and MIME type. Returns an empty list 
 
 *destructive*
 
-Remove a named embedded image. Refuses (lists offending Image elements) when any `<Image Source="Embedded"><Value>=name>` still references it; pass force=True to remove anyway and accept the dangling references. Drops the empty `<EmbeddedImages/>` block when removing the last entry.
+Remove a named embedded image. Refuses (file untouched; lists the references) while anything with Source=Embedded still uses it: an `<Image>` or a `Style/<BackgroundImage>` (Body, Rectangle, Textbox, Tablix, Chart, ...) whose `<Value>` is the name, or whose =expression Value contains it as a string literal (e.g. =IIf(..., "LogoA", "LogoB"), reported as a possible reference). Pass force=True to remove anyway and accept the dangling references. Drops the empty `<EmbeddedImages/>` block when removing the last entry.
 
 ### `set_element_visibility`
 

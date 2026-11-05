@@ -302,6 +302,56 @@ class TestDanglingEmbeddedImage:
         assert _rule_count(result, "dangling-embedded-image") == 1
         assert "NoSuchImage" in result["issues"][0]["message"]
 
+    def _body_image(self, rdl_path, value: str, source: str = "Embedded") -> None:
+        doc = RDLDocument.open(rdl_path)
+        body = doc.root.find(
+            f"{{{RDL_NS}}}ReportSections/{{{RDL_NS}}}ReportSection/{{{RDL_NS}}}Body"
+        )
+        items = body.find(q("ReportItems"))
+        img = etree.SubElement(items, q("Image"), Name="Pick")
+        etree.SubElement(img, q("Source")).text = source
+        etree.SubElement(img, q("Value")).text = value
+        _save(doc)
+
+    def test_expression_string_literal_naming_no_image_warns(self, rdl_path):
+        # #81: the Value expression may pick "LogoA", which isn't declared.
+        self._body_image(rdl_path, '=IIf(Parameters!DateFrom.Value Is Nothing, "LogoA", "LogoA")')
+        issues = lint_report(str(rdl_path), rules=["dangling-embedded-image"])["issues"]
+        assert [(i["severity"], i["location"]) for i in issues] == [
+            ("warning", "Image[Name='Pick']")
+        ]
+        assert "LogoA" in issues[0]["message"]
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "=Fields!ProductName.Value",  # no literal at all
+            '="http://x/" & Fields!ProductID.Value',  # not an image name
+            '=IIf(True, "Logo A", "")',  # not identifiers
+            '=Code.Pick() \' "Ghost" in a comment',
+        ],
+    )
+    def test_expression_without_image_name_literals_is_silent(self, rdl_path, value):
+        self._body_image(rdl_path, value)
+        assert lint_report(str(rdl_path), rules=["dangling-embedded-image"])["issues"] == []
+
+    def test_body_background_image_located_by_owner(self, rdl_path):
+        text = rdl_path.read_text(encoding="utf-8")
+        old = "<Height>2in</Height>\n        <Style />"
+        assert old in text
+        rdl_path.write_text(
+            text.replace(
+                old,
+                "<Height>2in</Height>\n        <Style><BackgroundImage><Source>Embedded</Source>"
+                "<Value>Watermark</Value></BackgroundImage></Style>",
+            ),
+            encoding="utf-8",
+        )
+        issues = lint_report(str(rdl_path), rules=["dangling-embedded-image"])["issues"]
+        assert [(i["severity"], i["location"]) for i in issues] == [
+            ("error", "Body/Style/BackgroundImage")
+        ]
+
 
 # ---- rule 9: dangling-data-source-reference ----------------------------
 
