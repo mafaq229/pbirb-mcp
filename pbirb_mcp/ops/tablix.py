@@ -44,6 +44,7 @@ from pbirb_mcp.ops import vbexpr
 from pbirb_mcp.ops import visibility as _visibility
 from pbirb_mcp.ops.filter_types import (
     _canonical_typename_group,
+    encode_filter_texts,
     type_mismatch_warnings,
     wrap_with_format,
 )
@@ -179,24 +180,29 @@ def add_tablix_filter(
 
     filters_root = _ensure_filters_block(tablix)
 
+    written_expression, written_values, entity_warnings = encode_filter_texts(
+        effective_expression, values
+    )
+    warnings.extend(entity_warnings)
+
     filter_node = etree.SubElement(filters_root, q("Filter"))
     expr_node = etree.SubElement(filter_node, q("FilterExpression"))
-    expr_node.text = encode_text(effective_expression)
+    expr_node.text = written_expression
     op_node = etree.SubElement(filter_node, q("Operator"))
     op_node.text = operator
     values_root = etree.SubElement(filter_node, q("FilterValues"))
-    for v in values:
+    for v in written_values:
         v_node = etree.SubElement(values_root, q("FilterValue"))
-        v_node.text = encode_text(v)
+        v_node.text = v
 
     new_index = len(find_children(filters_root, "Filter")) - 1
     doc.save()
     return {
         "tablix": tablix_name,
         "index": new_index,
-        "expression": effective_expression,
+        "expression": written_expression,
         "operator": operator,
-        "values": list(values),
+        "values": written_values,
         "formatted": field_format is not None,
         "warnings": warnings,
     }

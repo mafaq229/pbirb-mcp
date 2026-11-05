@@ -118,6 +118,28 @@ class TestUpdateDatasetQuery:
         doc = RDLDocument.open(rdl_path)
         doc.validate()  # no raise
 
+    def test_entity_shaped_dax_stored_verbatim(self, rdl_path):
+        # #75: SUBSTITUTE(col, "&amp;", "&") cleans HTML-escaped data; the
+        # "&amp;" literal must survive the write (it used to be decoded to
+        # "&", silently changing the query).
+        dax = (
+            "EVALUATE SELECTCOLUMNS('Sales', \"Clean\", "
+            'SUBSTITUTE(\'Sales\'[ProductName], "&amp;", "&"))'
+        )
+        result = update_dataset_query(str(rdl_path), "MainDataset", dax)
+        assert result["command_text"] == dax
+        assert get_dataset(str(rdl_path), "MainDataset")["command_text"] == dax
+        assert b'"&amp;amp;", "&amp;"' in rdl_path.read_bytes()
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_entity_shaped_dax_resubmit_is_noop(self, rdl_path):
+        dax = "EVALUATE FILTER('Sales', 'Sales'[ProductName] = \"R&amp;D\")"
+        update_dataset_query(str(rdl_path), "MainDataset", dax)
+        before = rdl_path.read_bytes()
+        again = update_dataset_query(str(rdl_path), "MainDataset", dax)
+        assert not again["changed"]
+        assert rdl_path.read_bytes() == before
+
 
 def _inject_designer_state(rdl_path: Path, dataset_name: str, statement_text: str):
     """Add a <rd:DesignerState>/<Statement> block to the named DataSet's
@@ -484,17 +506,15 @@ class TestUpdateDatasetQueryDesignerStateSync:
         )
         assert result["designer_state_synced"] is False
 
-    def test_sync_routes_through_encode_text(self, rdl_path):
-        """The DesignerState rewrite must use encode_text — same idempotent
-        encoding as CommandText. Otherwise a pre-encoded DAX double-encodes."""
+    def test_sync_writes_dax_verbatim(self, rdl_path):
+        """#75: the DesignerState rewrite stores the DAX verbatim, exactly
+        like CommandText — entity-shaped text in DAX is meaningful."""
         _inject_designer_state(rdl_path, "MainDataset", "old")
-        update_dataset_query(
-            path=str(rdl_path),
-            dataset_name="MainDataset",
-            dax_body="EVALUATE FILTER('X', 'X'[c] = \"A &amp; B\")",
-        )
-        # Disk should not contain &amp;amp;
-        assert b"&amp;amp;" not in rdl_path.read_bytes()
+        dax = "EVALUATE FILTER('X', 'X'[c] = \"A &amp; B\")"
+        update_dataset_query(path=str(rdl_path), dataset_name="MainDataset", dax_body=dax)
+        # Escaped exactly once on disk; reads back as the input.
+        assert b"&amp;amp;" in rdl_path.read_bytes()
+        assert get_dataset(str(rdl_path), "MainDataset")["command_text"] == dax
 
 
 # ---- add_query_parameter ---------------------------------------------------
@@ -707,17 +727,48 @@ class TestAddDatasetFilter:
                 values=["x"],
             )
 
-    def test_pre_encoded_value_no_double_encode(self, rdl_path):
-        # Bug class regression: pre-encoded entity must end up as
-        # &amp; on disk, not &amp;amp;.
-        add_dataset_filter(
+    def test_literal_value_stored_verbatim(self, rdl_path):
+        # #75: a literal (no leading '=') is not entity-decoded — 'R&amp;D'
+        # is a legitimate value and must read back unchanged.
+        result = add_dataset_filter(
             path=str(rdl_path),
             dataset_name="MainDataset",
             expression="=Fields!ProductName.Value",
             operator="Equal",
-            values=["A &amp; B"],
+            values=["R&amp;D"],
         )
-        assert b"&amp;amp;" not in (rdl_path).read_bytes()
+        assert result["values"] == ["R&amp;D"]
+        assert result["warnings"] == []
+        assert list_dataset_filters(str(rdl_path), "MainDataset")[0]["values"] == ["R&amp;D"]
+
+    def test_pre_encoded_expression_normalised_with_warning(self, rdl_path):
+        # #75: '='-expressions keep the double-encoding guard, but the
+        # rewrite is surfaced as a warning and the response echoes what
+        # was written.
+        result = add_dataset_filter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            expression='=Fields!ProductName.Value = "A &amp; B"',
+            operator="Equal",
+            values=["=True"],
+        )
+        assert result["expression"] == '=Fields!ProductName.Value = "A & B"'
+        assert any("decoded" in w for w in result["warnings"])
+        assert b"&amp;amp;" not in rdl_path.read_bytes()
+        stored = list_dataset_filters(str(rdl_path), "MainDataset")[0]
+        assert stored["expression"] == result["expression"]
+
+    def test_pre_encoded_expression_value_normalised(self, rdl_path):
+        result = add_dataset_filter(
+            path=str(rdl_path),
+            dataset_name="MainDataset",
+            expression="=Fields!ProductName.Value",
+            operator="Equal",
+            values=['="A &amp; B"'],
+        )
+        assert result["values"] == ['="A & B"']
+        assert len(result["warnings"]) == 1
+        assert list_dataset_filters(str(rdl_path), "MainDataset")[0]["values"] == ['="A & B"']
 
     def test_round_trip_safe(self, rdl_path):
         add_dataset_filter(

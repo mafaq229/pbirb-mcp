@@ -32,7 +32,11 @@ from pbirb_mcp.core.mutation import ChangeTracker, set_text_if_different
 from pbirb_mcp.core.names import MAX_IDENTIFIER_LENGTH, is_identifier, validate_identifier
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q
 from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
-from pbirb_mcp.ops.filter_types import type_mismatch_warnings, wrap_with_format
+from pbirb_mcp.ops.filter_types import (
+    encode_filter_texts,
+    type_mismatch_warnings,
+    wrap_with_format,
+)
 
 
 def _query(dataset: etree._Element) -> etree._Element:
@@ -181,10 +185,11 @@ def _sync_designer_state_statement(query: etree._Element, dax_body: str) -> bool
         # (rare, but valid). Don't synthesise one — Report Builder only
         # populates it for queries authored via the Query Designer.
         return False
-    new_text = encode_text(dax_body)
-    if statement.text == new_text:
+    # Verbatim, like <CommandText> (#75): DAX legitimately contains
+    # entity-shaped text such as SUBSTITUTE(x, "&amp;", "&").
+    if statement.text == dax_body:
         return False
-    statement.text = new_text
+    statement.text = dax_body
     return True
 
 
@@ -253,7 +258,9 @@ def update_dataset_query(
             anchor.addnext(cmd)
         else:
             query.insert(0, cmd)
-    cmd.text = encode_text(dax_body)
+    # Verbatim (#75): no entity decoding. DAX string literals such as
+    # SUBSTITUTE(col, "&amp;", "&") are meaningful; lxml escapes once.
+    cmd.text = dax_body
     designer_state_synced = _sync_designer_state_statement(query, dax_body)
 
     result: dict[str, Any] = {
@@ -267,7 +274,7 @@ def update_dataset_query(
         mapped: list[dict[str, str]] = []
         for field, df_node, new in plan:
             old = df_node.text or ""
-            df_node.text = encode_text(new)
+            df_node.text = new  # derived from the verbatim DAX (#75)
             mapped.append({"name": field.get("Name") or "", "old": old, "new": new})
         result["alias_strategy"] = "preserve_field_names"
         result["mapped"] = mapped
@@ -715,24 +722,29 @@ def add_dataset_filter(
     warnings = type_mismatch_warnings(doc.root, dataset, effective_expression, values)
     filters_root = _ensure_dataset_filters_block(dataset)
 
+    written_expression, written_values, entity_warnings = encode_filter_texts(
+        effective_expression, values
+    )
+    warnings.extend(entity_warnings)
+
     filter_node = etree.SubElement(filters_root, q("Filter"))
     expr_node = etree.SubElement(filter_node, q("FilterExpression"))
-    expr_node.text = encode_text(effective_expression)
+    expr_node.text = written_expression
     op_node = etree.SubElement(filter_node, q("Operator"))
     op_node.text = operator
     values_root = etree.SubElement(filter_node, q("FilterValues"))
-    for v in values:
+    for v in written_values:
         v_node = etree.SubElement(values_root, q("FilterValue"))
-        v_node.text = encode_text(v)
+        v_node.text = v
 
     new_index = len(find_children(filters_root, "Filter")) - 1
     doc.save()
     return {
         "dataset": dataset_name,
         "index": new_index,
-        "expression": effective_expression,
+        "expression": written_expression,
         "operator": operator,
-        "values": list(values),
+        "values": written_values,
         "formatted": field_format is not None,
         "warnings": warnings,
     }
@@ -1311,7 +1323,7 @@ def refresh_dataset_fields(
             fields_root = _ensure_fields_block(dataset)
         new_field = etree.SubElement(fields_root, q("Field"), Name=name)
         df_node = etree.SubElement(new_field, q("DataField"))
-        df_node.text = encode_text(col.data_field)
+        df_node.text = col.data_field  # derived from the verbatim DAX (#75)
         added.append({"name": name, "data_field": col.data_field})
         if name != col.name:
             warnings.append(
