@@ -52,7 +52,8 @@ controls, and decoration tools.
 from __future__ import annotations
 
 import copy
-from typing import Any, Optional
+import re
+from typing import Any, Optional, Union
 
 from lxml import etree
 
@@ -60,7 +61,12 @@ from pbirb_mcp.core import chart_shape, chart_types, mutation, names, style_valu
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError, resolve_dataset
-from pbirb_mcp.core.mutation import changed_by
+from pbirb_mcp.core.mutation import (
+    changed_by,
+    remove_child_if_present,
+    set_node_text,
+    set_text_if_different,
+)
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, find_children, q
 from pbirb_mcp.ops.actions import _insert_in_chart_data_point_order
 from pbirb_mcp.ops.containers import place
@@ -301,31 +307,73 @@ _CHART_AXIS_CHILD_ORDER = (
 )
 
 
+def _area_axes(area: etree._Element, axis_kind: str) -> list[etree._Element]:
+    axes_local = "ChartCategoryAxes" if axis_kind == "Category" else "ChartValueAxes"
+    axes_root = find_child(area, axes_local)
+    return find_children(axes_root, "ChartAxis") if axes_root is not None else []
+
+
 def _resolve_chart_axis(
-    chart: etree._Element, axis_kind: str, axis_name: str = "Primary"
-) -> etree._Element:
-    """Resolve the named ``<ChartAxis>`` inside the Default ChartArea's
-    Category or Value collection. Raises ``ElementNotFoundError`` if the
-    chart's structure is malformed or the named axis isn't present.
+    chart: etree._Element,
+    axis_kind: str,
+    axis_name: Optional[str] = None,
+    chart_area: Optional[str] = None,
+) -> tuple[etree._Element, etree._Element]:
+    """Resolve a ``<ChartAxis>`` of kind ``axis_kind``; return ``(area, axis)``.
+
+    ``chart_area`` names the ``ChartArea`` (default: the first one).
+    ``axis_name`` names the axis; omitted, it is ``Primary`` when the area
+    has one, else the area's only axis of that kind. With ``chart_area``
+    omitted, a named axis missing from the first area but present in
+    exactly one other area resolves there. Misses raise
+    ``ElementNotFoundError`` listing the ``area/axis`` pairs present.
     """
     if axis_kind not in _VALID_AXIS_KINDS:
         raise ValueError(f"axis must be one of {_VALID_AXIS_KINDS}; got {axis_kind!r}")
-    chart_areas = find_child(chart, "ChartAreas")
-    if chart_areas is None:
-        raise ElementNotFoundError(f"chart {chart.get('Name')!r} has no <ChartAreas>")
-    chart_area = find_child(chart_areas, "ChartArea")
+    chart_label = chart.get("Name")
+    areas = chart_shape.chart_areas(chart)
+    if not areas:
+        raise ElementNotFoundError(f"chart {chart_label!r} has no <ChartArea>")
+    pairs = [f"{a.get('Name')}/{x.get('Name')}" for a in areas for x in _area_axes(a, axis_kind)]
+
+    def _miss(what: str) -> ElementNotFoundError:
+        return ElementNotFoundError(f"{what} in chart {chart_label!r} (present: {pairs})")
+
+    if chart_area is not None:
+        scoped = [a for a in areas if a.get("Name") == chart_area]
+        if not scoped:
+            raise ElementNotFoundError(
+                f"no ChartArea named {chart_area!r} in chart {chart_label!r} "
+                f"(present: {[a.get('Name') for a in areas]})"
+            )
+        area = scoped[0]
+    else:
+        area = areas[0]
+
+    axes = _area_axes(area, axis_kind)
+    if axis_name is None:
+        for x in axes:
+            if x.get("Name") == "Primary":
+                return area, x
+        if len(axes) == 1:
+            return area, axes[0]
+        raise _miss(
+            f"axis_name is required: ChartArea {area.get('Name')!r} has {len(axes)} "
+            f"{axis_kind} axes and none is named 'Primary'"
+        )
+    for x in axes:
+        if x.get("Name") == axis_name:
+            return area, x
     if chart_area is None:
-        raise ElementNotFoundError(f"chart {chart.get('Name')!r} has no <ChartArea>")
-    axes_local = "ChartCategoryAxes" if axis_kind == "Category" else "ChartValueAxes"
-    axes_root = find_child(chart_area, axes_local)
-    if axes_root is None:
-        raise ElementNotFoundError(f"chart {chart.get('Name')!r} has no <{axes_local}>")
-    for axis in find_children(axes_root, "ChartAxis"):
-        if axis.get("Name") == axis_name:
-            return axis
-    raise ElementNotFoundError(
-        f"no {axis_kind} axis named {axis_name!r} in chart {chart.get('Name')!r}"
-    )
+        others = [
+            (a, x)
+            for a in areas[1:]
+            for x in _area_axes(a, axis_kind)
+            if x.get("Name") == axis_name
+        ]
+        if len(others) == 1:
+            return others[0]
+    raise _miss(f"no {axis_kind} axis named {axis_name!r} in ChartArea {area.get('Name')!r}")
 
 
 def _insert_axis_child_in_order(axis: etree._Element, new_child: etree._Element) -> None:
@@ -347,12 +395,13 @@ def _insert_axis_child_in_order(axis: etree._Element, new_child: etree._Element)
 
 
 def _set_axis_title(axis: etree._Element, title: str) -> None:
-    """Write or rewrite
-    ``<ChartAxisTitle><Caption>title</Caption></ChartAxisTitle>``.
+    """Write the axis title text, ``ChartAxisTitle/Caption``.
 
-    Empty string clears the title block. Migrates pre-v0.3.1 reports
-    that have a bare ``<Title>`` element by removing it (RB rejects
-    that name on a ChartAxis).
+    Only the ``Caption`` is written: the title's other children
+    (``Style`` with the font Report Builder authors, ``Position``,
+    ``TextOrientation``) are kept. Empty string clears the whole title
+    block. Migrates pre-v0.3.1 reports that have a bare ``<Title>``
+    element by removing it (RB rejects that name on a ChartAxis).
     """
     legacy = find_child(axis, "Title")
     if legacy is not None:
@@ -362,12 +411,15 @@ def _set_axis_title(axis: etree._Element, title: str) -> None:
         if existing is not None:
             axis.remove(existing)
         return
-    new_title = etree.Element(q("ChartAxisTitle"))
-    etree.SubElement(new_title, q("Caption")).text = encode_text(title)
-    if existing is not None:
-        axis.replace(existing, new_title)
-    else:
-        _insert_axis_child_in_order(axis, new_title)
+    if existing is None:
+        existing = etree.Element(q("ChartAxisTitle"))
+        _insert_axis_child_in_order(axis, existing)
+    caption = find_child(existing, "Caption")
+    if caption is None:
+        # Caption first: Report Builder's order (the XSD is a choice).
+        caption = etree.Element(q("Caption"))
+        existing.insert(0, caption)
+    set_node_text(caption, encode_text(title))
 
 
 def _set_axis_format(axis: etree._Element, format_value: str) -> None:
@@ -393,89 +445,152 @@ def _set_axis_format(axis: etree._Element, format_value: str) -> None:
 def _set_axis_simple_text(axis: etree._Element, local: str, value: str) -> None:
     """Common path for Minimum / Maximum / Interval / LogScale / Visible."""
     if value == "":
-        existing = find_child(axis, local)
-        if existing is not None:
-            axis.remove(existing)
+        remove_child_if_present(axis, local)
         return
-    new_node = etree.Element(q(local))
-    new_node.text = encode_text(value)
-    _insert_axis_child_in_order(axis, new_node)
+    set_text_if_different(axis, local, encode_text(value), order=_CHART_AXIS_CHILD_ORDER)
+
+
+# A literal axis bound / interval: a number (RDL invariant culture), or
+# NaN (Report Builder's "Auto").
+_AXIS_NUMBER_RE = re.compile(r"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$")
+
+
+def _axis_number(value: Optional[str], field: str) -> Optional[str]:
+    """Validate ``min`` / ``max`` / ``interval``: a number, ``NaN``, an
+    ``=expression`` or ``''`` (clear). Surrounding whitespace is trimmed."""
+    if value is None or value.startswith("="):
+        return value
+    text = value.strip()
+    if value == "" or text == "NaN" or _AXIS_NUMBER_RE.match(text):
+        return text
+    raise ValueError(
+        f"{field}: invalid axis value {value!r}; expected a number (e.g. '0', '2.5', "
+        "'1e6'), 'NaN' (auto), an =expression, or '' to clear"
+    )
+
+
+def _axis_flag(value: Union[bool, str, None], field: str, allow_auto: bool) -> Optional[str]:
+    """``True``/``False`` (or their strings, any case) -> ``'True'`` /
+    ``'False'``; ``'Auto'`` when ``allow_auto``. RDL's ChartAxis booleans
+    are case-sensitive (lowercase ``true`` is refused by Report Builder)."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    allowed = ("Auto", "True", "False") if allow_auto else ("True", "False")
+    if isinstance(value, str):
+        for candidate in allowed:
+            if value.strip().lower() == candidate.lower():
+                return candidate
+    raise ValueError(
+        f"{field}: invalid value {value!r}; expected "
+        + ("true, false or 'Auto'" if allow_auto else "true or false")
+    )
+
+
+def _literal_number(text: Optional[str]) -> Optional[float]:
+    """The value of a literal numeric axis bound; None for an expression,
+    NaN, empty or absent."""
+    if text is None:
+        return None
+    text = text.strip()
+    if not _AXIS_NUMBER_RE.match(text):
+        return None
+    return float(text)
 
 
 def set_chart_axis(
     path: str,
     chart_name: str,
     axis: str,
-    axis_name: str = "Primary",
+    axis_name: Optional[str] = None,
     title: Optional[str] = None,
     format: Optional[str] = None,  # noqa: A002 - tool-facing arg name; intentional
     min: Optional[str] = None,  # noqa: A002 - tool-facing
     max: Optional[str] = None,  # noqa: A002 - tool-facing
     log_scale: Optional[bool] = None,
     interval: Optional[str] = None,
-    visible: Optional[bool] = None,
+    visible: Union[bool, str, None] = None,
+    chart_area: Optional[str] = None,
 ) -> dict[str, Any]:
     """Configure a chart axis: title, numeric format, range, log scale,
     interval, visibility.
 
-    ``axis`` ∈ {Category, Value}. ``axis_name`` defaults to ``Primary``
-    (the only axis the template emits today; pass an explicit name when
-    the chart has secondary axes).
+    ``axis`` ∈ {Category, Value}. ``chart_area`` names the ``ChartArea``
+    (default: the first). ``axis_name`` defaults to ``Primary``, or the
+    area's only axis of that kind; a named axis that is not in the first
+    area but in exactly one other area is found there. A miss lists the
+    ``area/axis`` pairs present.
 
     Each optional field follows the canonical "None = unchanged, '' =
-    clear the element" convention. ``log_scale`` / ``visible`` accept
-    booleans; pass ``None`` to leave them unchanged.
+    clear the element" convention. ``title`` rewrites only
+    ``ChartAxisTitle/Caption`` (the title's ``Style`` etc. are kept).
+    ``min`` / ``max`` / ``interval`` must be a number, ``NaN`` (auto) or
+    an ``=expression``. ``log_scale`` is a boolean; a log scale with a
+    literal minimum ``<= 0`` is refused. ``visible`` is ``true`` /
+    ``false`` / ``"Auto"`` (written ``True`` / ``False`` / ``Auto``).
 
-    Returns ``{chart, axis, axis_name, kind, changed: list[str]}`` —
-    empty list when nothing was actually set (no-op short-circuit, no
-    save).
+    Returns ``{chart, axis, axis_name, chart_area, kind, changed:
+    list[str]}`` — ``changed`` lists only the fields whose value really
+    changed; empty when nothing did (file untouched).
     """
     if axis not in _VALID_AXIS_KINDS:
         raise ValueError(f"axis must be one of {_VALID_AXIS_KINDS}; got {axis!r}")
+    min = _axis_number(min, "min")
+    max = _axis_number(max, "max")
+    interval = _axis_number(interval, "interval")
+    log_text = _axis_flag(log_scale, "log_scale", allow_auto=False)
+    visible_text = _axis_flag(visible, "visible", allow_auto=True)
+    interval_value = _literal_number(interval)
+    if interval_value is not None and interval_value < 0:
+        raise ValueError(f"interval: must not be negative; got {interval!r}")
 
-    flags = {
-        "title": title,
-        "format": format,
-        "min": min,
-        "max": max,
-        "log_scale": log_scale,
-        "interval": interval,
-        "visible": visible,
-    }
-    if all(v is None for v in flags.values()):
+    flags = (title, format, min, max, log_text, interval, visible_text)
+    if all(v is None for v in flags):
         return {
             "chart": chart_name,
             "axis": axis,
             "axis_name": axis_name,
+            "chart_area": chart_area,
             "kind": "ChartAxis",
             "changed": [],
         }
 
     doc = RDLDocument.open(path)
     chart = _resolve_chart(doc, chart_name)
-    axis_el = _resolve_chart_axis(chart, axis, axis_name)
+    area_el, axis_el = _resolve_chart_axis(chart, axis, axis_name, chart_area)
+
+    # A logarithmic scale cannot start at or below zero: refuse a call that
+    # sets up that combination (with either argument).
+    if log_text is not None or min is not None:
+        log_node = find_child(axis_el, "LogScale")
+        min_node = find_child(axis_el, "Minimum")
+        eff_log = (
+            log_text if log_text is not None else (log_node.text if log_node is not None else None)
+        )
+        eff_min = min if min is not None else (min_node.text if min_node is not None else None)
+        min_value = _literal_number(eff_min)
+        if (eff_log or "").strip() == "True" and min_value is not None and min_value <= 0:
+            raise ValueError(
+                f"log_scale: a logarithmic axis needs a minimum greater than zero; the "
+                f"axis minimum is {eff_min!r}. Pass min (e.g. '1', 'NaN' for auto) or "
+                "log_scale=false"
+            )
 
     changed: list[str] = []
     # ChartAxis/LogScale and Visible are BooleanLocalizableType — a
-    # case-sensitive enum {True, False}. Lowercase 'true'/'false' is
-    # rejected by RB with "true is not a valid value." This differs from
-    # BooleanExpressionType used on most other ReportItem booleans.
+    # case-sensitive enum {True, False} (Visible also Auto). Lowercase
+    # 'true'/'false' is rejected by RB with "true is not a valid value."
+    # This differs from BooleanExpressionType used on most other
+    # ReportItem booleans.
     writes = (
         ("Title", title, _set_axis_title),
         ("Style.Format", format, _set_axis_format),
         ("Minimum", min, lambda a, v: _set_axis_simple_text(a, "Minimum", v)),
         ("Maximum", max, lambda a, v: _set_axis_simple_text(a, "Maximum", v)),
-        (
-            "LogScale",
-            None if log_scale is None else ("True" if log_scale else "False"),
-            lambda a, v: _set_axis_simple_text(a, "LogScale", v),
-        ),
+        ("LogScale", log_text, lambda a, v: _set_axis_simple_text(a, "LogScale", v)),
         ("Interval", interval, lambda a, v: _set_axis_simple_text(a, "Interval", v)),
-        (
-            "Visible",
-            None if visible is None else ("True" if visible else "False"),
-            lambda a, v: _set_axis_simple_text(a, "Visible", v),
-        ),
+        ("Visible", visible_text, lambda a, v: _set_axis_simple_text(a, "Visible", v)),
     )
     for label, value, writer in writes:
         if value is not None and changed_by(axis_el, writer, axis_el, value):
@@ -486,7 +601,8 @@ def set_chart_axis(
     return {
         "chart": chart_name,
         "axis": axis,
-        "axis_name": axis_name,
+        "axis_name": axis_el.get("Name"),
+        "chart_area": area_el.get("Name"),
         "kind": "ChartAxis",
         "changed": changed,
     }

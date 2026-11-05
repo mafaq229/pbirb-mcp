@@ -312,6 +312,14 @@ def data_point_count(series: etree._Element) -> int:
     return len(data_points(series))
 
 
+def chart_areas(chart: etree._Element) -> list[etree._Element]:
+    """``ChartAreas/ChartArea`` of a chart, in document order."""
+    areas = find_child(chart, "ChartAreas")
+    if areas is None:
+        return []
+    return find_children(areas, "ChartArea")
+
+
 def hierarchy_findings(
     chart: etree._Element, *, empty_as_one: bool = False
 ) -> list[tuple[str, etree._Element]]:
@@ -371,6 +379,7 @@ def hierarchy_problems(chart: etree._Element) -> list[str]:
 __all__ = [
     "category_hierarchy_members",
     "category_leaf_members",
+    "chart_areas",
     "child_members",
     "data_label",
     "data_point_count",

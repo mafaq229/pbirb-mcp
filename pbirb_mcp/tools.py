@@ -3739,7 +3739,7 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Format a chart axis (Category or Value): title, number/date format, "
             "min/max, interval, log scale, visible. '' clears a field. axis_name "
-            "defaults to 'Primary'."
+            "defaults to 'Primary'; chart_area to the first area."
         ),
         input_schema={
             "type": "object",
@@ -3751,17 +3751,18 @@ def register_all_tools(server: MCPServer) -> None:
                     "description": "Category or Value",
                     "enum": ["Category", "Value"],
                 },
-                "axis_name": {"type": "string", "default": "Primary"},
+                "axis_name": {"type": ["string", "null"], "default": None},
+                "chart_area": {"type": ["string", "null"], "default": None},
                 "title": {"type": "string"},
                 "format": {
                     "type": "string",
                     "description": "Numeric/date format, e.g. '#,0.00' or 'MMM yyyy'.",
                 },
-                "min": {"type": "string"},
+                "min": {"type": "string", "description": "Number, NaN (auto) or =expression."},
                 "max": {"type": "string"},
                 "log_scale": {"type": "boolean"},
                 "interval": {"type": "string"},
-                "visible": {"type": "boolean"},
+                "visible": {"oneOf": [{"type": "boolean"}, {"type": "string", "enum": ["Auto"]}]},
             },
             "required": ["path", "chart_name", "axis"],
             "additionalProperties": False,

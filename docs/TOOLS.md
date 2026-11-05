@@ -506,7 +506,7 @@ Make a chart series dynamic: one rendered series per distinct value of the group
 
 *idempotent*
 
-Configure a chart axis: title (Caption), format (numeric/date format string in `<Style>/<Format>`), min/max range, log_scale, interval, visible. axis ∈ {Category, Value}; axis_name defaults to 'Primary' (the only axis the template emits — pass a real name for secondary axes). All field args are optional; pass '' to clear an element. Returns {chart, axis, axis_name, kind, changed: list[str]} with the affected sub-element names.
+Configure a chart axis: title (Caption), format (numeric/date format string in `<Style>/<Format>`), min/max range, log_scale, interval, visible. axis ∈ {Category, Value}. chart_area names the ChartArea (default: the first); axis_name defaults to 'Primary', or the area's only axis of that kind. A named axis that is not in the first area but in exactly one other area is found there without chart_area; a miss lists the `area/axis` pairs present. All field args are optional; pass '' to clear an element. title rewrites only `ChartAxisTitle/Caption`, keeping the title's Style (font), Position and TextOrientation. min / max / interval must be a number, NaN (auto) or an =expression (interval not negative). log_scale writes `True`/`False`; a log scale with a literal minimum <= 0 is refused. visible is true / false / "Auto" (written `True` / `False` / `Auto`). Returns {chart, axis, axis_name, chart_area, kind, changed: list[str]}; changed lists only the fields whose value really changed, and is empty (file untouched) when nothing did.
 
 ### `set_chart_legend`
 

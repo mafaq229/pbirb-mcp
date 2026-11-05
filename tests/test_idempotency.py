@@ -976,6 +976,13 @@ VARIANTS: list[tuple[str, Case]] = [
     ("set_chart_axis", Case({"chart_name": CH, "axis": "Category", "title": ""}, fixture=CHART)),
     ("set_chart_axis", Case({"chart_name": CH, "axis": "Value", "log_scale": True}, fixture=CHART)),
     (
+        "set_chart_axis",
+        Case(
+            {"chart_name": CH, "axis": "Value", "chart_area": "Default", "visible": "Auto"},
+            fixture=CHART,
+        ),
+    ),
+    (
         "set_chart_category_group",
         Case(
             {"chart_name": CH, "add_level": "outer", "group_field": "ProductID"},
