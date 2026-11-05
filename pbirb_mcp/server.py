@@ -274,8 +274,8 @@ _CONFIRM_PARAM = {
     "type": "boolean",
     "default": False,
     "description": (
-        "true runs this destructive edit; required when PBIRB_MCP_REQUIRE_CONFIRM "
-        "is on (the pbirb-mcp default). Ask the user first."
+        "true runs this destructive edit (required unless "
+        "PBIRB_MCP_REQUIRE_CONFIRM is off). Ask the user first."
     ),
 }
 

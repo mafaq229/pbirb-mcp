@@ -25,8 +25,7 @@ RESPONSE_FORMAT_PARAM: dict = {
     "enum": ["concise", "detailed"],
     "default": "detailed",
     "description": (
-        "'detailed' (default): the full read. 'concise': names, types, counts "
-        "and positions only — use it to plan, then read details for what you edit."
+        "'concise': names, types, counts, positions (to plan); 'detailed' (default): full read."
     ),
 }
 
