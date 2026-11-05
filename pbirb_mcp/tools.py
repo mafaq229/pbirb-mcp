@@ -168,6 +168,16 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": "boolean",
                     "description": "Compute the result (and mapped list) without saving.",
                 },
+                "designer_state": {
+                    "type": "string",
+                    "enum": ["sync", "drop"],
+                    "default": "sync",
+                    "description": (
+                        "Report Builder's Query Designer state: 'sync' rewrites its "
+                        "Statement to the new DAX; 'drop' removes rd:DesignerState so "
+                        "Report Builder opens the query in its text editor."
+                    ),
+                },
             },
             "required": ["path", "dataset_name", "dax_body"],
             "additionalProperties": False,

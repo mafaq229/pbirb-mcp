@@ -54,8 +54,9 @@ Core rules (19):
   ``&amp;``/``&lt;``/``&gt;``/``&quot;`` (the post-decode signature of a
   double-encoding regression). Skips ``<Code>``, ``<CommandText>``,
   ``<ImageData>``, ``rd:*`` and HTML-markup text runs.
-* ``stale-designer-state`` (warn) — ``<rd:DesignerState>/<Statement>``
-  diverges from ``<CommandText>``.
+* ``stale-designer-state`` (warn) — the Query Designer's Statement
+  (``rd:DesignerState/QueryDefinition/Query/Statement``, or a legacy
+  ``rd:Statement``) diverges from ``<CommandText>``.
 * ``tablix-span-misplaced`` (error) — ``<ColSpan>``/``<RowSpan>``
   outside ``<CellContents>``.
 * ``dataset-fields-out-of-sync`` (warn, v0.3.1; both directions #51) —
@@ -87,7 +88,7 @@ from lxml import etree
 
 from pbirb_mcp.core import names
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import RD_NS, find_child, find_children, find_designer_statement, q
 from pbirb_mcp.ops import expr_walk, vbexpr
 from pbirb_mcp.ops.dataset import _is_pbidataset_dataset
 from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
@@ -744,25 +745,32 @@ def _rule_stale_designer_state(doc: RDLDocument) -> list[Issue]:
         cmd = find_child(query, "CommandText")
         if cmd is None or cmd.text is None:
             continue
-        # find_child takes a local name only, so reach into rd: directly.
-        designer = query.find(f"{{{RD_NS}}}DesignerState")
-        if designer is None:
-            continue
-        statement = designer.find(f"{{{RD_NS}}}Statement")
+        # Report Builder's QueryDefinition/Query/Statement (issue #70), or
+        # the legacy rd:Statement direct child.
+        statement = find_designer_statement(query)
         if statement is None or statement.text is None:
             continue
         if statement.text.strip() == cmd.text.strip():
             continue
+        path = (
+            "rd:DesignerState/rd:Statement"
+            if statement.tag == f"{{{RD_NS}}}Statement"
+            else "rd:DesignerState/QueryDefinition/Query/Statement"
+        )
         issues.append(
             {
                 "severity": "warning",
                 "rule": "stale-designer-state",
-                "location": f"DataSet[Name={ds.get('Name')!r}]/Query/rd:DesignerState/Statement",
+                "location": f"DataSet[Name={ds.get('Name')!r}]/Query/{path}",
                 "message": (
-                    "<rd:DesignerState>/<Statement> diverges from <CommandText>; "
-                    "the Query Designer GUI will display stale DAX"
+                    "the Query Designer's Statement (rd:DesignerState) diverges from "
+                    "<CommandText>; Report Builder's designer shows stale DAX and can "
+                    "regenerate the old query over the new one"
                 ),
-                "suggestion": "call update_dataset_query() to sync both at once",
+                "suggestion": (
+                    "call update_dataset_query() with the current DAX to sync both, "
+                    "or designer_state='drop' to remove the designer state"
+                ),
             }
         )
     return issues

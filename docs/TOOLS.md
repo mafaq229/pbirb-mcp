@@ -97,6 +97,8 @@ Full DAX command text, fields, query parameters, and dataset-level filters for e
 
 Replace the DAX command text of a named dataset. The full DAX expression is written verbatim — no XML-entity decoding, so a DAX literal such as SUBSTITUTE(col, "&amp;", "&") is kept exactly (the file escapes it once); empty bodies are rejected. Optional alias_strategy='preserve_field_names' keeps every `<Field Name>` (so Fields!X.Value references keep resolving) and re-aims `<DataField>` cells at the new DAX columns (Table[Col] or [Alias]): Fields whose column is still returned stay as they are (any order); a Field whose column vanished is re-aimed only when exactly one new column took its slot in the old DAX's column order; everything else is left untouched and reported in warnings. dry_run=true returns the result (including mapped) without saving.
 
+Report Builder's Query Designer keeps its own copy of the query in `<rd:DesignerState>/QueryDefinition/Query/Statement`. designer_state='sync' (default) rewrites that Statement to the new DAX (`designer_state_synced`); only the text is updated, because the designer's Select/Items graph cannot describe arbitrary DAX. designer_state='drop' removes `<rd:DesignerState>` (`designer_state_dropped`) so Report Builder opens the query in its text editor and can't regenerate the old query from the stale graph — prefer it for hand-written DAX.
+
 ### `add_query_parameter`
 
 Add a `<QueryParameter>` binding to a dataset's query. Use to wire report parameters into DAX (e.g. =Parameters!DateFrom.Value).

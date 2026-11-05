@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from typing import Optional
 
 import pytest
 from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
-from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child
+from pbirb_mcp.core.xpath import QD_NS, RD_NS, RDL_NS, find_child
 from pbirb_mcp.ops.dataset import (
     add_calculated_field,
     add_dataset_field,
@@ -40,6 +41,7 @@ from pbirb_mcp.ops.reader import get_datasets
 from pbirb_mcp.ops.validate import validate_report
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
+from tests._designer_state import build_designer_state_report
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pbi_paginated_minimal.rdl"
 
@@ -142,9 +144,24 @@ class TestUpdateDatasetQuery:
 
 
 def _inject_designer_state(rdl_path: Path, dataset_name: str, statement_text: str):
-    """Add a <rd:DesignerState>/<Statement> block to the named DataSet's
-    <Query>, mimicking what Power BI Report Builder writes for PBIDATASET
-    queries authored via the Query Designer GUI."""
+    """Add the <rd:DesignerState> block Report Builder's Query Designer
+    writes (#70): rd:DesignerState/QueryDefinition/Query/Statement in the
+    AnalysisServices QueryDefinition namespace."""
+    doc = RDLDocument.open(rdl_path)
+    ds = next(d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == dataset_name)
+    query = find_child(ds, "Query")
+    designer_state = etree.SubElement(query, f"{{{RD_NS}}}DesignerState")
+    qdef = etree.SubElement(designer_state, f"{{{QD_NS}}}QueryDefinition", nsmap={None: QD_NS})
+    etree.SubElement(qdef, f"{{{QD_NS}}}CommandType").text = "DAX"
+    qd_query = etree.SubElement(qdef, f"{{{QD_NS}}}Query")
+    etree.SubElement(qd_query, f"{{{QD_NS}}}Statement").text = statement_text
+    etree.SubElement(qd_query, f"{{{QD_NS}}}ParameterDefinitions")
+    doc.save()
+
+
+def _inject_legacy_designer_state(rdl_path: Path, dataset_name: str, statement_text: str):
+    """The pre-#70 assumed shape: <rd:DesignerState>/<rd:Statement>. Still
+    accepted as a fallback by find_designer_statement."""
     doc = RDLDocument.open(rdl_path)
     ds = next(d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == dataset_name)
     query = find_child(ds, "Query")
@@ -152,6 +169,11 @@ def _inject_designer_state(rdl_path: Path, dataset_name: str, statement_text: st
     statement = etree.SubElement(designer_state, f"{{{RD_NS}}}Statement")
     statement.text = statement_text
     doc.save()
+
+
+def _designer_statement_text(rdl_path: Path) -> Optional[str]:
+    st = next(etree.parse(str(rdl_path)).iter(f"{{{QD_NS}}}Statement"), None)
+    return None if st is None else st.text
 
 
 _SALES_DAX = "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[ProductName], 'Sales'[Amount])"
@@ -446,11 +468,35 @@ class TestUpdateDatasetQueryAliasStrategy:
 
 
 class TestUpdateDatasetQueryDesignerStateSync:
-    """update_dataset_query must rewrite <rd:DesignerState>/<Statement>
-    in lockstep with <CommandText>. Without this, the Query Designer GUI
-    in Report Builder shows stale DAX while the runtime executes the new
-    DAX — invisibly confusing.
+    """update_dataset_query must rewrite Report Builder's Query Designer
+    Statement (rd:DesignerState/QueryDefinition/Query/Statement, #70) in
+    lockstep with <CommandText>. Without this the designer shows stale DAX
+    and can regenerate the old query over the new one.
     """
+
+    def test_report_builder_shape_synced(self, tmp_path):
+        # Issue #70 repro, against the real Report Builder shape.
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        st = next(etree.parse(str(path)).iter(f"{{{QD_NS}}}Statement"))
+        assert [etree.QName(a).localname for a in st.iterancestors()][:3] == [
+            "Query",
+            "QueryDefinition",
+            "DesignerState",
+        ]
+        result = update_dataset_query(str(path), "MainDataset", 'EVALUATE ROW("x", 1)')
+        assert result["designer_state_synced"] is True
+        assert _designer_statement_text(path) == 'EVALUATE ROW("x", 1)'
+        # The QuerySpecification graph is left alone (it can't describe the DAX).
+        assert b"MDXQuerySpecification" in path.read_bytes()
+
+    def test_report_builder_shape_resubmit_is_noop(self, tmp_path):
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        update_dataset_query(str(path), "MainDataset", 'EVALUATE ROW("x", 1)')
+        before = path.read_bytes()
+        again = update_dataset_query(str(path), "MainDataset", 'EVALUATE ROW("x", 1)')
+        assert again["designer_state_synced"] is False
+        assert not again["changed"]
+        assert path.read_bytes() == before
 
     def test_designer_state_statement_synced(self, rdl_path):
         _inject_designer_state(rdl_path, "MainDataset", "OLD: EVALUATE 'OldTable'")
@@ -460,14 +506,54 @@ class TestUpdateDatasetQueryDesignerStateSync:
             dax_body="NEW: EVALUATE 'NewTable'",
         )
         assert result["designer_state_synced"] is True
+        assert _designer_statement_text(rdl_path) == "NEW: EVALUATE 'NewTable'"
 
+    def test_legacy_rd_statement_still_synced(self, rdl_path):
+        _inject_legacy_designer_state(rdl_path, "MainDataset", "OLD")
+        result = update_dataset_query(str(rdl_path), "MainDataset", "EVALUATE 'New'")
+        assert result["designer_state_synced"] is True
         doc = RDLDocument.open(rdl_path)
-        ds = next(
-            d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == "MainDataset"
+        statement = next(doc.root.iter(f"{{{RD_NS}}}Statement"))
+        assert statement.text == "EVALUATE 'New'"
+
+    def test_drop_removes_designer_state(self, tmp_path):
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        result = update_dataset_query(
+            str(path), "MainDataset", 'EVALUATE ROW("x", 1)', designer_state="drop"
         )
-        statement = ds.find(f"{{{RDL_NS}}}Query/{{{RD_NS}}}DesignerState/{{{RD_NS}}}Statement")
-        assert statement is not None
-        assert statement.text == "NEW: EVALUATE 'NewTable'"
+        assert result["designer_state_dropped"] is True
+        assert result["designer_state_synced"] is False
+        assert b"DesignerState" not in path.read_bytes()
+        assert get_dataset(str(path), "MainDataset")["designer_state_present"] is False
+        assert get_dataset(str(path), "MainDataset")["command_text"] == 'EVALUATE ROW("x", 1)'
+        # Dropping the foreign QueryDefinition payload leaves a valid report.
+        assert validate_report(str(path))["valid"]
+
+    def test_drop_again_is_noop(self, tmp_path):
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        update_dataset_query(str(path), "MainDataset", "EVALUATE 'X'", designer_state="drop")
+        before = path.read_bytes()
+        again = update_dataset_query(
+            str(path), "MainDataset", "EVALUATE 'X'", designer_state="drop"
+        )
+        assert again["designer_state_dropped"] is False
+        assert not again["changed"]
+        assert path.read_bytes() == before
+
+    def test_drop_with_dry_run_does_not_write(self, tmp_path):
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        before = path.read_bytes()
+        result = update_dataset_query(
+            str(path), "MainDataset", "EVALUATE 'X'", designer_state="drop", dry_run=True
+        )
+        assert result["designer_state_dropped"] is True
+        assert path.read_bytes() == before
+
+    def test_unknown_designer_state_mode_rejected(self, rdl_path):
+        with pytest.raises(ValueError, match="designer_state"):
+            update_dataset_query(
+                str(rdl_path), "MainDataset", "EVALUATE 'X'", designer_state="keep"
+            )
 
     def test_no_designer_state_returns_false(self, rdl_path):
         # Fixture has no DesignerState — the sync flag is False.

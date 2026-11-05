@@ -57,14 +57,22 @@ shape.)
 
 ## DesignerState sync
 
-PBIDATASET datasets typically carry an `<rd:DesignerState>/<Statement>`
-block whose text is what Report Builder's Query Designer GUI displays.
-When `<CommandText>` changes but `<Statement>` doesn't, the GUI shows
-stale DAX, masking the actual runtime query.
+Datasets authored in Report Builder's Query Designer carry an
+`<rd:DesignerState>` block. Its payload is a `QueryDefinition` (namespace
+`http://schemas.microsoft.com/AnalysisServices/QueryDefinition`) whose
+`Query/Statement` text is what the designer displays, next to a
+`QuerySpecification` Select/Items graph describing the query it built.
+When `<CommandText>` changes but `Statement` doesn't, the designer shows
+stale DAX — and clicking OK in the graphical designer can regenerate the
+old query over the new one.
 
-`update_dataset_query` rewrites both in lockstep — no separate call
-needed. The `stale-designer-state` lint rule flags any drift if a tool
-outside `update_dataset_query` mutates the command text.
+`update_dataset_query` rewrites `Statement` in lockstep by default
+(`designer_state="sync"`, reported as `designer_state_synced`). The
+Select/Items graph can't describe arbitrary DAX, so for hand-written DAX
+pass `designer_state="drop"`: the `<rd:DesignerState>` block is removed
+and Report Builder opens the query in its text editor instead. The
+`stale-designer-state` lint rule flags any drift if a tool outside
+`update_dataset_query` (e.g. `raw_xml_replace`) mutates the command text.
 
 ## Field names: SELECTCOLUMNS vs SUMMARIZECOLUMNS
 
@@ -144,8 +152,8 @@ walking each dataset's `<QueryParameters>` block manually.
 * `pbidataset-at-prefix` — `<QueryParameter Name="@…">` on a
   PBIDATASET dataset. Caught at write-time when the auto-strip
   short-circuits via `force_at_prefix=True` AND in legacy reports.
-* `stale-designer-state` — `<rd:DesignerState>/<Statement>` text
-  diverges from `<CommandText>`.
+* `stale-designer-state` — the `rd:DesignerState/QueryDefinition/Query/Statement`
+  text (or a legacy `rd:Statement`) diverges from `<CommandText>`.
 * `multi-value-eq` — `=Parameters!X.Value` (multi-value) compared
   with `=` instead of `IN`. The PBI Query Designer accepts the
   ill-formed shape but the runtime errors at preview.

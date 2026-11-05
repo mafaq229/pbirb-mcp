@@ -19,9 +19,12 @@ from lxml import etree
 
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.xpath import RDL_NS, q, qrd
+from pbirb_mcp.ops.dataset import update_dataset_query
+from pbirb_mcp.ops.escape import raw_xml_replace
 from pbirb_mcp.ops.lint import ALL_RULES, lint_report
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
+from tests._designer_state import build_designer_state_report
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pbi_paginated_minimal.rdl"
 FIXTURE_MULTI_DS = Path(__file__).parent / "fixtures" / "pbi_multi_datasource.rdl"
@@ -477,6 +480,39 @@ class TestStaleDesignerState:
         _save(doc)
         result = lint_report(str(rdl_path), rules=["stale-designer-state"])
         assert _rule_count(result, "stale-designer-state") == 1
+
+    # ---- #70: Report Builder's real DesignerState shape ----------------
+
+    def test_report_builder_shape_in_sync_is_clean(self, tmp_path):
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        result = lint_report(str(path), rules=["stale-designer-state"])
+        assert result["issues"] == []
+
+    def test_fires_after_command_text_only_raw_edit(self, tmp_path):
+        # A CommandText-only edit (raw_xml_replace) leaves the designer's
+        # QueryDefinition/Query/Statement stale; the rule must notice.
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        raw_xml_replace(
+            str(path),
+            ".//r:DataSet[@Name='MainDataset']/r:Query/r:CommandText",
+            '<CommandText>EVALUATE ROW("x", 1)</CommandText>',
+        )
+        result = lint_report(str(path), rules=["stale-designer-state"])
+        assert _rule_count(result, "stale-designer-state") == 1
+        issue = result["issues"][0]
+        assert "MainDataset" in issue["location"]
+        assert "QueryDefinition/Query/Statement" in issue["location"]
+
+    def test_clean_again_after_update_dataset_query(self, tmp_path):
+        path = build_designer_state_report(tmp_path / "rb.rdl")
+        raw_xml_replace(
+            str(path),
+            ".//r:DataSet[@Name='MainDataset']/r:Query/r:CommandText",
+            '<CommandText>EVALUATE ROW("x", 1)</CommandText>',
+        )
+        update_dataset_query(str(path), "MainDataset", 'EVALUATE ROW("x", 1)')
+        result = lint_report(str(path), rules=["stale-designer-state"])
+        assert result["issues"] == []
 
 
 # ---- rule 15: tablix-span-misplaced ------------------------------------

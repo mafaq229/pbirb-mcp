@@ -30,7 +30,15 @@ from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset
 from pbirb_mcp.core.mutation import ChangeTracker, set_text_if_different
 from pbirb_mcp.core.names import MAX_IDENTIFIER_LENGTH, is_identifier, validate_identifier
-from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q
+from pbirb_mcp.core.xpath import (
+    RD_NS,
+    RDL_NS,
+    find_child,
+    find_children,
+    find_designer_statement,
+    q,
+    qrd,
+)
 from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
 from pbirb_mcp.ops.filter_types import (
     encode_filter_texts,
@@ -161,29 +169,23 @@ def _find_query_parameter(qp_root: etree._Element, name: str) -> Optional[etree.
 
 
 def _sync_designer_state_statement(query: etree._Element, dax_body: str) -> bool:
-    """Rewrite ``<rd:DesignerState>/<Statement>`` to mirror ``<CommandText>``.
+    """Rewrite the Query Designer's Statement to mirror ``<CommandText>``.
 
-    PBIDATASET datasets carry a ``<rd:DesignerState>`` block whose
-    ``<Statement>`` child is what the Report Builder Query Designer GUI
-    displays. When ``<CommandText>`` changes but ``<Statement>`` doesn't,
-    the GUI shows stale DAX, masking the actual runtime query. This sync
-    keeps the two in step.
+    Report Builder stores what its Query Designer shows in
+    ``<rd:DesignerState>/<QueryDefinition>/<Query>/<Statement>`` (the
+    ``QueryDefinition`` namespace — issue #70; located by
+    :func:`pbirb_mcp.core.xpath.find_designer_statement`, which also
+    accepts a legacy ``<rd:Statement>`` child). When ``<CommandText>``
+    changes but the Statement doesn't, the designer shows stale DAX — and
+    clicking OK in the graphical designer can regenerate the old query
+    over the new one.
 
-    Returns True iff a Statement element was rewritten (used by callers
-    that surface a ``changed`` list — none today, but the helper stays
-    truthful so future callers don't have to guess).
-
-    Non-PBIDATASET datasets typically have no DesignerState; the function
-    is a no-op for those (returns False).
+    Returns True iff a Statement element was rewritten. A missing
+    DesignerState, or one without a Statement, is left alone (False):
+    nothing is synthesised.
     """
-    designer_state = query.find(f"{{{RD_NS}}}DesignerState")
-    if designer_state is None:
-        return False
-    statement = designer_state.find(f"{{{RD_NS}}}Statement")
+    statement = find_designer_statement(query)
     if statement is None:
-        # Some PBIDATASET DesignerState blocks omit Statement entirely
-        # (rare, but valid). Don't synthesise one — Report Builder only
-        # populates it for queries authored via the Query Designer.
         return False
     # Verbatim, like <CommandText> (#75): DAX legitimately contains
     # entity-shaped text such as SUBSTITUTE(x, "&amp;", "&").
@@ -191,6 +193,18 @@ def _sync_designer_state_statement(query: etree._Element, dax_body: str) -> bool
         return False
     statement.text = dax_body
     return True
+
+
+def _drop_designer_state(query: etree._Element) -> bool:
+    """Remove ``<rd:DesignerState>``; True iff one existed."""
+    designer = query.find(qrd("DesignerState"))
+    if designer is None:
+        return False
+    query.remove(designer)
+    return True
+
+
+_VALID_DESIGNER_STATE_MODES = ("sync", "drop")
 
 
 _VALID_ALIAS_STRATEGIES = (None, "preserve_field_names")
@@ -202,8 +216,22 @@ def update_dataset_query(
     dax_body: str,
     alias_strategy: Optional[str] = None,
     dry_run: bool = False,
+    designer_state: str = "sync",
 ) -> dict[str, Any]:
     """Rewrite a dataset's ``<CommandText>`` (and ``<rd:DesignerState>``).
+
+    ``designer_state`` (issue #70) — what to do with Report Builder's
+    Query Designer state:
+
+    * ``"sync"`` (default) — rewrite its ``Statement`` to the new DAX
+      (``designer_state_synced`` says whether it changed). Only the text is
+      updated: the ``QueryDefinition``'s Select/Items graph cannot describe
+      arbitrary DAX and is left as it was.
+    * ``"drop"`` — remove ``<rd:DesignerState>`` altogether
+      (``designer_state_dropped``). Report Builder then opens the query in
+      its text editor instead of the graphical designer, so the stale item
+      graph can never regenerate the old query. Prefer it for hand-written
+      DAX the graphical designer couldn't have produced.
 
     ``alias_strategy``:
 
@@ -241,6 +269,11 @@ def update_dataset_query(
             f"unknown alias_strategy {alias_strategy!r}; valid values: "
             f"{[s for s in _VALID_ALIAS_STRATEGIES]}"
         )
+    if designer_state not in _VALID_DESIGNER_STATE_MODES:
+        raise ValueError(
+            f"unknown designer_state {designer_state!r}; valid values: "
+            f"{list(_VALID_DESIGNER_STATE_MODES)}"
+        )
 
     doc = RDLDocument.open(path)
     dataset = resolve_dataset(doc, dataset_name)
@@ -261,13 +294,12 @@ def update_dataset_query(
     # Verbatim (#75): no entity decoding. DAX string literals such as
     # SUBSTITUTE(col, "&amp;", "&") are meaningful; lxml escapes once.
     cmd.text = dax_body
-    designer_state_synced = _sync_designer_state_statement(query, dax_body)
-
-    result: dict[str, Any] = {
-        "dataset": dataset_name,
-        "command_text": dax_body,
-        "designer_state_synced": designer_state_synced,
-    }
+    result: dict[str, Any] = {"dataset": dataset_name, "command_text": dax_body}
+    if designer_state == "drop":
+        result["designer_state_synced"] = False
+        result["designer_state_dropped"] = _drop_designer_state(query)
+    else:
+        result["designer_state_synced"] = _sync_designer_state_statement(query, dax_body)
 
     if alias_strategy == "preserve_field_names":
         plan, warnings = _plan_preserve_field_names(dataset, old_command_text, dax_body)

@@ -691,6 +691,27 @@ VARIANTS: list[tuple[str, Case]] = [
         ),
     ),
     (
+        "update_dataset_query",
+        Case(
+            {"dataset_name": "MainDataset", "dax_body": "EVALUATE 'X'", "designer_state": "drop"},
+            setup=[
+                (
+                    "raw_xml_replace",
+                    {
+                        "xpath": ".//r:DataSet[@Name='MainDataset']/r:Query/rd:UseGenericDesigner",
+                        "content": (
+                            '<rd:DesignerState xmlns:rd="http://schemas.microsoft.com/'
+                            'SQLServer/reporting/reportdesigner"><QueryDefinition xmlns='
+                            '"http://schemas.microsoft.com/AnalysisServices/QueryDefinition">'
+                            "<Query><Statement>EVALUATE 'Sales'</Statement></Query>"
+                            "</QueryDefinition></rd:DesignerState>"
+                        ),
+                    },
+                )
+            ],
+        ),
+    ),
+    (
         "raw_xml_replace",
         Case(
             {
