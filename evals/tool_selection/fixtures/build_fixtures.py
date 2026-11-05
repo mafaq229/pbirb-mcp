@@ -149,6 +149,9 @@ def build_fleet(path: Path) -> None:
         left="0in",
         width="6in",
         height="0.5in",
+        # The committed fixture predates #67's default; keep its header
+        # non-repeating so t12 ("make the header repeat") isn't pre-solved.
+        repeat_header=False,
     )
     d.call(
         "add_body_textbox",
@@ -189,9 +192,10 @@ def build_fleet(path: Path) -> None:
 def _report_builder_groups(path: Path, tablix: str, group: str, expression: str) -> None:
     """Reshape ``tablix``'s row hierarchy the way Report Builder writes it:
     the detail member wrapped in a dynamic ``group`` that has no
-    group-header row of its own (a parent group added without a header;
-    ``add_row_group`` always inserts a header row, so no tool produces
-    this), and ``KeepWithGroup=Before`` on the trailing static total row."""
+    group-header row of its own (built directly here so the fixture matches
+    Report Builder's output byte-for-byte; ``add_row_group(header="none")``
+    now produces the same member shape), and ``KeepWithGroup=Before`` on the
+    trailing static total row."""
     from lxml import etree
 
     from pbirb_mcp.core.document import RDLDocument
