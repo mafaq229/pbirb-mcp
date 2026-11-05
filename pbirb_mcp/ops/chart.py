@@ -128,20 +128,114 @@ def _find_series(series_collection: etree._Element, series_name: str) -> etree._
     )
 
 
+# ---- input validation (#101) ----------------------------------------------
+
+
+def _dataset_field_names(dataset: etree._Element) -> list[str]:
+    """``Fields/Field/@Name`` of a ``<DataSet>``, in order."""
+    fields = find_child(dataset, "Fields")
+    if fields is None:
+        return []
+    return [f.get("Name") for f in find_children(fields, "Field") if f.get("Name")]
+
+
+def _chart_dataset_fields(
+    doc: RDLDocument, chart: etree._Element
+) -> tuple[Optional[str], Optional[list[str]]]:
+    """``(dataset name, its field names)`` for a chart: its own
+    ``DataSetName``, else the nearest enclosing data region's (a chart in a
+    tablix cell). Fields are None when no dataset can be resolved — the
+    caller then skips the field-existence check."""
+    node: Optional[etree._Element] = chart
+    while node is not None:
+        ds = find_child(node, "DataSetName")
+        if ds is not None and (ds.text or "").strip():
+            name = ds.text.strip()
+            try:
+                return name, _dataset_field_names(resolve_dataset(doc, name))
+            except (ElementNotFoundError, AmbiguousElementError):
+                return name, None
+        node = node.getparent()
+    return None, None
+
+
+def _check_field_name(
+    value: object,
+    param: str,
+    *,
+    expression_param: Optional[str] = None,
+) -> str:
+    """A ``*_field`` argument must be a bare field name: not empty, not an
+    expression (``expression_param`` takes those), a valid identifier."""
+    hint = f"; pass an expression as {expression_param}" if expression_param else ""
+    if not isinstance(value, str) or value == "":
+        raise ValueError(f"{param}: a field name is required; got {value!r}")
+    if value.lstrip().startswith("="):
+        raise ValueError(f"{param}: {value!r} is an expression, not a field name{hint}")
+    if not names.is_identifier(value):
+        raise ValueError(
+            f"{param}: {value!r} is not a valid field name (RDL field names start with a "
+            f"letter and contain only letters, digits and underscores){hint}"
+        )
+    return value
+
+
+def _check_field_exists(
+    value: str, param: str, dataset_name: Optional[str], available: Optional[list[str]]
+) -> None:
+    if available is not None and value not in available:
+        raise ValueError(
+            f"{param}: dataset {dataset_name!r} has no field {value!r}; available fields: "
+            f"{available}"
+        )
+
+
+def _check_expression(value: object, param: str, hint: str = "") -> str:
+    """An ``*_expression`` argument must be an RDL ``=expression``."""
+    if not isinstance(value, str) or not value.startswith("="):
+        raise ValueError(
+            f"{param}: must be an =expression (e.g. '=Fields!Region.Value'); got {value!r}"
+            + (f"; {hint}" if hint else "")
+        )
+    return value
+
+
+def _field_or_expression(
+    field: Optional[str],
+    expression: Optional[str],
+    field_param: str,
+    expression_param: str,
+) -> None:
+    if field is not None and expression is not None:
+        raise ValueError(f"{field_param} and {expression_param} are mutually exclusive")
+    if field is None and expression is None:
+        raise ValueError(f"{field_param} (or {expression_param}) is required")
+    if field is not None:
+        _check_field_name(field, field_param, expression_param=expression_param)
+    else:
+        _check_expression(expression, expression_param, f"for a plain field use {field_param}")
+
+
 # ---- insert_chart_from_template -------------------------------------------
+
+
+# Name of the series a chart gets when its value is an expression.
+_EXPRESSION_SERIES_NAME = "Series1"
 
 
 def insert_chart_from_template(
     path: str,
     name: str,
     dataset_name: str,
-    category_field: str,
-    value_field: str,
-    top: str,
-    left: str,
-    width: str,
-    height: str,
+    category_field: Optional[str] = None,
+    value_field: Optional[str] = None,
+    top: Optional[str] = None,
+    left: Optional[str] = None,
+    width: Optional[str] = None,
+    height: Optional[str] = None,
     container: Optional[str] = None,
+    category_expression: Optional[str] = None,
+    value_expression: Optional[str] = None,
 ) -> dict[str, Any]:
     """Insert a basic Column chart bound to ``dataset_name``.
 
@@ -150,11 +244,37 @@ def insert_chart_from_template(
     Column; callers can change it post-insert via :func:`set_chart_series_type`.
     With ``container`` it goes inside that body Rectangle (#83; a List's
     only when the list is bound to ``dataset_name``).
+
+    ``category_field`` / ``value_field`` must be fields of the dataset
+    (an unknown one is refused, listing the available fields).
+    ``category_expression`` (group + label expression) and
+    ``value_expression`` (the whole Y expression, e.g.
+    ``=Sum(Fields!A.Value) / Sum(Fields!B.Value)``; the series is then
+    named ``Series1``) take ``=expressions`` instead — each is exclusive
+    with its ``*_field``. ``top`` / ``left`` / ``width`` / ``height`` are
+    required RDL sizes.
     """
     names.validate_identifier(name, "chart")
+    _field_or_expression(
+        category_field, category_expression, "category_field", "category_expression"
+    )
+    _field_or_expression(value_field, value_expression, "value_field", "value_expression")
     top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
-    resolve_dataset(doc, dataset_name)
+    available = _dataset_field_names(resolve_dataset(doc, dataset_name))
+    if category_field is not None:
+        _check_field_exists(category_field, "category_field", dataset_name, available)
+    if value_field is not None:
+        _check_field_exists(value_field, "value_field", dataset_name, available)
+    category_text = encode_text(
+        category_expression
+        if category_expression is not None
+        else f"=Fields!{category_field}.Value"
+    )
+    y_text = encode_text(
+        value_expression if value_expression is not None else f"=Sum(Fields!{value_field}.Value)"
+    )
+    series_name = value_field if value_field is not None else _EXPRESSION_SERIES_NAME
     registry = names.NameRegistry(doc)
     registry.ensure_unique(name)
     registry.claim(name)
@@ -169,9 +289,9 @@ def insert_chart_from_template(
     cat_group = etree.SubElement(cat_member, q("Group"), Name=category_group)
     cat_expressions = etree.SubElement(cat_group, q("GroupExpressions"))
     cat_expression = etree.SubElement(cat_expressions, q("GroupExpression"))
-    cat_expression.text = encode_text(f"=Fields!{category_field}.Value")
+    cat_expression.text = category_text
     cat_label = etree.SubElement(cat_member, q("Label"))
-    cat_label.text = encode_text(f"=Fields!{category_field}.Value")
+    cat_label.text = category_text
 
     # ChartSeriesHierarchy — single static series. Per RDL XSD a ChartMember
     # is required to have a <Label>; an empty member fails Report Builder's
@@ -180,17 +300,17 @@ def insert_chart_from_template(
     series_hier = etree.SubElement(chart, q("ChartSeriesHierarchy"))
     series_members = etree.SubElement(series_hier, q("ChartMembers"))
     series_member = etree.SubElement(series_members, q("ChartMember"))
-    etree.SubElement(series_member, q("Label")).text = encode_text(value_field)
+    etree.SubElement(series_member, q("Label")).text = encode_text(series_name)
 
     # ChartData — one ChartSeries with Y = Sum(value_field).
     chart_data = etree.SubElement(chart, q("ChartData"))
     series_collection = etree.SubElement(chart_data, q("ChartSeriesCollection"))
-    series = etree.SubElement(series_collection, q("ChartSeries"), Name=value_field)
+    series = etree.SubElement(series_collection, q("ChartSeries"), Name=series_name)
     data_points = etree.SubElement(series, q("ChartDataPoints"))
     data_point = etree.SubElement(data_points, q("ChartDataPoint"))
     data_point_values = etree.SubElement(data_point, q("ChartDataPointValues"))
     y_node = etree.SubElement(data_point_values, q("Y"))
-    y_node.text = encode_text(f"=Sum(Fields!{value_field}.Value)")
+    y_node.text = y_text
     etree.SubElement(series, q("Type")).text = "Column"
     etree.SubElement(series, q("Subtype")).text = "Plain"
 
@@ -228,6 +348,7 @@ def insert_chart_from_template(
         "type": "Column",
         "category_field": category_field,
         "value_field": value_field,
+        "series": series_name,
         "category_group": category_group,
     }
     return place(doc, chart, container, result, dataset_name=dataset_name)
@@ -709,7 +830,7 @@ def _remove_derived(derived: list[etree._Element]) -> None:
 
 def _build_chart_series(
     series_name: str,
-    value_field: str,
+    y_expression: str,
     series_type: str = "Column",
     series_subtype: str = "Plain",
     data_points: int = 1,
@@ -718,8 +839,9 @@ def _build_chart_series(
 
     Mirrors the structure :func:`insert_chart_from_template` builds for
     the initial series, so a chart with N series via this tool reads
-    consistently via :func:`get_chart`. ``data_points`` is the number of
-    ``<ChartDataPoint>`` to emit — one per category leaf member.
+    consistently via :func:`get_chart`. ``y_expression`` is each point's
+    ``<Y>``; ``data_points`` is the number of ``<ChartDataPoint>`` to
+    emit — one per category leaf member.
     """
     series = etree.Element(q("ChartSeries"), Name=series_name)
     points_root = etree.SubElement(series, q("ChartDataPoints"))
@@ -727,7 +849,7 @@ def _build_chart_series(
         data_point = etree.SubElement(points_root, q("ChartDataPoint"))
         values = etree.SubElement(data_point, q("ChartDataPointValues"))
         y_node = etree.SubElement(values, q("Y"))
-        y_node.text = encode_text(f"=Sum(Fields!{value_field}.Value)")
+        y_node.text = encode_text(y_expression)
     etree.SubElement(series, q("Type")).text = series_type
     etree.SubElement(series, q("Subtype")).text = series_subtype
     return series
@@ -737,12 +859,18 @@ def add_chart_series(
     path: str,
     chart_name: str,
     series_name: str,
-    value_field: str,
+    value_field: Optional[str] = None,
     series_type: str = "Column",
     series_subtype: Optional[str] = None,
+    value_expression: Optional[str] = None,
 ) -> dict[str, Any]:
     """Append a new ``<ChartSeries>`` to the named chart, together with its
     ``ChartSeriesHierarchy`` member.
+
+    ``series_name`` must be a valid RDL identifier. ``value_field`` must be
+    a field of the chart's dataset (an unknown one is refused, listing the
+    available fields); ``value_expression`` takes the whole Y
+    ``=expression`` instead (exclusive with ``value_field``).
 
     ``series_type`` / ``series_subtype`` must be an RDL pair (see
     :mod:`pbirb_mcp.core.chart_types`); shorthands such as ``Pie`` or
@@ -768,6 +896,8 @@ def add_chart_series(
     Refuses if ``series_name`` is already used by a series or a derived
     series of the chart.
     """
+    names.validate_identifier(series_name, "series")
+    _field_or_expression(value_field, value_expression, "value_field", "value_expression")
     series_type, series_subtype = chart_types.normalize_series_type(series_type, series_subtype)
     if series_subtype is None:
         series_subtype = chart_types.DEFAULT_SUBTYPE[series_type]
@@ -775,6 +905,9 @@ def add_chart_series(
     doc = RDLDocument.open(path)
     chart = _resolve_chart(doc, chart_name)
     sc = _series_collection(chart)
+    if value_field is not None:
+        dataset_name, available = _chart_dataset_fields(doc, chart)
+        _check_field_exists(value_field, "value_field", dataset_name, available)
 
     if series_name in _series_names(sc):
         raise ValueError(f"chart {chart_name!r} already has a series named {series_name!r}")
@@ -788,7 +921,11 @@ def add_chart_series(
     sc.append(
         _build_chart_series(
             series_name=series_name,
-            value_field=value_field,
+            y_expression=(
+                value_expression
+                if value_expression is not None
+                else f"=Sum(Fields!{value_field}.Value)"
+            ),
             series_type=series_type,
             series_subtype=series_subtype,
             data_points=len(chart_shape.category_leaf_members(chart)),
@@ -980,18 +1117,39 @@ def set_chart_series_type(
 # ---- set_chart_legend ----------------------------------------------------
 
 
-def _resolve_chart_legend(chart: etree._Element, legend_name: str = "Default") -> etree._Element:
-    """Resolve the named ``<ChartLegend>``. Raises ElementNotFoundError
-    if the chart's <ChartLegends> block or the named legend is missing."""
-    legends_root = find_child(chart, "ChartLegends")
-    if legends_root is None:
-        raise ElementNotFoundError(f"chart {chart.get('Name')!r} has no <ChartLegends>")
-    for legend in find_children(legends_root, "ChartLegend"):
-        if legend.get("Name") == legend_name:
-            return legend
+def _resolve_named_chart_child(
+    chart: etree._Element, container: str, local: str, name: Optional[str]
+) -> etree._Element:
+    """Resolve ``<container>/<local Name=name>`` (a ChartTitle or
+    ChartLegend). With ``name`` None: the one named ``Default`` (what the
+    template emits), else the chart's only one. Misses raise
+    ``ElementNotFoundError`` listing the names present."""
+    root = find_child(chart, container)
+    items = find_children(root, local) if root is not None else []
+    present = [el.get("Name") for el in items]
+    if name is None:
+        for el in items:
+            if el.get("Name") == "Default":
+                return el
+        if len(items) == 1:
+            return items[0]
+        raise ElementNotFoundError(
+            f"chart {chart.get('Name')!r} has {len(items)} {local} elements and none is "
+            f"named 'Default'; pass its name (present: {present})"
+        )
+    for el in items:
+        if el.get("Name") == name:
+            return el
     raise ElementNotFoundError(
-        f"no ChartLegend named {legend_name!r} in chart {chart.get('Name')!r}"
+        f"no {local} named {name!r} in chart {chart.get('Name')!r} (present: {present})"
     )
+
+
+def _resolve_chart_legend(
+    chart: etree._Element, legend_name: Optional[str] = None
+) -> etree._Element:
+    """Resolve a ``<ChartLegend>`` (see :func:`_resolve_named_chart_child`)."""
+    return _resolve_named_chart_child(chart, "ChartLegends", "ChartLegend", legend_name)
 
 
 def _insert_legend_child_in_order(legend: etree._Element, new_child: etree._Element) -> None:
@@ -1016,11 +1174,14 @@ def _insert_legend_child_in_order(legend: etree._Element, new_child: etree._Elem
 def set_chart_legend(
     path: str,
     chart_name: str,
-    legend_name: str = "Default",
+    legend_name: Optional[str] = None,
     position: Optional[str] = None,
     visible: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Configure the named chart legend.
+
+    ``legend_name`` defaults to the legend named ``Default``, else the
+    chart's only legend; a miss lists the legends present.
 
     ``position`` ∈ TopLeft / TopCenter / TopRight / LeftTop / LeftCenter
     / LeftBottom / RightTop / RightCenter / RightBottom / BottomLeft /
@@ -1072,7 +1233,7 @@ def set_chart_legend(
         doc.save()
     return {
         "chart": chart_name,
-        "legend": legend_name,
+        "legend": legend.get("Name"),
         "kind": "ChartLegend",
         "changed": changed,
     }
@@ -1299,6 +1460,15 @@ def set_chart_data_labels(
     """
     if visible is not None and visible_expression is not None:
         raise ValueError("visible and visible_expression are mutually exclusive — pass only one")
+    if visible_expression is not None and not visible_expression.startswith("="):
+        if visible_expression.strip().lower() not in ("true", "false"):
+            raise ValueError(
+                f"visible_expression: must be an =expression (e.g. '=Fields!Show.Value') or "
+                f"true/false; got {visible_expression!r}"
+            )
+        visible_expression = visible_expression.strip().lower()
+    if font_weight not in (None, ""):
+        font_weight = style_values.font_weight(font_weight, "font_weight")
     if position is not None and position not in _VALID_DATA_LABEL_POSITIONS:
         raise ValueError(
             f"position {position!r} not valid; expected one of {list(DATA_LABEL_POSITIONS)}"
@@ -1634,33 +1804,30 @@ def set_series_color(
 # ---- set_chart_title -----------------------------------------------------
 
 
-def _resolve_chart_title(chart: etree._Element, title_name: str = "Default") -> etree._Element:
-    """Resolve ``<ChartTitle Name="...">``. Raises if missing."""
-    titles_root = find_child(chart, "ChartTitles")
-    if titles_root is None:
-        raise ElementNotFoundError(f"chart {chart.get('Name')!r} has no <ChartTitles>")
-    for title in find_children(titles_root, "ChartTitle"):
-        if title.get("Name") == title_name:
-            return title
-    raise ElementNotFoundError(f"no ChartTitle named {title_name!r} in chart {chart.get('Name')!r}")
+def _resolve_chart_title(chart: etree._Element, title_name: Optional[str] = None) -> etree._Element:
+    """Resolve a ``<ChartTitle>`` (see :func:`_resolve_named_chart_child`)."""
+    return _resolve_named_chart_child(chart, "ChartTitles", "ChartTitle", title_name)
 
 
 def set_chart_title(
     path: str,
     chart_name: str,
     text: str,
-    title_name: str = "Default",
+    title_name: Optional[str] = None,
 ) -> dict[str, Any]:
     """Update ``<ChartTitle>/<Caption>``.
 
     ``text`` can be literal text or an ``=expression``. ``title_name``
-    defaults to ``"Default"`` (the only title the template emits).
+    defaults to the title named ``Default`` (what the template emits),
+    else the chart's only title (Report Builder names it ``Title``); a
+    miss lists the titles present.
 
     Returns ``{chart, title, kind, changed: bool}``.
     """
     doc = RDLDocument.open(path)
     chart = _resolve_chart(doc, chart_name)
     title = _resolve_chart_title(chart, title_name)
+    title_name = title.get("Name")
 
     encoded = encode_text(text)
     caption = find_child(title, "Caption")
@@ -1820,6 +1987,15 @@ def set_chart_series_grouping(
         )
     if group_name is not None:
         names.validate_identifier(group_name, "group")
+    if group_field is not None:
+        _check_field_name(group_field, "group_field", expression_param="group_expression")
+    else:
+        _check_expression(
+            group_expression,
+            "group_expression",
+            "without '=' it is a constant and every row lands in one series; "
+            "for a plain field use group_field",
+        )
 
     effective_expression = encode_text(
         f"=Fields!{group_field}.Value" if group_field is not None else group_expression

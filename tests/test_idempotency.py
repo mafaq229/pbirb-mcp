@@ -989,6 +989,34 @@ VARIANTS: list[tuple[str, Case]] = [
     ),
     ("set_chart_palette", Case({"chart_name": CH, "palette": ""}, fixture=CHART)),
     (
+        "insert_chart_from_template",
+        Case(
+            {
+                "name": "Chart3",
+                "dataset_name": "MainDataset",
+                "category_expression": "=Fields!ProductName.Value",
+                "value_expression": "=Count(Fields!ProductName.Value)",
+                "top": "3in",
+                "left": "0in",
+                "width": "4in",
+                "height": "3in",
+            },
+            second="refuses",
+        ),
+    ),
+    (
+        "add_chart_series",
+        Case(
+            {
+                "chart_name": CH,
+                "series_name": "Ratio",
+                "value_expression": "=Avg(Fields!Amount.Value)",
+            },
+            second="refuses",
+            fixture=CHART,
+        ),
+    ),
+    (
         "set_chart_axis",
         Case(
             {"chart_name": CH, "axis": "Value", "chart_area": "Default", "visible": "Auto"},
