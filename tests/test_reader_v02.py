@@ -319,6 +319,203 @@ class TestGetRectangle:
             get_rectangle(path=str(rdl_path), name="NoSuch")
 
 
+# ---- #108: interactivity, paragraphs, borders in the item readers ---------
+
+
+def _patch(path: Path, old: str, new: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    assert old in text, old
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def _image(path: Path, name: str = "Img") -> None:
+    add_body_image(
+        path=str(path),
+        name=name,
+        image_source="External",
+        value="https://example.test/a.png",
+        top="1.2in",
+        left="0.5in",
+        width="1in",
+        height="1in",
+    )
+
+
+class TestInteractivityReadBack:
+    def test_issue_repro(self, rdl_path):
+        from pbirb_mcp.ops.actions import (
+            set_document_map_label,
+            set_image_action,
+            set_textbox_action,
+            set_textbox_tooltip,
+        )
+        from pbirb_mcp.ops.layout import add_rectangle
+        from pbirb_mcp.ops.styling import set_textbox_style
+
+        p = str(rdl_path)
+        set_textbox_action(p, "ProductID", "Hyperlink", "https://example.test")
+        set_textbox_tooltip(p, "ProductID", "Open product")
+        set_document_map_label(p, "ProductID", "Products")
+        set_textbox_style(p, "ProductID", border_style="Solid")
+        tb = get_textbox(p, "ProductID")
+        assert tb["action"] == {
+            "type": "Hyperlink",
+            "target": "https://example.test",
+            "parameters": [],
+        }
+        assert tb["tooltip"] == "Open product"
+        assert tb["document_map_label"] == "Products"
+        assert tb["bookmark"] is None
+        assert tb["style"]["border"] == {"Style": "Solid"}
+
+        _image(rdl_path)
+        set_image_action(p, "Img", "Hyperlink", "https://example.test")
+        _patch(rdl_path, '<Image Name="Img">', '<Image Name="Img"><ToolTip>tip</ToolTip>')
+        _patch(
+            rdl_path,
+            "<Sizing>FitProportional</Sizing>",
+            "<Sizing>FitProportional</Sizing><Bookmark>top</Bookmark>",
+        )
+        img = get_image(p, "Img")
+        assert img["action"]["target"] == "https://example.test"
+        assert img["tooltip"] == "tip"
+        assert img["bookmark"] == "top"
+
+        add_rectangle(p, "Frame", "1.2in", "2in", "1in", "1in")
+        rect = get_rectangle(p, "Frame")
+        assert rect["style"] == {"border": {"Style": "None"}}
+        assert rect["action"] is None and rect["tooltip"] is None
+
+    def test_absent_interactivity_is_none(self, rdl_path):
+        tb = get_textbox(str(rdl_path), "ProductID")
+        for key in ("action", "tooltip", "document_map_label", "bookmark"):
+            assert tb[key] is None
+        assert tb["run_interactivity"] == []
+
+    def test_drillthrough_parameters_and_omit(self, rdl_path):
+        from pbirb_mcp.ops.actions import set_textbox_action
+
+        p = str(rdl_path)
+        set_textbox_action(
+            p,
+            "ProductID",
+            "Drillthrough",
+            "Detail",
+            [{"name": "Id", "value": "=Fields!ProductID.Value"}],
+        )
+        out = get_textbox(p, "ProductID")["action"]
+        assert out == {
+            "type": "Drillthrough",
+            "target": "Detail",
+            "parameters": [{"name": "Id", "value": "=Fields!ProductID.Value"}],
+        }
+
+    def test_omit_is_read(self, rdl_path):
+        p = str(rdl_path)
+        _patch(
+            rdl_path,
+            '<Textbox Name="ProductID">',
+            '<Textbox Name="ProductID"><ActionInfo><Actions><Action><Drillthrough>'
+            "<ReportName>Detail</ReportName><Parameters>"
+            '<Parameter Name="Id"><Value>1</Value><Omit>=True</Omit></Parameter>'
+            "</Parameters></Drillthrough></Action></Actions></ActionInfo>",
+        )
+        params = get_textbox(p, "ProductID")["action"]["parameters"]
+        assert params == [{"name": "Id", "value": "1", "omit": "=True"}]
+
+    def test_bookmark_link_and_legacy_bare_action(self, rdl_path):
+        p = str(rdl_path)
+        _patch(
+            rdl_path,
+            '<Textbox Name="ProductID">',
+            '<Textbox Name="ProductID"><Action><BookmarkLink>Top</BookmarkLink></Action>',
+        )
+        assert get_textbox(p, "ProductID")["action"] == {
+            "type": "BookmarkLink",
+            "target": "Top",
+            "parameters": [],
+        }
+
+    def test_run_level_tooltip_and_action(self, rdl_path):
+        p = str(rdl_path)
+        _patch(
+            rdl_path,
+            "<Value>=Fields!ProductID.Value</Value>",
+            "<Value>=Fields!ProductID.Value</Value>"
+            "<ActionInfo><Actions><Action><Hyperlink>http://x.test</Hyperlink>"
+            "</Action></Actions></ActionInfo><ToolTip>run tip</ToolTip>",
+        )
+        out = get_textbox(p, "ProductID")
+        assert out["run_interactivity"] == [
+            {
+                "paragraph_index": 0,
+                "run_index": 0,
+                "tooltip": "run tip",
+                "action": {"type": "Hyperlink", "target": "http://x.test", "parameters": []},
+            }
+        ]
+        # runs[] keeps the exact set_textbox_runs shape (fed back verbatim).
+        assert set(out["runs"][0]) <= {"value", "style", "paragraph_index", "markup_type"}
+
+    def test_paragraph_properties(self, rdl_path):
+        from lxml import etree
+
+        from pbirb_mcp.core.document import RDLDocument
+        from pbirb_mcp.core.xpath import RDL_NS, q
+
+        p = str(rdl_path)
+        doc = RDLDocument.open(p)
+        para = doc.root.find(f".//{{{RDL_NS}}}Textbox[@Name='ProductID']//{{{RDL_NS}}}Paragraph")
+        etree.SubElement(para.find(q("Style")), q("TextAlign")).text = "Right"
+        for local, value in (
+            ("ListStyle", "Bulleted"),
+            ("ListLevel", "1"),
+            ("LeftIndent", "10pt"),
+            ("SpaceBefore", "2pt"),
+            ("SpaceAfter", "3pt"),
+        ):
+            etree.SubElement(para, q(local)).text = value
+        doc.save()
+        paragraphs = get_textbox(p, "ProductID")["paragraphs"]
+        assert paragraphs == [
+            {
+                "index": 0,
+                "text_align": "Right",
+                "list_style": "Bulleted",
+                "list_level": "1",
+                "left_indent": "10pt",
+                "right_indent": None,
+                "hanging_indent": None,
+                "space_before": "2pt",
+                "space_after": "3pt",
+            }
+        ]
+
+    def test_image_style_nested_with_side_borders(self, rdl_path):
+        p = str(rdl_path)
+        _image(rdl_path)
+        _patch(
+            rdl_path,
+            "<Sizing>FitProportional</Sizing>",
+            "<Sizing>FitProportional</Sizing><Style><Border><Style>Solid</Style></Border>"
+            "<TopBorder><Color>Red</Color><Width>2pt</Width></TopBorder>"
+            "<BackgroundColor>Yellow</BackgroundColor></Style>",
+        )
+        assert get_image(p, "Img")["style"] == {
+            "box": {"BackgroundColor": "Yellow"},
+            "border": {"Style": "Solid"},
+            "top_border": {"Color": "Red", "Width": "2pt"},
+        }
+
+    def test_concise_view_unchanged(self, rdl_path):
+        from pbirb_mcp.ops.response_format import with_response_format
+
+        concise = with_response_format("get_textbox", get_textbox)(
+            str(rdl_path), "ProductID", response_format="concise"
+        )
+        assert set(concise) == {"name", "type", "top", "left", "width", "height", "values"}
+
+
 # ---- registration --------------------------------------------------------
 
 

@@ -906,13 +906,168 @@ def _paragraph_style_dict(paragraph: etree._Element) -> Optional[dict[str, str]]
     return _capture_style_fields(find_child(paragraph, "Style"), _PARAGRAPH_STYLE_FIELDS)
 
 
-def _border_dict(style: Optional[etree._Element]) -> Optional[dict[str, str]]:
-    """Capture the simple ``Border`` sub-element. Per-side borders
-    (``TopBorder`` / etc.) are reported separately if useful later."""
+def _border_dict(
+    style: Optional[etree._Element], local: str = "Border"
+) -> Optional[dict[str, str]]:
+    """Capture a ``Style`` border sub-element (``Border`` by default, or a
+    per-side ``TopBorder`` / ``BottomBorder`` / ``LeftBorder`` /
+    ``RightBorder``) as ``{Style, Color, Width}``; None when absent."""
     if style is None:
         return None
-    border = find_child(style, "Border")
+    border = find_child(style, local)
     return _capture_style_fields(border, _BORDER_STYLE_FIELDS) if border is not None else None
+
+
+# Per-side border elements → their key in the nested style dict.
+_SIDE_BORDERS = (
+    ("TopBorder", "top_border"),
+    ("BottomBorder", "bottom_border"),
+    ("LeftBorder", "left_border"),
+    ("RightBorder", "right_border"),
+)
+
+
+def _borders_into(out: dict[str, Any], style: Optional[etree._Element]) -> None:
+    """Add ``border`` and any per-side ``*_border`` dicts of ``style`` to
+    ``out`` (empty ones are skipped)."""
+    border = _border_dict(style)
+    if border:
+        out["border"] = border
+    for local, key in _SIDE_BORDERS:
+        side = _border_dict(style, local)
+        if side:
+            out[key] = side
+
+
+def _item_style_dict(el: etree._Element) -> Optional[dict[str, Any]]:
+    """Nested ``{box, border, top_border, ...}`` style of a non-text item
+    (Image, Rectangle) — the textbox shape without paragraph / run.
+    Empty branches are dropped; None when nothing is set (#108)."""
+    style = find_child(el, "Style")
+    out: dict[str, Any] = {}
+    box = _capture_style_fields(style, _BOX_STYLE_FIELDS)
+    if box:
+        out["box"] = box
+    _borders_into(out, style)
+    return out or None
+
+
+def _action_dict(action: etree._Element) -> Optional[dict[str, Any]]:
+    """``{type, target, parameters}`` of one ``<Action>``: type is
+    Hyperlink / Drillthrough / BookmarkLink, target the URL / report name
+    / bookmark, parameters the drillthrough ``[{name, value}]`` (plus
+    ``omit`` when the parameter carries ``<Omit>``)."""
+    for kind in ("Hyperlink", "BookmarkLink"):
+        node = find_child(action, kind)
+        if node is not None:
+            return {"type": kind, "target": node.text, "parameters": []}
+    drill = find_child(action, "Drillthrough")
+    if drill is None:
+        return None
+    params: list[dict[str, Any]] = []
+    params_root = find_child(drill, "Parameters")
+    if params_root is not None:
+        for param in find_children(params_root, "Parameter"):
+            entry: dict[str, Any] = {
+                "name": param.get("Name"),
+                "value": _text(find_child(param, "Value")),
+            }
+            omit = find_child(param, "Omit")
+            if omit is not None:
+                entry["omit"] = omit.text
+            params.append(entry)
+    return {
+        "type": "Drillthrough",
+        "target": _text(find_child(drill, "ReportName")),
+        "parameters": params,
+    }
+
+
+def _action_of(el: etree._Element) -> Optional[dict[str, Any]]:
+    """The first action of ``el``'s ``<ActionInfo>`` (or of a legacy bare
+    ``<Action>`` child), or None."""
+    info = find_child(el, "ActionInfo")
+    if info is not None:
+        actions_root = find_child(info, "Actions")
+        for action in find_children(actions_root, "Action") if actions_root is not None else []:
+            found = _action_dict(action)
+            if found is not None:
+                return found
+        return None
+    legacy = find_child(el, "Action")
+    return _action_dict(legacy) if legacy is not None else None
+
+
+def _interactivity_dict(el: etree._Element) -> dict[str, Any]:
+    """``{action, tooltip, document_map_label, bookmark}`` of a report item
+    — what the action / tooltip / document-map / bookmark tools write
+    (#108). Each is None when absent."""
+    return {
+        "action": _action_of(el),
+        "tooltip": _text(find_child(el, "ToolTip")),
+        "document_map_label": _text(find_child(el, "DocumentMapLabel")),
+        "bookmark": _text(find_child(el, "Bookmark")),
+    }
+
+
+# Paragraph-level properties → their key in get_textbox's ``paragraphs``.
+_PARAGRAPH_FIELDS = (
+    ("ListStyle", "list_style"),
+    ("ListLevel", "list_level"),
+    ("LeftIndent", "left_indent"),
+    ("RightIndent", "right_indent"),
+    ("HangingIndent", "hanging_indent"),
+    ("SpaceBefore", "space_before"),
+    ("SpaceAfter", "space_after"),
+)
+
+
+def _paragraph_elements(textbox: etree._Element) -> list[etree._Element]:
+    paragraphs_root = find_child(textbox, "Paragraphs")
+    return find_children(paragraphs_root, "Paragraph") if paragraphs_root is not None else []
+
+
+def _paragraphs_of(textbox: etree._Element) -> list[dict[str, Any]]:
+    """``[{index, text_align, list_style, list_level, left_indent,
+    right_indent, hanging_indent, space_before, space_after}]`` per
+    ``<Paragraph>`` (None for each property that is not set)."""
+    out: list[dict[str, Any]] = []
+    for index, paragraph in enumerate(_paragraph_elements(textbox)):
+        style = find_child(paragraph, "Style")
+        entry: dict[str, Any] = {
+            "index": index,
+            "text_align": _text(find_child(style, "TextAlign")) if style is not None else None,
+        }
+        for local, key in _PARAGRAPH_FIELDS:
+            entry[key] = _text(find_child(paragraph, local))
+        out.append(entry)
+    return out
+
+
+def _run_interactivity(textbox: etree._Element) -> list[dict[str, Any]]:
+    """``[{paragraph_index, run_index, tooltip, action}]`` for each text run
+    that carries a ``<ToolTip>`` or an action (run_index counts within its
+    paragraph). Kept out of ``runs`` so ``runs`` stays exactly the shape
+    ``set_textbox_runs`` accepts."""
+    out: list[dict[str, Any]] = []
+    for paragraph_index, paragraph in enumerate(_paragraph_elements(textbox)):
+        runs_root = find_child(paragraph, "TextRuns")
+        if runs_root is None:
+            continue
+        for run_index, run in enumerate(find_children(runs_root, "TextRun")):
+            tooltip = _text(find_child(run, "ToolTip"))
+            action = _action_of(run)
+            if tooltip is None and action is None:
+                continue
+            out.append(
+                {
+                    "paragraph_index": paragraph_index,
+                    "run_index": run_index,
+                    "tooltip": tooltip,
+                    "action": action,
+                }
+            )
+    return out
 
 
 def _runs_of(textbox: etree._Element) -> list[dict[str, Any]]:
@@ -952,6 +1107,8 @@ def _full_textbox_style(textbox: etree._Element) -> Optional[dict[str, Any]]:
         {
           "box":       {BackgroundColor, VerticalAlign, Padding*, ...},
           "border":    {Style, Color, Width},
+          "top_border" / "bottom_border" / "left_border" / "right_border":
+                       {Style, Color, Width}  (per-side overrides),
           "paragraph": {TextAlign},
           "run":       {FontFamily, FontSize, FontWeight, Color, Format, ...},
         }
@@ -963,7 +1120,6 @@ def _full_textbox_style(textbox: etree._Element) -> Optional[dict[str, Any]]:
     same behavior ``set_textbox_style`` uses for writes.
     """
     box = _capture_style_fields(find_child(textbox, "Style"), _BOX_STYLE_FIELDS)
-    border = _border_dict(find_child(textbox, "Style"))
 
     paragraph_style: Optional[dict[str, str]] = None
     run_style: Optional[dict[str, str]] = None
@@ -981,8 +1137,7 @@ def _full_textbox_style(textbox: etree._Element) -> Optional[dict[str, Any]]:
     out: dict[str, Any] = {}
     if box:
         out["box"] = box
-    if border:
-        out["border"] = border
+    _borders_into(out, find_child(textbox, "Style"))
     if paragraph_style:
         out["paragraph"] = paragraph_style
     if run_style:
@@ -993,8 +1148,8 @@ def _full_textbox_style(textbox: etree._Element) -> Optional[dict[str, Any]]:
 def _style_dict(el: Optional[etree._Element]) -> Optional[dict[str, Any]]:
     """Capture key Style children. Best-effort; returns None if no style.
 
-    Used by non-Textbox readers (Image, Rectangle) where there's only one
-    Style block to look at — fall back to a flat field dump.
+    Used by get_chart, where there's only one Style block to look at —
+    a flat field dump. (Image and Rectangle use :func:`_item_style_dict`.)
     """
     style = find_child(el, "Style") if el is not None else None
     if style is None:
@@ -1073,6 +1228,11 @@ def get_textbox(path: str, name: str) -> dict[str, Any]:
     properties: ``{"box": {...}, "border": {...}, "paragraph": {...},
     "run": {...}}``. Empty branches are dropped. ``runs`` entries each
     carry their own ``style`` dict.
+
+    Also returns ``paragraphs`` (per-paragraph TextAlign, list and indent
+    / spacing properties), ``run_interactivity`` (runs with their own
+    ToolTip / action) and the item's ``action`` / ``tooltip`` /
+    ``document_map_label`` / ``bookmark`` (#108).
     """
     doc = RDLDocument.open(path)
     tb = _find_named_anywhere(doc, "Textbox", name)
@@ -1085,15 +1245,20 @@ def get_textbox(path: str, name: str) -> dict[str, Any]:
         "type": "Textbox",
         **_layout_dict_for(tb),
         "runs": _runs_of(tb),
+        "paragraphs": _paragraphs_of(tb),
+        "run_interactivity": _run_interactivity(tb),
         "style": _full_textbox_style(tb),
         "visibility": _visibility(tb),
         "can_grow": _text(find_child(tb, "CanGrow")),
         "can_shrink": _text(find_child(tb, "CanShrink")),
+        **_interactivity_dict(tb),
     }
 
 
 def get_image(path: str, name: str) -> dict[str, Any]:
-    """Return position, size, source, value, sizing for a named Image."""
+    """Return position, size, source, value, sizing, nested style
+    (``box`` / ``border`` / per-side borders), visibility, action,
+    tooltip, document_map_label and bookmark for a named Image."""
     doc = RDLDocument.open(path)
     img = _find_named_anywhere(doc, "Image", name)
     if img is None:
@@ -1108,13 +1273,15 @@ def get_image(path: str, name: str) -> dict[str, Any]:
         "value": _text(find_child(img, "Value")),
         "sizing": _text(find_child(img, "Sizing")),
         "mime_type": _text(find_child(img, "MIMEType")),
-        "style": _style_dict(img),
+        "style": _item_style_dict(img),
         "visibility": _visibility(img),
+        **_interactivity_dict(img),
     }
 
 
 def get_rectangle(path: str, name: str) -> dict[str, Any]:
-    """Return position, size, contained-item names, and style for a Rectangle."""
+    """Return position, size, contained-item names, nested style (as
+    get_image), visibility and interactivity for a Rectangle."""
     doc = RDLDocument.open(path)
     rect = _find_named_anywhere(doc, "Rectangle", name)
     if rect is None:
@@ -1133,8 +1300,9 @@ def get_rectangle(path: str, name: str) -> dict[str, Any]:
         "type": "Rectangle",
         **_layout_dict_for(rect),
         "contained_items": contained,
-        "style": _style_dict(rect),
+        "style": _item_style_dict(rect),
         "visibility": _visibility(rect),
+        **_interactivity_dict(rect),
     }
 
 

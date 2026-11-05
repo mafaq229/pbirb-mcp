@@ -729,6 +729,73 @@ class TestSetChartSeriesAction:
         RDLDocument.open(chart_path).validate()
 
 
+# ---- read-back through the get_* readers (#108) ---------------------------
+
+
+def _add_image(rdl_path: Path, name: str = "Logo") -> None:
+    add_body_image(
+        path=str(rdl_path),
+        name=name,
+        image_source="External",
+        value="http://example.com/logo.png",
+        top="1.5in",
+        left="0in",
+        width="1in",
+        height="0.5in",
+    )
+
+
+class TestReadBack:
+    def test_textbox_action(self, rdl_path):
+        from pbirb_mcp.ops.reader import get_textbox
+
+        set_textbox_action(
+            str(rdl_path),
+            "ProductID",
+            "Drillthrough",
+            "Detail",
+            [{"name": "Id", "value": "=Fields!ProductID.Value"}],
+        )
+        assert get_textbox(str(rdl_path), "ProductID")["action"] == {
+            "type": "Drillthrough",
+            "target": "Detail",
+            "parameters": [{"name": "Id", "value": "=Fields!ProductID.Value"}],
+        }
+
+    def test_image_action(self, rdl_path):
+        from pbirb_mcp.ops.reader import get_image
+
+        _add_image(rdl_path)
+        set_image_action(str(rdl_path), "Logo", "BookmarkLink", "Top")
+        assert get_image(str(rdl_path), "Logo")["action"] == {
+            "type": "BookmarkLink",
+            "target": "Top",
+            "parameters": [],
+        }
+
+    def test_textbox_tooltip(self, rdl_path):
+        from pbirb_mcp.ops.reader import get_textbox
+
+        set_textbox_tooltip(str(rdl_path), "ProductID", "=Fields!ProductName.Value")
+        assert get_textbox(str(rdl_path), "ProductID")["tooltip"] == "=Fields!ProductName.Value"
+        set_textbox_tooltip(str(rdl_path), "ProductID", "")
+        assert get_textbox(str(rdl_path), "ProductID")["tooltip"] is None
+
+    def test_document_map_label(self, rdl_path):
+        from pbirb_mcp.ops.layout import add_rectangle
+        from pbirb_mcp.ops.reader import get_image, get_rectangle, get_textbox
+
+        p = str(rdl_path)
+        _add_image(rdl_path)
+        add_rectangle(p, "Frame", "2.5in", "0in", "1in", "1in")
+        set_document_map_label(p, "ProductID", "Products")
+        set_document_map_label(p, "Logo", "Logo")
+        set_document_map_label(p, "Frame", "Frame")
+        assert get_textbox(p, "ProductID")["document_map_label"] == "Products"
+        assert get_image(p, "Logo")["document_map_label"] == "Logo"
+        assert get_rectangle(p, "Frame")["document_map_label"] == "Frame"
+
+
 # ---- registration ---------------------------------------------------------
 
 

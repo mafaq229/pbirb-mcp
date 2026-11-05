@@ -2509,8 +2509,9 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Read a textbox anywhere in the report: value, position, size, "
             "visibility, CanGrow/CanShrink, style grouped as box / border / "
-            "paragraph / run, and runs[] (accepted as-is by set_textbox_runs). "
-            "Tablix cells have no position."
+            "paragraph / run, runs[] (accepted as-is by set_textbox_runs), "
+            "paragraphs[], action, tooltip, bookmark, map label. Tablix cells "
+            "have no position."
         ),
         input_schema={
             "type": "object",
@@ -2528,7 +2529,8 @@ def register_all_tools(server: MCPServer) -> None:
         name="get_image",
         description=(
             "Read an image: position, size, source (External / Embedded / "
-            "Database), value, sizing, MIME type, style, visibility."
+            "Database), value, sizing, MIME type, style, visibility, action, "
+            "tooltip, bookmark, map label."
         ),
         input_schema={
             "type": "object",
@@ -2544,7 +2546,10 @@ def register_all_tools(server: MCPServer) -> None:
     )
     server.register_tool(
         name="get_rectangle",
-        description=("Read a rectangle: position, size, contained items, style, visibility."),
+        description=(
+            "Read a rectangle: position, size, contained items, style, visibility, "
+            "action, tooltip, bookmark, map label."
+        ),
         input_schema={
             "type": "object",
             "properties": {

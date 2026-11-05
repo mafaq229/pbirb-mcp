@@ -590,7 +590,7 @@ Returns {chart, kind: 'ChartGroup', group_name, expression, label, sort: [{value
 
 *read-only*
 
-Return effective state of a named Textbox: position, size, Visibility, CanGrow, CanShrink, plus a nested style dict that mirrors set_textbox_style's routing — {box: {BackgroundColor, VerticalAlign, padding, ...}, border: {Style, Color, Width}, paragraph: {TextAlign}, run: {FontFamily, FontSize, FontWeight, Color, Format, ...}}. Empty branches are dropped. runs[] entries each carry their own per-run style. Searches the entire report; tablix-cell textboxes have None for top/left/width/height. Top-level positioned items with a missing `<Top>` or `<Left>` coerce to '0in' (RDL default).
+Return effective state of a named Textbox: position, size, Visibility, CanGrow, CanShrink, plus a nested style dict that mirrors set_textbox_style's routing — {box: {BackgroundColor, VerticalAlign, padding, ...}, border: {Style, Color, Width}, top_border / bottom_border / left_border / right_border (per-side overrides, same shape), paragraph: {TextAlign}, run: {FontFamily, FontSize, FontWeight, Color, Format, ...}}. Empty branches are dropped. runs[] entries each carry their own per-run style (and markup_type) — exactly the shape set_textbox_runs accepts. paragraphs[] is one {index, text_align, list_style, list_level, left_indent, right_indent, hanging_indent, space_before, space_after} per `<Paragraph>` (null when unset). Interactivity: `action` ({type: Hyperlink | Drillthrough | BookmarkLink, target, parameters: [{name, value, omit?}]} or null), `tooltip`, `document_map_label` and `bookmark` (null when absent); run_interactivity[] lists the runs with their own ToolTip / action as {paragraph_index, run_index, tooltip, action}. Searches the entire report; tablix-cell textboxes have None for top/left/width/height. Top-level positioned items with a missing `<Top>` or `<Left>` coerce to '0in' (RDL default).
 
 ### `set_textbox_style`
 
@@ -750,13 +750,13 @@ Same shape as list_body_items but for `<PageFooter>`.
 
 *read-only*
 
-Return effective state of a named Image: position, size, Source (External / Embedded / Database), Value, Sizing (AutoSize / Fit / FitProportional / Clip), MIMEType, Style, Visibility.
+Return effective state of a named Image: position, size, Source (External / Embedded / Database), Value, Sizing (AutoSize / Fit / FitProportional / Clip), MIMEType, Visibility, and style as {box: {BackgroundColor, VerticalAlign, padding, ...}, border: {Style, Color, Width}, top_border / bottom_border / left_border / right_border} (empty branches dropped; null when nothing is set). Interactivity as in get_textbox: `action` ({type, target, parameters} or null), `tooltip`, `document_map_label`, `bookmark`.
 
 ### `get_rectangle`
 
 *read-only*
 
-Return effective state of a named Rectangle: position, size, names of contained ReportItems, Style, Visibility.
+Return effective state of a named Rectangle: position, size, names of contained ReportItems, Visibility, style in the get_image shape ({box, border, per-side borders}; a rectangle from add_rectangle reads {border: {Style: None}}), and `action`, `tooltip`, `document_map_label`, `bookmark` as in get_textbox.
 
 ### `set_page_setup`
 
