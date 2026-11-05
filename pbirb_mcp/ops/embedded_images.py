@@ -39,6 +39,8 @@ _VALID_MIME_TYPES = frozenset(
         "image/x-png",
     }
 )
+# Public name: Database images (``Image/MIMEType``) use the same set (#79).
+VALID_MIME_TYPES = _VALID_MIME_TYPES
 
 
 # Magic-byte prefixes for the supported formats. We sniff the file to refuse

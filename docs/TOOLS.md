@@ -49,7 +49,7 @@ One-shot static check: union of validate_report and lint_report. Returns {valid,
 
 *read-only*
 
-Run static-analysis lint rules against an .rdl (`lint_report` returns `rules_run`; the rules live in `pbirb_mcp/ops/lint_rules/`). They cover the known bug classes (multi-value-eq, missing-field-reference, dangling-embedded-image, pbidataset-at-prefix, parameter-layout-out-of-sync, double-encoded-entities, stale-designer-state, tablix-span-misplaced, dataset-fields-out-of-sync, dangling-dataset-reference-field, duplicate-name, invalid-identifier, tablix-structure, chart-structure, etc.). Returns {issues, rules_run} with each issue {severity (error|warning), rule, location, message, suggestion?}; location names the nearest named items, e.g. Tablix[Name='T']>Textbox[Name='X']>Value. Optional `rules` selects a subset by name (empty = all).
+Run static-analysis lint rules against an .rdl (`lint_report` returns `rules_run`; the rules live in `pbirb_mcp/ops/lint_rules/`). They cover the known bug classes (multi-value-eq, missing-field-reference, dangling-embedded-image, database-image-missing-mimetype, pbidataset-at-prefix, parameter-layout-out-of-sync, double-encoded-entities, stale-designer-state, tablix-span-misplaced, dataset-fields-out-of-sync, dangling-dataset-reference-field, duplicate-name, invalid-identifier, tablix-structure, chart-structure, etc.). Returns {issues, rules_run} with each issue {severity (error|warning), rule, location, message, suggestion?}; location names the nearest named items, e.g. Tablix[Name='T']>Textbox[Name='X']>Value. Optional `rules` selects a subset by name (empty = all).
 
 ### `dry_run_edit`
 
@@ -601,7 +601,7 @@ Set `<Image>/<Sizing>` on a named Image. sizing ∈ AutoSize / Fit / FitProporti
 
 *idempotent*
 
-Repoint an existing `<Image>` at a different embedded image entry without delete-and-readd. Sets Source=Embedded and rewrites `<Value>` to embedded_name. Refuses with a clear error if embedded_name isn't in `<EmbeddedImages>` — leaving a dangling reference would render as a broken image. Add the image first via add_embedded_image. Idempotent: same (Source, Value) pair → {changed: false}, no save. Returns {name, kind, changed: bool}.
+Repoint an existing `<Image>` without delete-and-readd: writes `<Source>`, `<Value>` and (Database only) `<MIMEType>`. source='Embedded': value names an `<EmbeddedImage>` (or is an =expression); a missing name is refused — a dangling reference would render as a broken image, so add it first via add_embedded_image. source='External': value is a URL / report-server path or an =expression. source='Database': value is an =expression returning the image bytes (e.g. =First(Fields!Photo.Value)) and mime_type is required (image/png, image/jpeg, image/gif, image/bmp, image/x-png, or an =expression) — Report Builder refuses to publish a database image without it. MIMEType is removed when switching to Embedded or External; mime_type is refused for them. embedded_name is the deprecated spelling of source='Embedded', value=`<name>`. Idempotent: same (Source, Value, MIMEType) → {changed: false}, no save. Returns {name, kind, source, changed: bool}.
 
 ### `get_embedded_image_data`
 
@@ -749,7 +749,7 @@ Same as add_header_textbox, for `<PageFooter>`.
 
 ### `add_header_image`
 
-Add an Image to `<PageHeader>/<ReportItems>`. image_source is External (URL in value), Embedded (EmbeddedImage Name in value), or Database (=Fields!Photo.Value-style expression). Sizes the band like add_header_textbox (band_height, warnings).
+Add an Image to `<PageHeader>/<ReportItems>`. image_source is External (URL in value), Embedded (EmbeddedImage Name in value), or Database (=Fields!Photo.Value-style expression). A Database image requires mime_type (image/png, image/jpeg, image/gif, image/bmp, image/x-png, or an =expression), written as `<MIMEType>` after `<Value>`; mime_type is refused for the other sources. Sizes the band like add_header_textbox (band_height, warnings).
 
 ### `add_footer_image`
 
@@ -773,7 +773,7 @@ Add a Textbox to `<Body>/<ReportItems>`. text accepts static strings or RDL expr
 
 ### `add_body_image`
 
-Add an Image to `<Body>/<ReportItems>`, or inside the body Rectangle `container` (as for add_body_textbox). image_source: External (URL), Embedded (EmbeddedImage Name), Database (=Fields!Photo.Value).
+Add an Image to `<Body>/<ReportItems>`, or inside the body Rectangle `container` (as for add_body_textbox). image_source: External (URL), Embedded (EmbeddedImage Name), Database (=Fields!Photo.Value). A Database image requires mime_type (image/png, image/jpeg, image/gif, image/bmp, image/x-png, or an =expression), written as `<MIMEType>`; mime_type is refused for the other sources.
 
 ### `remove_body_item`
 

@@ -743,6 +743,37 @@ VARIANTS: list[tuple[str, Case]] = [
         Case({"textbox_names": ["HeaderProductID"], "font_weight": "700", "font_style": "Italic"}),
     ),
     ("style_tablix_row", Case({"tablix_name": "MainTable", "row": 0, "text_decoration": "None"})),
+    (
+        "set_image_source",
+        Case(
+            {
+                "image_name": "Logo",
+                "source": "Database",
+                "value": "=First(Fields!ProductName.Value)",
+                "mime_type": "image/png",
+            },
+            setup=[BODY_IMAGE],
+        ),
+    ),
+    (
+        "set_image_source",
+        Case(
+            {"image_name": "Logo", "source": "External", "value": "http://example.com/b.png"},
+            setup=[BODY_IMAGE],
+        ),
+    ),
+    (
+        "add_body_image",
+        Case(
+            {
+                **BODY_IMAGE[1],
+                "image_source": "Database",
+                "value": "=First(Fields!ProductName.Value)",
+                "mime_type": "image/jpeg",
+            },
+            second="refuses",
+        ),
+    ),
     ("set_parameter_prompt", Case({"name": "DateFrom", "prompt": ""})),
     (
         "set_parameter_available_values",

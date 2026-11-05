@@ -132,6 +132,16 @@ _CONTAINER_PARAM: dict = {
 }
 
 
+# Image/MIMEType for Database images (#79): add_*_image, set_image_source.
+_IMAGE_MIME_TYPE_SCHEMA: dict = {
+    "type": "string",
+    "description": (
+        "Database images only (required there): image/png, image/jpeg, image/gif, "
+        "image/bmp, image/x-png, or an =expression."
+    ),
+}
+
+
 def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="describe_report",
@@ -658,18 +668,30 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_image_source",
         description=(
-            "Point an existing image at an embedded image (Source=Embedded, "
-            "Value=embedded_name) without re-adding it. Refuses a name not in the "
-            "report's embedded images (add_embedded_image first)."
+            "Repoint an existing image without re-adding it: source Embedded "
+            "(value = an embedded image's name; refused if missing), External "
+            "(URL) or Database (=Fields! expression + required mime_type). "
+            "MIMEType is kept only for Database."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "image_name": {"type": "string"},
-                "embedded_name": {"type": "string"},
+                "source": {"type": "string", "enum": ["External", "Embedded", "Database"]},
+                "value": {
+                    "type": "string",
+                    "description": (
+                        "Embedded image name, URL, or =expression (required for Database)."
+                    ),
+                },
+                "mime_type": _IMAGE_MIME_TYPE_SCHEMA,
+                "embedded_name": {
+                    "type": "string",
+                    "description": "Deprecated: same as source='Embedded', value=<name>.",
+                },
             },
-            "required": ["path", "image_name", "embedded_name"],
+            "required": ["path", "image_name"],
             "additionalProperties": False,
         },
         handler=images.set_image_source,
@@ -2793,7 +2815,7 @@ def register_all_tools(server: MCPServer) -> None:
         "required": ["path", "name", "text", "top", "left", "width", "height"],
         "additionalProperties": False,
     }
-    _IMAGE_SCHEMA = {
+    _IMAGE_SCHEMA = {  # add_header_image / add_footer_image
         "type": "object",
         "properties": {
             "path": {"type": "string"},
@@ -2809,6 +2831,7 @@ def register_all_tools(server: MCPServer) -> None:
                     "or =Fields!X.Value for Database."
                 ),
             },
+            "mime_type": _IMAGE_MIME_TYPE_SCHEMA,
             "top": {"type": "string"},
             "left": {"type": "string"},
             "width": {"type": "string"},
@@ -2885,7 +2908,7 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Add an image (logo) to the page header: image_source External (URL), "
             "Embedded (name of an embedded image) or Database (=Fields! "
-            "expression). The header grows to fit."
+            "expression, plus the required mime_type). The header grows to fit."
         ),
         input_schema=_IMAGE_SCHEMA,
         handler=header_footer.add_header_image,
@@ -3286,6 +3309,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "enum": ["External", "Embedded", "Database"],
             },
             "value": {"type": "string"},
+            "mime_type": _IMAGE_MIME_TYPE_SCHEMA,
             "top": {"type": "string"},
             "left": {"type": "string"},
             "width": {"type": "string"},
@@ -3320,7 +3344,7 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Add an image to the report body: image_source External (URL), "
             "Embedded (name of an embedded image) or Database (=Fields! "
-            "expression)."
+            "expression, plus the required mime_type)."
         ),
         input_schema=_BODY_IMAGE_SCHEMA,
         handler=body.add_body_image,

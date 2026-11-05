@@ -26,12 +26,12 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.xpath import RDL_NS, find_child, q
 from pbirb_mcp.ops.containers import place
 from pbirb_mcp.ops.header_footer import (
-    _VALID_IMAGE_SOURCES,
     _build_image,
     _build_textbox,
     detach_item,
     resolve_removable_item,
 )
+from pbirb_mcp.ops.images import check_image_source
 
 
 def _resolve_body(doc: RDLDocument) -> etree._Element:
@@ -101,18 +101,18 @@ def add_body_image(
     width: str,
     height: str,
     container: Optional[str] = None,
+    mime_type: Optional[str] = None,
 ) -> dict[str, Any]:
     """Add an Image to the body, or inside the body Rectangle ``container``
     (see :func:`add_body_textbox`)."""
-    if image_source not in _VALID_IMAGE_SOURCES:
-        raise ValueError(
-            f"image_source must be one of {_VALID_IMAGE_SOURCES!r}; got {image_source!r}"
-        )
+    # Source / Value / MIMEType rules shared with set_image_source (#79):
+    # Database needs an =expression and a mime_type, the others refuse one.
+    mime_type = check_image_source(image_source, value, mime_type)
     names.validate_identifier(name, "image")
     top, left, width, height = units.box(top, left, width, height)
     doc = RDLDocument.open(path)
     names.ensure_unique(doc, name)
-    image = _build_image(name, image_source, value, top, left, width, height)
+    image = _build_image(name, image_source, value, top, left, width, height, mime_type)
     return place(doc, image, container, {"name": name, "kind": "Image"})
 
 
