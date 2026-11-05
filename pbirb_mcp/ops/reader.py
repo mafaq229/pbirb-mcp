@@ -1337,7 +1337,7 @@ def _chart_data_labels_dict(series: etree._Element) -> Optional[dict[str, Any]]:
     }
 
 
-def _action_dict(host: Optional[etree._Element]) -> Optional[dict[str, Any]]:
+def _chart_action_dict(host: Optional[etree._Element]) -> Optional[dict[str, Any]]:
     """Read-back of the first action on ``host`` (``ActionInfo/Actions/Action``,
     or a legacy bare ``<Action>``), in the argument shape of the
     ``set_*_action`` tools: ``{action_type, target_expression,
@@ -1401,9 +1401,9 @@ def _chart_series_dict(
     type_text = _text(find_child(series, "Type"))
     type_implicit = type_text is None or not type_text.strip()
 
-    action = _action_dict(point)
+    action = _chart_action_dict(point)
     if action is None:  # legacy series-level placement
-        action = _action_dict(series)
+        action = _chart_action_dict(series)
 
     return {
         "name": series.get("Name"),
