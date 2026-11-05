@@ -189,7 +189,10 @@ def apply_edits(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
 
     Returns ``{applied: [...], verify: {...}, committed: bool}`` where
     ``applied`` mirrors ``dry_run_edit``'s shape (per-op
-    ``{tool, ok, result|error}``) so an LLM can read both side by side.
+    ``{tool, ok, result|error}``) so an LLM can read both side by side,
+    and so does ``verify`` (commit's ``{valid, issues, rules_run, xsd_used,
+    introduced_count, preexisting_count, introduced_error_count}``; with
+    nothing checked when an op failed).
     """
     if not isinstance(ops, list):
         raise ValueError("ops must be a list of {tool, args} entries")
@@ -224,7 +227,7 @@ def apply_edits(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             "applied": [],
             "committed": False,
-            "verify": {"valid": False, "issues": [], "rules_run": []},
+            "verify": _unverified(),
             "error": _extract_payload(start_resp),
         }
     tx_state = _extract_payload(start_resp)
@@ -323,7 +326,7 @@ def apply_edits(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             "applied": applied,
             "committed": False,
-            "verify": {"valid": False, "issues": [], "rules_run": []},
+            "verify": _unverified(),
         }
 
     # All ops succeeded — commit. The commit tool itself runs lint;
@@ -358,13 +361,28 @@ def apply_edits(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             "applied": applied,
             "committed": False,
-            "verify": commit_payload.get("verify", {"valid": False, "issues": [], "rules_run": []}),
+            "verify": commit_payload.get("verify") or _unverified(),
         }
 
     return {
         "applied": applied,
         "committed": True,
         "verify": commit_payload["verify"],
+    }
+
+
+def _unverified() -> dict[str, Any]:
+    """The ``verify`` block of a batch that stopped before verifying (an op
+    failed): the same keys commit / dry_run_edit return (#84), nothing
+    checked."""
+    return {
+        "valid": False,
+        "issues": [],
+        "rules_run": [],
+        "xsd_used": False,
+        "introduced_count": 0,
+        "preexisting_count": 0,
+        "introduced_error_count": 0,
     }
 
 

@@ -150,7 +150,11 @@ SPECIFIC: dict[str, dict] = {
         "type": "object",
         "properties": {
             "applied": {"type": "array", "items": {"type": "object"}},
-            "diff": {"type": "string"},
+            "diff": {
+                "type": ["string", "array"],
+                "items": {"type": "string"},
+                "description": "Unified diff text, or (diff=summary) touched element paths.",
+            },
             "diff_stats": {"type": "object"},
             "diff_truncated": {"type": "boolean"},
             "verify": {"type": "object"},

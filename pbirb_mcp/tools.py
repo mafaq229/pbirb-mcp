@@ -943,9 +943,9 @@ def register_all_tools(server: MCPServer) -> None:
         name="dry_run_edit",
         description=(
             "Preview edits without changing the report: runs {tool, args} ops on "
-            "a temp copy and returns per-op results, a unified diff and a verify "
-            "report. Ops omit `path`. Stops at the first failing op. summary=true "
-            "leaves out the diff; max_diff_bytes caps it."
+            "a temp copy and returns per-op results, a diff and a verify report "
+            "shaped like apply_edits'. Ops omit `path`. Stops at the first failing "
+            "op. diff=summary lists the touched elements; max_diff_bytes caps it."
         ),
         input_schema={
             "type": "object",
@@ -968,8 +968,16 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": "boolean",
                     "default": False,
                     "description": (
-                        "Omit the diff and op result_text; verify becomes "
-                        "{valid, error_count, issue_count, issues_by_rule}."
+                        "Omit op results and (unless `diff` is set) the diff; verify "
+                        "becomes {valid, error_count, issue_count, issues_by_rule}."
+                    ),
+                },
+                "diff": {
+                    "type": "string",
+                    "enum": ["unified", "summary", "none"],
+                    "description": (
+                        "unified (default): text diff; summary: touched element "
+                        "paths; none: diff_stats only."
                     ),
                 },
                 "max_diff_bytes": {

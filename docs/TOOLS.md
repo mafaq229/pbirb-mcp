@@ -75,7 +75,11 @@ Run static-analysis lint rules against an .rdl (`lint_report` returns `rules_run
 
 *read-only*
 
-Apply a list of {tool, args} ops to a tempfile clone of the report; return the unified diff and a verify (validate + lint) report. The original file is NEVER modified. The harness auto-injects `path` into each op's args, so callers don't supply it. On op failure, dispatch stops; partial diff + verify are still returned. Use this to preview risky multi-step edits before committing. The diff is capped at max_diff_bytes (default 40000; capped diffs end in a 'diff truncated' marker line and set diff_truncated); summary=true returns only per-op outcomes, diff_stats and verify counts.
+Apply a list of {tool, args} ops to a tempfile clone of the report; return a diff and a verify (XSD + structural + lint) report. The original file is NEVER modified. The harness auto-injects `path` into each op's args, so callers don't supply it. On op failure, dispatch stops; partial diff + verify are still returned. Use this to preview risky multi-step edits before committing.
+
+The result has the apply_edits shape: `applied` is `[{tool, ok, result|error}]` with `result` the op's result object (`result_text`, the same result as a JSON string, is deprecated and will be removed in the next release), and `verify` is `{valid, issues, rules_run, xsd_used, introduced_count, preexisting_count, introduced_error_count}`. XSD and structural errors are among `issues`; `valid` is false only when an error-severity issue remains (warnings don't count, as in verify_report); each issue carries `new: true` unless the source already had it.
+
+`diff` picks the change report: `unified` (default) is the unified text diff; `summary` is a list of `"<change> <element path>"` lines, e.g. `changed Textbox[Title]/Paragraphs/Paragraph/TextRuns/TextRun/Value` or `added Tablix[T]/TablixBody/TablixColumns/TablixColumn[4]`; `none` leaves it out. Either diff is capped at max_diff_bytes (default 40000, 0 = no cap), the truncation marker included: a capped unified diff ends in a `\ pbirb-mcp: diff truncated ...` line, a capped summary in a `"... N more"` line, and diff_truncated is true. `diff_stats` (lines added/removed, hunks of the text diff) is always returned. summary=true drops the op results, reduces verify to {valid, xsd_used, error_count, issue_count, issues_by_rule} and leaves the diff out unless `diff` is given.
 
 ### `start_editing_transaction`
 
@@ -91,7 +95,7 @@ Discard a transaction. The in-memory tree is dropped; the on-disk file is unchan
 
 ### `apply_edits`
 
-Atomic batch: open once → apply ops → lint → save once. Opens an internal transaction against path, dispatches each {tool, args} op through the JSON-RPC tools/call path with transaction_id injected, and commits at the end. On any op failure or lint-error at commit, rolls back — disk is byte-identical to its pre-call state. Compare with dry_run_edit (clones to tempfile, never touches the real file): use dry_run_edit to preview a plan, apply_edits to land it. Returns {applied: [{tool, ok, result|error}], verify, committed}.
+Atomic batch: open once → apply ops → lint → save once. Opens an internal transaction against path, dispatches each {tool, args} op through the JSON-RPC tools/call path with transaction_id injected, and commits at the end. On any op failure or lint-error at commit, rolls back — disk is byte-identical to its pre-call state. Compare with dry_run_edit (clones to tempfile, never touches the real file): use dry_run_edit to preview a plan, apply_edits to land it. Returns {applied: [{tool, ok, result|error}], verify, committed}; `verify` has commit_editing_transaction's keys {valid, issues, rules_run, xsd_used, introduced_count, preexisting_count, introduced_error_count} — nothing checked (valid false, no issues) when an op failed — the same keys as dry_run_edit's.
 
 ### `get_expression_reference`
 

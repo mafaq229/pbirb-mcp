@@ -326,12 +326,13 @@ class TestDryRunSummary:
 
     def test_diff_cap_is_explicit(self, server, rdl):
         out = json.loads(
-            _call(server, "dry_run_edit", path=str(rdl), ops=self.OPS, max_diff_bytes=120)[
+            _call(server, "dry_run_edit", path=str(rdl), ops=self.OPS, max_diff_bytes=300)[
                 "content"
             ][0]["text"]
         )
         assert out["diff_truncated"] is True
-        assert "pbirb-mcp: diff truncated" in out["diff"]
+        # The cap includes the marker line (#84).
+        assert len(out["diff"].encode()) <= 300
         body, marker = out["diff"].rstrip("\n").rsplit("\n", 1)
-        assert len(body.encode()) <= 120
+        assert body.startswith("---")
         assert marker.startswith("\\ pbirb-mcp: diff truncated")
