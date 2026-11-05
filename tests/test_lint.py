@@ -371,6 +371,16 @@ class TestDanglingDataSourceReference:
         assert _rule_count(result, "dangling-data-source-reference") == 1
         assert "GhostDataSource" in result["issues"][0]["message"]
 
+    def test_shared_reference_server_path_is_not_a_name(self, multi_ds_path):
+        # #92: <DataSource>/<DataSourceReference> holds a shared data
+        # source's server path; it never has to match an embedded name.
+        doc = RDLDocument.open(multi_ds_path)
+        shared = next(d for d in doc.root.iter(q("DataSource")) if d.get("Name") == "SharedRef")
+        shared.find(q("DataSourceReference")).text = "/Data Sources/NoSuchEmbeddedName"
+        _save(doc)
+        result = lint_report(str(multi_ds_path), rules=["dangling-data-source-reference"])
+        assert result["issues"] == []
+
 
 # ---- rule 10: dangling-action ------------------------------------------
 

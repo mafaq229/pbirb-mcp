@@ -393,8 +393,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="remove_data_source",
         description=(
-            "Remove a data source by name. Refuses while a dataset or shared "
-            "reference still uses it (lists them); force=true removes anyway."
+            "Remove a data source by name. Refuses while a dataset still uses it "
+            "(lists them); force=true removes anyway. Never removes the last one."
         ),
         input_schema={
             "type": "object",
@@ -412,8 +412,8 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="rename_data_source",
         description=(
-            "Rename a data source and update every dataset and shared reference "
-            "that names it. Refuses if new_name is taken."
+            "Rename a data source and update every dataset query that names it. "
+            "Refuses if new_name is taken."
         ),
         input_schema={
             "type": "object",

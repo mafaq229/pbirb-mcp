@@ -44,7 +44,8 @@ Core rules (19):
   (:func:`pbirb_mcp.ops.embedded_images.iter_embedded_image_refs`).
 * ``dangling-data-source-reference`` (error) —
   ``<DataSet>/<Query>/<DataSourceName>`` doesn't match a real
-  ``<DataSource>``.
+  ``<DataSource>`` (a ``<DataSourceReference>`` server path is not a name
+  and is never checked, #92).
 * ``dangling-action`` (warn) — drillthrough action with empty
   ``<ReportName>``.
 * ``pbidataset-at-prefix`` (error) — PBIDATASET dataset has a
@@ -554,8 +555,9 @@ def _rule_dangling_data_source_reference(doc: RDLDocument) -> list[Issue]:
     sources = {ds.get("Name") for ds in doc.root.iter(q("DataSource")) if ds.get("Name")}
     issues: list[Issue] = []
     # Restrict to <DataSet>/<Query>/<DataSourceName> — that's where the
-    # reference actually has to resolve. <DataSource>'s own children
-    # (e.g. nested DataSourceReference shapes) are different beasts.
+    # reference actually has to resolve. <DataSource>/<DataSourceReference>
+    # is a shared data source's server path (e.g. "/Data Sources/Sales"),
+    # never an embedded <DataSource> name, so it is not checked here (#92).
     datasets_block = find_child(doc.root, "DataSets")
     if datasets_block is None:
         return []

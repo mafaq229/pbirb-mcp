@@ -7,10 +7,14 @@ Covers the full DataSource CRUD surface:
   provider shape (or convert it with ``provider=``).
 - ``add_data_source``: create a new ``<DataSource>``.
 - ``remove_data_source``: drop a ``<DataSource>``; refuses if any
-  ``<DataSet>/<Query>/<DataSourceName>`` references it.
-- ``rename_data_source``: rewrites both ``<DataSourceName>`` (in every
-  DataSet's Query) and ``<DataSourceReference>`` (in any shared-source
-  links) atomically.
+  ``<DataSet>/<Query>/<DataSourceName>`` references it, and always
+  refuses to drop the last one (#92).
+- ``rename_data_source``: rewrites every ``<DataSet>/<Query>/<DataSourceName>``
+  atomically.
+
+``<DataSource>/<DataSourceReference>`` is the *server path* of a shared
+data source (``/Data Sources/Sales``), not the name of another embedded
+``<DataSource>`` — neither tool reads or rewrites it (#92).
 
 The two connection shapes (``pbidataset`` — what Power BI Report Builder
 writes — and the legacy ``sql`` XMLA shape) and connect-string escaping
@@ -297,13 +301,15 @@ def add_data_source(
 
 
 def _scan_data_source_references(doc: RDLDocument, name: str) -> list[str]:
-    """Walk every ``<DataSet>/<Query>/<DataSourceName>`` AND every
-    ``<DataSource>/<DataSourceReference>`` looking for ``name``. Returns
-    a list of human-readable locator strings — same pattern as
-    ``parameters._scan_parameter_references`` for consistent UX.
+    """Walk every ``<DataSet>/<Query>/<DataSourceName>`` looking for
+    ``name``. Returns a list of human-readable locator strings — same
+    pattern as ``parameters._scan_parameter_references`` for consistent UX.
+
+    ``<DataSource>/<DataSourceReference>`` is deliberately not scanned: it
+    holds a shared data source's server path, never an embedded
+    ``<DataSource>`` name (#92).
     """
     locators: list[str] = []
-    # DataSet / Query / DataSourceName references.
     for dataset in doc.root.iter(f"{{{RDL_NS}}}DataSet"):
         query = find_child(dataset, "Query")
         if query is None:
@@ -311,11 +317,6 @@ def _scan_data_source_references(doc: RDLDocument, name: str) -> list[str]:
         ref = find_child(query, "DataSourceName")
         if ref is not None and ref.text == name:
             locators.append(f"DataSet[Name={dataset.get('Name')!r}]/Query/DataSourceName")
-    # Shared DataSource reference: <DataSource>/<DataSourceReference>.
-    for ds in doc.root.iter(f"{{{RDL_NS}}}DataSource"):
-        ref = find_child(ds, "DataSourceReference")
-        if ref is not None and ref.text == name:
-            locators.append(f"DataSource[Name={ds.get('Name')!r}]/DataSourceReference")
     return locators
 
 
@@ -326,14 +327,29 @@ def remove_data_source(
 ) -> dict[str, Any]:
     """Remove a named ``<DataSource>``.
 
-    Refuses by default if any ``<DataSet>/<Query>/<DataSourceName>`` or
-    ``<DataSource>/<DataSourceReference>`` still references it; the
-    error message lists the offending locators (mirrors the
-    ``remove_parameter`` and ``remove_embedded_image`` safety pattern).
-    Pass ``force=True`` to remove anyway and accept the dangling refs.
+    Refuses by default if any ``<DataSet>/<Query>/<DataSourceName>``
+    still references it; the error message lists the offending locators
+    (mirrors the ``remove_parameter`` and ``remove_embedded_image`` safety
+    pattern). Pass ``force=True`` to remove anyway and accept the dangling
+    refs.
+
+    Always refuses to remove the report's last ``<DataSource>`` (#92),
+    ``force`` or not: dropping the ``<DataSources>`` block fails the
+    structural check, and an empty ``<DataSources/>`` fails the XSD
+    (``DataSource`` has ``minOccurs=1``). Add the replacement first, or
+    repoint this one with ``set_datasource_connection``.
     """
     doc = RDLDocument.open(path)
     target = _resolve_data_source(doc, name)
+    parent = target.getparent()
+    if len(find_children(parent, "DataSource")) <= 1:
+        raise ValueError(
+            f"DataSource {name!r} is the report's only data source; a report "
+            "needs at least one (an empty or missing <DataSources> is invalid "
+            "RDL), so it can't be removed even with force=True. Add the "
+            "replacement with add_data_source first, or repoint this one "
+            "with set_datasource_connection."
+        )
 
     if not force:
         locators = _scan_data_source_references(doc, name)
@@ -345,13 +361,7 @@ def remove_data_source(
                 + ". Pass force=True to remove anyway."
             )
 
-    parent = target.getparent()
     parent.remove(target)
-    # Tidy up an empty <DataSources> block.
-    if len(list(parent)) == 0:
-        gp = parent.getparent()
-        if gp is not None:
-            gp.remove(parent)
     doc.save()
     return {"removed": name, "force": force}
 
@@ -370,8 +380,9 @@ def rename_data_source(
 
     1. The ``<DataSource Name=...>`` declaration.
     2. Every ``<DataSet>/<Query>/<DataSourceName>`` matching ``old_name``.
-    3. Every ``<DataSource>/<DataSourceReference>`` (shared-source link)
-       matching ``old_name``.
+
+    ``<DataSource>/<DataSourceReference>`` is left alone: it is a shared
+    data source's server path, not a reference to an embedded name (#92).
 
     Refuses if ``new_name`` already exists or equals ``old_name``.
     Atomic: collects all matches first, commits the rewrite only when
@@ -400,12 +411,6 @@ def rename_data_source(
         if query is None:
             continue
         ref = find_child(query, "DataSourceName")
-        if ref is not None and ref.text == old_name:
-            rewrites.append((ref, new_name))
-
-    # 3. <DataSource>/<DataSourceReference>
-    for ds in root.iter(f"{{{RDL_NS}}}DataSource"):
-        ref = find_child(ds, "DataSourceReference")
         if ref is not None and ref.text == old_name:
             rewrites.append((ref, new_name))
 

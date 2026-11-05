@@ -151,11 +151,11 @@ Create a new `<DataSource>` for a Power BI XMLA endpoint. workspace_url accepts 
 
 *destructive*
 
-Remove a named `<DataSource>`. Refuses by default if any DataSet/Query/DataSourceName or DataSource/DataSourceReference still references it; the error lists the offending locators. Pass force=True to remove anyway.
+Remove a named `<DataSource>`. Refuses by default if any DataSet/Query/DataSourceName still references it; the error lists the offending locators. Pass force=True to remove anyway. A `<DataSourceReference>` is a shared data source's server path, not an embedded name, so it never counts as a reference. Always refuses to remove the report's last data source (even with force): a report without one is invalid RDL — add the replacement first, or repoint it with set_datasource_connection.
 
 ### `rename_data_source`
 
-Rename a `<DataSource>` and rewrite every reference: DataSet/Query/DataSourceName entries AND any DataSource/DataSourceReference shared-source links. Atomic: stages all matches before committing. Errors if new_name already exists or equals old_name.
+Rename a `<DataSource>` and rewrite every DataSet/Query/DataSourceName that names it; `references_rewritten` counts them. `<DataSourceReference>` (a shared data source's server path) is left untouched. Atomic: stages all matches before committing. Errors if new_name already exists or equals old_name.
 
 ### `list_dataset_filters`
 
