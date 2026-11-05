@@ -51,6 +51,7 @@ controls, and decoration tools.
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Optional
 
 from lxml import etree
@@ -61,6 +62,7 @@ from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import AmbiguousElementError, ElementNotFoundError, resolve_dataset
 from pbirb_mcp.core.mutation import changed_by
 from pbirb_mcp.core.xpath import XPATH_NS, find_child, find_children, q
+from pbirb_mcp.ops.actions import _insert_in_chart_data_point_order
 from pbirb_mcp.ops.body import _ensure_body_report_items, _resolve_body
 
 # inputSchema descriptions for the series_type / series_subtype args of the
@@ -964,7 +966,9 @@ def set_chart_legend(
 
 
 def _ensure_series_data_label(series: etree._Element) -> etree._Element:
-    """Locate or create ``<ChartSeries>/<ChartDataLabel>``.
+    """Locate or create ``<ChartSeries>/<ChartDataLabel>`` — only used for a
+    series without any ``<ChartDataPoint>`` (labels normally live on the
+    data points, see :func:`set_chart_data_labels`).
 
     Per RDL XSD, ChartSeries child order: ChartDataPoints, Type, Subtype,
     EmptyPoints, Style, ChartItemInLegend, ChartDataLabel, ChartMarker,
@@ -1005,23 +1009,137 @@ def _insert_data_label_child_in_order(label: etree._Element, new_child: etree._E
     label.append(new_child)
 
 
-_VALID_DATA_LABEL_POSITIONS = frozenset(
-    {
-        "Auto",
-        "Top",
-        "TopLeft",
-        "TopCenter",
-        "TopRight",
-        "Left",
-        "Center",
-        "Right",
-        "BottomLeft",
-        "BottomCenter",
-        "BottomRight",
-        "Bottom",
-        "Outside",
-    }
+# RDL ChartDataLabel Position values. (TopCenter / BottomCenter are
+# ChartLegend positions, not data-label ones.)
+DATA_LABEL_POSITIONS: tuple[str, ...] = (
+    "Auto",
+    "Top",
+    "TopLeft",
+    "TopRight",
+    "Left",
+    "Center",
+    "Right",
+    "BottomRight",
+    "Bottom",
+    "BottomLeft",
+    "Outside",
 )
+_VALID_DATA_LABEL_POSITIONS = frozenset(DATA_LABEL_POSITIONS)
+
+
+def _data_label_hosts(
+    series: etree._Element,
+) -> tuple[list[tuple[etree._Element, Optional[etree._Element]]], bool]:
+    """``(label, host)`` pairs to edit for one series, and whether a
+    series-level label was moved onto the data points.
+
+    Report Builder keeps data labels on the data points
+    (``ChartDataPoint/ChartDataLabel``), and a point's label overrides
+    ``ChartSeries/ChartDataLabel`` at render time, so edits go to every
+    data point (a chart with one category member has one: the template
+    point). A point without a label gets a copy of the series-level label
+    when there is one (which is then removed — the render is unchanged,
+    and the edit cannot be shadowed), else a new label. ``host`` is the
+    data point a new label still has to be attached to (None when the
+    label is already in the tree), so a call that leaves it empty never
+    adds an empty element. A series without data points keeps the
+    series-level label.
+    """
+    points = chart_shape.data_points(series)
+    if not points:
+        return [(_ensure_series_data_label(series), None)], False
+    series_label = find_child(series, "ChartDataLabel")
+    hosts: list[tuple[etree._Element, Optional[etree._Element]]] = []
+    for point in points:
+        label = find_child(point, "ChartDataLabel")
+        if label is not None:
+            hosts.append((label, None))
+        elif series_label is not None:
+            moved = copy.deepcopy(series_label)
+            moved.tail = None
+            _insert_in_chart_data_point_order(point, moved)
+            hosts.append((moved, None))
+        else:
+            hosts.append((etree.Element(q("ChartDataLabel")), point))
+    if series_label is not None:
+        series.remove(series_label)
+    return hosts, series_label is not None
+
+
+def _edit_data_label(
+    label: etree._Element,
+    *,
+    visible: Optional[bool],
+    visible_expression: Optional[str],
+    format: Optional[str],  # noqa: A002
+    position: Optional[str],
+    use_value_as_label: Optional[bool],
+    font_weight: Optional[str],
+    color: Optional[str],
+) -> set[str]:
+    """Apply the requested values to one ``ChartDataLabel``; return the
+    names of the sub-elements that changed."""
+    changed: set[str] = set()
+
+    # ----- Visible (boolean OR expression) ----------------------
+    if visible is not None or visible_expression is not None:
+        new_text = (
+            "true"
+            if visible is True
+            else "false"
+            if visible is False
+            else encode_text(visible_expression)
+        )
+        existing = find_child(label, "Visible")
+        if existing is None or existing.text != new_text:
+            new = etree.Element(q("Visible"))
+            new.text = new_text
+            _insert_data_label_child_in_order(label, new)
+            changed.add("Visible")
+
+    # ----- UseValueAsLabel (boolean) ----------------------------
+    if use_value_as_label is not None:
+        text = "true" if use_value_as_label else "false"
+        existing = find_child(label, "UseValueAsLabel")
+        if existing is None or existing.text != text:
+            uval = etree.Element(q("UseValueAsLabel"))
+            uval.text = text
+            _insert_data_label_child_in_order(label, uval)
+            changed.add("UseValueAsLabel")
+
+    # ----- Position (enum) --------------------------------------
+    if position is not None:
+        existing = find_child(label, "Position")
+        if existing is None or existing.text != position:
+            pos = etree.Element(q("Position"))
+            pos.text = position
+            _insert_data_label_child_in_order(label, pos)
+            changed.add("Position")
+
+    # ----- Style.{Format, FontWeight, Color} --------------------
+    style_values = [
+        (local, value)
+        for local, value in (("Format", format), ("FontWeight", font_weight), ("Color", color))
+        if value is not None
+    ]
+    style = find_child(label, "Style")
+    if style is None and any(value != "" for _, value in style_values):
+        style = etree.Element(q("Style"))
+        _insert_data_label_child_in_order(label, style)
+    if style is not None:
+        for child_local, value in style_values:
+            existing = find_child(style, child_local)
+            if value == "":
+                if existing is not None:
+                    style.remove(existing)
+                    changed.add(f"Style.{child_local}")
+            else:
+                if existing is None:
+                    existing = etree.SubElement(style, q(child_local))
+                if existing.text != encode_text(value):
+                    existing.text = encode_text(value)
+                    changed.add(f"Style.{child_local}")
+    return changed
 
 
 def set_chart_data_labels(
@@ -1036,40 +1154,43 @@ def set_chart_data_labels(
     font_weight: Optional[str] = None,
     color: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Configure ``<ChartDataLabel>`` for one series or all series in
-    a chart.
+    """Configure the data labels of one series or all series in a chart.
+
+    Labels are written where Report Builder keeps them and where they
+    render: ``ChartSeries/ChartDataPoints/ChartDataPoint/ChartDataLabel``
+    (every data point of the series — one, the template point, unless the
+    category hierarchy has several static members). A series-level
+    ``ChartSeries/ChartDataLabel`` (written by earlier versions) is moved
+    onto the points that have none, since a point's label overrides it.
 
     When ``series_name`` is None, the change applies to every series.
-    Otherwise only the named series is touched.
 
     ``visible=True`` writes ``<Visible>true</Visible>``; False writes
     false; None leaves the element unchanged. ``visible_expression``
     writes the same element with a VB.NET ``=IIf(...)``-style
     expression — mutually exclusive with ``visible``.
 
-    ``format`` writes a numeric/date format into the per-label
-    ``<Style>/<Format>`` sub-element. Pass ``''`` to clear it.
+    ``format`` / ``font_weight`` / ``color`` write ``<Style>/<Format>``,
+    ``<Style>/<FontWeight>`` and ``<Style>/<Color>``; pass ``''`` to clear.
+    ``position`` ∈ :data:`DATA_LABEL_POSITIONS` (``Outside`` is meant for
+    Shape series — pie, doughnut, funnel, pyramid — and draws a warning on
+    other types). ``use_value_as_label`` writes ``<UseValueAsLabel>``.
 
-    v0.4 commit 22 — per-point kwargs:
-
-    * ``position`` ∈ Auto / Top / TopLeft / TopCenter / TopRight /
-      Left / Center / Right / BottomLeft / BottomCenter /
-      BottomRight / Bottom / Outside. Writes ``<Position>``.
-    * ``use_value_as_label=True`` / False. Writes
-      ``<UseValueAsLabel>true/false</UseValueAsLabel>``.
-    * ``font_weight`` / ``color`` — write to ``<Style>/<FontWeight>``
-      and ``<Style>/<Color>`` respectively. Pass ``''`` to clear.
-
-    Returns ``{chart, series: list[str], kind, changed: list[str]}`` —
-    ``series`` lists the affected series names (one or many);
-    ``changed`` is the union of sub-element names touched.
+    Returns ``{chart, series: list[str], kind, changed: list[str],
+    warnings}`` — ``changed`` is the union of sub-element names touched
+    (``ChartDataLabel`` when a series-level label was moved to the data
+    points); empty when everything already matched (file untouched).
     """
     if visible is not None and visible_expression is not None:
         raise ValueError("visible and visible_expression are mutually exclusive — pass only one")
     if position is not None and position not in _VALID_DATA_LABEL_POSITIONS:
         raise ValueError(
-            f"position {position!r} not valid; expected one of "
-            f"{sorted(_VALID_DATA_LABEL_POSITIONS)}"
+            f"position {position!r} not valid; expected one of {list(DATA_LABEL_POSITIONS)}"
+            + (
+                " (TopCenter/BottomCenter are legend positions; use Top/Bottom)"
+                if position in ("TopCenter", "BottomCenter")
+                else ""
+            )
         )
 
     no_op = all(
@@ -1090,6 +1211,7 @@ def set_chart_data_labels(
             "series": [series_name] if series_name else [],
             "kind": "ChartDataLabel",
             "changed": [],
+            "warnings": [],
         }
 
     doc = RDLDocument.open(path)
@@ -1102,70 +1224,34 @@ def set_chart_data_labels(
 
     changed: set[str] = set()
     affected: list[str] = []
+    warnings: list[str] = []
 
     for series in targets:
-        label = _ensure_series_data_label(series)
-
-        # ----- Visible (boolean OR expression) ----------------------
-        if visible is not None or visible_expression is not None:
-            new_text = (
-                "true"
-                if visible is True
-                else "false"
-                if visible is False
-                else encode_text(visible_expression)
+        hosts, migrated = _data_label_hosts(series)
+        if migrated:
+            changed.add("ChartDataLabel")
+        for label, host in hosts:
+            touched = _edit_data_label(
+                label,
+                visible=visible,
+                visible_expression=visible_expression,
+                format=format,
+                position=position,
+                use_value_as_label=use_value_as_label,
+                font_weight=font_weight,
+                color=color,
             )
-            new = etree.Element(q("Visible"))
-            new.text = new_text
-            existing = find_child(label, "Visible")
-            if existing is None or existing.text != new.text:
-                _insert_data_label_child_in_order(label, new)
-                changed.add("Visible")
-
-        # ----- UseValueAsLabel (boolean) ----------------------------
-        if use_value_as_label is not None:
-            uval = etree.Element(q("UseValueAsLabel"))
-            uval.text = "true" if use_value_as_label else "false"
-            existing = find_child(label, "UseValueAsLabel")
-            if existing is None or existing.text != uval.text:
-                _insert_data_label_child_in_order(label, uval)
-                changed.add("UseValueAsLabel")
-
-        # ----- Position (enum) --------------------------------------
-        if position is not None:
-            pos = etree.Element(q("Position"))
-            pos.text = position
-            existing = find_child(label, "Position")
-            if existing is None or existing.text != pos.text:
-                _insert_data_label_child_in_order(label, pos)
-                changed.add("Position")
-
-        # ----- Style.{Format, FontWeight, Color} --------------------
-        if format is not None or font_weight is not None or color is not None:
-            style = find_child(label, "Style")
-            if style is None:
-                style = etree.Element(q("Style"))
-                _insert_data_label_child_in_order(label, style)
-
-            for child_local, value in (
-                ("Format", format),
-                ("FontWeight", font_weight),
-                ("Color", color),
-            ):
-                if value is None:
-                    continue
-                existing = find_child(style, child_local)
-                if value == "":
-                    if existing is not None:
-                        style.remove(existing)
-                        changed.add(f"Style.{child_local}")
-                else:
-                    if existing is None:
-                        existing = etree.SubElement(style, q(child_local))
-                    if existing.text != encode_text(value):
-                        existing.text = encode_text(value)
-                        changed.add(f"Style.{child_local}")
-
+            if host is not None and len(label):
+                _insert_in_chart_data_point_order(host, label)
+            changed |= touched
+        type_node = find_child(series, "Type")
+        series_type = (type_node.text or "").strip() if type_node is not None else "Column"
+        if position == "Outside" and series_type != "Shape":
+            warnings.append(
+                f"series {series.get('Name')!r} is a {series_type} series: Position "
+                "'Outside' is meant for Shape series (pie, doughnut, funnel, pyramid); "
+                "Report Builder may ignore it here"
+            )
         affected.append(series.get("Name"))
 
     if changed:
@@ -1175,6 +1261,7 @@ def set_chart_data_labels(
         "series": affected,
         "kind": "ChartDataLabel",
         "changed": sorted(changed),
+        "warnings": warnings,
     }
 
 

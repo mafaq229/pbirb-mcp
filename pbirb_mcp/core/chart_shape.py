@@ -237,12 +237,44 @@ def series_group_member(
     return dynamic if dynamic is not None else leaf
 
 
-def data_point_count(series: etree._Element) -> int:
-    """Number of ``ChartDataPoints/ChartDataPoint`` in a ``ChartSeries``."""
+def data_points(series: etree._Element) -> list[etree._Element]:
+    """``ChartDataPoints/ChartDataPoint`` of a ``ChartSeries``, in order."""
     points = find_child(series, "ChartDataPoints")
     if points is None:
-        return 0
-    return len(find_children(points, "ChartDataPoint"))
+        return []
+    return find_children(points, "ChartDataPoint")
+
+
+def template_data_point(series: etree._Element) -> Optional[etree._Element]:
+    """The series' first ``ChartDataPoint`` — the template rendered per data
+    row (one per category leaf; a chart with one category member has just
+    this one). Report Builder keeps per-point settings such as
+    ``ChartDataLabel`` and ``ActionInfo`` here. None when there is none."""
+    points = data_points(series)
+    return points[0] if points else None
+
+
+def data_label(
+    series: etree._Element,
+) -> tuple[Optional[etree._Element], Optional[str]]:
+    """The ``ChartDataLabel`` that renders for ``series``, with where it
+    lives: the template data point's (``"point"``, Report Builder's place,
+    which overrides a series-level one) else ``ChartSeries/ChartDataLabel``
+    (``"series"``). ``(None, None)`` when neither exists."""
+    point = template_data_point(series)
+    if point is not None:
+        label = find_child(point, "ChartDataLabel")
+        if label is not None:
+            return label, "point"
+    label = find_child(series, "ChartDataLabel")
+    if label is not None:
+        return label, "series"
+    return None, None
+
+
+def data_point_count(series: etree._Element) -> int:
+    """Number of ``ChartDataPoints/ChartDataPoint`` in a ``ChartSeries``."""
+    return len(data_points(series))
 
 
 def hierarchy_findings(
@@ -304,7 +336,9 @@ def hierarchy_problems(chart: etree._Element) -> list[str]:
 __all__ = [
     "category_leaf_members",
     "child_members",
+    "data_label",
     "data_point_count",
+    "data_points",
     "derived_dependents",
     "derived_series_list",
     "derived_series_name",
@@ -323,4 +357,5 @@ __all__ = [
     "series_group_member",
     "series_names",
     "subtree_leaves",
+    "template_data_point",
 ]

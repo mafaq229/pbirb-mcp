@@ -435,7 +435,7 @@ Build and append a basic Tablix to `<Body>/<ReportItems>`. One column per entry 
 
 *read-only*
 
-Return effective state of a named Chart: position, size, dataset, palette, series list (name/type/subtype/value expression/color), category groups (name/expression/label), axes (category and value), legend, title, Style, Visibility. Symmetric with get_textbox / get_image / get_rectangle.
+Return effective state of a named Chart: position, size, dataset, palette, series list (name/type/subtype/value expression/color/data_labels — the label that renders: the template data point's, else the series-level one, as {source: point|series, visible, position, use_value_as_label, format, font_weight, color}, or null), category groups (name/expression/label), axes (category and value), legend, title, Style, Visibility. Symmetric with get_textbox / get_image / get_rectangle.
 
 ### `insert_chart_from_template`
 
@@ -479,7 +479,7 @@ Configure a chart legend: position (TopLeft / TopCenter / TopRight / LeftTop / L
 
 *idempotent*
 
-Configure `<ChartDataLabel>` on one or all series in a chart. When series_name is None, the change applies to every series; otherwise only the named series. visible writes `<Visible>true|false</Visible>`; visible_expression writes the same element with a VB.NET =IIf(...) expression (mutually exclusive with visible). format writes `<Style>/<Format>`; pass '' to clear. position ∈ Auto/Top/TopLeft/TopCenter/TopRight/Left/Center/Right/BottomLeft/BottomCenter/BottomRight/Bottom/Outside; use_value_as_label ∈ true/false; font_weight + color write to `<Style>/<FontWeight>` and `<Style>/<Color>` (pass '' to clear). Returns {chart, series, kind, changed}.
+Configure the data labels of one or all series in a chart. Labels are written where Report Builder keeps them and where they render: `ChartSeries/ChartDataPoints/ChartDataPoint/ChartDataLabel` (every data point of the series — just the template point unless the category hierarchy has several static members). A series-level `ChartSeries/ChartDataLabel` (written by earlier versions) is moved onto the data points that have none, since a point's label overrides it (reported as ChartDataLabel in changed). When series_name is None, the change applies to every series; otherwise only the named series. visible writes `<Visible>true|false</Visible>`; visible_expression writes the same element with a VB.NET =IIf(...) expression (mutually exclusive with visible). format writes `<Style>/<Format>`; pass '' to clear. position ∈ Auto/Top/TopLeft/TopRight/Left/Center/Right/BottomRight/Bottom/BottomLeft/Outside (the RDL ChartDataLabel positions; TopCenter/BottomCenter are legend positions and are refused); Outside is meant for Shape series (pie, doughnut, funnel, pyramid) and adds a warning on other types. use_value_as_label ∈ true/false; font_weight + color write to `<Style>/<FontWeight>` and `<Style>/<Color>` (pass '' to clear). Returns {chart, series, kind, changed, warnings}; changed is empty (file untouched) when everything already matched.
 
 ### `set_chart_palette`
 

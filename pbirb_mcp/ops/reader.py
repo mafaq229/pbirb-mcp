@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from pbirb_mcp.core import chart_shape
 from pbirb_mcp.core.columns import describe_columns
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.geometry import PAGE_DEFAULTS, REPORT_ITEM_TAGS, size_unit
@@ -954,21 +955,30 @@ def get_rectangle(path: str, name: str) -> dict[str, Any]:
 
 
 def _chart_data_labels_dict(series: etree._Element) -> Optional[dict[str, Any]]:
-    """Read-back shape for ``<ChartDataLabel>``: visible + format,
-    symmetric with what :func:`set_chart_data_labels` writes. Returns
-    ``None`` when the element is absent so consumers can distinguish
-    "no data labels configured" from "configured with no visible/format".
-    Closes the asymmetric reader/writer gap flagged in the v0.3.0 sweep
-    (P1.3 in feedback/2026-04-30-v030-live-mcp-sweep.md).
+    """Read-back shape for the series' effective ``<ChartDataLabel>``,
+    symmetric with what :func:`set_chart_data_labels` writes: the template
+    data point's label (``source: "point"``, Report Builder's place, which
+    overrides a series-level one) else ``ChartSeries/ChartDataLabel``
+    (``source: "series"``). Returns ``None`` when neither exists so
+    consumers can distinguish "no data labels configured" from "configured
+    with no visible/format".
     """
-    label = find_child(series, "ChartDataLabel")
+    label, source = chart_shape.data_label(series)
     if label is None:
         return None
     style = find_child(label, "Style")
-    fmt = _text(find_child(style, "Format")) if style is not None else None
+
+    def style_text(local: str) -> Optional[str]:
+        return _text(find_child(style, local)) if style is not None else None
+
     return {
+        "source": source,
         "visible": _text(find_child(label, "Visible")),
-        "format": fmt,
+        "position": _text(find_child(label, "Position")),
+        "use_value_as_label": _text(find_child(label, "UseValueAsLabel")),
+        "format": style_text("Format"),
+        "font_weight": style_text("FontWeight"),
+        "color": style_text("Color"),
     }
 
 

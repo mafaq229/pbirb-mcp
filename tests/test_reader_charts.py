@@ -160,7 +160,15 @@ class TestGetChartDataLabelsRoundTrip:
         )
         c = get_chart(path=str(rich_path), name="SalesByProduct")
         amount = next(s for s in c["series"] if s["name"] == "Amount")
-        assert amount["data_labels"] == {"visible": "true", "format": None}
+        assert amount["data_labels"] == {
+            "source": "point",
+            "visible": "true",
+            "position": None,
+            "use_value_as_label": None,
+            "format": None,
+            "font_weight": None,
+            "color": None,
+        }
         # Other series untouched.
         for other in (s for s in c["series"] if s["name"] != "Amount"):
             assert other["data_labels"] is None
@@ -177,7 +185,15 @@ class TestGetChartDataLabelsRoundTrip:
         )
         c = get_chart(path=str(rich_path), name="SalesByProduct")
         qty = next(s for s in c["series"] if s["name"] == "Quantity")
-        assert qty["data_labels"] == {"visible": "false", "format": "#,0"}
+        assert qty["data_labels"] == {
+            "source": "point",
+            "visible": "false",
+            "position": None,
+            "use_value_as_label": None,
+            "format": "#,0",
+            "font_weight": None,
+            "color": None,
+        }
 
     def test_apply_to_all_series(self, rich_path):
         from pbirb_mcp.ops.chart import set_chart_data_labels

@@ -3434,7 +3434,8 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Show/hide and format data labels on one series or all: visible (or "
             "an =expression), number format, position, use_value_as_label, font "
-            "weight and color; '' clears."
+            "weight and color; '' clears. Written on the series' data point, "
+            "where Report Builder keeps them."
         ),
         input_schema={
             "type": "object",
@@ -3447,21 +3448,8 @@ def register_all_tools(server: MCPServer) -> None:
                 "visible_expression": {"type": "string"},
                 "position": {
                     "type": "string",
-                    "enum": [
-                        "Auto",
-                        "Top",
-                        "TopLeft",
-                        "TopCenter",
-                        "TopRight",
-                        "Left",
-                        "Center",
-                        "Right",
-                        "BottomLeft",
-                        "BottomCenter",
-                        "BottomRight",
-                        "Bottom",
-                        "Outside",
-                    ],
+                    "enum": list(chart.DATA_LABEL_POSITIONS),
+                    "description": "Outside is for Shape series (pie, doughnut, funnel).",
                 },
                 "use_value_as_label": {"type": "boolean"},
                 "font_weight": {"type": "string"},
