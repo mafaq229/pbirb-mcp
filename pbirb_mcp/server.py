@@ -99,6 +99,22 @@ class Tool:
     routable: bool = False
     # The client-safe schema published in tools/list.
     published_schema: Optional[dict] = None
+    # The JSON Schema of the result, published as `outputSchema`; every
+    # successful call returns a matching `structuredContent` (issue #55).
+    output_schema: Optional[dict] = None
+
+
+def _success(result: Any) -> dict:
+    """A successful ``CallToolResult``: the JSON text block plus the same
+    value as ``structuredContent`` (wrapped as ``{"result": ...}`` when it
+    isn't an object)."""
+    from pbirb_mcp.core.output_schemas import structured_content
+
+    text = json.dumps(result, default=str)
+    return {
+        "content": [{"type": "text", "text": text}],
+        "structuredContent": structured_content(json.loads(text)),
+    }
 
 
 class MCPServer:
@@ -118,6 +134,7 @@ class MCPServer:
         *,
         batchable: Optional[bool] = None,
         mutating: bool = False,
+        output_schema: Optional[dict] = None,
     ) -> None:
         """Register a tool.
 
@@ -128,8 +145,14 @@ class MCPServer:
         ``mutating`` — the tool writes an RDL file; with
         ``PBIRB_MCP_AUTO_VERIFY`` on, the written file is verified after
         every successful call.
+
+        ``output_schema`` — JSON Schema of the result (``outputSchema``).
+        Defaults to the family schema from
+        :func:`pbirb_mcp.core.output_schemas.default_output_schema`. A
+        non-object result is published as ``{"result": value}``.
         """
         from pbirb_mcp.core.argcheck import client_schema
+        from pbirb_mcp.core.output_schemas import default_output_schema
 
         if name in self._tools:
             raise ValueError(f"tool already registered: {name}")
@@ -155,6 +178,7 @@ class MCPServer:
             mutating=mutating,
             routable=routable,
             published_schema=client_schema(schema),
+            output_schema=output_schema or default_output_schema(name, handler, mutating=mutating),
         )
 
     def is_batchable(self, name: str) -> bool:
@@ -201,6 +225,7 @@ class MCPServer:
                 "name": tool.name,
                 "description": tool.description,
                 "inputSchema": tool.published_schema or tool.input_schema,
+                **({"outputSchema": tool.output_schema} if tool.output_schema else {}),
             }
             for tool in self._tools.values()
         ]
@@ -339,10 +364,9 @@ class MCPServer:
                     "xsd_used": False,
                     "error": {"error_type": type(exc).__name__, "message": str(exc)},
                 }
-            wrapped = {"result": result, "verify": verify}
-            return {"content": [{"type": "text", "text": json.dumps(wrapped, default=str)}]}
+            return _success({"result": result, "verify": verify})
 
-        return {"content": [{"type": "text", "text": json.dumps(result, default=str)}]}
+        return _success(result)
 
     # ---- transport ----------------------------------------------------------
 

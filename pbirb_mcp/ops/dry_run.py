@@ -48,7 +48,58 @@ def _diff(before_text: str, after_text: str, label_before: str, label_after: str
     )
 
 
-def dry_run_edit(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
+# Default cap on the returned unified diff (issue #55): a dry run on a CRLF
+# report produced a 303 KB diff (~76k tokens), past what MCP clients show.
+DRY_RUN_MAX_DIFF_BYTES = 40_000
+
+
+def _diff_stats(diff: str) -> dict[str, Any]:
+    added = removed = hunks = 0
+    for line in diff.splitlines():
+        if line.startswith("@@"):
+            hunks += 1
+        elif line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+    return {"changed": bool(diff), "lines_added": added, "lines_removed": removed, "hunks": hunks}
+
+
+def _cap_diff(diff: str, max_bytes: int) -> tuple[str, bool]:
+    raw = diff.encode("utf-8")
+    if not max_bytes or len(raw) <= max_bytes:
+        return diff, False
+    head = raw[:max_bytes].decode("utf-8", errors="ignore")
+    if "\n" in head:
+        head = head[: head.rindex("\n") + 1]  # end on a whole line
+    marker = (
+        f"\\ pbirb-mcp: diff truncated: showing {len(head.encode('utf-8'))} of "
+        f"{len(raw)} bytes; see diff_stats, pass summary=true, or raise "
+        "max_diff_bytes (0 = no cap)\n"
+    )
+    return head + marker, True
+
+
+def _verify_summary(verify: dict[str, Any]) -> dict[str, Any]:
+    by_rule: dict[str, int] = {}
+    for issue in verify["issues"]:
+        rule = issue.get("rule", "?") if isinstance(issue, dict) else "?"
+        by_rule[rule] = by_rule.get(rule, 0) + 1
+    return {
+        "valid": verify["valid"],
+        "xsd_used": verify["xsd_used"],
+        "error_count": len(verify["errors"]),
+        "issue_count": len(verify["issues"]),
+        "issues_by_rule": by_rule,
+    }
+
+
+def dry_run_edit(
+    path: str,
+    ops: list[dict[str, Any]],
+    summary: bool = False,
+    max_diff_bytes: int = DRY_RUN_MAX_DIFF_BYTES,
+) -> dict[str, Any]:
     """Apply ``ops`` to a clone of ``path``; report diff + verify; discard.
 
     ``ops`` is a list of ``{"tool": <name>, "args": {<arg>: <value>...}}``
@@ -60,7 +111,19 @@ def dry_run_edit(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
     computed against whatever state the tempfile reached.
 
     The original file is never modified.
+
+    The result always carries ``diff_stats`` (lines added/removed, hunks).
+    ``diff`` is capped at ``max_diff_bytes`` (``0`` = no cap): a capped diff
+    ends on a whole line followed by an explicit ``\\ pbirb-mcp: diff
+    truncated ...`` marker line, and ``diff_truncated`` is true.
+    ``summary=True`` leaves the diff out, drops each op's ``result_text``
+    and reduces ``verify`` to counts (``error_count``, ``issue_count``,
+    ``issues_by_rule``).
     """
+    if isinstance(max_diff_bytes, bool) or not isinstance(max_diff_bytes, int):
+        raise ValueError("max_diff_bytes must be a non-negative integer (0 = no cap)")
+    if max_diff_bytes < 0:
+        raise ValueError("max_diff_bytes must be a non-negative integer (0 = no cap)")
     from pbirb_mcp.core import transactions as _tx
     from pbirb_mcp.ops.batch import check_ops, payload_reports_failure
 
@@ -178,7 +241,21 @@ def dry_run_edit(path: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
             "xsd_used": validate_result["xsd_used"],
         }
 
-        return {"applied": applied, "diff": diff, "verify": verify}
+        stats = _diff_stats(diff)
+        if summary:
+            return {
+                "applied": [{k: v for k, v in a.items() if k != "result_text"} for a in applied],
+                "diff_stats": stats,
+                "verify": _verify_summary(verify),
+            }
+        diff, truncated = _cap_diff(diff, max_diff_bytes)
+        return {
+            "applied": applied,
+            "diff": diff,
+            "diff_stats": stats,
+            "diff_truncated": truncated,
+            "verify": verify,
+        }
     finally:
         with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()

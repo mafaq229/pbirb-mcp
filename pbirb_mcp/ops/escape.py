@@ -49,17 +49,61 @@ def _evaluate(doc: RDLDocument, xpath: str) -> list[etree._Element]:
         raise ValueError(f"invalid xpath {xpath!r}: {exc}") from exc
 
 
-def raw_xml_view(path: str, xpath: str) -> list[str]:
+# Default output cap for raw_xml_view (issue #55): a whole-tablix view of a
+# real report ran to ~150 KB, far past what an MCP client shows the model
+# (Claude Code truncates tool output at ~25k tokens). 40 KB of XML is
+# ~10-13k tokens.
+RAW_XML_VIEW_MAX_BYTES = 40_000
+
+TRUNCATION_MARKER_PREFIX = "<!-- pbirb-mcp: truncated"
+
+
+def raw_xml_view(path: str, xpath: str, max_bytes: int = RAW_XML_VIEW_MAX_BYTES) -> list[str]:
     """Return matched elements as serialised XML strings.
 
     Read-only: never saves. Returns ``[]`` when the xpath matches no
     elements; raises ``ValueError`` when the xpath itself is malformed.
     Each result is the element serialised verbatim — namespace
     declarations included so the string is round-trip parseable.
+
+    ``max_bytes`` caps the total UTF-8 size of the returned strings
+    (``0`` = no cap). When the matches exceed it, the element that
+    crosses the cap is cut and ends in an explicit
+    ``<!-- pbirb-mcp: truncated ... -->`` marker naming how much was
+    left out (that string is no longer well-formed XML); later matches
+    are dropped and counted in the marker.
     """
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
+        raise ValueError("max_bytes must be a non-negative integer (0 = no cap)")
     doc = RDLDocument.open(path)
     matches = _evaluate(doc, xpath)
-    return [etree.tostring(m, encoding="unicode") for m in matches if isinstance(m, etree._Element)]
+    out = [etree.tostring(m, encoding="unicode") for m in matches if isinstance(m, etree._Element)]
+    return _cap(out, max_bytes) if max_bytes else out
+
+
+def _cap(items: list[str], max_bytes: int) -> list[str]:
+    encoded = [s.encode("utf-8") for s in items]
+    total = sum(len(b) for b in encoded)
+    if total <= max_bytes:
+        return items
+    kept: list[str] = []
+    used = 0
+    for i, b in enumerate(encoded):
+        if used + len(b) <= max_bytes:
+            kept.append(items[i])
+            used += len(b)
+            continue
+        head = b[: max_bytes - used].decode("utf-8", errors="ignore")
+        dropped = len(items) - i - 1
+        marker = (
+            f"{TRUNCATION_MARKER_PREFIX}: showing {used + len(head.encode('utf-8'))} of "
+            f"{total} bytes; match {i + 1} of {len(items)} is cut"
+            + (f" and {dropped} later match(es) omitted" if dropped else "")
+            + "; narrow the xpath or raise max_bytes (0 = no cap) -->"
+        )
+        kept.append(head + marker)
+        break
+    return kept
 
 
 def raw_xml_replace(path: str, xpath: str, content: str) -> dict[str, Any]:

@@ -43,6 +43,7 @@ from pbirb_mcp.ops import layout_helpers as _layout_helpers
 from pbirb_mcp.ops import lint as _lint
 from pbirb_mcp.ops import scratch as _scratch
 from pbirb_mcp.ops import transactions as _transactions
+from pbirb_mcp.ops.response_format import RESPONSE_FORMAT_PARAM, with_response_format
 
 if TYPE_CHECKING:
     from pbirb_mcp.server import MCPServer
@@ -55,6 +56,21 @@ _PATH_ONLY_SCHEMA: dict = {
             "type": "string",
             "description": "Absolute path to the .rdl file to read.",
         }
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+
+# describe_report / get_datasets / get_parameters / get_tablixes (#55).
+_READER_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": "Absolute path to the .rdl file to read.",
+        },
+        "response_format": RESPONSE_FORMAT_PARAM,
     },
     "required": ["path"],
     "additionalProperties": False,
@@ -102,8 +118,8 @@ def register_all_tools(server: MCPServer) -> None:
             "page.body {width, height} and page.printable_width (width minus "
             "left/right margins) for overflow checks."
         ),
-        input_schema=_PATH_ONLY_SCHEMA,
-        handler=reader.describe_report,
+        input_schema=_READER_SCHEMA,
+        handler=with_response_format("describe_report", reader.describe_report),
     )
     server.register_tool(
         name="get_datasets",
@@ -111,14 +127,14 @@ def register_all_tools(server: MCPServer) -> None:
             "Full DAX command text, fields, query parameters, and dataset-level "
             "filters for every DataSet in the report."
         ),
-        input_schema=_PATH_ONLY_SCHEMA,
-        handler=reader.get_datasets,
+        input_schema=_READER_SCHEMA,
+        handler=with_response_format("get_datasets", reader.get_datasets),
     )
     server.register_tool(
         name="get_parameters",
         description="Report parameter declarations: name, data type, prompt, flags.",
-        input_schema=_PATH_ONLY_SCHEMA,
-        handler=reader.get_parameters,
+        input_schema=_READER_SCHEMA,
+        handler=with_response_format("get_parameters", reader.get_parameters),
     )
     server.register_tool(
         name="get_tablixes",
@@ -126,8 +142,8 @@ def register_all_tools(server: MCPServer) -> None:
             "Tablix layout with stable IDs: columns, row/column groups, sort "
             "expressions, filters, visibility. Required input for any tablix edit."
         ),
-        input_schema=_PATH_ONLY_SCHEMA,
-        handler=reader.get_tablixes,
+        input_schema=_READER_SCHEMA,
+        handler=with_response_format("get_tablixes", reader.get_tablixes),
     )
 
     server.register_tool(
@@ -286,11 +302,12 @@ def register_all_tools(server: MCPServer) -> None:
             "properties": {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
+                "response_format": RESPONSE_FORMAT_PARAM,
             },
             "required": ["path", "name"],
             "additionalProperties": False,
         },
-        handler=datasource.get_data_source,
+        handler=with_response_format("get_data_source", datasource.get_data_source),
     )
     server.register_tool(
         name="add_data_source",
@@ -473,11 +490,12 @@ def register_all_tools(server: MCPServer) -> None:
             "properties": {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
+                "response_format": RESPONSE_FORMAT_PARAM,
             },
             "required": ["path", "name"],
             "additionalProperties": False,
         },
-        handler=dataset.get_dataset,
+        handler=with_response_format("get_dataset", dataset.get_dataset),
     )
     server.register_tool(
         name="add_calculated_field",
@@ -939,7 +957,11 @@ def register_all_tools(server: MCPServer) -> None:
             "modified. The harness auto-injects `path` into each op's "
             "args, so callers don't supply it. On op failure, dispatch "
             "stops; partial diff + verify are still returned. Use this "
-            "to preview risky multi-step edits before committing."
+            "to preview risky multi-step edits before committing. The diff "
+            "is capped at max_diff_bytes (default 40000; capped diffs end in "
+            "a 'diff truncated' marker line and set diff_truncated); "
+            "summary=true returns only per-op outcomes, diff_stats and "
+            "verify counts."
         ),
         input_schema={
             "type": "object",
@@ -957,6 +979,20 @@ def register_all_tools(server: MCPServer) -> None:
                         "additionalProperties": False,
                     },
                     "description": "Sequence of tool calls to dispatch against the tempfile.",
+                },
+                "summary": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Omit the diff and op result_text; verify becomes "
+                        "{valid, error_count, issue_count, issues_by_rule}."
+                    ),
+                },
+                "max_diff_bytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 40000,
+                    "description": "Cap on the returned diff's UTF-8 size (0 = no cap).",
                 },
             },
             "required": ["path", "ops"],
@@ -1425,13 +1461,25 @@ def register_all_tools(server: MCPServer) -> None:
             "'rd:' to the rd namespace. Examples: "
             "\"r:DataSources/r:DataSource[@Name='X']\" / "
             "\".//r:Textbox[@Name='X']/r:Style\". Returns [] when "
-            "nothing matches; raises on malformed xpath."
+            "nothing matches; raises on malformed xpath. Output is capped at "
+            "max_bytes (default 40000); a capped result ends in an explicit "
+            "'<!-- pbirb-mcp: truncated ... -->' marker."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "xpath": {"type": "string"},
+                "max_bytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 40000,
+                    "description": (
+                        "Cap on the total UTF-8 size of the returned XML (0 = no cap). "
+                        "Over the cap, the crossing element is cut and ends in a "
+                        "truncation marker; later matches are omitted and counted."
+                    ),
+                },
             },
             "required": ["path", "xpath"],
             "additionalProperties": False,
@@ -2534,11 +2582,12 @@ def register_all_tools(server: MCPServer) -> None:
             "properties": {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
+                "response_format": RESPONSE_FORMAT_PARAM,
             },
             "required": ["path", "name"],
             "additionalProperties": False,
         },
-        handler=reader.get_textbox,
+        handler=with_response_format("get_textbox", reader.get_textbox),
     )
     server.register_tool(
         name="get_image",
@@ -2553,11 +2602,12 @@ def register_all_tools(server: MCPServer) -> None:
             "properties": {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
+                "response_format": RESPONSE_FORMAT_PARAM,
             },
             "required": ["path", "name"],
             "additionalProperties": False,
         },
-        handler=reader.get_image,
+        handler=with_response_format("get_image", reader.get_image),
     )
     server.register_tool(
         name="get_rectangle",
@@ -2570,11 +2620,12 @@ def register_all_tools(server: MCPServer) -> None:
             "properties": {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
+                "response_format": RESPONSE_FORMAT_PARAM,
             },
             "required": ["path", "name"],
             "additionalProperties": False,
         },
-        handler=reader.get_rectangle,
+        handler=with_response_format("get_rectangle", reader.get_rectangle),
     )
     server.register_tool(
         name="get_chart",
@@ -2590,11 +2641,12 @@ def register_all_tools(server: MCPServer) -> None:
             "properties": {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
+                "response_format": RESPONSE_FORMAT_PARAM,
             },
             "required": ["path", "name"],
             "additionalProperties": False,
         },
-        handler=reader.get_chart,
+        handler=with_response_format("get_chart", reader.get_chart),
     )
 
     # ---- snapshot (v0.2 commit 14, v0.4 restore) --------------------------
