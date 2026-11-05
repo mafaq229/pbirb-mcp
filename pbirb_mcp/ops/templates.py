@@ -121,6 +121,7 @@ def insert_tablix_from_template(
     width: str,
     height: str,
     container: Optional[str] = None,
+    repeat_header: bool = True,
 ) -> dict[str, Any]:
     """Append a header-row + detail-row Tablix bound to ``dataset_name``.
 
@@ -132,6 +133,10 @@ def insert_tablix_from_template(
     group ``Details`` → ``Details1`` ...) is suffixed until unique.
     With ``container`` it goes inside that body Rectangle (#83; a List's
     only when the list is bound to ``dataset_name``).
+
+    The header row's member is ``KeepWithGroup=After`` and, with
+    ``repeat_header`` (default), ``RepeatOnNewPage=true`` — the header
+    repeats at the top of every page (#67).
     """
     names.validate_identifier(name, "tablix")
     spec = _normalize_columns(columns)
@@ -187,9 +192,13 @@ def insert_tablix_from_template(
     # ---- TablixRowHierarchy ----
     row_h = etree.SubElement(tablix, q("TablixRowHierarchy"))
     row_members = etree.SubElement(row_h, q("TablixMembers"))
-    # Header leaf (KeepWithGroup=After matches the fixture pattern).
+    # Header leaf (KeepWithGroup=After matches the fixture pattern;
+    # RepeatOnNewPage repeats it on every page, as Report Builder's
+    # "repeat header rows" does for a table).
     header_member = etree.SubElement(row_members, q("TablixMember"))
     etree.SubElement(header_member, q("KeepWithGroup")).text = "After"
+    if repeat_header:
+        etree.SubElement(header_member, q("RepeatOnNewPage")).text = "true"
     # Details leaf.
     details_member = etree.SubElement(row_members, q("TablixMember"))
     etree.SubElement(details_member, q("Group"), Name=details_group)

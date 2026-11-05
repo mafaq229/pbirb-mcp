@@ -108,20 +108,19 @@ the structural gate and the cases below.
 | `add_column_group` | t11 | fleet | `add_column_group` |
 | chart series add/remove | c07, c08 | fleet, fleet_rb | `add_chart_series` → `remove_chart_series`; `remove_chart_series` |
 | `set_textbox_runs` on a styled cell | s10 | fleet_rb | `set_textbox_runs` keeping the header's run, box and paragraph style |
-| repeating header row | t12 | fleet_rb | **known gap #67** |
+| repeating header row | t12 | fleet_rb | `set_repeat_header_rows` (or `set_repeat_on_new_page` with `member='header'`) (#67) |
 | descending sort | t13 | fleet | `set_group_sort` with `{value, direction: "Descending"}` (#66) |
 | rename | p09 | fleet_rb | `rename_parameter` (title, table filter, query parameter, prompt layout) |
 
-- **Known gaps.** `Case.known_gap` marks a request no tool can do correctly yet: t12 (no tool sets
-  `RepeatOnNewPage` on the static header member); t13 was one until #66 gave `set_group_sort` a direction,
-  and now has an oracle. Known gaps have no oracle, which `selftest` skips, but it still checks that doing nothing
-  fails them. Both checks are reachable today only through `raw_xml_replace`. In real runs they count as
-  failures, and `summarize()` prints `known-gap cases passed k/n`. When #66 / #67 land, add an oracle and
-  drop `known_gap`.
+- **Known gaps.** `Case.known_gap` marks a request no tool can do correctly yet. There are none at the
+  moment: t12 (no tool set `RepeatOnNewPage` on the static header member) and t13 (`set_group_sort` had no
+  direction) were known gaps until #67 / #66 and now have oracles. A known gap has no oracle, which
+  `selftest` skips, but it still checks that doing nothing fails it; in real runs it counts as a failure, and
+  `summarize()` prints `known-gap cases passed k/n`.
 - **t08 checks the column-heading row too** (since #65): it must stay the first row, outside both groups.
   Before #65 `add_row_group` also wrapped that row, so it repeated per group and t08 checked only the nesting.
-- **Comparing with the baseline.** New runs have 65 cases, and two of them are known gaps (so the ceiling is
-  96.9% until #66/#67 land). Compare against `baseline` / `v1` / `v2` on the original 55 ids (pass them with
+- **Comparing with the baseline.** New runs have 65 cases and no known gaps since #66 and #67 (the ceiling
+  was 96.9% while t12 and t13 were gaps). Compare against `baseline` / `v1` / `v2` on the original 55 ids (pass them with
   `--cases`, or filter `results.jsonl`), and report the new ten separately.
 
 ## Re-running
@@ -155,7 +154,8 @@ uv run --with anthropic==2.3.0 python -m evals.tool_selection.harness run \
   only, and again on 2026-11-05 for #60 (structural gate, 10 cases, `build_fleet_rb`), after reviewing that
   diff. That refresh ran `check_harness(approve=True)` directly, because `run --approve-harness` starts a
   paid run straight after storing the hash. `selftest` and `cases` never check the hash. Later refreshes,
-  the same way: #65 (t08 tightened, oracle nests with `parent_group`).
+  the same way: #65 (t08 tightened, oracle nests with `parent_group`), #67 (t12 oracle, `known_gap`
+  dropped).
 - **`ANTHROPIC_BASE_URL`.** Inside a Claude Code session this is set to the session's own proxy. Unset it
   (and `ANTHROPIC_AUTH_TOKEN`) before running, or requests go to the wrong endpoint. The harness also
   raises `ServedModelMismatch` if the served model differs from `--model`.

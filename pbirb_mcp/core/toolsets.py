@@ -149,6 +149,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "set_tablix_size",
             "set_group_page_break",
             "set_repeat_on_new_page",
+            "set_repeat_header_rows",
             "set_keep_together",
             "set_keep_with_group",
         }

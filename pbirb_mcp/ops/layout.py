@@ -8,13 +8,15 @@ Phase 10 ships group-level pagination controls:
   Between / None). Setting ``location='None'`` removes the
   ``<PageBreak>`` element entirely (canonical "no page break" shape).
 * :func:`set_repeat_on_new_page` — write
-  ``<TablixMember>/<RepeatOnNewPage>``. Controls whether a group's
-  TablixMember (typically the header row) repeats when the group
-  spans pages.
+  ``<TablixMember>/<RepeatOnNewPage>``. Controls whether a member
+  (typically a header row) repeats when the data spans pages.
 
-Both target a ``Group`` resolved via ``resolve_group(tablix_name,
-group_name)`` and walk one level up to the ``TablixMember`` parent for
-the repeat-on-new-page case.
+``set_group_page_break`` targets a ``Group`` resolved via
+``resolve_group(tablix_name, group_name)``. The member tools
+(``set_repeat_on_new_page``, ``set_keep_with_group``) take either
+``group_name`` (the group's member) or ``member`` — a row index or a
+``style_tablix_row`` role, which reaches static rows (no ``<Group>``),
+#67; ``set_repeat_header_rows`` flags every static row above the data.
 
 Phase 11 will add the layout-container constructors (``add_rectangle``,
 ``add_list``, ``add_line``) in this same module.
@@ -26,12 +28,15 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import names, units
+from pbirb_mcp.core import names, tablix_spans, units
 from pbirb_mcp.core.document import RDLDocument
-from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_group
-from pbirb_mcp.core.xpath import XPATH_NS, find_child, q
+from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_group, resolve_tablix
+from pbirb_mcp.core.tablix_headers import COLUMN, header_depth
+from pbirb_mcp.core.tablix_shape import leaf_row_index, owner_member, row_leaf, subtree_leaves
+from pbirb_mcp.core.xpath import XPATH_NS, find_child, find_children, q
 from pbirb_mcp.ops.body import _ensure_body_report_items, _resolve_body
 from pbirb_mcp.ops.containers import fit_warnings, target_report_items
+from pbirb_mcp.ops.styling import _resolve_row_index
 from pbirb_mcp.ops.tablix import _insert_member_child
 
 # ---- set_group_page_break -----------------------------------------------
@@ -146,59 +151,140 @@ def set_group_page_break(
     }
 
 
+# ---- member addressing (#67) --------------------------------------------
+
+
+def _static_header_members(tablix: etree._Element) -> list[etree._Element]:
+    """Top-level row members before the first one holding a ``<Group>``
+    (dynamic or detail) — the static rows above the data, e.g. the
+    column-header row (and a title row above it)."""
+    hierarchy = find_child(tablix, "TablixRowHierarchy")
+    members_root = find_child(hierarchy, "TablixMembers") if hierarchy is not None else None
+    out: list[etree._Element] = []
+    for member in find_children(members_root, "TablixMember") if members_root is not None else []:
+        if next(member.iter(q("Group")), None) is not None:
+            break
+        out.append(member)
+    return out
+
+
+def _row_member(tablix: etree._Element, member: Any) -> tuple[etree._Element, int]:
+    """The row-hierarchy ``TablixMember`` a ``member`` selector names and
+    its body row: a row index (int or digit string) or a
+    ``style_tablix_row`` role (``header``, ``details``, ``<group>_header``,
+    ``<group>_footer``). ``header`` falls back to the first static row
+    above the data when no row is marked ``KeepWithGroup=After`` yet.
+
+    From the row's leaf it climbs through static wrappers that hold only
+    that row, so the flag lands on the member next to the group."""
+    try:
+        index = _resolve_row_index(tablix, member)
+    except ElementNotFoundError:
+        headers = _static_header_members(tablix) if member == "header" else []
+        if not headers:
+            raise
+        index = leaf_row_index(tablix, subtree_leaves(headers[0])[0])
+    leaf = row_leaf(tablix, index)
+    if leaf is None:
+        raise ElementNotFoundError(
+            f"body row {index} of tablix {tablix.get('Name')!r} has no row-hierarchy member"
+        )
+    while True:
+        owner = owner_member(leaf)
+        if (
+            owner is None
+            or find_child(owner, "Group") is not None
+            or len(find_children(leaf.getparent(), "TablixMember")) > 1
+        ):
+            break
+        leaf = owner
+    return leaf, index
+
+
+def _target_member(
+    doc: RDLDocument,
+    tablix_name: str,
+    group_name: Optional[str],
+    member: Any,
+) -> tuple[etree._Element, dict[str, Any]]:
+    """Resolve exactly one of ``group_name`` / ``member`` to a
+    ``TablixMember``; also returns the result keys naming it."""
+    if (group_name is None) == (member is None):
+        raise ValueError("pass exactly one of group_name (a group's member) or member (a row)")
+    if member is not None:
+        tablix = resolve_tablix(doc, tablix_name)
+        target, index = _row_member(tablix, member)
+        group = find_child(target, "Group")
+        return target, {
+            "group": group.get("Name") if group is not None else None,
+            "member": member,
+            "row_index": index,
+        }
+    group = resolve_group(doc, tablix_name, group_name)
+    target = group.getparent()
+    # resolve_group returns a Group; its parent is always a TablixMember.
+    if target is None or etree.QName(target.tag).localname != "TablixMember":
+        raise ValueError(f"Group {group_name!r} is not enclosed in a <TablixMember>")
+    return target, {"group": group_name}
+
+
+def _set_member_flag(member: etree._Element, local: str, value: Optional[str]) -> bool:
+    """Write ``<local>value</local>`` on ``member`` in schema order
+    (``None`` removes it); True iff anything changed."""
+    existing = find_child(member, local)
+    if value is None:
+        if existing is None:
+            return False
+        tablix_spans.detach(existing)
+        return True
+    current = (existing.text or "").strip() if existing is not None else None
+    # xsd:boolean flags compare case-insensitively ("True" == "true").
+    if current == value or (value == "true" and (current or "").lower() == "true"):
+        return False
+    node = etree.Element(q(local))
+    node.text = value
+    _insert_member_child(member, node)
+    return True
+
+
 # ---- set_repeat_on_new_page ---------------------------------------------
 
 
 def set_repeat_on_new_page(
     path: str,
     tablix_name: str,
-    group_name: str,
-    repeat: bool,
+    group_name: Optional[str] = None,
+    repeat: bool = True,
+    member: Any = None,
 ) -> dict[str, Any]:
-    """Set ``<TablixMember>/<RepeatOnNewPage>`` on the member that wraps
-    the named group.
+    """Set ``<TablixMember>/<RepeatOnNewPage>`` on one hierarchy member.
 
-    Most common use: keep a group header row visible at the top of every
-    page the group spans. Setting ``repeat=False`` removes the element
-    (False is the default; explicit removal keeps round-trip clean).
+    The member is named by exactly one of:
 
-    Returns ``{tablix, group, kind: 'TablixMember', repeat, changed: bool}``.
-    Idempotent.
+    * ``group_name`` — the member that wraps that group;
+    * ``member`` — a row: a body row index or a ``style_tablix_row`` role
+      (``"header"``, ``"details"``, ``"<group>_header"``,
+      ``"<group>_footer"``). Static rows have no group, so this is how the
+      column-header row (``member="header"``) or a group's header row
+      (``"<group>_header"``) is reached.
+
+    Most common use: repeat the column-header row at the top of every
+    page — ``member="header"`` (see also :func:`set_repeat_header_rows`,
+    which also sets ``KeepWithGroup=After``). ``repeat=False`` removes the
+    element (False is the default; explicit removal keeps round-trip
+    clean).
+
+    Returns ``{tablix, group, kind: 'TablixMember', repeat, changed: bool}``
+    plus ``member`` / ``row_index`` for a ``member`` selector. Idempotent.
     """
     doc = RDLDocument.open(path)
-    group = resolve_group(doc, tablix_name, group_name)
-    member = group.getparent()
-    # resolve_group returns a Group; its parent is always a TablixMember.
-    # Defensive sanity-check anyway.
-    if member is None or etree.QName(member.tag).localname != "TablixMember":
-        raise ValueError(f"Group {group_name!r} is not enclosed in a <TablixMember>")
-
-    existing = find_child(member, "RepeatOnNewPage")
-    current = (existing.text or "").strip().lower() if existing is not None else ""
-    desired = "true" if repeat else "false"
-
-    if not repeat:
-        if existing is None:
-            return _result(tablix_name, group_name, repeat, changed=False)
-        member.remove(existing)
+    target, label = _target_member(doc, tablix_name, group_name, member)
+    changed = _set_member_flag(target, "RepeatOnNewPage", "true" if repeat else None)
+    if changed:
         doc.save()
-        return _result(tablix_name, group_name, repeat, changed=True)
-
-    if current == desired:
-        return _result(tablix_name, group_name, repeat, changed=False)
-
-    new_node = etree.Element(q("RepeatOnNewPage"))
-    new_node.text = desired
-    _insert_member_child(member, new_node)
-
-    doc.save()
-    return _result(tablix_name, group_name, repeat, changed=True)
-
-
-def _result(tablix_name: str, group_name: str, repeat: bool, changed: bool) -> dict:
     return {
         "tablix": tablix_name,
-        "group": group_name,
+        **label,
         "kind": "TablixMember",
         "repeat": repeat,
         "changed": changed,
@@ -326,19 +412,28 @@ _VALID_KEEP_WITH_GROUP = ("None", "Before", "After")
 def set_keep_with_group(
     path: str,
     tablix_name: str,
-    group_name: str,
-    value: str,
+    group_name: Optional[str] = None,
+    value: Optional[str] = None,
+    member: Any = None,
 ) -> dict[str, Any]:
-    """Set ``<TablixMember>/<KeepWithGroup>`` on the member that wraps
-    the named group.
+    """Set ``<TablixMember>/<KeepWithGroup>`` on a static row's member.
 
-    ``value`` ∈ ``{None, Before, After}``. ``None`` removes the element
+    ``value`` ∈ ``{None, Before, After}``; ``None`` removes the element
     (the canonical "no preference" representation). The typical use is
-    a column-header row's TablixMember setting ``After`` so the header
-    stays glued to the data rows that follow it.
+    the column-header row — ``member="header"``, ``value="After"`` — so
+    the header stays glued to the data rows that follow it (``Before``
+    for a total row that follows them).
 
-    Returns ``{tablix, group, kind: 'TablixMember', value, changed}``.
-    Idempotent.
+    The member is named by ``member`` (a body row index or a
+    ``style_tablix_row`` role, as in :func:`set_repeat_on_new_page`) or
+    ``group_name``. RDL defines KeepWithGroup for static members only
+    (the ``tablix-structure`` lint rule warns on a grouped one), so a
+    member carrying a ``<Group>`` — any ``group_name``, ``"details"`` —
+    raises ``ValueError``; only ``value="None"`` is accepted there, to
+    clean such a misplaced element up.
+
+    Returns ``{tablix, group, kind: 'TablixMember', value, changed}`` plus
+    ``member`` / ``row_index`` for a ``member`` selector. Idempotent.
     """
     if value not in _VALID_KEEP_WITH_GROUP:
         raise ValueError(
@@ -346,38 +441,138 @@ def set_keep_with_group(
         )
 
     doc = RDLDocument.open(path)
-    group = resolve_group(doc, tablix_name, group_name)
-    member = group.getparent()
-    if member is None or etree.QName(member.tag).localname != "TablixMember":
-        raise ValueError(f"Group {group_name!r} is not enclosed in a <TablixMember>")
-
-    existing = find_child(member, "KeepWithGroup")
-    current = (existing.text or "").strip() if existing is not None else ""
-
-    if value == "None":
-        if existing is None:
-            return _kwg_result(tablix_name, group_name, value, changed=False)
-        member.remove(existing)
+    target, label = _target_member(doc, tablix_name, group_name, member)
+    group = find_child(target, "Group")
+    if group is not None and value != "None":
+        raise ValueError(
+            f"KeepWithGroup belongs on a static member (a header or total row next to a "
+            f"group), not on the member of group {group.get('Name')!r}. Target the row "
+            "instead: member='header' (the column-header row), '<group>_header', "
+            "'<group>_footer' or a body row index."
+        )
+    changed = _set_member_flag(target, "KeepWithGroup", None if value == "None" else value)
+    if changed:
         doc.save()
-        return _kwg_result(tablix_name, group_name, value, changed=True)
-
-    if current == value:
-        return _kwg_result(tablix_name, group_name, value, changed=False)
-
-    new_node = etree.Element(q("KeepWithGroup"))
-    new_node.text = value
-    _insert_member_child(member, new_node)
-
-    doc.save()
-    return _kwg_result(tablix_name, group_name, value, changed=True)
-
-
-def _kwg_result(tablix: str, group: str, value: str, changed: bool) -> dict:
     return {
-        "tablix": tablix,
-        "group": group,
+        "tablix": tablix_name,
+        **label,
         "kind": "TablixMember",
         "value": value,
+        "changed": changed,
+    }
+
+
+# ---- set_repeat_header_rows (#67) ---------------------------------------
+
+# Tablix children in Report Builder's order around the header flags (the
+# XSD itself is an unordered choice).
+_TABLIX_FLAG_ORDER = (
+    "TablixCorner",
+    "TablixBody",
+    "TablixColumnHierarchy",
+    "TablixRowHierarchy",
+    "LayoutDirection",
+    "GroupsBeforeRowHeaders",
+    "RepeatColumnHeaders",
+    "RepeatRowHeaders",
+    "FixedColumnHeaders",
+    "FixedRowHeaders",
+)
+
+
+def _set_tablix_flag(tablix: etree._Element, local: str, value: Optional[bool]) -> bool:
+    """Write ``<local>true</local>`` (``value`` True) or remove it
+    (False) on the tablix; ``None`` leaves it. True iff changed."""
+    if value is None:
+        return False
+    existing = find_child(tablix, local)
+    if not value:
+        if existing is None:
+            return False
+        tablix_spans.detach(existing)
+        return True
+    if existing is not None:
+        if (existing.text or "").strip().lower() == "true":
+            return False
+        existing.text = "true"
+        return True
+    node = etree.Element(q(local))
+    node.text = "true"
+    before = _TABLIX_FLAG_ORDER[: _TABLIX_FLAG_ORDER.index(local)]
+    anchor = None
+    for child in tablix:
+        if isinstance(child.tag, str) and etree.QName(child).localname in before:
+            anchor = child
+    if anchor is not None:
+        anchor.addnext(node)
+    else:
+        tablix.insert(0, node)
+    return True
+
+
+def set_repeat_header_rows(
+    path: str,
+    tablix_name: str,
+    repeat: bool = True,
+    fixed: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Repeat a tablix's header rows at the top of every page.
+
+    The header rows are the static row members before the first member
+    holding a group (the column-header row, and e.g. a title row above
+    it). ``repeat=True`` gives each ``RepeatOnNewPage=true`` and
+    ``KeepWithGroup=After`` — Report Builder's "repeat header rows" for a
+    table; ``repeat=False`` removes ``RepeatOnNewPage`` (KeepWithGroup
+    stays). When the tablix has column-header cells (a matrix's
+    ``TablixHeader`` rows) its ``RepeatColumnHeaders`` is set / removed
+    too.
+
+    ``fixed`` (default: leave alone) also keeps them visible while
+    scrolling in the web viewer: ``FixedData`` on the header members and,
+    for a matrix, ``FixedColumnHeaders``; ``False`` removes those.
+
+    Refuses (``ValueError``) a tablix with neither static header rows nor
+    column-header cells. Returns ``{tablix, kind: 'Tablix', repeat,
+    fixed, header_rows, changed}`` — ``header_rows`` the body row
+    indices, ``changed`` the elements written or removed. Idempotent.
+    """
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+    headers = _static_header_members(tablix)
+    column_headers = header_depth(tablix, COLUMN) > 0
+    if not headers and not column_headers:
+        raise ValueError(
+            f"tablix {tablix_name!r} has no static header rows above its first group "
+            "and no column-header cells; nothing to repeat"
+        )
+    changed: list[str] = []
+
+    def note(flag: bool, what: str) -> None:
+        if flag and what not in changed:
+            changed.append(what)
+
+    rows: list[int] = []
+    for header in headers:
+        rows += [leaf_row_index(tablix, leaf) for leaf in subtree_leaves(header)]
+        note(
+            _set_member_flag(header, "RepeatOnNewPage", "true" if repeat else None),
+            "RepeatOnNewPage",
+        )
+        if repeat:
+            note(_set_member_flag(header, "KeepWithGroup", "After"), "KeepWithGroup")
+        if fixed is not None:
+            note(_set_member_flag(header, "FixedData", "true" if fixed else None), "FixedData")
+    if column_headers:
+        note(_set_tablix_flag(tablix, "RepeatColumnHeaders", repeat), "RepeatColumnHeaders")
+        note(_set_tablix_flag(tablix, "FixedColumnHeaders", fixed), "FixedColumnHeaders")
+    if changed:
+        doc.save()
+    return {
+        "tablix": tablix_name,
+        "kind": "Tablix",
+        "repeat": repeat,
+        "fixed": fixed,
+        "header_rows": [r for r in rows if r is not None],
         "changed": changed,
     }
 

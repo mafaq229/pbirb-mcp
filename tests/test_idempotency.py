@@ -397,10 +397,11 @@ CASES: dict[str, Case] = {
         setup=[ROW_GROUP],
     ),
     "set_keep_together": Case({"name": "MainTable", "keep": True}),
+    # KeepWithGroup targets static rows (#67); the fixture's header has After.
     "set_keep_with_group": Case(
-        {"tablix_name": "MainTable", "group_name": "ProductGroup", "value": "After"},
-        setup=[ROW_GROUP],
+        {"tablix_name": "MainTable", "member": "header", "value": "Before"}
     ),
+    "set_repeat_header_rows": Case({"tablix_name": "MainTable"}),
     "add_rectangle": Case(
         {"name": "Box", "top": "3in", "left": "0in", "width": "1in", "height": "1in"},
         second="refuses",
@@ -644,6 +645,36 @@ CASES: dict[str, Case] = {
 # Further argument sets for branches the main case doesn't reach
 # (clearing, alternative sources, …). Same contract.
 VARIANTS: list[tuple[str, Case]] = [
+    # Row selectors for the static header row (#67).
+    (
+        "set_repeat_on_new_page",
+        Case({"tablix_name": "MainTable", "member": "header", "repeat": True}),
+    ),
+    ("set_repeat_on_new_page", Case({"tablix_name": "MainTable", "member": 0, "repeat": True})),
+    ("set_repeat_header_rows", Case({"tablix_name": "MainTable", "fixed": True})),
+    (
+        "insert_tablix_from_template",
+        Case(
+            {
+                "name": "Second",
+                "dataset_name": "MainDataset",
+                "columns": ["ProductName"],
+                "top": "3in",
+                "left": "0in",
+                "width": "1in",
+                "height": "0.5in",
+                "repeat_header": False,
+            },
+            second="refuses",
+        ),
+    ),
+    (
+        "set_repeat_header_rows",
+        Case(
+            {"tablix_name": "MainTable", "repeat": False, "fixed": False},
+            setup=[("set_repeat_header_rows", {"tablix_name": "MainTable", "fixed": True})],
+        ),
+    ),
     # add_row_group's wrap / parent_group / header (#65): a repeat refuses
     # the duplicate group name before touching the file.
     ("add_row_group", Case({**ROW_GROUP[1], "header": "column"}, second="refuses")),

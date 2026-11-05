@@ -177,6 +177,7 @@ IDEMPOTENT_TOOLS = frozenset(
         "set_parameter_layout",
         "set_parameter_prompt",
         "set_parameter_type",
+        "set_repeat_header_rows",
         "set_repeat_on_new_page",
         "set_row_height",
         "set_series_color",

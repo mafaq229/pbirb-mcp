@@ -323,7 +323,13 @@ Set `<BreakLocation>` on a tablix group's page-break rule. location ∈ {None, S
 
 *idempotent*
 
-Set `<TablixMember>/<RepeatOnNewPage>` on the member that wraps the named group. Most common use: repeat a group header row at the top of every page the group spans. Setting repeat=False removes the element (False is default). Returns {tablix, group, kind: 'TablixMember', repeat, changed}.
+Set `<TablixMember>/<RepeatOnNewPage>` on one row-hierarchy member, named by exactly one of `group_name` (the member that wraps that group) or `member` (a row: a body row index, or a `style_tablix_row` role — `'header'`, `'details'`, `'<group>_header'`, `'<group>_footer'`). Static rows have no group, so `member` is how the column-header row (`member='header'`; with no row marked KeepWithGroup=After yet, the first static row above the data) or a group's header row (`'<group>_header'`) is reached; from the row's leaf the flag climbs to the outermost static member holding only that row. Most common use: repeat the column-header row on every page — `set_repeat_header_rows` does that and also sets `KeepWithGroup=After`. Setting repeat=False removes the element (False is default). Returns {tablix, group, kind: 'TablixMember', repeat, changed} plus `member` / `row_index` for a `member` selector.
+
+### `set_repeat_header_rows`
+
+*idempotent*
+
+Repeat a table's header rows at the top of every page, as Report Builder does it: `RepeatOnNewPage=true` and `KeepWithGroup=After` on every static row member before the first member holding a group (the column-header row, and e.g. a title row above it). When the tablix has column-header cells (a matrix's `TablixHeader` rows) its `RepeatColumnHeaders` is set too. `fixed=true` also keeps them visible while scrolling in the web viewer (`FixedData` on those members, `FixedColumnHeaders` on a matrix); `fixed=false` removes those; omitted leaves them alone. `repeat=false` removes `RepeatOnNewPage` / `RepeatColumnHeaders` (KeepWithGroup stays). Refuses a tablix with neither static header rows nor column-header cells. Returns {tablix, kind: 'Tablix', repeat, fixed, header_rows, changed: list[str]} — `changed` names the elements written or removed (empty on a repeat).
 
 ### `set_keep_together`
 
@@ -335,7 +341,7 @@ Set `<KeepTogether>` on a named Tablix / Rectangle / Chart / Textbox / Map / Gau
 
 *idempotent*
 
-Set `<TablixMember>/<KeepWithGroup>` on the member that wraps the named group. value ∈ {None, Before, After}. Typical use: a column-header row's member with 'After' to glue it to the data rows that follow. value='None' removes the element.
+Set `<TablixMember>/<KeepWithGroup>` on a static row's member. value ∈ {None, Before, After}. Typical use: `member='header'`, `value='After'` glues the column-header row to the data rows that follow (`Before` for a total row after them). The member is named by `member` (body row index or `style_tablix_row` role, as in `set_repeat_on_new_page`) or `group_name`. RDL defines KeepWithGroup for static members only (the `tablix-structure` lint rule warns on a grouped one), so a member carrying a `<Group>` — any `group_name`, or `member='details'` — is refused with `ValueError`; `value='None'` is still accepted there to remove a misplaced element. value='None' removes the element. Returns {tablix, group, kind: 'TablixMember', value, changed} plus `member` / `row_index` for a `member` selector.
 
 ### `list_tablix_filters`
 
@@ -460,7 +466,7 @@ Remove a filter by index. Filters are anonymous in RDL, so use list_tablix_filte
 
 ### `insert_tablix_from_template`
 
-Build and append a basic Tablix to `<Body>/<ReportItems>`. One column per entry in `columns`: a field name of the dataset, or {"field": `<field name>`, "header": `<caption>}` for a display caption that is not an identifier (e.g. 'Unit Price (USD)'). The header row shows the caption (default: the field name), the detail row binds to =Fields!`<field>.Value`. dataset_name must already exist and every field must be declared in it (unknown fields are refused, listing the available ones). The tablix name must be unused report-wide; generated textbox and detail group names are suffixed until unique. `width` is the tablix outer width — each column defaults to 1in regardless, so for a 3-column tablix the columns sum to 3in even if you pass width=10cm. Resize columns afterwards via direct edits or future column-width tools. `container` names a Rectangle in the body to put the tablix in instead (top/left relative to it; see add_body_textbox); inside a List's rectangle the list must be bound to the same dataset.
+Build and append a basic Tablix to `<Body>/<ReportItems>`. One column per entry in `columns`: a field name of the dataset, or {"field": `<field name>`, "header": `<caption>}` for a display caption that is not an identifier (e.g. 'Unit Price (USD)'). The header row shows the caption (default: the field name), the detail row binds to =Fields!`<field>.Value`. dataset_name must already exist and every field must be declared in it (unknown fields are refused, listing the available ones). The tablix name must be unused report-wide; generated textbox and detail group names are suffixed until unique. `width` is the tablix outer width — each column defaults to 1in regardless, so for a 3-column tablix the columns sum to 3in even if you pass width=10cm. Resize columns afterwards via direct edits or future column-width tools. `container` names a Rectangle in the body to put the tablix in instead (top/left relative to it; see add_body_textbox); inside a List's rectangle the list must be bound to the same dataset. The header row's member carries `KeepWithGroup=After` and, unless `repeat_header=false`, `RepeatOnNewPage=true`, so the header repeats at the top of every page.
 
 ## `chart`
 

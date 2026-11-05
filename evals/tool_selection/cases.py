@@ -1975,11 +1975,10 @@ REVIEW_PATHS = [
         "synth",
         "When the table runs onto more than one page, repeat the column heading row at the top "
         "of every page.",
-        [],
+        # #67: RepeatOnNewPage + KeepWithGroup=After on the static header member.
+        [("set_repeat_header_rows", {"tablix_name": "FleetTable"})],
         _t12,
         fixture=FLEET_RB,
-        known_gap="#67: no tool sets RepeatOnNewPage on the static column-header member; "
-        "set_repeat_on_new_page only addresses members that wrap a group",
     ),
     Case(
         "t13",

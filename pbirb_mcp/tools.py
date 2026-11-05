@@ -1193,8 +1193,11 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_repeat_on_new_page",
         description=(
-            "Repeat a group's header row on every page the group spans "
-            "(RepeatOnNewPage on its member); repeat=false removes it."
+            "Repeat a row on every page (RepeatOnNewPage on its member): "
+            "member='header' for the column-header row, '<group>_header' for a "
+            "group's header row, or group_name for a group's member; "
+            "repeat=false removes it. For a table's header rows prefer "
+            "set_repeat_header_rows."
         ),
         input_schema={
             "type": "object",
@@ -1202,12 +1205,45 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "tablix_name": {"type": "string"},
                 "group_name": {"type": "string"},
+                "member": {
+                    "oneOf": [
+                        {"type": "integer", "minimum": 0},
+                        {"type": "string"},
+                    ],
+                    "description": (
+                        "A row instead of a group: body row index, or 'header', "
+                        "'details', '<group>_header', '<group>_footer'."
+                    ),
+                },
                 "repeat": {"type": "boolean"},
             },
-            "required": ["path", "tablix_name", "group_name", "repeat"],
+            "required": ["path", "tablix_name", "repeat"],
             "additionalProperties": False,
         },
         handler=_layout.set_repeat_on_new_page,
+        mutating=True,
+    )
+
+    server.register_tool(
+        name="set_repeat_header_rows",
+        description=(
+            "Repeat a table's header rows at the top of every page: "
+            "RepeatOnNewPage + KeepWithGroup=After on the static rows above the "
+            "first group (plus RepeatColumnHeaders on a matrix); fixed=true also "
+            "freezes them while scrolling. repeat=false undoes it."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "tablix_name": {"type": "string"},
+                "repeat": {"type": "boolean", "default": True},
+                "fixed": {"type": ["boolean", "null"], "default": None},
+            },
+            "required": ["path", "tablix_name"],
+            "additionalProperties": False,
+        },
+        handler=_layout.set_repeat_header_rows,
         mutating=True,
     )
 
@@ -1234,9 +1270,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="set_keep_with_group",
         description=(
-            "Keep a group's member with the rows before or after it "
-            "(KeepWithGroup: None, Before, After), e.g. glue a header row to the "
-            "data that follows."
+            "Keep a static row with the group rows after or before it "
+            "(KeepWithGroup: None, Before, After), e.g. member='header', "
+            "value='After' glues the column-header row to the data. Refuses a "
+            "member that has a group (value='None' still removes it there)."
         ),
         input_schema={
             "type": "object",
@@ -1244,12 +1281,22 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "tablix_name": {"type": "string"},
                 "group_name": {"type": "string"},
+                "member": {
+                    "oneOf": [
+                        {"type": "integer", "minimum": 0},
+                        {"type": "string"},
+                    ],
+                    "description": (
+                        "A row instead of a group: body row index, or 'header', "
+                        "'details', '<group>_header', '<group>_footer'."
+                    ),
+                },
                 "value": {
                     "type": "string",
                     "enum": list(_layout._VALID_KEEP_WITH_GROUP),
                 },
             },
-            "required": ["path", "tablix_name", "group_name", "value"],
+            "required": ["path", "tablix_name", "value"],
             "additionalProperties": False,
         },
         handler=_layout.set_keep_with_group,
@@ -3458,6 +3505,11 @@ def register_all_tools(server: MCPServer) -> None:
                 "width": {"type": "string"},
                 "height": {"type": "string"},
                 "container": _CONTAINER_PARAM,
+                "repeat_header": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Repeat the header row on every page (RepeatOnNewPage).",
+                },
             },
             "required": [
                 "path",
