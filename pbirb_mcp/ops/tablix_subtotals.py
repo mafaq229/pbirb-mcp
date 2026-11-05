@@ -44,6 +44,7 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core import names, units
+from pbirb_mcp.core.columns import resolve_column
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
@@ -201,6 +202,29 @@ def _require_consistent(tablix: etree._Element, axis: str) -> None:
         )
 
 
+def _aggregate_column(
+    tablix: etree._Element, column_names: list[Optional[str]], aggregate: dict[str, Any]
+) -> Optional[str]:
+    """The data-row textbox name an ``aggregates`` entry targets: its
+    ``column``, or the textbox at the column its ``column_ref`` names."""
+    column, ref = aggregate.get("column"), aggregate.get("column_ref")
+    if (column is None) == (ref is None):
+        raise ValueError(
+            f"aggregate {aggregate!r} needs exactly one of column (textbox name) or "
+            "column_ref ({header|field|index: ...})"
+        )
+    if ref is None:
+        return column
+    index = resolve_column(tablix, ref)
+    name = column_names[index] if index < len(column_names) else None
+    if name is None:
+        raise ElementNotFoundError(
+            f"column {index} of tablix {tablix.get('Name')!r} has no data-row textbox "
+            "to total under"
+        )
+    return name
+
+
 def add_subtotal_row(
     path: str,
     tablix_name: str,
@@ -215,7 +239,9 @@ def add_subtotal_row(
     <aggregate>}`` entries. ``column`` matches against the **group's
     data row** textbox names (its detail row, or in a matrix the
     innermost group's row) — the same identifiers ``add_tablix_column``
-    uses for its ``column_name``. Columns not listed get blank cells.
+    uses for its ``column_name``. An entry may give ``column_ref``
+    (``{"header": ...}`` / ``{"field": ...}`` / ``{"index": n}``, #59)
+    instead of ``column``. Columns not listed get blank cells.
 
     ``position`` is ``"footer"`` (default — the row goes just after the
     group's last row) or ``"header"`` (at the group's first row — after
@@ -255,7 +281,9 @@ def add_subtotal_row(
     _require_consistent(tablix, "row")
 
     column_names = _data_row_textbox_names(tablix, wrapper)
-    aggregates_by_column = {a["column"]: a["expression"] for a in aggregates}
+    aggregates_by_column = {
+        _aggregate_column(tablix, column_names, a): a["expression"] for a in aggregates
+    }
     missing = [c for c in aggregates_by_column if c not in column_names]
     if missing:
         raise ElementNotFoundError(

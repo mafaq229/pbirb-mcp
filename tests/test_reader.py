@@ -71,6 +71,7 @@ class TestDescribeReport:
             "has_groups",
             "has_subtotals",
             "has_spans",
+            "column_details",  # #59
         }
         assert t["name"] == "MainTable"
         assert t["rows"] == 2

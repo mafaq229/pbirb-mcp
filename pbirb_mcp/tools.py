@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pbirb_mcp.core import columns as _columns
 from pbirb_mcp.ops import (
     actions,
     body,
@@ -86,8 +87,12 @@ def register_all_tools(server: MCPServer) -> None:
             "Top-level inventory of an RDL: data sources, datasets, parameters, "
             "tablixes, charts, and page setup. Always the first call when "
             "planning edits. v0.4: `tablixes` returns rich shape hints "
-            "[{name, rows, columns, has_groups, has_subtotals, has_spans}] "
-            "(was bare strings — migrate with `[t['name'] for t in tablixes]`). "
+            "[{name, rows, columns, has_groups, has_subtotals, has_spans, "
+            "column_details}] (was bare strings — migrate with "
+            "`[t['name'] for t in tablixes]`). column_details lists each "
+            "body column {index, header_text, header_cell, data_cell, "
+            "bound_fields} — how to find 'the Asset Name column' and its "
+            "cell textbox names. "
             "`charts` (new in v0.4) is a top-level array of chart names. "
             "Also: `subreports` [{name, report_name, parameters}], `maps`, "
             "`gauges`, `body` {height, width}, `nested_items` (items inside "
@@ -681,7 +686,8 @@ def register_all_tools(server: MCPServer) -> None:
             "Set <Width> on a tablix's body column. column accepts a "
             "0-based integer index OR a textbox name living in any cell "
             "of that column (mirrors how set_cell_span / add_subtotal_row "
-            "address columns). width is an RDL size ('1.5in', '4cm', "
+            "address columns), or column_ref {header | field} to pick it "
+            "by header text or field. width is an RDL size ('1.5in', '4cm', "
             "'80pt'). Idempotent: same width → {changed: false}, no save."
         ),
         input_schema={
@@ -696,9 +702,10 @@ def register_all_tools(server: MCPServer) -> None:
                     ],
                     "description": "0-based column index or textbox name in any column cell.",
                 },
+                "column_ref": _columns.COLUMN_REF_SCHEMA,
                 "width": {"type": "string"},
             },
-            "required": ["path", "tablix_name", "column", "width"],
+            "required": ["path", "tablix_name", "width"],
             "additionalProperties": False,
         },
         handler=tablix_columns.set_column_width,
@@ -1483,13 +1490,17 @@ def register_all_tools(server: MCPServer) -> None:
             "text or =expression. drillthrough_parameters is a list of "
             "{name, value} dicts wired into <Drillthrough>/<Parameters>. "
             "Idempotent: same action_type + target + parameters → "
-            "{changed: false}, no save."
+            "{changed: false}, no save. "
+            "Tablix cell by column header or field: pass cell {tablix, "
+            "header | field | index, row: data (default) | header} instead "
+            "of textbox_name."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "textbox_name": {"type": "string"},
+                "cell": _columns.CELL_SCHEMA,
                 "action_type": {
                     "type": "string",
                     "enum": ["Hyperlink", "Drillthrough", "BookmarkLink"],
@@ -1502,13 +1513,12 @@ def register_all_tools(server: MCPServer) -> None:
             },
             "required": [
                 "path",
-                "textbox_name",
                 "action_type",
                 "target_expression",
             ],
             "additionalProperties": False,
         },
-        handler=actions.set_textbox_action,
+        handler=_columns.with_cell_target(actions.set_textbox_action),
         mutating=True,
     )
     server.register_tool(
@@ -1549,19 +1559,23 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Set <Textbox>/<ToolTip>. Literal text or =expression. Pass "
             "'' to clear. Idempotent. Returns {textbox, kind, changed: "
-            "bool}."
+            "bool}. "
+            "Tablix cell by column header or field: pass cell {tablix, "
+            "header | field | index, row: data (default) | header} instead "
+            "of textbox_name."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "textbox_name": {"type": "string"},
+                "cell": _columns.CELL_SCHEMA,
                 "text_or_expression": {"type": "string"},
             },
-            "required": ["path", "textbox_name", "text_or_expression"],
+            "required": ["path", "text_or_expression"],
             "additionalProperties": False,
         },
-        handler=actions.set_textbox_tooltip,
+        handler=_columns.with_cell_target(actions.set_textbox_tooltip),
         mutating=True,
     )
     server.register_tool(
@@ -2059,7 +2073,9 @@ def register_all_tools(server: MCPServer) -> None:
             "too). Merged (ColSpan) cells shrink by one instead of losing their "
             "contents. Refuses to delete a textbox a ToggleItem points at "
             "unless force=true (which drops those toggles). Errors if no row "
-            "contains a textbox with the given name."
+            "contains a textbox with the given name. Instead of column_name, "
+            "column_ref {header | field | index} picks the column by "
+            "header text or field."
         ),
         input_schema={
             "type": "object",
@@ -2067,6 +2083,7 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "tablix_name": {"type": "string"},
                 "column_name": {"type": "string"},
+                "column_ref": _columns.COLUMN_REF_SCHEMA,
                 "remove_group": {"type": "boolean", "default": False},
                 "force": {
                     "type": "boolean",
@@ -2077,7 +2094,7 @@ def register_all_tools(server: MCPServer) -> None:
                     ),
                 },
             },
-            "required": ["path", "tablix_name", "column_name"],
+            "required": ["path", "tablix_name"],
             "additionalProperties": False,
         },
         handler=tablix_columns.remove_tablix_column,
@@ -2089,7 +2106,8 @@ def register_all_tools(server: MCPServer) -> None:
             "Add a subtotal row for a row-axis group. aggregates is a list "
             "of {column, expression} entries; column matches against the "
             "group's data-row textbox names (the same names add_tablix_column "
-            "uses as column_name — NOT field names). expression is the "
+            "uses as column_name — NOT field names), or give column_ref "
+            "{header | field | index} instead of column. expression is the "
             "aggregate (e.g. =Sum(Fields!X.Value)). Columns not listed get "
             "blank cells. position='footer' (default) puts the row just after "
             "the group's last row; 'header' at the group's first row (after "
@@ -2112,9 +2130,10 @@ def register_all_tools(server: MCPServer) -> None:
                         "type": "object",
                         "properties": {
                             "column": {"type": "string"},
+                            "column_ref": _columns.COLUMN_REF_SCHEMA,
                             "expression": {"type": "string"},
                         },
-                        "required": ["column", "expression"],
+                        "required": ["expression"],
                         "additionalProperties": False,
                     },
                 },
@@ -2192,7 +2211,8 @@ def register_all_tools(server: MCPServer) -> None:
             "Set <ColSpan> on a tablix body cell (merge it with the cells "
             "to its right). The cell is addressed by (row_index, "
             "column_name) where column_name is the textbox name inside the "
-            "cell. At least one of row_span / col_span must be supplied; "
+            "cell (or column_ref {header | field | index} picks the column). "
+            "At least one of row_span / col_span must be supplied; "
             "both must be integers >= 1. col_span may not run past the last "
             "column. Covered cells become empty placeholders: blank ones are "
             "cleared, a covered cell with content is refused unless "
@@ -2209,11 +2229,12 @@ def register_all_tools(server: MCPServer) -> None:
                 "tablix_name": {"type": "string"},
                 "row_index": {"type": "integer", "minimum": 0},
                 "column_name": {"type": "string"},
+                "column_ref": _columns.COLUMN_REF_SCHEMA,
                 "row_span": {"type": ["integer", "null"], "minimum": 1},
                 "col_span": {"type": ["integer", "null"], "minimum": 1},
                 "force": {"type": "boolean", "default": False},
             },
-            "required": ["path", "tablix_name", "row_index", "column_name"],
+            "required": ["path", "tablix_name", "row_index"],
             "additionalProperties": False,
         },
         handler=tablix_cells.set_cell_span,
@@ -3109,13 +3130,17 @@ def register_all_tools(server: MCPServer) -> None:
             "on Textbox (not inside Style). All fields optional — only "
             "what's passed gets written. Cell-level styling: every tablix "
             "cell is a Textbox with a unique name, so use this tool with "
-            "the cell's textbox name (e.g. 'HeaderAmount')."
+            "the cell's textbox name (e.g. 'HeaderAmount'). "
+            "Tablix cell by column header or field: pass cell {tablix, "
+            "header | field | index, row: data (default) | header} instead "
+            "of textbox_name."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "textbox_name": {"type": "string"},
+                "cell": _columns.CELL_SCHEMA,
                 "font_family": {"type": ["string", "null"]},
                 "font_size": {
                     "type": ["string", "null"],
@@ -3177,10 +3202,10 @@ def register_all_tools(server: MCPServer) -> None:
                     ),
                 },
             },
-            "required": ["path", "textbox_name"],
+            "required": ["path"],
             "additionalProperties": False,
         },
-        handler=styling.set_textbox_style,
+        handler=_columns.with_cell_target(styling.set_textbox_style),
         mutating=True,
     )
     server.register_tool(
@@ -3206,13 +3231,17 @@ def register_all_tools(server: MCPServer) -> None:
             "changed}. "
             "Pass raw text in each run's `text` — encoding is handled; "
             "don't pre-encode XML entities (use `&` not `&amp;`, "
-            "including for the VB.NET string-concat operator)."
+            "including for the VB.NET string-concat operator). "
+            "Tablix cell by column header or field: pass cell {tablix, "
+            "header | field | index, row: data (default) | header} instead "
+            "of textbox_name."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "textbox_name": {"type": "string"},
+                "cell": _columns.CELL_SCHEMA,
                 "runs": {
                     "type": "array",
                     "minItems": 1,
@@ -3273,10 +3302,10 @@ def register_all_tools(server: MCPServer) -> None:
                     ),
                 },
             },
-            "required": ["path", "textbox_name", "runs"],
+            "required": ["path", "runs"],
             "additionalProperties": False,
         },
-        handler=styling.set_textbox_runs,
+        handler=_columns.with_cell_target(styling.set_textbox_runs),
         mutating=True,
     )
     server.register_tool(
@@ -3292,19 +3321,23 @@ def register_all_tools(server: MCPServer) -> None:
             "{changed: false} no-op. Returns {textbox, kind, changed}. "
             "Pass raw text — encoding is handled; don't pre-encode XML "
             "entities (use `&` not `&amp;`, including for the VB.NET "
-            "string-concat operator in expressions)."
+            "string-concat operator in expressions). "
+            "Tablix cell by column header or field: pass cell {tablix, "
+            "header | field | index, row: data (default) | header} instead "
+            "of textbox_name."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
                 "textbox_name": {"type": "string"},
+                "cell": _columns.CELL_SCHEMA,
                 "value": {"type": "string"},
             },
-            "required": ["path", "textbox_name", "value"],
+            "required": ["path", "value"],
             "additionalProperties": False,
         },
-        handler=styling.set_textbox_value,
+        handler=_columns.with_cell_target(styling.set_textbox_value),
         mutating=True,
     )
     server.register_tool(
@@ -3315,7 +3348,9 @@ def register_all_tools(server: MCPServer) -> None:
             "land in skipped rather than raising. Returns {textboxes, "
             "skipped, changed} where changed is the union of sub-paths "
             "affected across all textboxes. Pair with find_textboxes_by_"
-            "style to discover names by current style."
+            "style to discover names by current style. cells (a list of "
+            "{tablix, header | field | index, row}) adds tablix cells "
+            "picked by column header or field."
         ),
         input_schema={
             "type": "object",
@@ -3325,6 +3360,7 @@ def register_all_tools(server: MCPServer) -> None:
                     "type": "array",
                     "items": {"type": "string"},
                 },
+                "cells": {"type": "array", "items": _columns.CELL_SCHEMA},
                 "font_family": {"type": ["string", "null"]},
                 "font_size": {"type": ["string", "null"]},
                 "font_weight": {"type": ["string", "null"]},
@@ -3344,10 +3380,10 @@ def register_all_tools(server: MCPServer) -> None:
                 "can_grow": {"type": ["boolean", "null"]},
                 "can_shrink": {"type": ["boolean", "null"]},
             },
-            "required": ["path", "textbox_names"],
+            "required": ["path"],
             "additionalProperties": False,
         },
-        handler=styling.set_textbox_style_bulk,
+        handler=_columns.with_cells_target(styling.set_textbox_style_bulk),
         mutating=True,
     )
     server.register_tool(

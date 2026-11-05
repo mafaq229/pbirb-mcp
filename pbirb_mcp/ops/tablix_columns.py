@@ -33,6 +33,7 @@ from typing import Any, Optional
 from lxml import etree
 
 from pbirb_mcp.core import names, tablix_headers, tablix_spans, units
+from pbirb_mcp.core.columns import describe_columns, resolve_column
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
@@ -574,11 +575,14 @@ def add_tablix_column(
 def remove_tablix_column(
     path: str,
     tablix_name: str,
-    column_name: str,
+    column_name: Optional[str] = None,
     remove_group: bool = False,
     force: bool = False,
+    column_ref: Optional[dict] = None,
 ) -> dict[str, Any]:
-    """Remove the column holding a body textbox named ``column_name``.
+    """Remove the column holding a body textbox named ``column_name`` — or,
+    with ``column_ref`` (#59), the column with that header text / field
+    (``{"header": ...}`` / ``{"field": ...}`` / ``{"index": n}``).
 
     The column index is found by scanning every row's cells for a textbox
     with that exact name (first hit wins). The column's own hierarchy leaf
@@ -605,6 +609,7 @@ def remove_tablix_column(
     textbox with the given name. Returns ``{tablix, removed_column,
     position, removed_textboxes, removed_groups, removed_toggle_targets?}``.
     """
+    _column_handle(column_name, column_ref, "column_name")
     doc = RDLDocument.open(path)
     textboxes_before = _visibility.textbox_names(doc.root)
     tablix = resolve_tablix(doc, tablix_name)
@@ -618,7 +623,10 @@ def remove_tablix_column(
     rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
 
     target_index: Optional[int] = None
-    for row in rows:
+    if column_ref is not None:
+        target_index = resolve_column(tablix, column_ref)
+        column_name = _column_label(tablix, target_index)
+    for row in rows if target_index is None else ():
         cells_root = find_child(row, "TablixCells")
         if cells_root is None:
             continue
@@ -695,68 +703,58 @@ def remove_tablix_column(
     return result
 
 
+def _column_label(tablix: etree._Element, index: int) -> str:
+    """How messages / payloads name a column picked by ``column_ref``: its
+    data-cell textbox, else its header cell, else ``column <index>``."""
+    info = describe_columns(tablix)[index]
+    return info.data_cell or info.header_cell or f"column {index}"
+
+
 # ---- set_column_width ----------------------------------------------------
 
 
 def _resolve_tablix_column_index(
     tablix: etree._Element,
-    column: int | str,
+    column: int | str | dict,
 ) -> int:
-    """Resolve a column handle (0-based int OR textbox-name in a cell) to
-    its 0-based ``<TablixColumns>`` index.
-
-    Integer handles validate against the column count. String handles
-    look for any cell whose Textbox Name matches and return that cell's
-    column position. Raises ``ElementNotFoundError`` on a missing name
-    and ``IndexError`` on an out-of-range integer.
+    """Resolve a column handle to its 0-based ``<TablixColumns>`` index:
+    a 0-based int (or digit string), a textbox name in any cell of the
+    column, or a column spec ``{header|field|index|textbox: ...}`` (#59,
+    :func:`pbirb_mcp.core.columns.resolve_column`). Raises
+    ``ElementNotFoundError`` on a missing name / unmatched spec,
+    ``AmbiguousColumnError`` when a spec matches several columns and
+    ``IndexError`` on an out-of-range integer.
     """
-    body = find_child(tablix, "TablixBody")
-    cols_root = find_child(body, "TablixColumns") if body is not None else None
-    cols = find_children(cols_root, "TablixColumn") if cols_root is not None else []
+    return resolve_column(tablix, column)
 
-    # tools/list publishes `column` as a string; a digit string is an
-    # index (textbox names can't be all digits).
-    if isinstance(column, str) and column.isdigit():
-        column = int(column)
-    if isinstance(column, int):
-        if column < 0 or column >= len(cols):
-            raise IndexError(
-                f"tablix {tablix.get('Name')!r} has {len(cols)} columns; "
-                f"index {column} is out of range"
-            )
-        return column
 
-    if not isinstance(column, str):
-        raise TypeError(f"column must be int or str; got {type(column).__name__}")
-
-    # String → search every row's cells for a Textbox whose Name matches.
-    rows_root = find_child(body, "TablixRows") if body is not None else None
-    rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
-    for row in rows:
-        cells_root = find_child(row, "TablixCells")
-        if cells_root is None:
-            continue
-        for col_idx, cell in enumerate(find_children(cells_root, "TablixCell")):
-            tb = cell.find(f"{q('CellContents')}/{q('Textbox')}")
-            if tb is not None and tb.get("Name") == column:
-                return col_idx
-    raise ElementNotFoundError(
-        f"no cell with textbox named {column!r} in tablix "
-        f"{tablix.get('Name')!r}; cannot resolve column index"
-    )
+def _column_handle(column: Any, column_ref: Optional[dict], what: str = "column") -> Any:
+    """The one column handle of ``column`` (legacy) / ``column_ref`` (#59)."""
+    if column is not None and column_ref is not None:
+        raise ValueError(f"pass {what} or column_ref, not both")
+    if column is None and column_ref is None:
+        raise ValueError(
+            f"{what} or column_ref is required (column_ref picks the column by "
+            'header text or field, e.g. {"header": "Amount"})'
+        )
+    return column if column is not None else column_ref
 
 
 def set_column_width(
     path: str,
     tablix_name: str,
-    column: int | str,
-    width: str,
+    column: int | str | dict | None = None,
+    width: Optional[str] = None,
+    column_ref: Optional[dict] = None,
 ) -> dict[str, Any]:
     """Set ``<Width>`` on a tablix's body column.
 
     ``column`` accepts either a 0-based integer index OR a textbox name
     living in any cell of that column (mirrors how
     ``set_cell_span`` / ``add_subtotal_row`` address columns).
+    ``column_ref`` (#59) picks it by header text or field instead:
+    ``{"header": "Asset Name"}`` / ``{"field": "AssetID"}`` (or
+    ``{"index": n}`` / ``{"textbox": name}``); pass one of the two.
 
     ``width`` is an RDL size string (``'1.5in'``, ``'4cm'``, ``'80pt'``).
     Malformed (e.g. unitless, empty) or non-positive values are rejected.
@@ -765,11 +763,14 @@ def set_column_width(
     Returns ``{tablix, column_index, width, kind: 'TablixColumn',
     changed: bool}``.
     """
+    if width is None:
+        raise TypeError("set_column_width() missing required argument: 'width'")
+    handle = _column_handle(column, column_ref)
     width = units.validate_size(width, field="width", allow_zero=False)
 
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
-    column_index = _resolve_tablix_column_index(tablix, column)
+    column_index = _resolve_tablix_column_index(tablix, handle)
 
     body = find_child(tablix, "TablixBody")
     cols_root = find_child(body, "TablixColumns") if body is not None else None
