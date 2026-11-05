@@ -419,6 +419,16 @@ class RDLDocument:
         doc._on_disk = _DiskState(str(path.resolve()), raw, _stat_signature(path))
         return doc
 
+    def pin_root_start_tag(self, start_tag: bytes) -> None:
+        """Write the root start tag as ``start_tag`` (exact bytes) for as long
+        as the root's tag, attributes and namespaces stay as they are now.
+
+        For documents built in memory: lxml writes namespace declarations
+        before attributes, Report Builder writes ``MustUnderstand`` first.
+        ``start_tag`` must declare exactly what the root carries."""
+        self.source_form.root_start_tag = start_tag
+        self.source_form.root_signature = _root_signature(self.root)
+
     def _remember_elements(self) -> None:
         refs = list(self.tree.iter())
         self._known_refs = refs

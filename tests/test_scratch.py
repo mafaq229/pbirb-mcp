@@ -295,6 +295,8 @@ def _ds_canonical(path: Path, name: str) -> str:
     doc = RDLDocument.open(path)
     ds = next(d for d in doc.root.iter(f"{{{RDL_NS}}}DataSource") if d.get("Name") == name)
     ds = etree.fromstring(etree.tostring(ds))
+    # Namespaces merely in scope (create_report's df, #88) aren't shape.
+    etree.cleanup_namespaces(ds)
     ds.find(f"{{{RD_NS}}}DataSourceID").text = "-"
     for el in ds.iter():
         el.tail = None
@@ -354,6 +356,135 @@ class TestOneConnectionShape:
             assert "<rd:PowerBIWorkspaceName>Sales WS</rd:PowerBIWorkspaceName>" in shape
             assert ("warnings" in result) == (not extra)
         assert 'Initial Catalog="' in shape or "Initial Catalog=sobe-1" in shape
+
+
+class TestReportBuilderScaffold:
+    """#88: the scaffold looks like Report Builder's output and can declare
+    DataSet1's fields."""
+
+    DF_NS = "http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition/defaultfontfamily"
+
+    def test_default_output_is_indented_and_valid(self, tmp_path: Path):
+        from pbirb_mcp.ops.validate import validate_report
+
+        dst = tmp_path / "new.rdl"
+        create_report(str(dst))
+        text = dst.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        assert len(lines) > 30
+        assert lines[0] == '<?xml version="1.0" encoding="utf-8"?>'
+        assert "  <AutoRefresh>0</AutoRefresh>" in lines
+        assert "        <ConnectString />" in lines  # six levels deep, 2-space indent
+        assert validate_report(str(dst))["valid"]
+
+    def test_df_namespace_in_report_builder_order(self, tmp_path: Path):
+        dst = tmp_path / "new.rdl"
+        create_report(str(dst))
+        lines = dst.read_text(encoding="utf-8").splitlines()
+        assert lines[1] == (
+            f'<Report MustUnderstand="df" xmlns="{RDL_NS}" '
+            'xmlns:rd="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner" '
+            f'xmlns:df="{self.DF_NS}">'
+        )
+        assert lines[2] == "  <df:DefaultFontFamily>Segoe UI</df:DefaultFontFamily>"
+        root = RDLDocument.open(dst).root
+        assert root.get("MustUnderstand") == "df"
+        assert root[0].tag == f"{{{self.DF_NS}}}DefaultFontFamily"
+        assert root[1].tag == f"{{{RDL_NS}}}AutoRefresh"
+
+    def test_noop_reopen_save_is_byte_identical(self, tmp_path: Path):
+        dst = tmp_path / "new.rdl"
+        create_report(str(dst))
+        before = dst.read_bytes()
+        doc = RDLDocument.open(dst)
+        assert doc.to_bytes() == before
+
+    def test_default_has_no_fields_block(self, tmp_path: Path):
+        dst = tmp_path / "new.rdl"
+        create_report(str(dst))
+        assert "<Fields>" not in dst.read_text(encoding="utf-8")
+
+    def test_fields_emitted(self, tmp_path: Path):
+        from pbirb_mcp.ops.dataset import get_dataset
+        from pbirb_mcp.ops.validate import validate_report
+
+        dst = tmp_path / "new.rdl"
+        create_report(
+            str(dst),
+            fields=[
+                "Amount",
+                {"name": "Region", "data_field": "Sales[Region]", "type_name": "System.String"},
+                {"name": "Qty", "type_name": "System.Int32"},
+            ],
+        )
+        fields = {f["name"]: f for f in get_dataset(str(dst), "DataSet1")["fields"]}
+        assert list(fields) == ["Amount", "Region", "Qty"]
+        assert fields["Amount"]["data_field"] == "Amount"
+        assert fields["Region"]["data_field"] == "Sales[Region]"
+        assert fields["Region"]["type_name"] == "System.String"
+        assert fields["Qty"]["data_field"] == "Qty"
+        assert validate_report(str(dst))["valid"]
+
+    @pytest.mark.parametrize(
+        ("fields", "match"),
+        [
+            (["Amount", "amount"], "more than once"),
+            (["Not valid"], "field"),
+            ([{"data_field": "X"}], "'name' is required"),
+            ([{"name": "A", "bogus": 1}], "unknown key"),
+            ([3], "expected a field name"),
+        ],
+    )
+    def test_bad_fields_rejected_before_writing(self, tmp_path: Path, fields, match):
+        dst = tmp_path / "new.rdl"
+        with pytest.raises(ValueError, match=match):
+            create_report(str(dst), fields=fields)
+        assert not dst.exists()
+
+    def test_fields_then_template_tablix_lints_clean(self, tmp_path: Path):
+        from pbirb_mcp.ops.lint import lint_report
+        from pbirb_mcp.ops.templates import insert_tablix_from_template
+        from pbirb_mcp.ops.validate import validate_report
+
+        dst = tmp_path / "new.rdl"
+        create_report(str(dst), fields=["Amount"])
+        insert_tablix_from_template(
+            str(dst),
+            name="T",
+            dataset_name="DataSet1",
+            columns=["Amount"],
+            top="0in",
+            left="0in",
+            width="1in",
+            height="0.5in",
+        )
+        issues = lint_report(str(dst))["issues"]
+        assert [i for i in issues if i["rule"] != "unused-data-source"] == []
+        assert validate_report(str(dst))["valid"]
+
+    def test_fields_via_server(self, tmp_path: Path):
+        import json
+
+        from pbirb_mcp.server import MCPServer
+        from pbirb_mcp.tools import register_all_tools
+
+        server = MCPServer()
+        register_all_tools(server)
+        dst = tmp_path / "new.rdl"
+        resp = server.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "create_report",
+                    "arguments": {"path": str(dst), "fields": ["A", {"name": "B"}]},
+                },
+            }
+        )
+        result = resp["result"]
+        assert not result.get("isError"), json.loads(result["content"][0]["text"])
+        assert dst.read_text(encoding="utf-8").count("<Field Name=") == 2
 
 
 class TestCreateReportToolRegistration:

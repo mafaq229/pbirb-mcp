@@ -39,8 +39,9 @@ from lxml import etree
 from pbirb_mcp.core import connection as conn_shape
 from pbirb_mcp.core import units
 from pbirb_mcp.core.document import RDLDocument
+from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.names import validate_identifier
-from pbirb_mcp.core.xpath import RDL_NS, q, qrd
+from pbirb_mcp.core.xpath import RD_NS, RDL_NS, q, qrd
 
 _DEFAULT_PAGE_SETUP: dict[str, str] = {
     "page_height": "11in",
@@ -65,6 +66,58 @@ _DATASOURCE_KEYS = frozenset(
     }
 )
 _VALID_PROVIDERS = conn_shape.PROVIDERS
+
+# Report Builder 2016+ marks the default-font extension as must-understand
+# and writes it as the report's first child (#88).
+DF_NS = (
+    "http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition/defaultfontfamily"
+)
+_DEFAULT_FONT_FAMILY = "Segoe UI"
+# Report Builder's root start tag: MustUnderstand before the namespaces.
+_RB_ROOT_START_TAG = (
+    f'<Report MustUnderstand="df" xmlns="{RDL_NS}" xmlns:rd="{RD_NS}" xmlns:df="{DF_NS}">'
+).encode()
+_FIELD_KEYS = frozenset({"name", "data_field", "type_name"})
+
+
+def _normalise_fields(fields: Optional[list[Any]]) -> list[tuple[str, str, Optional[str]]]:
+    """``fields`` entries → ``(name, data_field, type_name)``.
+
+    An entry is a field name (``data_field`` = the name) or
+    ``{name, data_field?, type_name?}``. Names are RDL identifiers and
+    unique (case-insensitively, like every RDL name)."""
+    out: list[tuple[str, str, Optional[str]]] = []
+    seen: set[str] = set()
+    for i, entry in enumerate(fields or []):
+        if isinstance(entry, str):
+            name, data_field, type_name = entry, entry, None
+        elif isinstance(entry, dict):
+            unknown = set(entry) - _FIELD_KEYS
+            if unknown:
+                raise ValueError(
+                    f"fields[{i}]: unknown key(s) {sorted(unknown)!r}; "
+                    f"valid keys: {sorted(_FIELD_KEYS)}"
+                )
+            name = entry.get("name")
+            if not isinstance(name, str):
+                raise ValueError(f"fields[{i}]: 'name' is required and must be a string")
+            data_field = entry.get("data_field") or name
+            type_name = entry.get("type_name") or None
+            if not isinstance(data_field, str) or (
+                type_name is not None and not isinstance(type_name, str)
+            ):
+                raise ValueError(f"fields[{i}]: 'data_field' and 'type_name' must be strings")
+        else:
+            raise ValueError(
+                f"fields[{i}]: expected a field name or {{name, data_field, type_name}}, "
+                f"got {type(entry).__name__}"
+            )
+        validate_identifier(name, "field")
+        if name.lower() in seen:
+            raise ValueError(f"fields lists {name!r} more than once")
+        seen.add(name.lower())
+        out.append((name, data_field, type_name))
+    return out
 
 
 def _emit_datasource_block(
@@ -136,6 +189,7 @@ def _build_minimal_rdl(
     page_setup: Optional[dict[str, str]],
     datasource: Optional[dict[str, Any]],
     warnings: Optional[list[str]] = None,
+    fields: Optional[list[Any]] = None,
 ) -> etree._ElementTree:
     """Construct the in-memory minimal RDL tree.
 
@@ -151,8 +205,14 @@ def _build_minimal_rdl(
             margin = k.startswith("margin_")
             cfg[k] = units.validate_size(v, field=f"page_setup.{k}", allow_zero=margin)
 
-    nsmap = {None: RDL_NS, "rd": "http://schemas.microsoft.com/SQLServer/reporting/reportdesigner"}
+    field_specs = _normalise_fields(fields)
+
+    # Report Builder's root: the df (default font family) extension,
+    # marked must-understand, written as the first child (#88).
+    nsmap = {None: RDL_NS, "rd": RD_NS, "df": DF_NS}
     root = etree.Element(q("Report"), nsmap=nsmap)
+    root.set("MustUnderstand", "df")
+    etree.SubElement(root, f"{{{DF_NS}}}DefaultFontFamily").text = _DEFAULT_FONT_FAMILY
 
     etree.SubElement(root, q("AutoRefresh")).text = "0"
 
@@ -169,6 +229,15 @@ def _build_minimal_rdl(
     query_elem = etree.SubElement(dataset_elem, q("Query"))
     etree.SubElement(query_elem, q("DataSourceName")).text = ds_name
     etree.SubElement(query_elem, q("CommandText"))
+    if field_specs:
+        # Declared up front so insert_tablix_from_template & co. can bind
+        # to them straight away (#88).
+        fields_elem = etree.SubElement(dataset_elem, q("Fields"))
+        for name, data_field, type_name in field_specs:
+            field_elem = etree.SubElement(fields_elem, q("Field"), Name=name)
+            etree.SubElement(field_elem, q("DataField")).text = encode_text(data_field)
+            if type_name:
+                etree.SubElement(field_elem, qrd("TypeName")).text = encode_text(type_name)
 
     # ReportSections — one section with an empty body. Note: an empty
     # <ReportItems/> is XSD-INVALID (the element requires at least one
@@ -193,13 +262,17 @@ def _build_minimal_rdl(
     etree.SubElement(root, qrd("ReportUnitType")).text = "Inch"
     etree.SubElement(root, qrd("ReportID")).text = str(uuid.uuid4())
 
-    return etree.ElementTree(root)
+    tree = etree.ElementTree(root)
+    # One element per line, two-space indent, like Report Builder (#88).
+    etree.indent(tree, space="  ")
+    return tree
 
 
 def create_report(
     path: str,
     page_setup: Optional[dict[str, str]] = None,
     datasource: Optional[dict[str, Any]] = None,
+    fields: Optional[list[Any]] = None,
 ) -> dict[str, Any]:
     """Emit a minimal valid RDL from scratch at ``path``.
 
@@ -218,6 +291,14 @@ def create_report(
     ``dataset_name`` a placeholder source is written. Builder warnings
     (e.g. a PBIDATASET catalog taken from the display name) come back as
     ``warnings``.
+
+    ``fields`` declares ``DataSet1``'s ``<Fields>``: each entry is a field
+    name (bound to the column of that name) or ``{name, data_field,
+    type_name}``. Tablix / chart tools only bind to declared fields.
+
+    The file is written the way Report Builder writes one: indented, with
+    the ``df`` namespace (``MustUnderstand="df"``) and
+    ``<df:DefaultFontFamily>Segoe UI</df:DefaultFontFamily>``.
     """
     dst = Path(path)
     if dst.exists():
@@ -226,12 +307,13 @@ def create_report(
         )
 
     warnings: list[str] = []
-    tree = _build_minimal_rdl(page_setup, datasource, warnings)
+    tree = _build_minimal_rdl(page_setup, datasource, warnings, fields)
 
     # Write to a temporary RDLDocument so we can reuse the canonical
     # save_as flow (atomic .tmp + os.replace, exact byte shape Report
     # Builder expects). Mock up the dataclass directly.
     doc = RDLDocument(path=dst, tree=tree, encoding="utf-8")
+    doc.pin_root_start_tag(_RB_ROOT_START_TAG)
     # Validate BEFORE saving — a malformed shape never hits disk.
     doc.validate()
     doc.save_as(dst)

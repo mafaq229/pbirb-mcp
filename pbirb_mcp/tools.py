@@ -1060,7 +1060,7 @@ def register_all_tools(server: MCPServer) -> None:
             "file). Page defaults to US Letter portrait, 1in margins; page_setup "
             "overrides sizes. datasource {name, workspace_url, dataset_name, ...} "
             "connects it to Power BI; omitted, a placeholder DataSource1 + "
-            "DataSet1 is written."
+            "DataSet1 is written. fields declares DataSet1's fields."
         ),
         input_schema={
             "type": "object",
@@ -1073,6 +1073,25 @@ def register_all_tools(server: MCPServer) -> None:
                 },
                 "datasource": {
                     "type": ["object", "null"],
+                    "default": None,
+                },
+                "fields": {
+                    "type": ["array", "null"],
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "data_field": {"type": "string"},
+                                    "type_name": {"type": "string"},
+                                },
+                                "required": ["name"],
+                                "additionalProperties": False,
+                            },
+                        ]
+                    },
                     "default": None,
                 },
             },
