@@ -96,12 +96,138 @@ DESTRUCTIVE_TOOLS = frozenset(
         "remove_row_group",
         "remove_tablix_column",
         "remove_tablix_filter",
+        # Deletes the columns, rows and textboxes a matrix no longer needs.
+        "convert_to_matrix",
         # Replaces an arbitrary element with caller-supplied XML.
         "raw_xml_replace",
         # Copies a backup over the report.
         "restore_from_backup",
     }
 )
+
+# Mutating tools whose second identical call is a no-op: it succeeds,
+# reports nothing changed and leaves the file alone (issue #61). Published
+# as idempotentHint (#54). tests/test_annotations.py keeps this equal to the
+# "noop" cases of tests/test_idempotency.py; a tool whose repeat call
+# refuses (creators, removers, renames) or appends again is not listed.
+IDEMPOTENT_TOOLS = frozenset(
+    {
+        "center_item",
+        "fit_page_to_body",
+        "raw_xml_replace",
+        "refresh_dataset_fields",
+        "reorder_parameters",
+        "set_alternating_row_color",
+        "set_body_item_position",
+        "set_body_item_size",
+        "set_body_size",
+        "set_cell_span",
+        "set_chart_axis",
+        "set_chart_data_labels",
+        "set_chart_legend",
+        "set_chart_palette",
+        "set_chart_series_action",
+        "set_chart_series_grouping",
+        "set_chart_series_type",
+        "set_chart_title",
+        "set_column_group_sort",
+        "set_column_group_visibility",
+        "set_column_width",
+        "set_conditional_row_color",
+        "set_datasource_connection",
+        "set_detail_row_visibility",
+        "set_document_map_label",
+        "set_element_visibility",
+        "set_footer_item_position",
+        "set_footer_item_size",
+        "set_group_page_break",
+        "set_group_sort",
+        "set_group_visibility",
+        "set_header_item_position",
+        "set_header_item_size",
+        "set_image_action",
+        "set_image_sizing",
+        "set_image_source",
+        "set_keep_together",
+        "set_keep_with_group",
+        "set_page_footer",
+        "set_page_header",
+        "set_page_orientation",
+        "set_page_setup",
+        "set_parameter_available_values",
+        "set_parameter_default_values",
+        "set_parameter_layout",
+        "set_parameter_prompt",
+        "set_parameter_type",
+        "set_repeat_on_new_page",
+        "set_row_height",
+        "set_series_color",
+        "set_tablix_corner",
+        "set_tablix_size",
+        "set_textbox_action",
+        "set_textbox_runs",
+        "set_textbox_style",
+        "set_textbox_style_bulk",
+        "set_textbox_tooltip",
+        "set_textbox_value",
+        "style_tablix_row",
+        "sync_parameter_layout",
+        "update_dataset_query",
+        "update_parameter_advanced",
+        "update_query_parameter",
+    }
+)
+
+# Tools that write no report file (mutating=False) yet aren't read-only:
+# transaction control holds edit state (commit saves the report) and
+# backup_report writes a backup copy. Every other non-mutating tool only
+# reads, and is published readOnlyHint=true.
+_STATEFUL_TOOLS = TRANSACTION_CONTROL_TOOLS | {"backup_report"}
+
+# Display titles where the name doesn't spell out well word by word.
+_TITLE_OVERRIDES = {
+    "count_where": "Build a conditional Count expression",
+    "sum_where": "Build a conditional Sum expression",
+    "iif_format": "Build an IIf expression",
+    "dry_run_edit": "Preview edits (dry run)",
+    "apply_edits": "Apply edits atomically",
+    "raw_xml_view": "View raw XML",
+    "raw_xml_replace": "Replace raw XML",
+    "lint_report": "Lint report",
+}
+_TITLE_WORDS = {"xml": "XML", "rdl": "RDL", "dax": "DAX", "iif": "IIf"}
+
+
+def tool_title(name: str) -> str:
+    """Human-readable title for a tool name (``set_page_setup`` → ``Set page setup``)."""
+    if name in _TITLE_OVERRIDES:
+        return _TITLE_OVERRIDES[name]
+    words = [_TITLE_WORDS.get(w, w) for w in name.split("_") if w]
+    if not words:
+        return name
+    return " ".join([words[0][:1].upper() + words[0][1:], *words[1:]])
+
+
+def tool_annotations(name: str, *, mutating: bool) -> dict:
+    """The MCP ``ToolAnnotations`` hints for a tool (issue #54).
+
+    The display title is published once, as the tool's top-level ``title``
+    (2025-06-18+), not repeated as ``annotations.title``. The hints are
+    derived from the classifications above, not declared per tool:
+    ``readOnlyHint`` — writes nothing (not ``mutating``, not stateful);
+    ``destructiveHint`` — in :data:`DESTRUCTIVE_TOOLS` (deletes report
+    content or overwrites a file; ordinary in-place edits are not);
+    ``idempotentHint`` — read-only, or in :data:`IDEMPOTENT_TOOLS`;
+    ``openWorldHint`` — always false: every tool works on local files only.
+    """
+    read_only = not mutating and name not in _STATEFUL_TOOLS
+    return {
+        "readOnlyHint": read_only,
+        "destructiveHint": name in DESTRUCTIVE_TOOLS,
+        "idempotentHint": read_only or name in IDEMPOTENT_TOOLS,
+        "openWorldHint": False,
+    }
+
 
 # Tools that take `confirm`: the destructive ones, plus apply_edits, which
 # needs it when any of its ops is destructive.
@@ -146,7 +272,8 @@ class Tool:
     handler: ToolHandler
     # May this tool run as an op inside apply_edits / dry_run_edit?
     batchable: bool = False
-    # Does this tool write an RDL file? (drives PBIRB_MCP_AUTO_VERIFY)
+    # Does this tool write an RDL file? (drives PBIRB_MCP_AUTO_VERIFY, the
+    # audit log and readOnlyHint)
     mutating: bool = False
     # May a call carry `transaction_id` to run inside a transaction?
     routable: bool = False
@@ -155,6 +282,9 @@ class Tool:
     # The JSON Schema of the result, published as `outputSchema`; every
     # successful call returns a matching `structuredContent` (issue #55).
     output_schema: Optional[dict] = None
+    # Display name and MCP ToolAnnotations (issue #54); see tool_annotations.
+    title: str = ""
+    annotations: Optional[dict] = None
 
 
 def _success(result: Any) -> dict:
@@ -196,6 +326,7 @@ class MCPServer:
         batchable: Optional[bool] = None,
         mutating: bool = False,
         output_schema: Optional[dict] = None,
+        title: Optional[str] = None,
     ) -> None:
         """Register a tool.
 
@@ -211,6 +342,11 @@ class MCPServer:
         Defaults to the family schema from
         :func:`pbirb_mcp.core.output_schemas.default_output_schema`. A
         non-object result is published as ``{"result": value}``.
+
+        ``title`` — display name; defaults to :func:`tool_title`. The
+        title and the read-only / destructive / idempotent / open-world
+        hints are published as ``title`` and ``annotations``
+        (:func:`tool_annotations`).
         """
         from pbirb_mcp.core.argcheck import client_schema
         from pbirb_mcp.core.output_schemas import default_output_schema
@@ -244,6 +380,8 @@ class MCPServer:
             routable=routable,
             published_schema=client_schema(schema),
             output_schema=output_schema or default_output_schema(name, handler, mutating=mutating),
+            title=title or tool_title(name),
+            annotations=tool_annotations(name, mutating=mutating),
         )
 
     def is_batchable(self, name: str) -> bool:
@@ -311,9 +449,11 @@ class MCPServer:
         return [
             {
                 "name": tool.name,
+                "title": tool.title,
                 "description": tool.description,
                 "inputSchema": tool.published_schema or tool.input_schema,
                 **({"outputSchema": tool.output_schema} if tool.output_schema else {}),
+                **({"annotations": tool.annotations} if tool.annotations else {}),
             }
             for tool in self._tools.values()
         ]
