@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import chart_shape
+from pbirb_mcp.core import chart_shape, chart_types
 from pbirb_mcp.core.columns import describe_columns
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.geometry import PAGE_DEFAULTS, REPORT_ITEM_TAGS, size_unit
@@ -1169,14 +1169,60 @@ def _chart_data_labels_dict(series: etree._Element) -> Optional[dict[str, Any]]:
     }
 
 
-def _chart_series_dict(series: etree._Element) -> dict[str, Any]:
+def _action_dict(host: Optional[etree._Element]) -> Optional[dict[str, Any]]:
+    """Read-back of the first action on ``host`` (``ActionInfo/Actions/Action``,
+    or a legacy bare ``<Action>``), in the argument shape of the
+    ``set_*_action`` tools: ``{action_type, target_expression,
+    drillthrough_parameters: [{name, value}]}``. None when there is none."""
+    if host is None:
+        return None
+    action = None
+    info = find_child(host, "ActionInfo")
+    if info is not None:
+        actions = find_child(info, "Actions")
+        action = find_child(actions, "Action") if actions is not None else None
+    if action is None:
+        action = find_child(host, "Action")
+    if action is None:
+        return None
+    for kind in ("Hyperlink", "BookmarkLink"):
+        node = find_child(action, kind)
+        if node is not None:
+            return {"action_type": kind, "target_expression": _text(node)}
+    drill = find_child(action, "Drillthrough")
+    if drill is None:
+        return None
+    params_root = find_child(drill, "Parameters")
+    params = (
+        [
+            {"name": p.get("Name"), "value": _text(find_child(p, "Value"))}
+            for p in find_children(params_root, "Parameter")
+        ]
+        if params_root is not None
+        else []
+    )
+    return {
+        "action_type": "Drillthrough",
+        "target_expression": _text(find_child(drill, "ReportName")),
+        "drillthrough_parameters": params,
+    }
+
+
+def _chart_series_dict(
+    series: etree._Element, member: Optional[etree._Element] = None
+) -> dict[str, Any]:
     """Return the read-back shape for one ``<ChartSeries>``: name, type,
-    subtype, value/category expressions on the (single) data point,
-    style color (when explicitly set via ``<Style>/<Color>``), and
-    ``data_labels`` (``None`` when ``<ChartDataLabel>`` is absent).
+    subtype, value/category expressions on the template data point, style
+    color (when explicitly set via ``<Style>/<Color>``), ``data_labels``
+    (``None`` when ``<ChartDataLabel>`` is absent), the axis / area /
+    legend bindings, ``hidden``, the click ``action`` and the series'
+    hierarchy ``label`` (its leaf ``member``'s ``<Label>``).
+
+    ``type`` is the effective type: RDL's default ``Column`` when
+    ``<Type>`` is absent (Report Builder omits it for Column series), with
+    ``type_implicit: true``.
     """
-    data_points = find_child(series, "ChartDataPoints")
-    point = find_child(data_points, "ChartDataPoint") if data_points is not None else None
+    point = chart_shape.template_data_point(series)
     values = find_child(point, "ChartDataPointValues") if point is not None else None
     y = find_child(values, "Y") if values is not None else None
     x = find_child(values, "X") if values is not None else None
@@ -1184,14 +1230,29 @@ def _chart_series_dict(series: etree._Element) -> dict[str, Any]:
     style = find_child(series, "Style")
     color = _text(find_child(style, "Color")) if style is not None else None
 
+    type_text = _text(find_child(series, "Type"))
+    type_implicit = type_text is None or not type_text.strip()
+
+    action = _action_dict(point)
+    if action is None:  # legacy series-level placement
+        action = _action_dict(series)
+
     return {
         "name": series.get("Name"),
-        "type": _text(find_child(series, "Type")),
+        "type": chart_types.RDL_DEFAULT_TYPE if type_implicit else type_text,
+        "type_implicit": type_implicit,
         "subtype": _text(find_child(series, "Subtype")),
         "value_expression": _text(y),
         "category_expression": _text(x),
         "color": color,
         "data_labels": _chart_data_labels_dict(series),
+        "label": _text(find_child(member, "Label")) if member is not None else None,
+        "value_axis": _text(find_child(series, "ValueAxisName")),
+        "category_axis": _text(find_child(series, "CategoryAxisName")),
+        "chart_area": _text(find_child(series, "ChartAreaName")),
+        "legend_name": _text(find_child(series, "LegendName")),
+        "hidden": _text(find_child(series, "Hidden")),
+        "action": action,
     }
 
 
@@ -1227,13 +1288,30 @@ def _chart_axis_dict(axis: etree._Element) -> dict[str, Any]:
     }
 
 
-def _chart_legend_dict(chart: etree._Element) -> Optional[dict[str, Any]]:
-    legends_root = find_child(chart, "ChartLegends")
-    if legends_root is None:
-        return None
-    legend = find_child(legends_root, "ChartLegend")
-    if legend is None:
-        return None
+def _chart_area_axes(chart_area: etree._Element) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {"category": [], "value": []}
+    for key, local in (("category", "ChartCategoryAxes"), ("value", "ChartValueAxes")):
+        root = find_child(chart_area, local)
+        if root is not None:
+            out[key] = [_chart_axis_dict(a) for a in find_children(root, "ChartAxis")]
+    return out
+
+
+def _chart_areas(chart: etree._Element) -> list[dict[str, Any]]:
+    areas_root = find_child(chart, "ChartAreas")
+    if areas_root is None:
+        return []
+    return [
+        {
+            "name": area.get("Name"),
+            "hidden": _text(find_child(area, "Hidden")),
+            "axes": _chart_area_axes(area),
+        }
+        for area in find_children(areas_root, "ChartArea")
+    ]
+
+
+def _chart_legend_entry(legend: etree._Element) -> dict[str, Any]:
     # set_chart_legend writes <Hidden>true|false</Hidden> as the inverse
     # of `visible` (visible=True → Hidden=false). Echo the inverse on
     # read so the field name matches the writer's input arg semantics:
@@ -1243,11 +1321,8 @@ def _chart_legend_dict(chart: etree._Element) -> Optional[dict[str, Any]]:
         visible_text: Optional[str] = None
     else:
         visible_text = "false" if hidden_text.strip().lower() == "true" else "true"
-    # Pre-v0.3.1 had a fallback `_text(<DockOutsideChartArea>) or
-    # _text(<Position>)` which returned the boolean's text as the
-    # "position" string when both elements were present. Read only
-    # <Position> — DockOutsideChartArea is a separate boolean and
-    # doesn't belong in this field.
+    # Read only <Position> — DockOutsideChartArea is a separate boolean
+    # and doesn't belong in this field.
     return {
         "name": legend.get("Name"),
         "position": _text(find_child(legend, "Position")),
@@ -1255,50 +1330,100 @@ def _chart_legend_dict(chart: etree._Element) -> Optional[dict[str, Any]]:
     }
 
 
-def _chart_title_dict(chart: etree._Element) -> Optional[dict[str, Any]]:
+def _chart_legends(chart: etree._Element) -> list[dict[str, Any]]:
+    legends_root = find_child(chart, "ChartLegends")
+    if legends_root is None:
+        return []
+    return [_chart_legend_entry(lg) for lg in find_children(legends_root, "ChartLegend")]
+
+
+def _chart_titles(chart: etree._Element) -> list[dict[str, Any]]:
     titles_root = find_child(chart, "ChartTitles")
     if titles_root is None:
-        return None
-    title = find_child(titles_root, "ChartTitle")
-    if title is None:
-        return None
+        return []
+    return [
+        {"name": title.get("Name"), "caption": _text(find_child(title, "Caption"))}
+        for title in find_children(titles_root, "ChartTitle")
+    ]
+
+
+def _chart_member_entry(member: etree._Element, level: int) -> dict[str, Any]:
+    """``{name, expression, label, sort, static, level}`` for one ChartMember
+    (``name`` / ``expression`` are the ``<Group>``'s; None when static)."""
+    group = find_child(member, "Group")
+    expressions: list[str] = []
+    if group is not None:
+        expr_root = find_child(group, "GroupExpressions")
+        if expr_root is not None:
+            expressions = [
+                e.text for e in find_children(expr_root, "GroupExpression") if e.text is not None
+            ]
     return {
-        "name": title.get("Name"),
-        "caption": _text(find_child(title, "Caption")),
+        "name": group.get("Name") if group is not None else None,
+        "expression": expressions[0] if expressions else None,
+        "label": _text(find_child(member, "Label")),
+        "sort": [{"value": v, "direction": d} for v, d in chart_shape.member_sorts(member)],
+        "static": group is None,
+        "level": level,
     }
 
 
 def _chart_category_groups(chart: etree._Element) -> list[dict[str, Any]]:
+    """Every category-hierarchy member, depth-first (outer level first)."""
+    return [
+        _chart_member_entry(member, level)
+        for member, level in chart_shape.walk_members(chart_shape.category_hierarchy_members(chart))
+    ]
+
+
+def _chart_series_groups(chart: etree._Element) -> list[dict[str, Any]]:
+    """Every series-hierarchy member, depth-first; a leaf also names the
+    ``series`` it belongs to (series and leaves match by position)."""
+    all_series = chart_shape.series_list(chart)
+    leaf_index = {id(m): i for i, m in enumerate(chart_shape.series_leaf_members(chart))}
     out: list[dict[str, Any]] = []
-    cat_h = find_child(chart, "ChartCategoryHierarchy")
-    members_root = find_child(cat_h, "ChartMembers") if cat_h is not None else None
-    if members_root is None:
-        return out
-    for member in find_children(members_root, "ChartMember"):
-        group = find_child(member, "Group")
-        label = _text(find_child(member, "Label"))
-        if group is None:
-            out.append({"name": None, "expression": None, "label": label})
-            continue
-        expr_root = find_child(group, "GroupExpressions")
-        expressions: list[str] = []
-        if expr_root is not None:
-            for e in find_children(expr_root, "GroupExpression"):
-                if e.text:
-                    expressions.append(e.text)
+    for member, level in chart_shape.walk_members(chart_shape.series_hierarchy_members(chart)):
+        entry = _chart_member_entry(member, level)
+        idx = leaf_index.get(id(member))
+        entry["series"] = (
+            all_series[idx].get("Name") if idx is not None and idx < len(all_series) else None
+        )
+        out.append(entry)
+    return out
+
+
+def _chart_derived_series(chart: etree._Element) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for derived in chart_shape.derived_series_list(chart):
+        inner = find_child(derived, "ChartSeries")
+        params_root = find_child(derived, "ChartFormulaParameters")
+        params = (
+            [
+                {
+                    "name": p.get("Name"),
+                    "value": _text(find_child(p, "Value")),
+                    "source": _text(find_child(p, "Source")),
+                }
+                for p in find_children(params_root, "ChartFormulaParameter")
+            ]
+            if params_root is not None
+            else []
+        )
+        type_text = _text(find_child(inner, "Type")) if inner is not None else None
         out.append(
             {
-                "name": group.get("Name"),
-                "expression": expressions[0] if expressions else None,
-                "label": label,
+                "name": chart_shape.derived_series_name(derived),
+                "source": chart_shape.derived_source_name(derived),
+                "formula": _text(find_child(derived, "DerivedSeriesFormula")),
+                "parameters": params,
+                "type": type_text or chart_types.RDL_DEFAULT_TYPE,
             }
         )
     return out
 
 
 def get_chart(path: str, name: str) -> dict[str, Any]:
-    """Read-back for a named ``<Chart>``: position, size, dataset, series,
-    category groups, axes, legend, title, palette.
+    """Read-back for a named ``<Chart>``: everything the chart tools write.
 
     Symmetric with :func:`get_textbox` / :func:`get_image` /
     :func:`get_rectangle`. Returns shape::
@@ -1309,12 +1434,21 @@ def get_chart(path: str, name: str) -> dict[str, Any]:
           "top": "..", "left": "..", "width": "..", "height": "..",
           "dataset": "..",
           "palette": "EarthTones" | None,
-          "series": [{name, type, subtype, value_expression,
-                      category_expression, color, data_labels}, ...],
-          "category_groups": [{name, expression, label}, ...],
-          "axes": {"category": [...], "value": [...]},
-          "legend": {name, position, visible} | None,
-          "title": {name, caption} | None,
+          "custom_palette_colors": [..], "palette_hatch_behavior": .. | None,
+          "series": [{name, type, type_implicit, subtype, value_expression,
+                      category_expression, color, data_labels, label,
+                      value_axis, category_axis, chart_area, legend_name,
+                      hidden, action}, ...],
+          "series_groups": [{name, expression, label, sort, static, level,
+                             series}, ...],
+          "derived_series": [{name, source, formula, parameters, type}, ...],
+          "category_groups": [{name, expression, label, sort, static, level}, ...],
+          "axes": {"category": [...], "value": [...]},      # first ChartArea
+          "chart_areas": [{name, hidden, axes: {category, value}}, ...],
+          "legend": {name, position, visible} | None,         # first legend
+          "legends": [...],
+          "title": {name, caption} | None,                    # first title
+          "titles": [...],
           "style": {...} | None,
           "visibility": {...} | None,
         }
@@ -1326,26 +1460,21 @@ def get_chart(path: str, name: str) -> dict[str, Any]:
 
         raise ElementNotFoundError(f"no Chart named {name!r}")
 
-    # Series collection.
-    series_collection = chart.find(f"{{{RDL_NS}}}ChartData/{{{RDL_NS}}}ChartSeriesCollection")
-    series_list: list[dict[str, Any]] = []
-    if series_collection is not None:
-        for s in find_children(series_collection, "ChartSeries"):
-            series_list.append(_chart_series_dict(s))
+    leaves = chart_shape.series_leaf_members(chart)
+    series_list = [
+        _chart_series_dict(s, leaves[i] if i < len(leaves) else None)
+        for i, s in enumerate(chart_shape.series_list(chart))
+    ]
 
-    # Axes (Default ChartArea only).
-    chart_area = chart.find(f"{{{RDL_NS}}}ChartAreas/{{{RDL_NS}}}ChartArea")
-    cat_axes: list[dict[str, Any]] = []
-    val_axes: list[dict[str, Any]] = []
-    if chart_area is not None:
-        cat_axes_root = find_child(chart_area, "ChartCategoryAxes")
-        if cat_axes_root is not None:
-            for a in find_children(cat_axes_root, "ChartAxis"):
-                cat_axes.append(_chart_axis_dict(a))
-        val_axes_root = find_child(chart_area, "ChartValueAxes")
-        if val_axes_root is not None:
-            for a in find_children(val_axes_root, "ChartAxis"):
-                val_axes.append(_chart_axis_dict(a))
+    areas = _chart_areas(chart)
+    legends = _chart_legends(chart)
+    titles = _chart_titles(chart)
+    custom_root = find_child(chart, "ChartCustomPaletteColors")
+    custom_colors = (
+        [_text(c) for c in find_children(custom_root, "ChartCustomPaletteColor")]
+        if custom_root is not None
+        else []
+    )
 
     return {
         "name": name,
@@ -1353,11 +1482,18 @@ def get_chart(path: str, name: str) -> dict[str, Any]:
         **_layout_dict_for(chart),
         "dataset": _text(find_child(chart, "DataSetName")),
         "palette": _text(find_child(chart, "Palette")),
+        "custom_palette_colors": custom_colors,
+        "palette_hatch_behavior": _text(find_child(chart, "PaletteHatchBehavior")),
         "series": series_list,
+        "series_groups": _chart_series_groups(chart),
+        "derived_series": _chart_derived_series(chart),
         "category_groups": _chart_category_groups(chart),
-        "axes": {"category": cat_axes, "value": val_axes},
-        "legend": _chart_legend_dict(chart),
-        "title": _chart_title_dict(chart),
+        "axes": areas[0]["axes"] if areas else {"category": [], "value": []},
+        "chart_areas": areas,
+        "legend": legends[0] if legends else None,
+        "legends": legends,
+        "title": titles[0] if titles else None,
+        "titles": titles,
         "style": _style_dict(chart),
         "visibility": _visibility(chart),
     }

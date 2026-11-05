@@ -141,6 +141,8 @@ def _chart(d: dict) -> dict:
         _pick(s, ("name", "type")) for s in d.get("series") or [] if isinstance(s, dict)
     ]
     out["category_groups"] = _names(d.get("category_groups"))
+    # Dynamic series groups only (static members have no group name).
+    out["series_groups"] = [n for n in _names(d.get("series_groups")) if n]
     return out
 
 

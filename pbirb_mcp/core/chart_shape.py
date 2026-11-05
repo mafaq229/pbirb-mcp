@@ -71,6 +71,44 @@ def subtree_leaves(member: etree._Element) -> list[etree._Element]:
     return out
 
 
+def walk_members(
+    members_root: Optional[etree._Element], level: int = 0
+) -> list[tuple[etree._Element, int]]:
+    """Every ``ChartMember`` under a ``<ChartMembers>`` as ``(member,
+    level)`` pairs, depth-first in document order (a parent before its
+    children; ``level`` 0 is the top level)."""
+    if members_root is None:
+        return []
+    out: list[tuple[etree._Element, int]] = []
+    for member in find_children(members_root, "ChartMember"):
+        out.append((member, level))
+        out.extend(walk_members(find_child(member, "ChartMembers"), level + 1))
+    return out
+
+
+def member_sorts(member: etree._Element) -> list[tuple[Optional[str], str]]:
+    """``(Value, Direction)`` per ``SortExpressions/SortExpression`` of a
+    ``ChartMember`` (a missing Direction is Ascending, the RDL default)."""
+    sorts = find_child(member, "SortExpressions")
+    if sorts is None:
+        return []
+    out: list[tuple[Optional[str], str]] = []
+    for s in find_children(sorts, "SortExpression"):
+        value = find_child(s, "Value")
+        direction = find_child(s, "Direction")
+        text = (direction.text or "").strip() if direction is not None else ""
+        out.append((value.text if value is not None else None, text or "Ascending"))
+    return out
+
+
+def category_hierarchy_members(chart: etree._Element) -> Optional[etree._Element]:
+    """The top-level ``ChartCategoryHierarchy/ChartMembers`` element, or None."""
+    hierarchy = find_child(chart, "ChartCategoryHierarchy")
+    if hierarchy is None:
+        return None
+    return find_child(hierarchy, "ChartMembers")
+
+
 def series_hierarchy_members(chart: etree._Element) -> Optional[etree._Element]:
     """The top-level ``ChartSeriesHierarchy/ChartMembers`` element, or None."""
     hierarchy = find_child(chart, "ChartSeriesHierarchy")
@@ -88,10 +126,7 @@ def series_leaf_members(chart: etree._Element) -> list[etree._Element]:
 def category_leaf_members(chart: etree._Element) -> list[etree._Element]:
     """Leaf ``ChartMember`` elements of the category hierarchy, depth-first
     in document order. Leaf ``j`` owns every series' ``ChartDataPoint[j]``."""
-    hierarchy = find_child(chart, "ChartCategoryHierarchy")
-    if hierarchy is None:
-        return []
-    return _leaves_of(find_child(hierarchy, "ChartMembers"))
+    return _leaves_of(category_hierarchy_members(chart))
 
 
 def series_list(chart: etree._Element) -> list[etree._Element]:
@@ -334,6 +369,7 @@ def hierarchy_problems(chart: etree._Element) -> list[str]:
 
 
 __all__ = [
+    "category_hierarchy_members",
     "category_leaf_members",
     "child_members",
     "data_label",
@@ -349,6 +385,7 @@ __all__ = [
     "member_ancestors",
     "member_groups",
     "member_series",
+    "member_sorts",
     "series_hierarchy_members",
     "series_index",
     "series_leaf_members",
@@ -358,4 +395,5 @@ __all__ = [
     "series_names",
     "subtree_leaves",
     "template_data_point",
+    "walk_members",
 ]

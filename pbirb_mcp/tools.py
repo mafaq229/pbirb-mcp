@@ -2536,8 +2536,10 @@ def register_all_tools(server: MCPServer) -> None:
     server.register_tool(
         name="get_chart",
         description=(
-            "Read a chart: position, size, dataset, palette, series (type, value, "
-            "color), category groups, axes, legend, title, style, visibility."
+            "Read a chart: position, size, dataset, palette, custom colours, series "
+            "(type, value, color, labels, axes, legend, action), series_groups, "
+            "category_groups, derived_series, chart_areas/axes, legends, titles, style, "
+            "visibility."
         ),
         input_schema={
             "type": "object",
