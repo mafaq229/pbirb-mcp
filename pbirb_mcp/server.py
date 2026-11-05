@@ -284,10 +284,10 @@ _AUDITED_EXTRA_TOOLS = frozenset({"commit_editing_transaction"})
 # confirmation gate — the top-level batch call is gated instead.
 _CALL_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("pbirb_mcp_call_depth", default=0)
 
-_TRANSACTION_ID_PARAM = {
-    "type": "string",
-    "description": "Optional: run inside this start_editing_transaction id.",
-}
+# No per-parameter description: the same sentence on ~160 tools cost ~11 KB
+# of tools/list; start_editing_transaction's description says to pass its
+# id as transaction_id.
+_TRANSACTION_ID_PARAM = {"type": "string"}
 
 
 @dataclass
