@@ -17,6 +17,8 @@ Public API::
     aggregate_calls(tokens) -> list[Call]              # Sum(…, "Scope"), Lookup(…) …
     enclosing_calls(calls, index) -> list[Call]        # innermost first
     ScopeIndex(root)                                   # datasets / regions / groups
+    find_field_references(root, dataset, field)        # consumers of one field (#72)
+    locator(elem) -> str                               # Type[Name='X']/Sub/Path label
 
 All token indices refer to the *significant* token list (whitespace and
 comments dropped) — what :func:`expression_tokens` returns and what
@@ -399,10 +401,169 @@ class ScopeIndex:
         return None
 
 
+# ---- field consumers (#72) -------------------------------------------------
+
+
+def locator(elem: etree._Element, max_named: int = 3) -> str:
+    """Human-readable locator for ``elem``: its nearest ``max_named`` named
+    ancestors (``Type[Name='X']``, outermost first, joined by ``>``), then
+    the unnamed path below the nearest one (joined by ``/``) — e.g.
+    ``Tablix[Name='T']>Textbox[Name='Amount']/Paragraphs/Paragraph/TextRuns/TextRun/Value``
+    or ``ReportParameter[Name='P']/ValidValues/DataSetReference/ValueField``.
+    Walks to the root, so a named ancestor is never missed.
+    """
+    path: list[str] = []
+    named: list[str] = []
+    cur: Optional[etree._Element] = elem
+    while cur is not None and len(named) < max_named:
+        if isinstance(cur.tag, str):
+            local = _local(cur)
+            if cur.get("Name"):
+                named.append(f"{local}[Name={cur.get('Name')!r}]")
+            elif not named:
+                path.append(local)
+        cur = cur.getparent()
+    head = ">".join(reversed(named))
+    tail = "/".join(reversed(path))
+    if head and tail:
+        return f"{head}/{tail}"
+    return head or tail or "(unnamed)"
+
+
+class FieldReference(NamedTuple):
+    """One consumer of a dataset field, found by :func:`find_field_references`.
+
+    ``element`` holds the reference; ``locator`` labels it (see
+    :func:`locator`); ``kind`` is ``"expression"`` (``Fields!X…`` /
+    ``Fields("X")`` in an ``=``-expression) or ``"dataset_reference"``
+    (a parameter's ``DataSetReference/ValueField|LabelField``); ``text``
+    is the matched source text (the reference, or the bare field name);
+    ``scope`` is the dataset the reference was resolved to, ``None`` when
+    it could not be resolved statically (counted as a reference anyway).
+    """
+
+    element: etree._Element
+    locator: str
+    kind: str
+    text: str
+    scope: Optional[str]
+
+
+def _resolve_ref_dataset(
+    ref: Ref,
+    calls: Sequence[Call],
+    region_ds: Optional[str],
+    index: ScopeIndex,
+) -> tuple[bool, Optional[str]]:
+    """``(resolved, dataset)`` for one ``Fields`` reference: the innermost
+    enclosing call with a literal scope wins (a group / data region name
+    resolves to the dataset it reads); a ``Lookup`` with a non-literal
+    dataset, or an unknown scope name, is unresolved; otherwise the data
+    region's / DataSet's dataset; outside any region, the report's only
+    dataset (unresolved when there are several)."""
+    for call in enclosing_calls(calls, ref.first):  # innermost first
+        if call.scope is not None:
+            ds = index.resolve(call.scope)
+            return (ds is not None), ds
+        if call.kind == LOOKUP:
+            return False, None
+    if region_ds is not None:
+        return True, region_ds
+    if len(index.datasets) == 1:
+        return True, next(iter(index.datasets))
+    return False, None
+
+
+def find_field_references(
+    root: etree._Element, dataset_name: str, field_name: str
+) -> list[FieldReference]:
+    """Every consumer of field ``field_name`` of dataset ``dataset_name``, in
+    document order (#72). Public so other guards can reuse it.
+
+    1. ``Fields!N.<member>`` and ``Fields("N")[.<member>]`` in any
+       ``=``-expression (:func:`iter_expressions`, VB tokens — names in
+       string literals or comments don't count), kept when the reference's
+       dataset scope is ``dataset_name``: an aggregate's / lookup's literal
+       scope argument, else the nearest data region's ``DataSetName``
+       (Tablix, Chart, GaugePanel, map data region, CustomReportItem), else
+       the enclosing ``<DataSet>`` (calculated fields, dataset filters),
+       else the report's only dataset. A reference whose scope can't be
+       resolved statically is kept too — a guard should err on the side
+       of refusing.
+    2. ``DataSetReference`` elements (a parameter's ValidValues /
+       DefaultValue query) with ``DataSetName == dataset_name`` whose
+       ``ValueField`` or ``LabelField`` is ``field_name`` — bare names, not
+       expressions.
+
+    The field's own ``<Field>`` definition is not a consumer and is skipped.
+    """
+    ns = etree.QName(root).namespace
+    index = ScopeIndex(root)
+
+    def own_definition(elem: etree._Element) -> bool:
+        # <DataSet Name=dataset_name>/<Fields>/<Field Name=field_name>/<Value>
+        field = elem.getparent()
+        fields = field.getparent() if field is not None else None
+        ds = fields.getparent() if fields is not None else None
+        return (
+            ds is not None
+            and _local(field) == "Field"
+            and field.get("Name") == field_name
+            and _local(ds) == "DataSet"
+            and ds.get("Name") == dataset_name
+        )
+
+    hits: list[tuple[etree._Element, FieldReference]] = []
+    for elem, text in iter_expressions(root):
+        if field_name not in text:
+            continue
+        sig = expression_tokens(text)
+        if not sig:
+            continue
+        refs = [r for r in references(sig, "Fields") if r.name == field_name]
+        if not refs or own_definition(elem):
+            continue
+        calls = aggregate_calls(sig)
+        region_ds = dataset_scope(elem)
+        for ref in refs:
+            resolved, ds = _resolve_ref_dataset(ref, calls, region_ds, index)
+            if resolved and ds != dataset_name:
+                continue
+            hits.append(
+                (
+                    elem,
+                    FieldReference(
+                        elem, locator(elem), "expression", text[ref.start : ref.end], ds
+                    ),
+                )
+            )
+
+    for dsref in root.iter(f"{{{ns}}}DataSetReference"):
+        names = _children(dsref, ns, "DataSetName")
+        if not names or (names[0].text or "").strip() != dataset_name:
+            continue
+        for slot in ("ValueField", "LabelField"):
+            for el in _children(dsref, ns, slot):
+                if (el.text or "").strip() == field_name:
+                    hits.append(
+                        (
+                            el,
+                            FieldReference(
+                                el, locator(el), "dataset_reference", field_name, dataset_name
+                            ),
+                        )
+                    )
+
+    order = {el: i for i, el in enumerate(root.iter())}
+    hits.sort(key=lambda h: order.get(h[0], 0))
+    return [h[1] for h in hits]
+
+
 __all__ = [
     "AGGREGATE",
     "Call",
     "EXCLUDED_TAGS",
+    "FieldReference",
     "LOOKUP",
     "Ref",
     "SCOPE_ONLY",
@@ -411,7 +572,9 @@ __all__ = [
     "dataset_scope",
     "enclosing_calls",
     "expression_tokens",
+    "find_field_references",
     "iter_expressions",
+    "locator",
     "references",
     "scope_region",
 ]

@@ -485,7 +485,9 @@ def register_all_tools(server: MCPServer) -> None:
         name="remove_calculated_field",
         description=(
             "Remove a calculated field from a dataset. Refuses a query-bound "
-            "field (use remove_dataset_field)."
+            "field (use remove_dataset_field) and a field still referenced "
+            "(expressions in its dataset's scope, parameter ValueField/LabelField) "
+            "unless force=true."
         ),
         input_schema={
             "type": "object",
@@ -493,6 +495,14 @@ def register_all_tools(server: MCPServer) -> None:
                 "path": {"type": "string"},
                 "dataset_name": {"type": "string"},
                 "field_name": {"type": "string"},
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Default false: refuse if the field is still "
+                        "referenced. true: delete anyway "
+                        "(prefer fixing the references first)."
+                    ),
+                },
             },
             "required": ["path", "dataset_name", "field_name"],
             "additionalProperties": False,
@@ -505,8 +515,9 @@ def register_all_tools(server: MCPServer) -> None:
         description=(
             "Remove a query-bound field (one with a DataField) from a dataset. "
             "Refuses a calculated field (use remove_calculated_field) and a field "
-            "still referenced by an expression unless force=true. Use it to drop "
-            "orphans refresh_dataset_fields reports."
+            "still referenced (expressions in its dataset's scope, parameter "
+            "ValueField/LabelField) unless force=true. Use it to drop orphans "
+            "refresh_dataset_fields reports."
         ),
         input_schema={
             "type": "object",

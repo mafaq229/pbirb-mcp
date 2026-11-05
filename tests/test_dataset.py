@@ -22,6 +22,7 @@ from lxml import etree
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import QD_NS, RD_NS, RDL_NS, find_child
+from pbirb_mcp.ops import expr_walk
 from pbirb_mcp.ops.dataset import (
     add_calculated_field,
     add_dataset_field,
@@ -37,7 +38,13 @@ from pbirb_mcp.ops.dataset import (
     update_dataset_query,
     update_query_parameter,
 )
+from pbirb_mcp.ops.lint import lint_report
+from pbirb_mcp.ops.parameters import (
+    set_parameter_available_values,
+    set_parameter_default_values,
+)
 from pbirb_mcp.ops.reader import get_datasets
+from pbirb_mcp.ops.styling import set_textbox_value
 from pbirb_mcp.ops.validate import validate_report
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
@@ -1223,6 +1230,198 @@ class TestRemoveDatasetField:
         doc = RDLDocument.open(rdl_path)
         ds = doc.root.find(f".//{{{RDL_NS}}}DataSet[@Name='MainDataset']")
         assert find_child(ds, "Fields") is None
+
+
+# ---- scope-aware field-reference guards (#72) -----------------------------
+
+MULTI_FIXTURE = Path(__file__).parent / "fixtures" / "pbi_multi_datasource.rdl"
+
+
+@pytest.fixture
+def multi_path(tmp_path: Path) -> Path:
+    dest = tmp_path / "multi.rdl"
+    shutil.copy(MULTI_FIXTURE, dest)
+    return dest
+
+
+def _refusal(fn, *args, **kw) -> str:
+    with pytest.raises(ValueError) as excinfo:
+        fn(*args, **kw)
+    msg = str(excinfo.value)
+    assert "(unnamed)" not in msg
+    assert "force=True" in msg
+    return msg
+
+
+class TestFieldReferenceGuards:
+    """Issue #72 acceptance (a)-(d) on pbi_multi_datasource.rdl, plus the
+    other consumer shapes find_field_references covers."""
+
+    def test_a_parameter_valid_values_blocks_removal(self, multi_path):
+        set_parameter_available_values(
+            str(multi_path),
+            "DateFrom",
+            "query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+        )
+        msg = _refusal(remove_dataset_field, str(multi_path), "LookupSet", "LookupKey")
+        assert "ReportParameter[Name='DateFrom']/ValidValues" in msg
+        assert "ValueField" in msg
+
+    def test_a_label_field_and_default_value_block_removal(self, multi_path):
+        add_dataset_field(str(multi_path), "LookupSet", "LookupLabel", "Lookup[Label]")
+        set_parameter_available_values(
+            str(multi_path),
+            "DateFrom",
+            "query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+            query_label_field="LookupLabel",
+        )
+        msg = _refusal(remove_dataset_field, str(multi_path), "LookupSet", "LookupLabel")
+        assert "ValidValues/DataSetReference/LabelField" in msg
+        set_parameter_default_values(
+            str(multi_path),
+            "DateTo",
+            "query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+        )
+        msg = _refusal(remove_dataset_field, str(multi_path), "LookupSet", "LookupKey")
+        assert "ReportParameter[Name='DateTo']/DefaultValue" in msg
+
+    def test_b_same_name_in_other_dataset_does_not_block(self, multi_path):
+        # MainTable (bound to MainDataset) uses Fields!ProductID.Value; that
+        # is not a consumer of LookupSet.ProductID.
+        add_dataset_field(str(multi_path), "LookupSet", "ProductID", "Lookup[ProductID]")
+        result = remove_dataset_field(str(multi_path), "LookupSet", "ProductID")
+        assert result["removed"] == "ProductID"
+        # ...while MainDataset.ProductID is still guarded.
+        msg = _refusal(remove_dataset_field, str(multi_path), "MainDataset", "ProductID")
+        assert "Textbox[Name='ProductID']" in msg
+        assert validate_report(str(multi_path))["valid"]
+
+    def test_c_fields_string_form_blocks_removal(self, multi_path):
+        add_dataset_field(str(multi_path), "MainDataset", "Extra", "Sales[Extra]")
+        set_textbox_value(str(multi_path), "Amount", '=Fields("Extra").Value')
+        msg = _refusal(remove_dataset_field, str(multi_path), "MainDataset", "Extra")
+        assert "Textbox[Name='Amount']" in msg
+
+    def test_d_calculated_field_guarded(self, multi_path):
+        add_calculated_field(str(multi_path), "MainDataset", "Calc", "=1")
+        set_textbox_value(str(multi_path), "ProductName", "=Sum(Fields!Calc.Value)")
+        msg = _refusal(remove_calculated_field, str(multi_path), "MainDataset", "Calc")
+        assert "Textbox[Name='ProductName']" in msg
+
+    def test_d_calculated_field_force(self, multi_path):
+        add_calculated_field(str(multi_path), "MainDataset", "Calc", "=1")
+        set_textbox_value(str(multi_path), "ProductName", "=Sum(Fields!Calc.Value)")
+        result = remove_calculated_field(str(multi_path), "MainDataset", "Calc", force=True)
+        assert result["removed"] == "Calc"
+
+    def test_unreferenced_calculated_field_still_removable(self, multi_path):
+        add_calculated_field(str(multi_path), "MainDataset", "Calc", "=1")
+        assert remove_calculated_field(str(multi_path), "MainDataset", "Calc")["removed"] == "Calc"
+
+    def test_other_calculated_field_is_a_consumer(self, multi_path):
+        add_calculated_field(str(multi_path), "MainDataset", "Base", "=1")
+        add_calculated_field(str(multi_path), "MainDataset", "Twice", "=Fields!Base.Value * 2")
+        msg = _refusal(remove_calculated_field, str(multi_path), "MainDataset", "Base")
+        assert "Field[Name='Twice']" in msg
+        # A same-named reference in another dataset's calculated field is
+        # evaluated against that dataset, so it doesn't block.
+        add_calculated_field(str(multi_path), "LookupSet", "Base", "=2")
+        add_calculated_field(str(multi_path), "LookupSet", "Other", "=Fields!Base.Value")
+        assert remove_calculated_field(str(multi_path), "MainDataset", "Twice")["removed"]
+        assert remove_calculated_field(str(multi_path), "MainDataset", "Base")["removed"]
+
+    def test_dataset_filter_is_a_consumer(self, multi_path):
+        add_dataset_field(str(multi_path), "LookupSet", "Region", "Lookup[Region]")
+        add_dataset_filter(str(multi_path), "LookupSet", "=Fields!Region.Value", "Equal", ["North"])
+        msg = _refusal(remove_dataset_field, str(multi_path), "LookupSet", "Region")
+        assert "DataSet[Name='LookupSet']" in msg
+
+    def test_explicit_aggregate_scope_resolves_dataset(self, multi_path):
+        # Inside MainTable, but aggregated over LookupSet explicitly.
+        add_dataset_field(str(multi_path), "LookupSet", "Weight", "Lookup[Weight]")
+        set_textbox_value(str(multi_path), "Amount", '=Sum(Fields!Weight.Value, "LookupSet")')
+        msg = _refusal(remove_dataset_field, str(multi_path), "LookupSet", "Weight")
+        assert "Textbox[Name='Amount']" in msg
+
+    def test_lookup_destination_resolves_dataset(self, multi_path):
+        set_textbox_value(
+            str(multi_path),
+            "Amount",
+            "=Lookup(Fields!ProductID.Value, Fields!LookupKey.Value, "
+            'Fields!LookupKey.Value, "LookupSet")',
+        )
+        msg = _refusal(remove_dataset_field, str(multi_path), "LookupSet", "LookupKey")
+        assert "Textbox[Name='Amount']" in msg
+
+    def test_reference_inside_string_literal_does_not_block(self, multi_path):
+        add_dataset_field(str(multi_path), "MainDataset", "Extra", "Sales[Extra]")
+        set_textbox_value(str(multi_path), "Amount", '="Fields!Extra.Value"')
+        assert remove_dataset_field(str(multi_path), "MainDataset", "Extra")["removed"]
+
+    def test_find_field_references_is_public(self, multi_path):
+        doc = RDLDocument.open(multi_path)
+        refs = expr_walk.find_field_references(doc.root, "MainDataset", "Amount")
+        assert [r.kind for r in refs] == ["expression"]
+        assert refs[0].text == "Fields!Amount.Value"
+        assert refs[0].scope == "MainDataset"
+        assert refs[0].locator.startswith("Tablix[Name='MainTable']>Textbox[Name='Amount']")
+        assert expr_walk.find_field_references(doc.root, "LookupSet", "Amount") == []
+
+
+class TestDanglingDatasetReferenceFieldLint:
+    """#72: lint rule for parameter DataSetReference fields that don't exist."""
+
+    def test_clean_when_field_exists(self, multi_path):
+        set_parameter_available_values(
+            str(multi_path),
+            "DateFrom",
+            "query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+        )
+        result = lint_report(str(multi_path), rules=["dangling-dataset-reference-field"])
+        assert result["issues"] == []
+
+    def test_fires_after_forced_removal(self, multi_path):
+        set_parameter_available_values(
+            str(multi_path),
+            "DateFrom",
+            "query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+            query_label_field="Missing",
+        )
+        remove_dataset_field(str(multi_path), "LookupSet", "LookupKey", force=True)
+        issues = lint_report(str(multi_path), rules=["dangling-dataset-reference-field"])["issues"]
+        assert sorted(i["message"] for i in issues) == [
+            "DataSetReference LabelField 'Missing' is not a field of dataset 'LookupSet'",
+            "DataSetReference ValueField 'LookupKey' is not a field of dataset 'LookupSet'",
+        ]
+        assert all(i["severity"] == "error" for i in issues)
+        assert all("ReportParameter[Name='DateFrom']" in i["location"] for i in issues)
+
+    def test_silent_on_unknown_dataset(self, multi_path):
+        # A DataSetName naming no dataset is dangling-dataset-reference's job.
+        set_parameter_available_values(
+            str(multi_path),
+            "DateFrom",
+            "query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+        )
+        text = multi_path.read_text(encoding="utf-8")
+        multi_path.write_text(
+            text.replace("<DataSetName>LookupSet</DataSetName>", "<DataSetName>Nope</DataSetName>"),
+            encoding="utf-8",
+        )
+        result = lint_report(str(multi_path), rules=["dangling-dataset-reference-field"])
+        assert result["issues"] == []
 
 
 # ---- registration ---------------------------------------------------------

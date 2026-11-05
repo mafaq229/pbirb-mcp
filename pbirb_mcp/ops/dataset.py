@@ -39,6 +39,7 @@ from pbirb_mcp.core.xpath import (
     q,
     qrd,
 )
+from pbirb_mcp.ops import expr_walk
 from pbirb_mcp.ops.dax import data_field_matches, normalize_data_field, result_columns
 from pbirb_mcp.ops.filter_types import (
     encode_filter_texts,
@@ -947,6 +948,7 @@ def remove_calculated_field(
     path: str,
     dataset_name: str,
     field_name: str,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Remove a calculated ``<Field>`` (one with ``<Value>`` instead of
     ``<DataField>``) by name.
@@ -955,6 +957,10 @@ def remove_calculated_field(
     than ``<Value>``) — those reflect the source query's columns and
     should not be removed via this tool. Use the data-binding workflow
     (rewrite the dataset query) instead.
+
+    Refuses while the field is still referenced (#72) — same scope-aware
+    check as :func:`remove_dataset_field`. Pass ``force=True`` to remove
+    anyway.
 
     Cleans up the empty ``<Fields>`` block when removing the last field.
     """
@@ -980,6 +986,9 @@ def remove_calculated_field(
             "dataset query via update_dataset_query to drop a data-bound field."
         )
 
+    if not force:
+        _refuse_if_referenced(doc, dataset_name, field_name)
+
     fields_root.remove(target)
     if len(find_children(fields_root, "Field")) == 0:
         dataset.remove(fields_root)
@@ -992,39 +1001,24 @@ def remove_calculated_field(
     }
 
 
-def _scan_field_references(doc: RDLDocument, name: str) -> list[str]:
-    """Walk every text-bearing element looking for ``Fields!<name>.Value``
-    (or ``.IsMissing`` / ``.Count`` aggregation suffixes).
-
-    Returns a list of human-readable locator strings describing where the
-    references live. Used by :func:`remove_dataset_field` to refuse a
-    destructive delete and surface the offending sites.
-    """
-    # Match the field name as a whole word so e.g. removing 'Date' doesn't
-    # report 'Fields!DateFrom.Value' as a reference.
-    pattern = re.compile(rf"\bFields!{re.escape(name)}\.(Value|IsMissing|Count)\b")
+def _refuse_if_referenced(doc: RDLDocument, dataset_name: str, field_name: str) -> None:
+    """Raise ``ValueError`` when field ``field_name`` of ``dataset_name`` still
+    has consumers (:func:`pbirb_mcp.ops.expr_walk.find_field_references`:
+    scope-aware ``Fields!X`` / ``Fields("X")`` references and parameter
+    ``DataSetReference`` ValueField/LabelField). Lists up to 5 locators."""
+    refs = expr_walk.find_field_references(doc.root, dataset_name, field_name)
+    if not refs:
+        return
     locators: list[str] = []
-    seen: set[str] = set()
-    for el in doc.root.iter():
-        if not isinstance(el.tag, str):
-            continue
-        text = el.text
-        if not text or "Fields!" not in text or not pattern.search(text):
-            continue
-        ancestor = el
-        label_parts: list[str] = []
-        depth = 0
-        while ancestor is not None and depth < 5:
-            tag = etree.QName(ancestor.tag).localname
-            if ancestor.get("Name"):
-                label_parts.append(f"{tag}[Name={ancestor.get('Name')!r}]")
-            ancestor = ancestor.getparent()
-            depth += 1
-        loc = ">".join(reversed(label_parts)) if label_parts else "(unnamed)"
-        if loc not in seen:
-            seen.add(loc)
-            locators.append(loc)
-    return locators
+    for r in refs:
+        if r.locator not in locators:
+            locators.append(r.locator)
+    shown = locators[:5]
+    elided = f" (+{len(locators) - 5} more)" if len(locators) > 5 else ""
+    raise ValueError(
+        f"field {field_name!r} of dataset {dataset_name!r} is still referenced from "
+        f"{len(locators)} location(s): {shown}{elided}. Pass force=True to remove anyway."
+    )
 
 
 def remove_dataset_field(
@@ -1048,9 +1042,13 @@ def remove_dataset_field(
     1. **Calculated field**: target has ``<Value>`` and not
        ``<DataField>`` → ``ValueError`` pointing at
        :func:`remove_calculated_field`.
-    2. **Still referenced**: any expression in the report contains
-       ``Fields!<field_name>.Value`` (or ``.IsMissing`` / ``.Count``) →
-       ``ValueError`` carrying up to the first 5 locators. Pass
+    2. **Still referenced** (#72): an expression evaluated against this
+       dataset uses ``Fields!<field_name>.<member>`` or
+       ``Fields("<field_name>")``, or a parameter's ValidValues /
+       DefaultValue ``DataSetReference`` names it as ``ValueField`` /
+       ``LabelField`` → ``ValueError`` carrying up to the first 5 locators
+       (see :func:`pbirb_mcp.ops.expr_walk.find_field_references`). A
+       same-named field of *another* dataset doesn't count. Pass
        ``force=True`` to remove anyway.
 
     Cleans up the empty ``<Fields>`` block when removing the last field.
@@ -1080,15 +1078,7 @@ def remove_dataset_field(
         )
 
     if not force:
-        locators = _scan_field_references(doc, field_name)
-        if locators:
-            shown = locators[:5]
-            elided = " (more elided)" if len(locators) > 5 else ""
-            raise ValueError(
-                f"field {field_name!r} is still referenced from "
-                f"{len(locators)} location(s): {shown}{elided}. "
-                "Pass force=True to remove anyway."
-            )
+        _refuse_if_referenced(doc, dataset_name, field_name)
 
     fields_root.remove(target)
     if len(find_children(fields_root, "Field")) == 0:

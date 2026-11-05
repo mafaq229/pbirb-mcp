@@ -691,6 +691,24 @@ VARIANTS: list[tuple[str, Case]] = [
         ),
     ),
     (
+        "remove_calculated_field",
+        Case(
+            {"dataset_name": "MainDataset", "field_name": "Double", "force": True},
+            second="refuses",
+            setup=[
+                (
+                    "add_calculated_field",
+                    {
+                        "dataset_name": "MainDataset",
+                        "field_name": "Double",
+                        "expression": "=Fields!Amount.Value * 2",
+                    },
+                ),
+                ("set_textbox_value", {"textbox_name": "Amount", "value": "=Fields!Double.Value"}),
+            ],
+        ),
+    ),
+    (
         "update_dataset_query",
         Case(
             {"dataset_name": "MainDataset", "dax_body": "EVALUATE 'X'", "designer_state": "drop"},

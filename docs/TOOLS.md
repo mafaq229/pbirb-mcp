@@ -35,7 +35,7 @@ One-shot static check: union of validate_report and lint_report. Returns {valid,
 
 *read-only*
 
-Run static-analysis lint rules against an .rdl (`lint_report` returns `rules_run`; the rules live in `pbirb_mcp/ops/lint_rules/`). They cover the known bug classes (multi-value-eq, missing-field-reference, dangling-embedded-image, pbidataset-at-prefix, parameter-layout-out-of-sync, double-encoded-entities, stale-designer-state, tablix-span-misplaced, dataset-fields-out-of-sync, duplicate-name, invalid-identifier, tablix-structure, chart-structure, etc.). Returns {issues, rules_run} with each issue {severity (error|warning), rule, location, message, suggestion?}; location names the nearest named items, e.g. Tablix[Name='T']>Textbox[Name='X']>Value. Optional `rules` selects a subset by name (empty = all).
+Run static-analysis lint rules against an .rdl (`lint_report` returns `rules_run`; the rules live in `pbirb_mcp/ops/lint_rules/`). They cover the known bug classes (multi-value-eq, missing-field-reference, dangling-embedded-image, pbidataset-at-prefix, parameter-layout-out-of-sync, double-encoded-entities, stale-designer-state, tablix-span-misplaced, dataset-fields-out-of-sync, dangling-dataset-reference-field, duplicate-name, invalid-identifier, tablix-structure, chart-structure, etc.). Returns {issues, rules_run} with each issue {severity (error|warning), rule, location, message, suggestion?}; location names the nearest named items, e.g. Tablix[Name='T']>Textbox[Name='X']>Value. Optional `rules` selects a subset by name (empty = all).
 
 ### `dry_run_edit`
 
@@ -175,13 +175,13 @@ Append a calculated `<Field>` to the named dataset. Calculated fields carry an e
 
 *destructive*
 
-Remove a calculated `<Field>` by name. Refuses if the field is data-bound (carries `<DataField>` instead of `<Value>`) — those reflect the source query's columns. Drop a data-bound field via remove_dataset_field, or rewrite the dataset query via update_dataset_query.
+Remove a calculated `<Field>` by name. Refuses if the field is data-bound (carries `<DataField>` instead of `<Value>`) — those reflect the source query's columns. Drop a data-bound field via remove_dataset_field, or rewrite the dataset query via update_dataset_query. Also refuses while the field is still referenced — the same scope-aware check as remove_dataset_field; pass force=True to remove anyway.
 
 ### `remove_dataset_field`
 
 *destructive*
 
-Remove a data-bound `<Field>` by name (one with `<DataField>`). Symmetric counterpart to remove_calculated_field. Refuses on calculated fields (use remove_calculated_field instead) and on still-referenced fields (any expression containing Fields!`<name>.Value` / .IsMissing / .Count). Pass force=True to delete anyway. Closes the cookbook flow: refresh_dataset_fields lists orphans, remove_dataset_field drops them. Returns {dataset, removed, kind: 'DataBoundField'}.
+Remove a data-bound `<Field>` by name (one with `<DataField>`). Symmetric counterpart to remove_calculated_field. Refuses on calculated fields (use remove_calculated_field instead) and on still-referenced fields. A reference is `Fields!<name>.<member>` or `Fields("<name>")` in an expression evaluated against this dataset — the scope argument of an aggregate or Lookup, else the enclosing data region's DataSetName (Tablix, Chart, Gauge, map), else the DataSet itself for calculated fields and dataset filters — or a report parameter's ValidValues/DefaultValue DataSetReference whose ValueField/LabelField names the field. A same-named field used by a region bound to another dataset doesn't block. The error lists up to 5 locators such as `Tablix[Name='T']>Textbox[Name='Amount']/…/Value` or `ReportParameter[Name='P']/ValidValues/DataSetReference/ValueField`. Pass force=True to delete anyway. Closes the cookbook flow: refresh_dataset_fields lists orphans, remove_dataset_field drops them. Returns {dataset, removed, kind: 'DataBoundField'}.
 
 ### `add_dataset_field`
 
