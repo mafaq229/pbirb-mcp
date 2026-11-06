@@ -47,6 +47,7 @@ from pbirb_mcp.core import names, units
 from pbirb_mcp.core.columns import resolve_column
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
+from pbirb_mcp.core.geometry import sync_tablix_width
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
 from pbirb_mcp.core.tablix_shape import (
     axis_leaves,
@@ -479,6 +480,7 @@ def add_subtotal_column(
         emitted.append(textbox_name)
         new_cell = _build_subtotal_cell(textbox_name, aggregates_by_row.get(row_idx, ""))
         insert_nth_child(cells_root, "TablixCell", column_insert_index, new_cell)
+    tablix_width = sync_tablix_width(tablix)  # #89
 
     doc.save()
     result: dict[str, Any] = {
@@ -492,6 +494,9 @@ def add_subtotal_column(
         "changed": ["member_added", "column_added", "cells_added"],
         "textboxes": emitted,
     }
+    if tablix_width is not None:
+        result["changed"].append("tablix_width")
+        result["tablix_width"] = tablix_width
     if header_names:
         result["header_textboxes"] = header_names
     if warnings:

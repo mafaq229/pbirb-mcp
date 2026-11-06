@@ -46,8 +46,16 @@ def _named(path: Path, name: str):
     raise AssertionError(name)
 
 
+def _force_tablix_width(path: Path, width: str) -> None:
+    """Give MainTable a stale <Width> (its columns add up to 4in). The tools
+    keep Width in step with the columns (#89), so patch the file."""
+    src = path.read_text(encoding="utf-8")
+    assert src.count("<Width>4in</Width>") == 1
+    path.write_text(src.replace("<Width>4in</Width>", f"<Width>{width}</Width>"), "utf-8")
+
+
 def _build_repro(path: Path) -> None:
-    set_tablix_size(str(path), "MainTable", width="5in")
+    _force_tablix_width(path, "5in")
     set_body_size(str(path), width="9in", height="2in")
     add_body_textbox(str(path), "Overlap", "x", "0.6in", "0.6in", "2in", "0.25in")
     add_body_textbox(str(path), "Outside", "x", "3in", "8.5in", "2in", "0.25in")
@@ -141,7 +149,7 @@ class TestCenterItem:
     def test_tablix_centred_on_rendered_column_width(self, rdl_path):
         # Width says 5in but the columns render 4in: centre what is drawn.
         set_body_size(str(rdl_path), width="9in")
-        set_tablix_size(str(rdl_path), "MainTable", width="5in")
+        _force_tablix_width(rdl_path, "5in")
         out = center_item(str(rdl_path), "MainTable")
         assert out["left"] == "2.5in"
         assert out["warnings"] and "tablix-width-mismatch" in out["warnings"][0]

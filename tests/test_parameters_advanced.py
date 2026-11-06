@@ -84,14 +84,14 @@ class TestUpdateAdvanced:
             path=str(rdl_path),
             name="DateFrom",
             multi_value=True,
-            hidden=False,
-            allow_null=True,
+            hidden=True,
+            allow_null=False,
             allow_blank=True,
         )
         flags = _flags_from_reader(rdl_path, "DateFrom")
         assert flags["multi_value"] is True
-        assert flags["hidden"] is False
-        assert flags["nullable"] is True
+        assert flags["hidden"] is True
+        assert flags["nullable"] is False
         assert flags["allow_blank"] is True
 
     def test_false_values_persist_explicitly(self, rdl_path):
@@ -167,7 +167,7 @@ class TestErrors:
             path=str(rdl_path),
             name="DateFrom",
             multi_value=True,
-            allow_null=True,
+            allow_null=False,
             allow_blank=True,
             hidden=False,
         )

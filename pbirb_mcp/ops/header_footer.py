@@ -33,6 +33,7 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
 from pbirb_mcp.core.ids import resolve_report_item
 from pbirb_mcp.core.xpath import find_child, q, qrd
+from pbirb_mcp.ops import expr_walk
 from pbirb_mcp.ops.images import check_image_source
 from pbirb_mcp.ops.page import _resolve_page, printable_width_in  # type: ignore[attr-defined]
 
@@ -440,14 +441,56 @@ def detach_item(item: etree._Element) -> etree._Element:
     return holder
 
 
-def _remove_item(path: str, region: _Region, name: str) -> dict[str, Any]:
+def _reference_label(ref: expr_walk.InboundReference) -> str:
+    if ref.span is not None:
+        return f"{ref.text} in {ref.locator}"
+    return f"{ref.locator} = {ref.text!r}"
+
+
+def removal_impact(doc: RDLDocument, target: etree._Element, *, force: bool) -> dict[str, Any]:
+    """What removing ``target`` takes with it and leaves dangling (#105):
+    ``{also_removed, dangling_refs}``. ``also_removed`` names the report
+    items and groups inside it; ``dangling_refs`` lists every reference from
+    outside the subtree to it or one of those (``ReportItems!X``,
+    ``ToggleItem``, scope strings, ``RepeatWith``, UserSort targets — see
+    :func:`pbirb_mcp.ops.expr_walk.find_inbound_references`) as
+    ``{kind, name, location, text}``. Raises ``ValueError`` listing them
+    unless ``force``. Call before mutating."""
+    subtree = [el.get("Name") for el in names.iter_scope_elements(target)]
+    inside = set(target.iter())
+    refs = [
+        r
+        for r in expr_walk.find_inbound_references(doc.root, set(subtree))
+        if r.element not in inside
+    ]
+    if refs and not force:
+        listed = "; ".join(_reference_label(r) for r in refs)
+        inner = " (or an item or group inside it)" if len(subtree) > 1 else ""
+        raise ValueError(
+            f"{etree.QName(target).localname} {target.get('Name')!r}{inner} is still "
+            f"referenced: {listed}. Re-point or remove those references "
+            "first, or pass force=true to remove it anyway and leave them dangling "
+            "(lint_report then flags them)."
+        )
+    return {
+        "also_removed": [n for n in subtree[1:] if n],
+        "dangling_refs": [
+            {"kind": r.kind, "name": r.name, "location": r.locator, "text": r.text} for r in refs
+        ],
+    }
+
+
+def _remove_item(path: str, region: _Region, name: str, force: bool = False) -> dict[str, Any]:
     doc = RDLDocument.open(path)
     target = resolve_removable_item(doc, region.name, name)
+    kind = etree.QName(target).localname
+    impact = removal_impact(doc, target, force=force)
     holder = detach_item(target)
     doc.save()
-    result: dict[str, Any] = {"region": region.name, "removed": name}
+    result: dict[str, Any] = {"region": region.name, "removed": name, "kind": kind}
     if etree.QName(holder).localname == "Rectangle":
         result["parent"] = holder.get("Name")
+    result.update(impact)
     return result
 
 
@@ -524,12 +567,12 @@ def add_footer_image(
     return _add_image(path, FOOTER, name, image_source, value, top, left, width, height, mime_type)
 
 
-def remove_header_item(path: str, name: str) -> dict[str, Any]:
-    return _remove_item(path, HEADER, name)
+def remove_header_item(path: str, name: str, force: bool = False) -> dict[str, Any]:
+    return _remove_item(path, HEADER, name, force)
 
 
-def remove_footer_item(path: str, name: str) -> dict[str, Any]:
-    return _remove_item(path, FOOTER, name)
+def remove_footer_item(path: str, name: str, force: bool = False) -> dict[str, Any]:
+    return _remove_item(path, FOOTER, name, force)
 
 
 __all__ = [
@@ -540,6 +583,7 @@ __all__ = [
     "add_header_textbox",
     "fit_band",
     "item_extent",
+    "removal_impact",
     "remove_footer_item",
     "remove_header_item",
     "set_page_footer",

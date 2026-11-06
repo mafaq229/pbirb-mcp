@@ -92,6 +92,7 @@ DESTRUCTIVE_TOOLS = frozenset(
         "remove_chart_series",
         "remove_column_group",
         "remove_data_source",
+        "remove_dataset",
         "remove_dataset_field",
         "remove_dataset_filter",
         "remove_embedded_image",
@@ -106,6 +107,8 @@ DESTRUCTIVE_TOOLS = frozenset(
         "convert_to_matrix",
         # Replaces an arbitrary element with caller-supplied XML.
         "raw_xml_replace",
+        # Removes arbitrary elements by XPath.
+        "raw_xml_remove",
         # Copies a backup over the report.
         "restore_from_backup",
     }
@@ -117,7 +120,10 @@ DESTRUCTIVE_TOOLS = frozenset(
 # backs the target up itself (its `safety_backup`).
 AUTO_BACKUP_TOOLS = (DESTRUCTIVE_TOOLS - {"restore_from_backup"}) | {
     "rename_data_source",
+    "rename_dataset",
+    "rename_dataset_field",
     "rename_parameter",
+    "rename_report_item",
     "update_dataset_query",
     "refresh_dataset_fields",
 }
@@ -126,36 +132,44 @@ AUTO_BACKUP_TOOLS = (DESTRUCTIVE_TOOLS - {"restore_from_backup"}) | {
 # reports nothing changed and leaves the file alone (issue #61). Published
 # as idempotentHint (#54). tests/test_annotations.py keeps this equal to the
 # "noop" cases of tests/test_idempotency.py; a tool whose repeat call
-# refuses (creators, removers, renames) or appends again is not listed.
+# refuses (creators, removers, most renames) or appends again is not listed.
 IDEMPOTENT_TOOLS = frozenset(
     {
         "center_item",
+        "copy_textbox_style",
         "fit_page_to_body",
         "move_report_item",
         "raw_xml_replace",
         "refresh_dataset_fields",
+        "rename_report_item",
         "reorder_parameters",
         "set_alternating_row_color",
         "set_body_item_position",
         "set_body_item_size",
         "set_body_size",
+        "set_bookmark",
         "set_cell_span",
         "set_chart_axis",
+        "set_chart_category_group",
         "set_chart_data_labels",
         "set_chart_legend",
         "set_chart_palette",
         "set_chart_series_action",
         "set_chart_series_grouping",
+        "set_chart_series_properties",
         "set_chart_series_type",
         "set_chart_title",
         "set_column_group_sort",
         "set_column_group_visibility",
         "set_column_width",
         "set_conditional_row_color",
+        "set_dataset_data_source",
+        "set_dataset_options",
         "set_datasource_connection",
         "set_detail_row_visibility",
         "set_document_map_label",
         "set_element_visibility",
+        "set_field_type",
         "set_footer_item_position",
         "set_footer_item_size",
         "set_group_page_break",
@@ -166,6 +180,8 @@ IDEMPOTENT_TOOLS = frozenset(
         "set_image_action",
         "set_image_sizing",
         "set_image_source",
+        "set_item_action",
+        "set_item_tooltip",
         "set_keep_together",
         "set_keep_with_group",
         "set_page_footer",
@@ -212,6 +228,8 @@ _TITLE_OVERRIDES = {
     "apply_edits": "Apply edits atomically",
     "raw_xml_view": "View raw XML",
     "raw_xml_replace": "Replace raw XML",
+    "raw_xml_insert": "Insert raw XML",
+    "raw_xml_remove": "Remove raw XML",
     "lint_report": "Lint report",
 }
 _TITLE_WORDS = {"xml": "XML", "rdl": "RDL", "dax": "DAX", "iif": "IIf"}
@@ -256,8 +274,8 @@ _CONFIRM_PARAM = {
     "type": "boolean",
     "default": False,
     "description": (
-        "true runs this destructive edit; required when PBIRB_MCP_REQUIRE_CONFIRM "
-        "is on (the pbirb-mcp default). Ask the user first."
+        "true runs this destructive edit (required unless "
+        "PBIRB_MCP_REQUIRE_CONFIRM is off). Ask the user first."
     ),
 }
 
@@ -270,10 +288,10 @@ _AUDITED_EXTRA_TOOLS = frozenset({"commit_editing_transaction"})
 # confirmation gate — the top-level batch call is gated instead.
 _CALL_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("pbirb_mcp_call_depth", default=0)
 
-_TRANSACTION_ID_PARAM = {
-    "type": "string",
-    "description": "Optional: run inside this start_editing_transaction id.",
-}
+# No per-parameter description: the same sentence on ~160 tools cost ~11 KB
+# of tools/list; start_editing_transaction's description says to pass its
+# id as transaction_id.
+_TRANSACTION_ID_PARAM = {"type": "string"}
 
 
 @dataclass
@@ -587,6 +605,9 @@ class MCPServer:
             payload = {"error_type": "InvalidArguments", "message": str(exc), **exc.payload}
             return _failure(payload)
 
+        # Issue #86: expand `~` in every path argument, once, here — the
+        # sandbox check below and the handler both see the expanded path.
+        arguments = security.expand_user_paths(arguments)
         # Issue #57: file-access sandbox, then the confirmation gate —
         # both before the handler, so a refused call never touches a file.
         try:

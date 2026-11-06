@@ -76,6 +76,31 @@ DEFAULT_SUBTYPE: dict[str, str] = {t: subs[0] for t, subs in SUBTYPES_BY_TYPE.it
 RDL_DEFAULT_TYPE = "Column"
 RDL_DEFAULT_SUBTYPE = "Plain"
 
+# RDL 2016 ChartPalette enumeration (``Chart/Palette``) — the one list
+# set_chart_palette writes from and the chart-structure lint rule checks
+# against. ``Custom`` takes its colours from ``ChartCustomPaletteColors``.
+PALETTES: tuple[str, ...] = (
+    "Default",
+    "EarthTones",
+    "Excel",
+    "GrayScale",
+    "Light",
+    "Pastel",
+    "SemiTransparent",
+    "Berry",
+    "Chocolate",
+    "Fire",
+    "SeaGreen",
+    "BrightPastel",
+    "Pacific",
+    "PacificLight",
+    "PacificSemiTransparent",
+    "Custom",
+)
+
+# RDL ChartPaletteHatchBehavior (``Chart/PaletteHatchBehavior``).
+PALETTE_HATCH_BEHAVIORS: tuple[str, ...] = ("Default", "None", "Always")
+
 # series_type shorthand → canonical (Type, Subtype).
 TYPE_ALIASES: dict[str, tuple[str, str]] = {
     "Pie": ("Shape", "Pie"),
@@ -106,6 +131,31 @@ SUBTYPE_ALIASES: dict[str, str] = {
 # ``Exploded`` qualifies the Pie / Doughnut shorthands (the pre-v0.5 tool
 # surface used ``("Doughnut", "Exploded")``).
 _EXPLODABLE = {"Pie": "ExplodedPie", "Doughnut": "ExplodedDoughnut"}
+
+
+# RDL ChartMarker/Type values (the ChartMarkerTypes enum).
+MARKER_TYPES: tuple[str, ...] = (
+    "None",
+    "Square",
+    "Circle",
+    "Diamond",
+    "Triangle",
+    "Cross",
+    "Star4",
+    "Star5",
+    "Star6",
+    "Star10",
+    "Auto",
+)
+
+# Values of the series custom property ``EmptyPointValue``: where an empty
+# point is plotted when it is drawn — the average of its neighbours (the
+# default) or zero.
+EMPTY_POINT_VALUES: tuple[str, ...] = ("Average", "Zero")
+
+# Series types that draw a marker per point (Column/Bar/Shape points are
+# shapes of their own).
+MARKER_SERIES_TYPES: frozenset[str] = frozenset({"Line", "Area", "Scatter", "Range", "Polar"})
 
 
 def _types_with_subtype(subtype: str) -> list[str]:
@@ -197,6 +247,11 @@ def series_type_problem(type_text: Optional[str], subtype_text: Optional[str]) -
 
 __all__ = [
     "DEFAULT_SUBTYPE",
+    "EMPTY_POINT_VALUES",
+    "MARKER_SERIES_TYPES",
+    "MARKER_TYPES",
+    "PALETTES",
+    "PALETTE_HATCH_BEHAVIORS",
     "RDL_DEFAULT_SUBTYPE",
     "RDL_DEFAULT_TYPE",
     "SERIES_SUBTYPES",

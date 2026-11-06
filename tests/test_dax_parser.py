@@ -394,3 +394,26 @@ class TestLegacyWrappers:
         names, warnings = _extract_dax_field_names("EVALUATE 'Sales'")
         assert names == []
         assert any("EVALUATE" in w for w in warnings)
+
+
+# ---- parameter_names / parameter_uses (#95) -----------------------------
+
+
+def test_parameter_names_skip_strings_and_comments():
+    from pbirb_mcp.ops.dax import parameter_names
+
+    dax = (
+        "EVALUATE FILTER('T', 'T'[a] = @A && 'T'[b] = @B && 'T'[c] = @A) "
+        '// @Comment\n /* @Block */ "@InString" [@InBracket]'
+    )
+    assert parameter_names(dax) == ["A", "B"]
+    assert parameter_names(None) == []
+
+
+def test_parameter_uses_report_enclosing_calls():
+    from pbirb_mcp.ops.dax import parameter_uses
+
+    dax = "EVALUATE SUMMARIZECOLUMNS(RSCustomDaxFilter(@X, EqualToCondition, [T].[c], String), 'T'[d] = @Y)"
+    uses = {u.name: u.calls for u in parameter_uses(dax)}
+    assert uses["X"] == ("RSCUSTOMDAXFILTER", "SUMMARIZECOLUMNS")
+    assert uses["Y"] == ("SUMMARIZECOLUMNS",)

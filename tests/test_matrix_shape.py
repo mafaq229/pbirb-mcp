@@ -176,7 +176,11 @@ class TestDocumentedFlow:
             "cells_aggregated",
             "row_headers_added",
             "corner_created",
+            "tablix_width",
         ]
+        # Width follows the columns (#89): Amount 1in + the 2in Region header.
+        assert result["tablix_width"] == "3in"
+        assert find_child(tablix, "Width").text == "3in"
         # The add_row_group caption textbox moved into the row header
         # (name kept); the ProductName column's width became its Size.
         region = _group_member(tablix, "Region")

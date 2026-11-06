@@ -74,14 +74,27 @@ class TestGetExpressionReference:
 class TestCountWhere:
     def test_emits_canonical_pattern(self):
         out = count_where('Fields!Status.Value = "Active"')
-        assert out == '=Sum(IIf(Fields!Status.Value = "Active", 1, 0))'
+        assert out == '=Count(IIf(Fields!Status.Value = "Active", 1, Nothing))'
 
-    def test_strips_leading_eq_is_caller_responsibility(self):
-        # Helper accepts the body verbatim — if caller passes an
-        # expression with a leading `=`, the emitted IIf body has it
-        # too. That's by design; we don't second-guess the input.
-        out = count_where("=Fields!X.Value > 0")
-        assert "IIf(=Fields!X.Value > 0," in out
+    def test_leading_eq_is_dropped(self):
+        # #96: LLMs routinely pass '=...'; IIf(=... is invalid.
+        assert count_where("=Fields!X.Value > 0") == count_where("Fields!X.Value > 0")
+        assert count_where("  = Fields!X.Value > 0") == count_where("Fields!X.Value > 0")
+
+    def test_scope_argument(self):
+        assert count_where("Fields!X.Value > 0", scope="DataSet1") == (
+            '=Count(IIf(Fields!X.Value > 0, 1, Nothing), "DataSet1")'
+        )
+        doubled = ', "My ' + '""' + "Q" + '""' + '")'
+        assert count_where("c", scope='My "Q"').endswith(doubled)
+
+    def test_blank_scope_rejected(self):
+        with pytest.raises(ValueError, match="scope"):
+            count_where("c", scope=" ")
+
+    def test_lone_eq_rejected(self):
+        with pytest.raises(ValueError, match="non-empty"):
+            count_where("=")
 
     def test_empty_condition_rejected(self):
         with pytest.raises(ValueError, match="non-empty"):
@@ -95,7 +108,22 @@ class TestCountWhere:
 class TestSumWhere:
     def test_emits_canonical_pattern(self):
         out = sum_where("Fields!Amount.Value", 'Fields!Status.Value = "Active"')
-        assert out == ('=Sum(IIf(Fields!Status.Value = "Active", Fields!Amount.Value, 0))')
+        assert out == ('=Sum(IIf(Fields!Status.Value = "Active", Fields!Amount.Value, Nothing))')
+
+    def test_no_int32_zero_branch(self):
+        # #96: Int32 0 mixed with Double/Decimal fails the aggregate.
+        out = sum_where("Fields!Amount.Value", "Fields!Ok.Value")
+        assert ", 0)" not in out and "Nothing" in out
+
+    def test_leading_eq_is_dropped_from_both_args(self):
+        assert sum_where("=Fields!Amount.Value", "=Fields!Ok.Value") == (
+            "=Sum(IIf(Fields!Ok.Value, Fields!Amount.Value, Nothing))"
+        )
+
+    def test_scope_argument(self):
+        assert sum_where("Fields!A.Value", "Fields!Ok.Value", scope="DataSet1") == (
+            '=Sum(IIf(Fields!Ok.Value, Fields!A.Value, Nothing), "DataSet1")'
+        )
 
     def test_empty_field_rejected(self):
         with pytest.raises(ValueError, match="field_expression"):
@@ -110,6 +138,9 @@ class TestIIfFormat:
     def test_emits_canonical_pattern(self):
         out = iif_format("Fields!Active.Value", '"Yes"', '"No"')
         assert out == '=IIf(Fields!Active.Value, "Yes", "No")'
+
+    def test_leading_eq_is_dropped(self):
+        assert iif_format("=Fields!Ok.Value", '="Y"', '"N"') == '=IIf(Fields!Ok.Value, "Y", "N")'
 
     def test_supports_nested_expressions(self):
         out = iif_format(
@@ -183,4 +214,56 @@ class TestToolRegistration:
 
         text = resp["result"]["content"][0]["text"]
         # The emitter returns a string; server JSON-encodes that.
-        assert json.loads(text) == ('=Sum(IIf(Fields!Status.Value = "Active", 1, 0))')
+        assert json.loads(text) == ('=Count(IIf(Fields!Status.Value = "Active", 1, Nothing))')
+
+
+# ---- #96: reference corrections and additions -----------------------------
+
+
+class TestReferenceCorrections:
+    def _entries(self):
+        ref = get_expression_reference()
+        return {e["name"]: e for entries in ref.values() for e in entries}
+
+    def test_is_missing_means_absent_not_null(self):
+        ref = get_expression_reference()
+        desc = next(e for e in ref["fields"] if e["name"] == "IsMissing")["description"]
+        assert "absent" in desc
+        assert "IsNothing" in desc
+
+    def test_label_does_not_cite_a_label_expression(self):
+        ref = get_expression_reference()
+        desc = next(e for e in ref["parameters"] if e["name"] == "Label")["description"]
+        assert "LabelExpression" not in desc
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "IsNothing",
+            "Lookup",
+            "LookupSet",
+            "MultiLookup",
+            "Scope argument",
+            "IsMultiValue",
+            "RowNumber",
+            "RunningValue",
+            "CountRows",
+            "InScope",
+        ],
+    )
+    def test_entry_exists_with_example(self, name):
+        entry = self._entries()[name]
+        assert entry["example"].startswith("=")
+        assert entry["syntax"] and entry["description"]
+
+    def test_scope_argument_example_quotes_the_scope(self):
+        assert ', "' in self._entries()["Scope argument"]["example"]
+
+    def test_conditional_idioms_match_the_emitters(self):
+        entries = self._entries()
+        assert "Nothing" in entries["Conditional Sum"]["syntax"]
+        assert entries["Conditional Count"]["syntax"].startswith("Count(")
+
+    def test_no_release_history_in_descriptions(self):
+        for entry in self._entries().values():
+            assert "Phase" not in entry["description"]

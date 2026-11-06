@@ -33,7 +33,7 @@ MULTI_DS = "pbi_multi_datasource.rdl"
 # A 1x1 transparent PNG.
 _TINY_PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
-    "0000000d49444154789c63faffff3f000005fe02fea3796300000000049454e4ae"
+    "0000000b49444154789c6360000200000500017a5eab3f0000000049454e44ae"
     "426082"
 )
 PNG = "{png}"  # placeholder replaced with a real PNG path per test
@@ -221,6 +221,31 @@ CASES: dict[str, Case] = {
     "rename_data_source": Case(
         {"old_name": "PowerBIDataset", "new_name": "MainSource"}, second="refuses"
     ),
+    # dataset authoring (#98)
+    "set_dataset_data_source": Case(
+        {"dataset_name": "MainDataset", "data_source_name": "LookupDataset"}, fixture=MULTI_DS
+    ),
+    "add_dataset": Case(
+        {
+            "name": "Lookup2",
+            "data_source_name": "PowerBIDataset",
+            "command_text": "EVALUATE 'Lookup'",
+            "fields": ["Lookup[Key]"],
+        },
+        second="refuses",
+    ),
+    "remove_dataset": Case({"name": "LookupSet"}, second="refuses", fixture=MULTI_DS),
+    "rename_dataset": Case({"old_name": "MainDataset", "new_name": "Sales"}, second="refuses"),
+    "rename_dataset_field": Case(
+        {"dataset_name": "MainDataset", "old_name": "Amount", "new_name": "Revenue"},
+        second="refuses",
+    ),
+    "set_field_type": Case(
+        {"dataset_name": "MainDataset", "field_name": "Amount", "type_name": "System.Double"}
+    ),
+    "set_dataset_options": Case(
+        {"dataset_name": "MainDataset", "timeout": 30, "case_sensitivity": "True"}
+    ),
     "remove_dataset_filter": Case(
         {"dataset_name": "MainDataset", "filter_index": 0},
         second="refuses",
@@ -295,7 +320,7 @@ CASES: dict[str, Case] = {
     "remove_embedded_image": Case({"name": "LogoData"}, second="refuses", setup=[EMBEDDED]),
     # ---- tablix ----
     "set_column_width": Case({"tablix_name": "MainTable", "column": 0, "width": "1.5in"}),
-    "set_tablix_size": Case({"name": "MainTable", "width": "4.5in"}),
+    "set_tablix_size": Case({"name": "MainTable", "width": "4.5in", "distribute": True}),
     "set_row_height": Case({"tablix_name": "MainTable", "row_index": 0, "height": "0.4in"}),
     "remove_tablix_filter": Case(
         {"tablix_name": "MainTable", "filter_index": 0},
@@ -423,12 +448,37 @@ CASES: dict[str, Case] = {
     ),
     "move_report_item": Case({"name": "Note", "to": "header"}, setup=[BODY_BOX]),
     "ungroup_rectangle": Case({"name": "Panel"}, second="refuses", setup=[BODY_BOX, PANEL]),
+    # #111: the repeat finds old_name gone and new_name present — already renamed.
+    "rename_report_item": Case(
+        {"old_name": "Note", "new_name": "Remark"},
+        setup=[
+            BODY_BOX,
+            (
+                "add_body_textbox",
+                {**BODY_BOX[1], "name": "Echo", "text": "=ReportItems!Note.Value"},
+            ),
+        ],
+    ),
     "raw_xml_replace": Case(
         {
             "xpath": "r:ReportSections/r:ReportSection/r:Body/r:Height",
             "content": "<Height>3in</Height>",
         }
     ),
+    # The repeat would emit the textbox name again (#85).
+    "raw_xml_insert": Case(
+        {
+            "xpath": "r:ReportSections/r:ReportSection/r:Body/r:ReportItems",
+            "content": (
+                '<Textbox Name="RawBox"><Paragraphs><Paragraph><TextRuns><TextRun>'
+                "<Value>x</Value></TextRun></TextRuns></Paragraph></Paragraphs>"
+                "<Top>3in</Top><Left>0in</Left><Height>0.25in</Height><Width>1in</Width>"
+                "</Textbox>"
+            ),
+        },
+        second="refuses",
+    ),
+    "raw_xml_remove": Case({"xpath": "rd:ReportUnitType"}, second="refuses"),
     # ---- actions ----
     "set_textbox_action": Case(
         {"textbox_name": TB, "action_type": "Hyperlink", "target_expression": "http://example.com"}
@@ -442,6 +492,17 @@ CASES: dict[str, Case] = {
         setup=[BODY_IMAGE],
     ),
     "set_textbox_tooltip": Case({"textbox_name": TB, "text_or_expression": "Total amount"}),
+    "set_item_action": Case(
+        {
+            "name": "Logo",
+            "action_type": "Drillthrough",
+            "target_expression": "Detail",
+            "drillthrough_parameters": [{"name": "Id", "value": "1", "omit": True}],
+        },
+        setup=[BODY_IMAGE],
+    ),
+    "set_item_tooltip": Case({"name": "MainTable", "text_or_expression": "Sales"}),
+    "set_bookmark": Case({"name": "MainTable", "bookmark_or_expression": "Top"}),
     "set_document_map_label": Case({"element_name": TB, "label_or_expression": "Amount"}),
     "set_chart_series_action": Case(
         {
@@ -575,6 +636,21 @@ CASES: dict[str, Case] = {
             "color": "Blue",
         }
     ),
+    "copy_textbox_style": Case(
+        {"source": "HeaderAmount", "targets": ["HeaderProductID", "ProductID"]},
+        setup=[
+            (
+                "set_textbox_style",
+                {
+                    "textbox_name": "HeaderAmount",
+                    "background_color": "Navy",
+                    "border_style": "Solid",
+                    "text_align": "Center",
+                    "color": "White",
+                },
+            )
+        ],
+    ),
     "style_tablix_row": Case(
         {"tablix_name": "MainTable", "row": 0, "font_weight": "Bold", "background_color": "#DDDDDD"}
     ),
@@ -586,6 +662,7 @@ CASES: dict[str, Case] = {
             "tablix_name": "MainTable",
             "value_expression": "=Fields!ProductName.Value",
             "color_map": {"A": "Red", "B": "Green"},
+            "base_color": "zebra:White,#F0F0F0",
         }
     ),
     "set_element_visibility": Case({"element_name": TB, "hidden_expression": "=False"}),
@@ -640,6 +717,31 @@ CASES: dict[str, Case] = {
         {"chart_name": CH, "series_name": "Amount", "color": "#FF0000"}, fixture=CHART
     ),
     "set_chart_title": Case({"chart_name": CH, "text": "Revenue"}, fixture=CHART),
+    "set_chart_series_properties": Case(
+        {
+            "chart_name": CH,
+            "series_name": "Quantity",
+            "legend_text": "Units",
+            "hide_in_legend": False,
+            "value_axis": "Secondary",
+            "hidden": False,
+            "position": 0,
+            "tooltip": "=Fields!Amount.Value",
+            "marker_type": "Circle",
+            "marker_size": "6pt",
+            "empty_point_value": "Zero",
+            "empty_point_color": "Gray",
+        },
+        fixture=CHART,
+    ),
+    "set_chart_category_group": Case(
+        {
+            "chart_name": CH,
+            "label_expression": "=UCase(Fields!ProductName.Value)",
+            "sort": "Descending",
+        },
+        fixture=CHART,
+    ),
 }
 
 # Further argument sets for branches the main case doesn't reach
@@ -790,6 +892,25 @@ VARIANTS: list[tuple[str, Case]] = [
     ),
     ("set_body_item_size", Case({"name": "Note", "width": "1in"}, setup=[BODY_BOX, PANEL])),
     ("remove_body_item", Case({"name": "Note"}, second="refuses", setup=[BODY_BOX, PANEL])),
+    # ---- #105: removing a referenced item needs force ----
+    (
+        "remove_body_item",
+        Case(
+            {"name": "Note", "force": True},
+            second="refuses",
+            setup=[
+                BODY_BOX,
+                (
+                    "add_body_textbox",
+                    {**BODY_BOX[1], "name": "Echo", "text": "=ReportItems!Note.Value"},
+                ),
+            ],
+        ),
+    ),
+    (
+        "remove_header_item",
+        Case({"name": "HdrBox", "force": True}, second="refuses", setup=[HEADER, HEADER_BOX]),
+    ),
     (
         "add_body_textbox",
         Case(
@@ -921,10 +1042,155 @@ VARIANTS: list[tuple[str, Case]] = [
     ("set_chart_axis", Case({"chart_name": CH, "axis": "Category", "title": ""}, fixture=CHART)),
     ("set_chart_axis", Case({"chart_name": CH, "axis": "Value", "log_scale": True}, fixture=CHART)),
     (
+        "set_chart_palette",
+        Case(
+            {
+                "chart_name": CH,
+                "palette": "Custom",
+                "colors": ["#112233", "Red"],
+                "hatch_behavior": "Always",
+            },
+            fixture=CHART,
+        ),
+    ),
+    ("set_chart_palette", Case({"chart_name": CH, "palette": ""}, fixture=CHART)),
+    (
+        "set_series_color",
+        Case(
+            {"chart_name": CH, "series_name": "Amount", "color": "Green", "target": "point"},
+            fixture=CHART,
+        ),
+    ),
+    (
+        "set_chart_series_action",
+        Case(
+            {"chart_name": CH, "series_name": "Amount", "action_type": "None"},
+            fixture=CHART,
+            setup=[
+                (
+                    "set_chart_series_action",
+                    {
+                        "chart_name": CH,
+                        "series_name": "Amount",
+                        "action_type": "Hyperlink",
+                        "target_expression": "http://example.com",
+                    },
+                )
+            ],
+        ),
+    ),
+    (
+        "insert_chart_from_template",
+        Case(
+            {
+                "name": "Chart3",
+                "dataset_name": "MainDataset",
+                "category_expression": "=Fields!ProductName.Value",
+                "value_expression": "=Count(Fields!ProductName.Value)",
+                "top": "3in",
+                "left": "0in",
+                "width": "4in",
+                "height": "3in",
+            },
+            second="refuses",
+        ),
+    ),
+    (
+        "add_chart_series",
+        Case(
+            {
+                "chart_name": CH,
+                "series_name": "Ratio",
+                "value_expression": "=Avg(Fields!Amount.Value)",
+            },
+            second="refuses",
+            fixture=CHART,
+        ),
+    ),
+    (
+        "set_chart_axis",
+        Case(
+            {"chart_name": CH, "axis": "Value", "chart_area": "Default", "visible": "Auto"},
+            fixture=CHART,
+        ),
+    ),
+    (
+        "set_chart_category_group",
+        Case(
+            {"chart_name": CH, "add_level": "outer", "group_field": "ProductID"},
+            fixture=CHART,
+        ),
+    ),
+    (
+        "set_chart_category_group",
+        Case(
+            {"chart_name": CH, "add_level": "inner", "group_field": "ProductID"},
+            fixture=CHART,
+        ),
+    ),
+    (
+        "set_chart_series_properties",
+        Case(
+            {"chart_name": CH, "series_name": "Amount", "legend_text": "", "marker_type": ""},
+            fixture=CHART,
+            setup=[
+                (
+                    "set_chart_series_properties",
+                    {
+                        "chart_name": CH,
+                        "series_name": "Amount",
+                        "legend_text": "Sales",
+                        "marker_type": "Square",
+                    },
+                )
+            ],
+        ),
+    ),
+    (
         "set_textbox_tooltip",
         Case(
             {"textbox_name": TB, "text_or_expression": ""},
             setup=[("set_textbox_tooltip", {"textbox_name": TB, "text_or_expression": "Tip"})],
+        ),
+    ),
+    # warn_above_bytes (#110): the first call warns, the repeat refuses the name.
+    (
+        "add_embedded_image",
+        Case(
+            {
+                "name": "LogoData",
+                "mime_type": "image/png",
+                "image_path": PNG,
+                "warn_above_bytes": 1,
+            },
+            second="refuses",
+        ),
+    ),
+    # clear=true (#109): the second clear finds nothing to remove.
+    (
+        "set_textbox_action",
+        Case(
+            {"textbox_name": TB, "clear": True},
+            setup=[
+                (
+                    "set_textbox_action",
+                    {"textbox_name": TB, "action_type": "Hyperlink", "target_expression": "x"},
+                )
+            ],
+        ),
+    ),
+    (
+        "set_bookmark",
+        Case(
+            {"name": TB, "bookmark_or_expression": ""},
+            setup=[("set_bookmark", {"name": TB, "bookmark_or_expression": "Top"})],
+        ),
+    ),
+    (
+        "set_textbox_action",
+        Case(
+            {"textbox_name": TB, "action_type": "BookmarkLink", "target_expression": "Top"},
+            setup=[("set_bookmark", {"name": "MainTable", "bookmark_or_expression": "Top"})],
         ),
     ),
     (
@@ -972,6 +1238,7 @@ VARIANTS: list[tuple[str, Case]] = [
                     "raw_xml_replace",
                     {
                         "xpath": ".//r:DataSet[@Name='MainDataset']/r:Query/rd:UseGenericDesigner",
+                        "allow_kind_change": True,
                         "content": (
                             '<rd:DesignerState xmlns:rd="http://schemas.microsoft.com/'
                             'SQLServer/reporting/reportdesigner"><QueryDefinition xmlns='

@@ -13,6 +13,7 @@ from pbirb_mcp.core.xpath import RDL_NS, find_child, q
 from pbirb_mcp.ops.parameters import (
     set_parameter_available_values,
     set_parameter_default_values,
+    update_parameter_advanced,
 )
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
@@ -121,7 +122,7 @@ class TestReplace:
             path=str(rdl_path),
             name="DateFrom",
             source="static",
-            static_values=["X"],
+            static_values=["2026-01-01"],
         )
         set_parameter_available_values(
             path=str(rdl_path),
@@ -169,7 +170,7 @@ class TestErrors:
             path=str(rdl_path),
             name="DateFrom",
             source="static",
-            static_values=["X", "Y"],
+            static_values=["2026-01-01", "2026-02-01"],
         )
         param = _param(rdl_path, "DateFrom")
         assert find_child(param, "ValidValues") is not None
@@ -190,7 +191,7 @@ class TestErrors:
             path=str(rdl_path),
             name="DateFrom",
             source="static",
-            static_values=["X"],
+            static_values=["2026-01-01"],
         )
         # Clear via explicit empty list.
         result = set_parameter_available_values(
@@ -246,16 +247,18 @@ class TestStaticDefaultValues:
         assert [v.text for v in values] == ["=Today()"]
 
     def test_multiple_static_default_values(self, rdl_path):
+        # #93: more than one default needs a multi-value parameter.
+        update_parameter_advanced(path=str(rdl_path), name="DateFrom", multi_value=True)
         set_parameter_default_values(
             path=str(rdl_path),
             name="DateFrom",
             source="static",
-            static_values=["A", "B"],
+            static_values=["2026-01-01", "2026-02-01"],
         )
         values = _param(rdl_path, "DateFrom").findall(
             f"{q('DefaultValue')}/{q('Values')}/{q('Value')}"
         )
-        assert [v.text for v in values] == ["A", "B"]
+        assert [v.text for v in values] == ["2026-01-01", "2026-02-01"]
 
 
 class TestQueryDefaultValues:
@@ -281,17 +284,17 @@ class TestDefaultValuesReplace:
             path=str(rdl_path),
             name="DateFrom",
             source="static",
-            static_values=["A"],
+            static_values=["2026-01-01"],
         )
         set_parameter_default_values(
             path=str(rdl_path),
             name="DateFrom",
             source="static",
-            static_values=["B"],
+            static_values=["2026-02-01"],
         )
         defaults = _param(rdl_path, "DateFrom").findall(q("DefaultValue"))
         assert len(defaults) == 1
-        assert defaults[0].find(f"{q('Values')}/{q('Value')}").text == "B"
+        assert defaults[0].find(f"{q('Values')}/{q('Value')}").text == "2026-02-01"
 
 
 class TestDefaultValuesClear:
@@ -339,6 +342,7 @@ class TestDefaultValuesClear:
         from pbirb_mcp.ops.parameters import set_parameter_type
 
         # Seed a String-typed param with a non-numeric default.
+        set_parameter_type(path=str(rdl_path), name="DateFrom", type="String")
         set_parameter_default_values(
             path=str(rdl_path),
             name="DateFrom",

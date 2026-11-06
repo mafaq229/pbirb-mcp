@@ -49,7 +49,8 @@ def _patch(path: Path, old: str, new: str) -> None:
 
 def _build_repro(path: Path) -> None:
     # page 8.5in, margins 1in + 1in -> 6.5in printable. Columns 1+2+1 = 4in.
-    set_tablix_size(str(path), "MainTable", width="5in")
+    # A stale Width: the tools keep it in step with the columns (#89).
+    _patch(path, "<Width>4in</Width>", "<Width>5in</Width>")
     set_body_size(str(path), width="9in", height="2in")
     add_body_textbox(str(path), "Overlap", "x", "0.6in", "0.6in", "2in", "0.25in")
     add_body_textbox(str(path), "Outside", "x", "3in", "8.5in", "2in", "0.25in")
@@ -199,14 +200,17 @@ class TestOverlappingItems:
 
 class TestTablixWidthMismatch:
     def test_within_tolerance_is_clean(self, rdl_path):
-        set_tablix_size(str(rdl_path), "MainTable", width="4.005in")
+        _patch(rdl_path, "<Width>4in</Width>", "<Width>4.005in</Width>")
         assert _rules(rdl_path) == []
 
     def test_mismatch_flagged_with_fix(self, rdl_path):
-        set_tablix_size(str(rdl_path), "MainTable", width="3in")
+        _patch(rdl_path, "<Width>4in</Width>", "<Width>3in</Width>")
         issues = _geometry(rdl_path)
         assert [i["rule"] for i in issues] == ["tablix-width-mismatch"]
         assert "set_tablix_size(width='4in')" in issues[0]["suggestion"]
+        # The suggested fix clears it.
+        set_tablix_size(str(rdl_path), "MainTable", width="4in")
+        assert _rules(rdl_path) == []
 
     def test_row_header_sizes_count(self, rdl_path):
         # Row headers of 1.5in on every row member: the tablix renders at

@@ -331,7 +331,13 @@ class TestNestedPositionSizeRemove:
 
     def test_remove(self, grouped):
         result = remove_body_item(str(grouped), "Title")
-        assert result == {"removed": "Title", "kind": "Textbox", "parent": "Panel"}
+        assert result == {
+            "removed": "Title",
+            "kind": "Textbox",
+            "parent": "Panel",
+            "also_removed": [],
+            "dangling_refs": [],
+        }
         assert get_rectangle(str(grouped), "Panel")["contained_items"] == []
         # The emptied <ReportItems> goes with it.
         assert find_child(_named(grouped, "Panel"), "ReportItems") is None
@@ -383,7 +389,10 @@ class TestNestedPositionSizeRemove:
         assert remove_header_item(str(rdl_path), "Sub") == {
             "region": "header",
             "removed": "Sub",
+            "kind": "Textbox",
             "parent": "Band",
+            "also_removed": [],
+            "dangling_refs": [],
         }
         assert validate_report(str(rdl_path))["valid"]
 

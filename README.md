@@ -21,7 +21,8 @@ never leaves a half-written report or scrubs the original.
 
 > **Security defaults.** The `pbirb-mcp` server only opens files under the
 > directory it was started in, and refuses destructive tools (removals,
-> `convert_to_matrix`, `raw_xml_replace`, `restore_from_backup`) until the
+> `convert_to_matrix`, `raw_xml_replace` / `raw_xml_remove`,
+> `restore_from_backup`) until the
 > call carries `confirm=true`. MCP clients often start servers in `/` or in
 > their own app directory, so **set `PBIRB_MCP_ALLOWED_ROOTS` to your
 > reports folder** (see [Security defaults](#security-defaults)).
@@ -169,7 +170,7 @@ The `pbirb-mcp` command (what MCP clients launch) is locked down by default:
   config example in the Quick start).
 - **Destructive tools need `confirm=true`.** Tools that delete report
   content or overwrite a file (every `remove_*`, `convert_to_matrix`,
-  `raw_xml_replace`, `restore_from_backup`, and an `apply_edits` batch that
+  `raw_xml_replace` / `raw_xml_remove`, `restore_from_backup`, and an `apply_edits` batch that
   contains one) are refused with `ConfirmationRequired` until the call
   carries `confirm=true`; 2026-07-28 clients that support elicitation are
   asked to confirm instead. `PBIRB_MCP_REQUIRE_CONFIRM=0` turns this off.
@@ -199,7 +200,7 @@ task needs, and/or run read-only:
 
 | Toolset | Covers |
 |---------|--------|
-| `core` | Always on: `describe_report`, `validate_report` / `verify_report` / `lint_report`, `apply_edits`, `dry_run_edit`, transactions, expression helpers |
+| `core` | Always on: `describe_report`, `validate_report` / `verify_report` / `lint_report`, `diff_report`, `apply_edits`, `dry_run_edit`, transactions, expression helpers |
 | `data` | Data sources, datasets, DAX queries, query parameters, fields, dataset filters |
 | `parameters` | Report parameters: declarations, available/default values, prompts, pane layout |
 | `tablix` | Tables and matrices: groups, columns, rows, subtotals, spans, filters, sorting, group visibility, pagination |
@@ -238,7 +239,7 @@ can auto-approve the readers and flag the destructive tools.
 | `PBIRB_MCP_TRANSACTION_TIMEOUT_S` | `600` | Seconds an editing transaction lives without a commit or cancel; an expired one is discarded (nothing saved). |
 | `PBIRB_MCP_LOG_LEVEL` | `WARNING` | `DEBUG` / `INFO` / `WARNING` / `ERROR`. |
 | `PBIRB_MCP_LOG_FILE` | stderr | Log file path (see [Logging](#logging)). |
-| `PBIRB_MCP_AUTO_BACKUP` | off | `1` backs the report up (`<path>.bak.<UTC-timestamp>`) before every removal, rename, query rewrite, `raw_xml_replace` and `convert_to_matrix`; the result's `auto_backup` is the backup path. A backup that already holds the file's bytes is reused. |
+| `PBIRB_MCP_AUTO_BACKUP` | off | `1` backs the report up (`<path>.bak.<UTC-timestamp>`) before every removal, rename, query rewrite, `raw_xml_replace` / `raw_xml_remove` and `convert_to_matrix`; the result's `auto_backup` is the backup path. A backup that already holds the file's bytes is reused. |
 
 Truthy values are `1`, `true`, `yes`, `on` (case-insensitive).
 
@@ -346,6 +347,9 @@ multi-step edit.
 | `add_calculated_field` / `remove_calculated_field` | Manage `<Value>`-backed calculated fields |
 | `refresh_dataset_fields` | Re-derive the `<Fields>` list from the query's column metadata |
 | `add_dataset_filter` / `remove_dataset_filter` | Filters applied at the dataset level (vs. tablix) |
+| `add_dataset` / `remove_dataset` / `rename_dataset` | Manage `<DataSet>` elements; a rename rewrites every reference to the dataset |
+| `set_dataset_data_source` / `set_dataset_options` | Point a dataset at another data source; query timeout, collation and case/accent/kana/width sensitivity |
+| `rename_dataset_field` / `set_field_type` | Rename a field (rewriting `Fields!X` references) or set its `rd:TypeName` |
 
 ### Tablix
 
@@ -365,7 +369,8 @@ multi-step edit.
 | `add_subtotal_row` / `add_subtotal_column` | Insert an aggregate row/column on a group |
 | `set_cell_span` | Set `RowSpan` / `ColSpan` on a cell |
 | `set_column_width` / `set_row_height` | Set `<Width>` / `<Height>` on the Nth column/row |
-| `set_tablix_size` | Set the tablix's overall `<Width>` / `<Height>` |
+| `set_tablix_size` | Set the tablix's overall `<Width>` / `<Height>` (`distribute=true` rescales the columns to a new width; column edits keep `<Width>` in sync on their own) |
+| `set_repeat_header_rows` | Repeat the column header rows on every page |
 
 ### Page
 
@@ -392,7 +397,8 @@ follow-up edits don't drift on indices.
 |------|---------------|
 | `add_body_textbox` | Append a Textbox to `<Body>/<ReportItems>` |
 | `add_body_image` | Append an Image to the body |
-| `remove_body_item` | Remove a named Textbox / Image / Tablix from the body |
+| `remove_body_item` | Remove a named report item from the body; refuses while other items still reference it unless `force=true` |
+| `rename_report_item` | Rename a report item or group and rewrite every reference to it |
 
 ### Snippet templates
 
@@ -417,7 +423,9 @@ Refine a chart after `insert_chart_from_template` (or any existing `<Chart>`).
 | `set_chart_legend` | Legend visibility and placement |
 | `set_chart_data_labels` | Toggle and format data labels |
 | `set_chart_title` | Chart title text/expression |
-| `set_chart_palette` / `set_series_color` | Palette name; explicit per-series color |
+| `set_chart_palette` / `set_series_color` | Any of the 16 RDL palettes or custom colours; explicit per-series or per-point colour |
+| `set_chart_series_properties` | Legend entry, secondary axis, chart area, order, tooltip, markers, empty points of one series |
+| `set_chart_category_group` | Edit a category group's label, sort or field, or add a nested level |
 
 ### Styling
 
@@ -425,6 +433,7 @@ Refine a chart after `insert_chart_from_template` (or any existing `<Chart>`).
 |------|---------------|
 | `set_textbox_style` | Routes properties to the right nested `<Style>` node automatically: box-level (BackgroundColor, Border, VerticalAlign), paragraph-level (TextAlign), run-level (FontFamily, FontSize, FontWeight, Color, Format) |
 | `set_textbox_style_bulk` | Apply one style to many textboxes in a single call |
+| `copy_textbox_style` | Copy one textbox's formatting onto others |
 | `set_textbox_runs` / `set_textbox_value` | Rich multi-run paragraph content; or replace the value |
 | `find_textboxes_by_style` / `find_textbox_by_value` | Locate textboxes to target follow-up edits |
 | `style_tablix_row` | Style every cell of a tablix row at once (header / detail / footer) |
@@ -445,6 +454,7 @@ Refine a chart after `insert_chart_from_template` (or any existing `<Chart>`).
 | `add_rectangle` | A `<Rectangle>` container (group other items, control page breaks) |
 | `add_list` | A list region (single-column tablix template) |
 | `add_line` | A `<Line>` report item |
+| `ungroup_rectangle` | Remove a rectangle, moving its items out to its container in place |
 
 ### Positioning & sizing
 
@@ -456,13 +466,16 @@ Move and resize named items in each region. Coordinates are RDL sizes
 | `set_body_item_position` / `set_header_item_position` / `set_footer_item_position` | `Top` / `Left` of a named item |
 | `set_body_item_size` / `set_header_item_size` / `set_footer_item_size` | `Width` / `Height` of a named item |
 | `set_body_size` | The `<Body>` region's overall height |
+| `move_report_item` / `center_item` / `fit_page_to_body` | Move an item between the body, header, footer and rectangles; centre it in its container; fix a body wider than the page |
 
 ### Interactivity
 
 | Tool | What it edits |
 |------|---------------|
 | `set_textbox_action` / `set_image_action` / `set_chart_series_action` | `<Action>`: hyperlink, drill-through, or bookmark |
-| `set_textbox_tooltip` | Textbox `<ToolTip>` |
+| `set_item_action` | The same, on any Textbox / Image / Rectangle / Line |
+| `set_textbox_tooltip` / `set_item_tooltip` | `<ToolTip>` on a textbox / any report item |
+| `set_bookmark` | `<Bookmark>` on any report item (target of BookmarkLink actions) |
 | `set_document_map_label` | `<DocumentMapLabel>` for the navigation pane |
 
 ### Pagination
@@ -535,6 +548,7 @@ Batch many edits into one atomic save, and check correctness before/after.
 | `start_editing_transaction` / `commit_editing_transaction` / `cancel_editing_transaction` | Open an in-memory transaction, verify (XSD + lint, new errors only) and save once, or discard. See [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md). |
 | `apply_edits` | Apply a list of tool calls in one transaction |
 | `dry_run_edit` | Preview an edit's effect without writing to disk |
+| `diff_report` | Semantic diff of a report against a baseline (added / removed / changed items, ignoring layout noise) |
 | `validate_report` / `verify_report` | Structural + XSD validation against the bundled `reportdefinition.xsd`; `verify_report` adds lint |
 | `lint_report` | Surface warnings/errors Report Builder would flag |
 
@@ -544,6 +558,7 @@ Batch many edits into one atomic save, and check correctness before/after.
 |------|--------------|
 | `raw_xml_view` | Read the XML under an XPath |
 | `raw_xml_replace` | Replace the XML at an XPath — last resort for anything without a dedicated tool |
+| `raw_xml_insert` / `raw_xml_remove` | Insert XML at an XPath; remove the node(s) it matches |
 
 ---
 

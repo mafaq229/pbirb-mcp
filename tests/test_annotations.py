@@ -189,6 +189,7 @@ READ_ONLY_CALLS: dict[str, dict] = {
     "validate_report": {},
     "verify_report": {},
     "lint_report": {},
+    "diff_report": {"baseline_path": str(FIXTURES / "pbi_paginated_minimal.rdl")},
     "dry_run_edit": {
         "ops": [{"tool": "set_textbox_value", "args": {"textbox_name": "Note", "value": "X"}}]
     },

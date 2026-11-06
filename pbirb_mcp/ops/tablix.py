@@ -17,7 +17,6 @@ the right anchor before placing a freshly-created ``<Filters>`` element.
 
 from __future__ import annotations
 
-import contextlib
 import copy
 import re
 from typing import Any, Optional
@@ -27,6 +26,13 @@ from lxml import etree
 from pbirb_mcp.core import names, tablix_headers, tablix_spans, units
 from pbirb_mcp.core.document import RDLDocument, indent_inserted
 from pbirb_mcp.core.encoding import encode_text
+from pbirb_mcp.core.geometry import (
+    TOLERANCE_IN,
+    size_unit,
+    sync_tablix_width,
+    tablix_columns_width,
+    tablix_row_header_width,
+)
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_dataset, resolve_tablix
 from pbirb_mcp.core.mutation import ChangeTracker, fingerprint, set_node_text
 from pbirb_mcp.core.tablix_shape import (
@@ -49,29 +55,12 @@ from pbirb_mcp.ops import visibility as _visibility
 from pbirb_mcp.ops.filter_types import (
     _canonical_typename_group,
     encode_filter_texts,
+    filter_to_dict,
     type_mismatch_warnings,
+    validate_filter,
     wrap_with_format,
+    write_filter,
 )
-
-# RDL 2016 FilterOperator enumeration.
-_VALID_OPERATORS = frozenset(
-    {
-        "Equal",
-        "NotEqual",
-        "GreaterThan",
-        "GreaterThanOrEqual",
-        "LessThan",
-        "LessThanOrEqual",
-        "Like",
-        "TopN",
-        "BottomN",
-        "TopPercent",
-        "BottomPercent",
-        "In",
-        "Between",
-    }
-)
-
 
 # Per RDL XSD, on a Tablix the <Filters> block sits between <DataSetName>
 # (which we always have) and <SortExpressions>. We try to insert immediately
@@ -105,21 +94,6 @@ def _ensure_filters_block(tablix: etree._Element) -> etree._Element:
     return block
 
 
-def _filter_to_dict(filter_node: etree._Element) -> dict[str, Any]:
-    expr = find_child(filter_node, "FilterExpression")
-    op = find_child(filter_node, "Operator")
-    values_root = find_child(filter_node, "FilterValues")
-    values: list[str] = []
-    if values_root is not None:
-        for v in find_children(values_root, "FilterValue"):
-            values.append(v.text or "")
-    return {
-        "expression": expr.text if expr is not None else None,
-        "operator": op.text if op is not None else None,
-        "values": values,
-    }
-
-
 # ---- list_tablix_filters --------------------------------------------------
 
 
@@ -129,7 +103,7 @@ def list_tablix_filters(path: str, tablix_name: str) -> list[dict[str, Any]]:
     filters_root = find_child(tablix, "Filters")
     if filters_root is None:
         return []
-    return [_filter_to_dict(f) for f in find_children(filters_root, "Filter")]
+    return [filter_to_dict(f) for f in find_children(filters_root, "Filter")]
 
 
 # ---- add_tablix_filter ----------------------------------------------------
@@ -142,8 +116,12 @@ def add_tablix_filter(
     operator: str,
     values: list[str],
     field_format: Optional[str] = None,
+    value_data_type: Optional[str] = None,
 ) -> dict[str, Any]:
     """Append a ``<Filter>`` to a tablix's ``<Filters>`` block.
+
+    Operator, arity and ``value_data_type`` are checked and written as
+    in :func:`pbirb_mcp.ops.dataset.add_dataset_filter` (#94).
 
     ``field_format`` (Phase 8 commit 36): when provided, the filter
     expression is wrapped as ``=Format(<body>, "<field_format>")``.
@@ -156,12 +134,7 @@ def add_tablix_filter(
     against a ``Parameters!Y.Value`` in the values and their declared
     types differ. Best-effort, silent when either side isn't readable.
     """
-    if operator not in _VALID_OPERATORS:
-        raise ValueError(
-            f"unknown filter operator {operator!r}; valid operators are: {sorted(_VALID_OPERATORS)}"
-        )
-    if not values:
-        raise ValueError("at least one filter value is required")
+    validate_filter(operator, values, value_data_type)
 
     effective_expression = (
         wrap_with_format(expression, field_format) if field_format else expression
@@ -178,7 +151,14 @@ def add_tablix_filter(
     if ds_name_node is not None and ds_name_node.text:
         try:
             dataset = resolve_dataset(doc, ds_name_node.text)
-            warnings = type_mismatch_warnings(doc.root, dataset, effective_expression, values)
+            warnings = type_mismatch_warnings(
+                doc.root,
+                dataset,
+                effective_expression,
+                values,
+                operator=operator,
+                value_data_type=value_data_type,
+            )
         except Exception:  # noqa: BLE001 — ElementNotFoundError is fine to swallow
             warnings = []
 
@@ -188,16 +168,7 @@ def add_tablix_filter(
         effective_expression, values
     )
     warnings.extend(entity_warnings)
-
-    filter_node = etree.SubElement(filters_root, q("Filter"))
-    expr_node = etree.SubElement(filter_node, q("FilterExpression"))
-    expr_node.text = written_expression
-    op_node = etree.SubElement(filter_node, q("Operator"))
-    op_node.text = operator
-    values_root = etree.SubElement(filter_node, q("FilterValues"))
-    for v in written_values:
-        v_node = etree.SubElement(values_root, q("FilterValue"))
-        v_node.text = v
+    write_filter(filters_root, written_expression, operator, written_values, value_data_type)
 
     new_index = len(find_children(filters_root, "Filter")) - 1
     doc.save()
@@ -207,6 +178,7 @@ def add_tablix_filter(
         "expression": written_expression,
         "operator": operator,
         "values": written_values,
+        "data_type": value_data_type,
         "formatted": field_format is not None,
         "warnings": warnings,
     }
@@ -441,22 +413,6 @@ def _wrap_targets(
     return level, [target]
 
 
-def _shift_tablix_width(tablix: etree._Element, delta_in: float) -> None:
-    """Add ``delta_in`` inches to the tablix's ``<Width>`` (in its own
-    unit) — a row-header column added or removed. Left alone when absent
-    or unparsable."""
-    width = find_child(tablix, "Width")
-    try:
-        size = units.parse_size((width.text or "").strip()) if width is not None else None
-    except ValueError:
-        return
-    if size is None:
-        return
-    total = units.to_inches(width.text.strip()) + delta_in
-    if total > 0:
-        width.text = units.format_size(total, size.unit)
-
-
 def add_row_group(
     path: str,
     tablix_name: str,
@@ -570,6 +526,7 @@ def add_row_group(
         inner_members.append(child)
 
     corner: dict[str, Any] = {"created": [], "removed": []}
+    tablix_width: Optional[str] = None
     if header == "column":
         name = registry.unique(f"{group_name}_Header")
         size = tablix_headers.first_header_size(tablix, tablix_headers.ROW)
@@ -579,8 +536,8 @@ def add_row_group(
         header_names.append(name)
         header_names += tablix_headers.pad_header_levels(tablix, tablix_headers.ROW, registry)
         corner = tablix_headers.ensure_corner(tablix, registry)
-        # The row-header column widens the rendered tablix.
-        _shift_tablix_width(tablix, units.to_inches(size))
+        # The row-header column widens the rendered tablix (#65, #89).
+        tablix_width = sync_tablix_width(tablix)
     elif header == "row":
         header_names = [
             registry.unique(f"{group_name}_Header_{i}") for i in range(_column_count(tablix))
@@ -617,6 +574,7 @@ def add_row_group(
         "header_textboxes": header_names,
         "corner_textboxes": corner["created"],
         "changed": True,
+        **({"tablix_width": tablix_width} if tablix_width is not None else {}),
     }
 
 
@@ -741,7 +699,6 @@ def remove_row_group(
             "that row; refusing."
         )
     row_header = find_child(member, "TablixHeader")
-    row_depth = tablix_headers.header_depth(tablix, tablix_headers.ROW)
 
     # Leaf -> body row map, taken before any mutation.
     body = find_child(tablix, "TablixBody")
@@ -823,6 +780,7 @@ def remove_row_group(
 
     # ---- row-header cell (header="column"): one header level fewer ------
     removed_textboxes: list[str] = []
+    tablix_width: Optional[str] = None
     if row_header is not None:
         removed_textboxes = tablix_spans.report_item_names(row_header)
         try:
@@ -835,10 +793,8 @@ def remove_row_group(
             ) from None
         corner = tablix_headers.ensure_corner(tablix, names.NameRegistry(doc))
         removed_textboxes += corner["removed"]
-        size = find_child(row_header, "Size")
-        if tablix_headers.header_depth(tablix, tablix_headers.ROW) < row_depth and size is not None:
-            with contextlib.suppress(ValueError):  # unparsable Size: Width stays
-                _shift_tablix_width(tablix, -units.to_inches((size.text or "").strip()))
+        # One row-header level fewer narrows the rendered tablix (#89).
+        tablix_width = sync_tablix_width(tablix)
 
     doc.save()
     return {
@@ -847,6 +803,7 @@ def remove_row_group(
         "removed_rows": removed_rows,
         "kept_subtotal_rows": kept_rows,
         **({"removed_textboxes": removed_textboxes} if removed_textboxes else {}),
+        **({"tablix_width": tablix_width} if tablix_width is not None else {}),
         **({"warnings": warnings} if warnings else {}),
     }
 
@@ -1265,11 +1222,72 @@ def set_row_height(
 # ---- set_tablix_size -----------------------------------------------------
 
 
+def _fmt_in(inches: float) -> str:
+    return units.format_size(round(inches, 4))
+
+
+def _fit_columns_to_width(
+    tablix: etree._Element, name: str, width: str, distribute: bool
+) -> list[str]:
+    """Make a requested outer ``width`` agree with the column widths (#89).
+
+    A tablix renders at Σ column widths + row headers, whatever its
+    ``<Width>`` says. A ``width`` that disagrees is refused, or with
+    ``distribute`` the body columns are scaled proportionally (row headers
+    keep their size) so they add up to it. Returns the new column widths
+    when columns were rescaled, else ``[]``. Columns with a missing /
+    invalid width can't be checked: nothing is done."""
+    rendered = tablix_columns_width(tablix)
+    if rendered is None:
+        return []
+    target = units.to_inches(width)
+    if abs(rendered - target) <= TOLERANCE_IN:
+        return []
+    headers = tablix_row_header_width(tablix)
+    header_note = f" (including {_fmt_in(headers)} of row headers)" if headers else ""
+    if not distribute:
+        raise ValueError(
+            f"width {width!r} contradicts the columns of tablix {name!r}, which add up to "
+            f"{_fmt_in(rendered)}{header_note}; a tablix renders at its column widths. "
+            f"Pass distribute=true to scale the columns to {width}, or resize them with "
+            "set_column_width (the tablix Width follows)."
+        )
+    room = target - headers
+    if room <= TOLERANCE_IN:
+        raise ValueError(
+            f"width {width!r} leaves no room for the columns of tablix {name!r}: its row "
+            f"headers alone take {_fmt_in(headers)}."
+        )
+    cols_root = find_child(find_child(tablix, "TablixBody"), "TablixColumns")
+    nodes = [find_child(c, "Width") for c in find_children(cols_root, "TablixColumn")]
+    factor = room / (rendered - headers)
+    texts: list[str] = []
+    placed = 0.0
+    for i, node in enumerate(nodes):
+        unit = size_unit(node.text)
+        if i < len(nodes) - 1:
+            text = units.format_size(units.to_inches(node.text.strip()) * factor, unit)
+        else:
+            # The last column takes the remainder, so the sum is exact.
+            text = units.format_size(room - placed, unit)
+        if units.to_inches(text) <= 0:
+            raise ValueError(
+                f"width {width!r} is too narrow to distribute over the {len(nodes)} "
+                f"columns of tablix {name!r}."
+            )
+        placed += units.to_inches(text)
+        texts.append(text)
+    for node, text in zip(nodes, texts):
+        node.text = text
+    return texts
+
+
 def set_tablix_size(
     path: str,
     name: str,
     height: Optional[str] = None,
     width: Optional[str] = None,
+    distribute: bool = False,
 ) -> dict[str, Any]:
     """Resize a tablix by setting its outer ``<Height>`` and / or
     ``<Width>`` directly.
@@ -1283,6 +1301,12 @@ def set_tablix_size(
     Both values are RDL size strings (``'4in'``, ``'10cm'``, etc.).
     Malformed (e.g. unitless, empty) or non-positive values are rejected.
 
+    A tablix renders at the sum of its column widths plus its row
+    headers (#89), so a ``width`` that disagrees with them is refused —
+    unless ``distribute`` is true, which scales the body columns
+    proportionally to fit (row headers keep their size; reported as
+    ``column_widths``).
+
     Returns ``{tablix, kind, changed: list[str]}`` — empty list when
     inputs match existing (no save).
     """
@@ -1294,6 +1318,11 @@ def set_tablix_size(
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, name)
     changed: list[str] = []
+    column_widths = (
+        _fit_columns_to_width(tablix, name, width, distribute) if width is not None else []
+    )
+    if column_widths:
+        changed.append("columns")
 
     if height is not None:
         h_node = find_child(tablix, "Height")
@@ -1328,7 +1357,10 @@ def set_tablix_size(
 
     if changed:
         doc.save()
-    return {"tablix": name, "kind": "Tablix", "changed": changed}
+    result: dict[str, Any] = {"tablix": name, "kind": "Tablix", "changed": changed}
+    if column_widths:
+        result["column_widths"] = column_widths
+    return result
 
 
 # ---- convert_to_matrix (#31) ----------------------------------------------
@@ -1923,6 +1955,10 @@ def convert_to_matrix(
             f"converting tablix {tablix_name!r} would leave an inconsistent matrix "
             f"({'; '.join(problems)}); nothing was changed."
         )
+    # Caption columns became row headers of their own (or default) size (#89).
+    tablix_width = sync_tablix_width(tablix)
+    if tablix_width is not None:
+        changed.append("tablix_width")
 
     doc.save()
     return {
@@ -1938,6 +1974,7 @@ def convert_to_matrix(
         "blank_headers": padded,
         "corner_textboxes": corner["created"],
         "warnings": warnings,
+        **({"tablix_width": tablix_width} if tablix_width is not None else {}),
     }
 
 

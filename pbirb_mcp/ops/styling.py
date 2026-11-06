@@ -29,10 +29,25 @@ from lxml import etree
 from pbirb_mcp.core import style_values, units
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
-from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix, resolve_textbox
-from pbirb_mcp.core.mutation import set_text_if_different
-from pbirb_mcp.core.tablix_shape import NO_DETAIL_GROUP, data_row_index, detail_row_index
-from pbirb_mcp.core.xpath import find_child, find_children, q
+from pbirb_mcp.core.ids import (
+    AmbiguousElementError,
+    ElementNotFoundError,
+    resolve_tablix,
+    resolve_textbox,
+)
+from pbirb_mcp.core.mutation import fingerprint, set_text_if_different
+from pbirb_mcp.core.tablix_shape import (
+    NO_DETAIL_GROUP,
+    data_leaf,
+    data_row_index,
+    detail_row_index,
+    find_group_member,
+    find_row_group_member,
+    leaf_row_index,
+    owner_member,
+    subtree_leaves,
+)
+from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
 
 # Per RDL XSD, the order of <Style> children includes (subset relevant here):
 #   Border, TopBorder, BottomBorder, LeftBorder, RightBorder,
@@ -350,24 +365,47 @@ def _apply_textbox_style(textbox: etree._Element, props: dict[str, dict[str, Any
     return changed
 
 
-def _style_textboxes(
-    doc: RDLDocument, names: list[str], props: dict[str, dict[str, Any]]
-) -> tuple[list[str], list[str], list[str]]:
-    """Apply ``props`` to each named textbox of ``doc`` (in memory).
-    Returns ``(affected, skipped, changed)``: names that resolved, names
-    that didn't, and the sorted union of changed sub-paths."""
-    affected: list[str] = []
+def _resolve_textbox_names(
+    doc: RDLDocument, names: list[str]
+) -> tuple[list[tuple[str, etree._Element]], list[str], list[str]]:
+    """Resolve every name before anything is written. Names are
+    de-duplicated (first occurrence kept) and sorted into ``(resolved
+    [(name, textbox)], skipped (not found), ambiguous (several
+    matches))``, each in input order."""
+    resolved: list[tuple[str, etree._Element]] = []
     skipped: list[str] = []
-    union_changed: set[str] = set()
-    for name in names:
+    ambiguous: list[str] = []
+    for name in dict.fromkeys(names):
         try:
-            textbox = resolve_textbox(doc, name)
+            resolved.append((name, resolve_textbox(doc, name)))
+        except AmbiguousElementError:
+            ambiguous.append(name)
         except ElementNotFoundError:
             skipped.append(name)
-            continue
-        affected.append(name)
+    return resolved, skipped, ambiguous
+
+
+def _refuse_unresolved(tool: str, skipped: list[str], ambiguous: list[str]) -> None:
+    """``strict=True``: refuse (before any write) when a name did not
+    resolve to exactly one textbox."""
+    if not skipped and not ambiguous:
+        return
+    parts = []
+    if skipped:
+        parts.append(f"not found: {skipped}")
+    if ambiguous:
+        parts.append(f"ambiguous (several textboxes share the name): {ambiguous}")
+    error = AmbiguousElementError if ambiguous else ElementNotFoundError
+    raise error(f"{tool} strict=true: {'; '.join(parts)}; nothing was written")
+
+
+def _style_elements(textboxes: list[etree._Element], props: dict[str, dict[str, Any]]) -> list[str]:
+    """Apply ``props`` to each textbox (in memory); the sorted union of
+    changed sub-paths."""
+    union_changed: set[str] = set()
+    for textbox in textboxes:
         union_changed.update(_apply_textbox_style(textbox, props))
-    return affected, skipped, sorted(union_changed)
+    return sorted(union_changed)
 
 
 def set_textbox_style(
@@ -434,7 +472,63 @@ def set_textbox_style(
     return {"textbox": textbox_name, "changed": changed}
 
 
-# ---- alternating row color -----------------------------------------------
+# ---- alternating / conditional row color ---------------------------------
+
+
+def _vb_string(text: str) -> str:
+    """``text`` as a VB string literal (RDL doubles embedded quotes)."""
+    return '"' + text.replace('"', '""') + '"'
+
+
+def _color_operand(value: Any, field: str) -> str:
+    """A colour argument as a VB operand, validated first
+    (:func:`style_values.color`). A literal becomes a quoted string, an
+    ``=expression`` is embedded as an expression (its ``=`` dropped), so
+    ``=Parameters!C.Value`` yields the parameter's value rather than the
+    literal text."""
+    if value is None:
+        raise ValueError(f"{field}: a colour is required")
+    style_values.color(value, field)
+    if value.startswith("="):
+        return value[1:]
+    return _vb_string(value)
+
+
+def _zebra_operand(color_a: Any, color_b: Any, field_a: str, field_b: str) -> str:
+    a = _color_operand(color_a, field_a)
+    b = _color_operand(color_b, field_b)
+    return f"IIf(RowNumber(Nothing) Mod 2, {a}, {b})"
+
+
+def _write_detail_row_background(
+    path: str, tablix_name: str, expression: str, tool: str
+) -> dict[str, Any]:
+    """Write ``expression`` as the BackgroundColor of every detail-row
+    cell (one open, one save only when something changed)."""
+    doc = RDLDocument.open(path)
+    tablix = resolve_tablix(doc, tablix_name)
+    detail_idx = detail_row_index(tablix)
+    if detail_idx is None:
+        raise ElementNotFoundError(
+            f"tablix {tablix_name!r} has {NO_DETAIL_GROUP}; {tool} requires one"
+        )
+    body = find_child(tablix, "TablixBody")
+    rows_root = find_child(body, "TablixRows") if body is not None else None
+    rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
+    cells_root = find_child(rows[detail_idx], "TablixCells")
+    cells_touched: list[str] = []
+    changed = False
+    if cells_root is not None:
+        cells_touched, changed = _set_row_background(cells_root, expression)
+    if changed:
+        doc.save()
+    return {
+        "tablix": tablix_name,
+        "row_index": detail_idx,
+        "expression": expression,
+        "cells": cells_touched,
+        "changed": changed,
+    }
 
 
 def set_alternating_row_color(
@@ -450,38 +544,17 @@ def set_alternating_row_color(
 
         =IIf(RowNumber(Nothing) Mod 2, "<color_a>", "<color_b>")
 
-    Odd rows get ``color_a``; even rows get ``color_b``. The expression is
-    written verbatim per cell, replacing any existing BackgroundColor.
+    Odd rows get ``color_a``; even rows get ``color_b``. Both colours are
+    validated as in ``set_textbox_style`` (named colour, ``#RRGGBB``,
+    ``#AARRGGBB`` or ``=expression``) before the file is opened; an
+    ``=expression`` colour is embedded as an expression, not quoted. The
+    expression replaces any existing BackgroundColor on the cells — to
+    combine striping with a value-driven colour, use
+    ``set_conditional_row_color(base_color="zebra:<a>,<b>")`` instead.
     Returns ``{tablix, row_index, expression, cells, changed}``.
     """
-    doc = RDLDocument.open(path)
-    tablix = resolve_tablix(doc, tablix_name)
-    detail_idx = detail_row_index(tablix)
-    if detail_idx is None:
-        raise ElementNotFoundError(
-            f"tablix {tablix_name!r} has {NO_DETAIL_GROUP}; set_alternating_row_color requires one"
-        )
-
-    body = find_child(tablix, "TablixBody")
-    rows_root = find_child(body, "TablixRows") if body is not None else None
-    rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
-    detail_row = rows[detail_idx]
-
-    expression = f'=IIf(RowNumber(Nothing) Mod 2, "{color_a}", "{color_b}")'
-
-    cells_root = find_child(detail_row, "TablixCells")
-    if cells_root is None:
-        return {"tablix": tablix_name, "row_index": detail_idx, "cells": [], "changed": False}
-    cells_touched, changed = _set_row_background(cells_root, expression)
-    if changed:
-        doc.save()
-    return {
-        "tablix": tablix_name,
-        "row_index": detail_idx,
-        "expression": expression,
-        "cells": cells_touched,
-        "changed": changed,
-    }
+    expression = "=" + _zebra_operand(color_a, color_b, "color_a", "color_b")
+    return _write_detail_row_background(path, tablix_name, expression, "set_alternating_row_color")
 
 
 def _set_row_background(cells_root: etree._Element, expression: str) -> tuple[list[str], bool]:
@@ -511,17 +584,40 @@ def _normalise_value_expression(expr: str) -> str:
     return expr[1:] if expr.startswith("=") else expr
 
 
+_ZEBRA_PREFIX = "zebra:"
+
+
+def _base_operand(base_color: Any) -> str:
+    """The fallback arm of a conditional colour: ``"zebra:<a>,<b>"``
+    (alternating striping), an ``=expression`` (e.g. the zebra expression
+    ``set_alternating_row_color`` wrote) or a colour literal."""
+    if isinstance(base_color, str) and base_color.lower().startswith(_ZEBRA_PREFIX):
+        parts = [part.strip() for part in base_color[len(_ZEBRA_PREFIX) :].split(",")]
+        if len(parts) != 2 or not all(parts):
+            raise ValueError(
+                f"base_color: {base_color!r} must be 'zebra:<color_a>,<color_b>', "
+                "e.g. 'zebra:White,#F2F2F2'"
+            )
+        return _zebra_operand(
+            parts[0], parts[1], "base_color zebra color_a", "base_color zebra color_b"
+        )
+    return _color_operand(base_color, "base_color")
+
+
 def _build_conditional_color_switch(
     value_expression: str,
     color_map: dict[str, str],
     default_color: str,
     *,
     case_sensitive: bool,
+    base_color: Optional[str] = None,
 ) -> str:
     """Build a Switch(...) expression mapping ``value_expression`` outcomes
     to colors. The expression is the value an LLM might type directly:
     each row of the detail body picks up the right BackgroundColor at
-    render time.
+    render time. ``base_color``, when given, is the fallback arm instead
+    of ``default_color`` (see :func:`_base_operand`). Every colour is
+    validated; literals are quoted, ``=expressions`` embedded.
     """
     inner = _normalise_value_expression(value_expression)
     operand = inner if case_sensitive else f"UCase({inner})"
@@ -529,15 +625,16 @@ def _build_conditional_color_switch(
     arms: list[str] = []
     for raw_value, color in color_map.items():
         match_value = raw_value if case_sensitive else raw_value.upper()
-        # RDL string literals use double quotes; embedded quotes are doubled.
-        match_literal = '"' + match_value.replace('"', '""') + '"'
-        color_literal = '"' + color.replace('"', '""') + '"'
-        arms.append(f"{operand}={match_literal}, {color_literal}")
+        color_operand = _color_operand(color, f"color_map[{raw_value!r}]")
+        arms.append(f"{operand}={_vb_string(match_value)}, {color_operand}")
     # Final fallback arm — Switch with no match returns Nothing, which RDL
     # renders as no fill. Always emit a default so unmatched values pick up
-    # default_color explicitly.
-    default_literal = '"' + default_color.replace('"', '""') + '"'
-    arms.append(f"True, {default_literal}")
+    # default_color (or the composed base colour) explicitly.
+    if base_color is not None:
+        fallback = _base_operand(base_color)
+    else:
+        fallback = _color_operand(default_color, "default_color")
+    arms.append(f"True, {fallback}")
 
     return "=Switch(" + ", ".join(arms) + ")"
 
@@ -547,8 +644,9 @@ def set_conditional_row_color(
     tablix_name: str,
     value_expression: str,
     color_map: dict[str, str],
-    default_color: str = "Transparent",
+    default_color: Optional[str] = None,
     case_sensitive: bool = False,
+    base_color: Optional[str] = None,
 ) -> dict[str, Any]:
     """Color every cell of a tablix's detail row based on the value of
     one of its fields.
@@ -569,52 +667,35 @@ def set_conditional_row_color(
         case_sensitive: When False (default), wraps the field reference in
             ``UCase(...)`` and uppercases the keys, so the comparison is
             case-insensitive.
+        base_color: A fallback that composes with other colouring, used
+            instead of ``default_color``: ``"zebra:<a>,<b>"`` keeps zebra
+            striping on unmatched rows (``Switch(..., True,
+            IIf(RowNumber(Nothing) Mod 2, a, b))``); an ``=expression`` is
+            embedded as is. Exclusive with a non-default ``default_color``.
 
-    Returns the same shape as ``set_alternating_row_color``:
-    ``{tablix, row_index, expression, cells, changed}``.
+    Every colour (map values, default, base) is validated as in
+    ``set_textbox_style`` before the file is opened; ``=expression``
+    colours are embedded as expressions. The result replaces the cells'
+    BackgroundColor (last writer wins). Returns the same shape as
+    ``set_alternating_row_color``: ``{tablix, row_index, expression,
+    cells, changed}``.
     """
     if not color_map:
         raise ValueError("color_map must contain at least one value→color entry")
-
-    doc = RDLDocument.open(path)
-    tablix = resolve_tablix(doc, tablix_name)
-    detail_idx = detail_row_index(tablix)
-    if detail_idx is None:
-        raise ElementNotFoundError(
-            f"tablix {tablix_name!r} has {NO_DETAIL_GROUP}; set_conditional_row_color requires one"
+    if base_color is not None and default_color not in (None, "Transparent"):
+        raise ValueError(
+            "pass default_color or base_color, not both: base_color is the "
+            "fallback for values not in color_map"
         )
-
-    body = find_child(tablix, "TablixBody")
-    rows_root = find_child(body, "TablixRows") if body is not None else None
-    rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
-    detail_row = rows[detail_idx]
 
     expression = _build_conditional_color_switch(
         value_expression=value_expression,
         color_map=color_map,
-        default_color=default_color,
+        default_color="Transparent" if default_color is None else default_color,
         case_sensitive=case_sensitive,
+        base_color=base_color,
     )
-
-    cells_root = find_child(detail_row, "TablixCells")
-    if cells_root is None:
-        return {
-            "tablix": tablix_name,
-            "row_index": detail_idx,
-            "expression": expression,
-            "cells": [],
-            "changed": False,
-        }
-    cells_touched, changed = _set_row_background(cells_root, expression)
-    if changed:
-        doc.save()
-    return {
-        "tablix": tablix_name,
-        "row_index": detail_idx,
-        "expression": expression,
-        "cells": cells_touched,
-        "changed": changed,
-    }
+    return _write_detail_row_background(path, tablix_name, expression, "set_conditional_row_color")
 
 
 # ---- set_textbox_runs ----------------------------------------------------
@@ -1103,178 +1184,151 @@ def set_textbox_value(
 def set_textbox_style_bulk(
     path: str,
     textbox_names: list[str],
+    strict: bool = False,
     **style: Any,
 ) -> dict[str, Any]:
     """Apply the same style kwargs to every named textbox in one call.
 
     Same kwarg surface (:data:`STYLE_KWARGS`), routing and validation as
     :func:`set_textbox_style`; every value is checked before the file is
-    opened. Missing names land in ``skipped`` rather than raising; the
-    textboxes that resolve are styled and saved together.
+    opened. The document is opened once, every name is resolved before
+    anything is written (names repeated in the input count once), and
+    the file is saved once, only if something changed. A name with no
+    textbox lands in ``skipped`` and one shared by several textboxes in
+    ``ambiguous``; the others are still styled. With ``strict=True`` any
+    skipped or ambiguous name refuses the whole call before any write.
 
-    Returns ``{textboxes: [names], skipped: [names], changed: list[str]}``
-    where ``changed`` is the **union** of sub-paths affected across all
-    textboxes (e.g. ``["box.PaddingTop", "run.FontWeight"]``). Empty
-    ``textbox_names`` and all-None kwargs both short-circuit to a no-op.
+    Returns ``{textboxes, skipped, ambiguous, changed}`` — the names
+    styled, not found and ambiguous (input order), and the **union** of
+    sub-paths affected across all textboxes (e.g. ``["box.PaddingTop",
+    "run.FontWeight"]``). Empty ``textbox_names`` and all-None kwargs
+    both short-circuit to a no-op without opening the file.
     """
+    if not isinstance(strict, bool):
+        raise ValueError(f"strict: expected true or false; got {strict!r}")
     props = _style_props(style, "set_textbox_style_bulk")
-    if not textbox_names:
-        return {"textboxes": [], "skipped": [], "changed": []}
-    if _no_style(props):
-        return {"textboxes": list(textbox_names), "skipped": [], "changed": []}
+    names = list(dict.fromkeys(textbox_names or []))
+    if not names or _no_style(props):
+        return {"textboxes": names, "skipped": [], "ambiguous": [], "changed": []}
 
     doc = RDLDocument.open(path)
-    affected, skipped, changed = _style_textboxes(doc, list(textbox_names), props)
+    resolved, skipped, ambiguous = _resolve_textbox_names(doc, names)
+    if strict:
+        _refuse_unresolved("set_textbox_style_bulk", skipped, ambiguous)
+    changed = _style_elements([textbox for _name, textbox in resolved], props)
     if changed:
         doc.save()
-    return {"textboxes": affected, "skipped": skipped, "changed": changed}
+    return {
+        "textboxes": [name for name, _textbox in resolved],
+        "skipped": skipped,
+        "ambiguous": ambiguous,
+        "changed": changed,
+    }
 
 
 # ---- style_tablix_row ----------------------------------------------------
 
 
-def _walk_row_hierarchy_leaves(
-    tablix: etree._Element,
-) -> list[tuple[etree._Element, int, str]]:
-    """Walk ``<TablixRowHierarchy>`` depth-first and return leaf members
-    with their body row index and position-in-parent.
-
-    Returns ``[(leaf_member, body_row_index, position_in_parent), ...]``
-    where ``position_in_parent`` is:
-    - ``"header"`` if the leaf is the first child of its parent's
-      ``<TablixMembers>`` (or the very top if no nesting);
-    - ``"footer"`` if the leaf is the last child of its parent's
-      ``<TablixMembers>`` (and the parent has more than one child);
-    - ``"middle"`` otherwise.
-
-    Body rows correspond 1:1 with leaf TablixMembers in DFS order, so
-    the returned indexes match ``TablixBody/TablixRows/TablixRow``
-    indexes.
-    """
-    rh = find_child(tablix, "TablixRowHierarchy")
-    if rh is None:
-        return []
-    members_root = find_child(rh, "TablixMembers")
-    if members_root is None:
-        return []
-
-    out: list[tuple[etree._Element, int, str]] = []
-    counter = [0]
-
-    def walk(member: etree._Element, position: str) -> None:
-        children_root = find_child(member, "TablixMembers")
-        children = list(children_root) if children_root is not None else []
-        if not children:
-            out.append((member, counter[0], position))
-            counter[0] += 1
-            return
-        for i, sub in enumerate(children):
-            if len(children) == 1:
-                child_pos = "middle"
-            elif i == 0:
-                child_pos = "header"
-            elif i == len(children) - 1:
-                child_pos = "footer"
-            else:
-                child_pos = "middle"
-            walk(sub, child_pos)
-
-    top_members = list(members_root)
-    for i, top in enumerate(top_members):
-        if len(top_members) == 1:
-            top_pos = "middle"
-        elif i == 0:
-            top_pos = "header"
-        elif i == len(top_members) - 1:
-            top_pos = "footer"
-        else:
-            top_pos = "middle"
-        walk(top, top_pos)
-
-    return out
+def _has_group(member: etree._Element) -> bool:
+    """True iff ``member`` or any member below it carries a ``<Group>``."""
+    return any(find_child(m, "Group") is not None for m in member.iter(q("TablixMember")))
 
 
-def _first_header_row_index(tablix: etree._Element) -> Optional[int]:
-    """Return the body row index of the first leaf with
-    ``KeepWithGroup=After`` — the conventional column header row."""
-    for leaf, idx, _position in _walk_row_hierarchy_leaves(tablix):
-        kwg = find_child(leaf, "KeepWithGroup")
-        if kwg is not None and kwg.text == "After":
-            return idx
-    return None
-
-
-def _first_leaf_descendant(member: etree._Element) -> etree._Element:
-    """Recurse into ``member`` until a leaf TablixMember is reached.
-    A leaf has no nested ``<TablixMembers>``."""
-    children_root = find_child(member, "TablixMembers")
-    children = list(children_root) if children_root is not None else []
-    if not children:
-        return member
-    return _first_leaf_descendant(children[0])
-
-
-def _last_leaf_descendant(member: etree._Element) -> etree._Element:
-    children_root = find_child(member, "TablixMembers")
-    children = list(children_root) if children_root is not None else []
-    if not children:
-        return member
-    return _last_leaf_descendant(children[-1])
-
-
-def _group_row_index(
-    tablix: etree._Element,
-    group_name: str,
-    position: str,
-) -> Optional[int]:
-    """Return the body row index of a named group's header or footer leaf.
-
-    The header is the first leaf descendant of the group's
-    ``<TablixMembers>``; the footer is the last leaf descendant.
-    Returns None if the group isn't present, or if the position can't
-    be resolved (e.g. footer requested but the group has only its
-    header child).
-    """
-    rh = find_child(tablix, "TablixRowHierarchy")
-    if rh is None:
-        return None
-
-    target_wrapper: Optional[etree._Element] = None
-    for member in rh.iter(q("TablixMember")):
-        g = find_child(member, "Group")
-        if g is not None and g.get("Name") == group_name:
-            target_wrapper = member
+def _keeps_with_after(leaf: etree._Element, top: etree._Element) -> bool:
+    """True iff ``leaf`` or a static wrapper up to ``top`` is marked
+    ``KeepWithGroup=After``."""
+    node: Optional[etree._Element] = leaf
+    while node is not None:
+        kwg = find_child(node, "KeepWithGroup")
+        if kwg is not None and (kwg.text or "").strip() == "After":
+            return True
+        if node is top:
             break
-    if target_wrapper is None:
-        return None
+        node = owner_member(node)
+    return False
 
-    inner_members = find_child(target_wrapper, "TablixMembers")
-    if inner_members is None:
-        return None
-    inner_children = list(inner_members)
-    if not inner_children:
-        return None
 
+def _column_header_row_index(tablix: etree._Element) -> Optional[int]:
+    """Body row of the column header: the last static top-level row
+    marked ``KeepWithGroup=After`` before the first grouped member.
+
+    Only top-level members ahead of the data count, so a group's own
+    header row (``add_row_group`` marks it ``KeepWithGroup=After`` too,
+    but it sits inside the group) is never mistaken for it."""
+    rh = find_child(tablix, "TablixRowHierarchy")
+    members_root = find_child(rh, "TablixMembers") if rh is not None else None
+    if members_root is None:
+        return None
+    found: Optional[etree._Element] = None
+    for top in find_children(members_root, "TablixMember"):
+        if _has_group(top):
+            break
+        for leaf in subtree_leaves(top):
+            if _keeps_with_after(leaf, top):
+                found = leaf
+    return leaf_row_index(tablix, found) if found is not None else None
+
+
+def _group_static_leaf(
+    tablix: etree._Element, member: etree._Element, position: str
+) -> Optional[etree._Element]:
+    """A row group's own static header (``position="header"``) or footer
+    (``"footer"``) leaf, or ``None`` when it has none.
+
+    The group's children split into the *wrapped* members — those holding
+    a ``<Group>`` or the group's data row (:func:`data_leaf`) — and the
+    static ones around them. The header is the first static child before
+    the first wrapped member, the footer the last static child after the
+    last one. A group whose only child is its data row (the usual Report
+    Builder shape for a group without details) has neither."""
+    members_root = find_child(member, "TablixMembers")
+    children = find_children(members_root, "TablixMember") if members_root is not None else []
+    data = data_leaf(tablix, member)
+    wrapped = [
+        i
+        for i, child in enumerate(children)
+        if _has_group(child) or (data is not None and data in subtree_leaves(child))
+    ]
+    if not wrapped:
+        return None
     if position == "header":
-        target_leaf = _first_leaf_descendant(inner_children[0])
-    elif position == "footer":
-        # A "real" group footer is a placeholder TablixMember WITHOUT
-        # a <Group> child — the shape add_subtotal_row(position="footer")
-        # emits. The detail leaf carries a <Group> (no GroupExpressions); if it
-        # happens to be the last child, that's NOT a footer. Likewise,
-        # bare add_row_group leaves the group with [header, ...,
-        # Details] and no real footer.
-        last_child = inner_children[-1]
-        last_leaf = _last_leaf_descendant(last_child)
-        if find_child(last_leaf, "Group") is not None:
-            return None
-        target_leaf = last_leaf
-    else:
-        return None
+        before = children[: wrapped[0]]
+        return subtree_leaves(before[0])[0] if before else None
+    after = children[wrapped[-1] + 1 :]
+    return subtree_leaves(after[-1])[-1] if after else None
 
-    for leaf, idx, _pos in _walk_row_hierarchy_leaves(tablix):
-        if leaf is target_leaf:
-            return idx
+
+# Suffix -> position, longest first so "<g>_group_header" isn't read as
+# group "<g>_group" + "_header" when "<g>" is the group that exists.
+_GROUP_ROLE_SUFFIXES = (
+    ("_group_header", "header"),
+    ("_rowheader", "rowheader"),
+    ("_header", "header"),
+    ("_footer", "footer"),
+)
+_ROLE_LIST = (
+    "an integer, 'header', 'details', '<group>_header' (alias "
+    "'<group>_group_header'), '<group>_footer', '<group>_rowheader' or 'corner'"
+)
+
+
+def _parse_group_role(
+    tablix: etree._Element, row: str
+) -> Optional[tuple[str, str, Optional[etree._Element]]]:
+    """``(group, position, group member or None)`` for a ``<group>_<suffix>``
+    role, preferring the reading whose group exists; ``None`` when ``row``
+    has no group-role suffix."""
+    parsed: list[tuple[str, str]] = []
+    for suffix, position in _GROUP_ROLE_SUFFIXES:
+        if row.endswith(suffix) and len(row) > len(suffix):
+            parsed.append((row[: -len(suffix)], position))
+    for group, position in parsed:
+        member = find_row_group_member(tablix, group)
+        if member is not None:
+            return group, position, member
+    if parsed:
+        group, position = parsed[0]
+        return group, position, None
     return None
 
 
@@ -1283,14 +1337,19 @@ def _resolve_row_index(tablix: etree._Element, row: object) -> int:
 
     ``row`` accepts:
     - ``int`` — taken as the body row index directly; range-checked.
-    - ``"header"`` — first leaf with ``KeepWithGroup=After`` (the
-      conventional column header).
+    - ``"header"`` — the column header: the last static top-level row
+      marked ``KeepWithGroup=After`` before the first grouped member.
     - ``"details"`` — the detail leaf (a ``<Group>`` without
       ``<GroupExpressions>``, whatever its name); on a matrix with no
       detail group, the innermost dynamic row group's leaf.
-    - ``"<group>_header"`` — header leaf of a named row group.
-    - ``"<group>_footer"`` — footer leaf of a named row group (when
-      present, e.g. after ``add_subtotal_row``).
+    - ``"<group>_header"`` / ``"<group>_group_header"`` — the named row
+      group's own static header row (a static child before its data).
+    - ``"<group>_footer"`` — the group's static footer row (a static
+      child after its data, e.g. from ``add_subtotal_row``).
+
+    ``"<group>_rowheader"`` and ``"corner"`` address header cells, not a
+    body row; :func:`style_tablix_row` handles them, here they raise
+    ``ValueError``.
 
     Raises ``IndexError`` for out-of-range integers,
     ``ElementNotFoundError`` for unresolvable string roles, and
@@ -1299,6 +1358,7 @@ def _resolve_row_index(tablix: etree._Element, row: object) -> int:
     body = find_child(tablix, "TablixBody")
     rows_root = find_child(body, "TablixRows") if body is not None else None
     rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
+    name = tablix.get("Name")
 
     if isinstance(row, bool):
         # Guard: bool is an int subclass in Python; reject explicitly so
@@ -1310,9 +1370,7 @@ def _resolve_row_index(tablix: etree._Element, row: object) -> int:
         row = int(row)
     if isinstance(row, int):
         if row < 0 or row >= len(rows):
-            raise IndexError(
-                f"tablix {tablix.get('Name')!r} has {len(rows)} rows; index {row} is out of range"
-            )
+            raise IndexError(f"tablix {name!r} has {len(rows)} rows; index {row} is out of range")
         return row
     if not isinstance(row, str):
         raise TypeError(f"row must be int or str; got {type(row).__name__}")
@@ -1321,60 +1379,91 @@ def _resolve_row_index(tablix: etree._Element, row: object) -> int:
         idx = data_row_index(tablix)
         if idx is None:
             raise ElementNotFoundError(
-                f"tablix {tablix.get('Name')!r} has {NO_DETAIL_GROUP} and "
+                f"tablix {name!r} has {NO_DETAIL_GROUP} and "
                 "no dynamic row group; no row with role 'details' to resolve. "
                 "Use an integer row index instead."
             )
         return idx
     if row == "header":
-        idx = _first_header_row_index(tablix)
+        idx = _column_header_row_index(tablix)
         if idx is None:
             raise ElementNotFoundError(
-                f"tablix {tablix.get('Name')!r} has no leaf with "
-                "KeepWithGroup=After; no row with role 'header' to "
-                "resolve. Use an integer row index instead."
+                f"tablix {name!r} has no static row marked KeepWithGroup=After "
+                "above its groups; no row with role 'header' to resolve. "
+                "Use an integer row index (or '<group>_header') instead."
             )
         return idx
+    if row == "corner":
+        raise ValueError("'corner' names the tablix corner cells, not a body row")
 
-    if row.endswith("_header") and len(row) > len("_header"):
-        group = row[: -len("_header")]
-        idx = _group_row_index(tablix, group, "header")
-        if idx is None:
-            raise ElementNotFoundError(
-                f"tablix {tablix.get('Name')!r} has no header row for group {group!r}"
-            )
-        return idx
-    if row.endswith("_footer") and len(row) > len("_footer"):
-        group = row[: -len("_footer")]
-        idx = _group_row_index(tablix, group, "footer")
-        if idx is None:
-            raise ElementNotFoundError(
-                f"tablix {tablix.get('Name')!r} has no footer row for "
-                f"group {group!r}; add one via add_subtotal_row first"
-            )
-        return idx
-
-    raise ValueError(
-        f"unknown row role {row!r}; expected an integer, 'header', "
-        "'details', '<group>_header', or '<group>_footer'"
-    )
+    parsed = _parse_group_role(tablix, row)
+    if parsed is None:
+        raise ValueError(f"unknown row role {row!r}; expected {_ROLE_LIST}")
+    group, position, member = parsed
+    if position == "rowheader":
+        raise ValueError(f"{row!r} names the row-header cell of group {group!r}, not a body row")
+    leaf = _group_static_leaf(tablix, member, position) if member is not None else None
+    if leaf is None:
+        why = "" if member is not None else " (no row group of that name)"
+        hint = (
+            "; add one via add_subtotal_row first"
+            if position == "footer" and member is not None
+            else ""
+        )
+        raise ElementNotFoundError(
+            f"tablix {name!r} has no {position} row for group {group!r}{why}{hint}"
+        )
+    idx = leaf_row_index(tablix, leaf)
+    assert idx is not None
+    return idx
 
 
-def _row_cell_textbox_names(tablix: etree._Element, row_index: int) -> list[str]:
-    """Return the textbox names of every cell in a body row, in column
-    order. Cells without a Textbox child (rare) are skipped."""
+def _row_cell_textboxes(tablix: etree._Element, row_index: int) -> list[etree._Element]:
+    """The named textbox of every cell in a body row, in column order.
+    Cells without a Textbox child (rare) are skipped."""
     body = find_child(tablix, "TablixBody")
     rows_root = find_child(body, "TablixRows") if body is not None else None
     rows = find_children(rows_root, "TablixRow") if rows_root is not None else []
     target_row = rows[row_index]
     cells_root = find_child(target_row, "TablixCells")
     cells = find_children(cells_root, "TablixCell") if cells_root is not None else []
-    out: list[str] = []
+    out: list[etree._Element] = []
     for cell in cells:
         tb = cell.find(f"{q('CellContents')}/{q('Textbox')}")
         if tb is not None and tb.get("Name") is not None:
-            out.append(tb.get("Name"))
+            out.append(tb)
     return out
+
+
+def _header_cell_textboxes(tablix: etree._Element, row: object) -> Optional[list[etree._Element]]:
+    """Textboxes of the header-area roles — ``"corner"`` (every
+    ``TablixCornerCell``) and ``"<group>_rowheader"`` (the group's
+    ``TablixHeader`` cell, row or column axis) — or ``None`` when ``row``
+    is not one of them."""
+    name = tablix.get("Name")
+    if row == "corner":
+        corner = find_child(tablix, "TablixCorner")
+        if corner is None:
+            raise ElementNotFoundError(f"tablix {name!r} has no TablixCorner (no header area)")
+        return list(corner.iter(q("Textbox")))
+    if not isinstance(row, str) or not row.endswith("_rowheader"):
+        return None
+    parsed = _parse_group_role(tablix, row)
+    if parsed is None or parsed[1] != "rowheader":
+        return None
+    group = parsed[0]
+    member = parsed[2]
+    if member is None:
+        member = find_group_member(tablix, "column", group)
+    header = find_child(member, "TablixHeader") if member is not None else None
+    contents = find_child(header, "CellContents") if header is not None else None
+    textbox = find_child(contents, "Textbox") if contents is not None else None
+    if textbox is None:
+        why = "no group of that name" if member is None else "its member has no TablixHeader cell"
+        raise ElementNotFoundError(
+            f"tablix {name!r} has no row-header textbox for group {group!r} ({why})"
+        )
+    return [textbox]
 
 
 def style_tablix_row(
@@ -1388,51 +1477,289 @@ def style_tablix_row(
     ``row`` accepts:
     - **Integer**: 0-based body row index. Range-checked against
       ``<TablixBody>/<TablixRows>``.
-    - **"header"**: first leaf with ``KeepWithGroup=After`` (the
-      conventional column header row).
+    - **"header"**: the column header row — the last static top-level
+      row marked ``KeepWithGroup=After`` above the groups (a group's own
+      header row, which ``add_row_group`` also marks, does not count).
     - **"details"**: the row containing the detail group leaf (a
       ``<Group>`` without ``<GroupExpressions>`` — ``Details``,
       ``Details1``, ...); on a matrix (no detail group), the innermost
       dynamic row group's leaf row.
-    - **"<group>_header"**: header row of a named row group (the group
-      created by ``add_row_group("<group>", ...)``).
-    - **"<group>_footer"**: footer row of a named row group (present
-      after ``add_subtotal_row("<group>", position="footer", ...)``).
+    - **"<group>_header"** (alias **"<group>_group_header"**): the named
+      row group's own static header row (what ``add_row_group`` emits);
+      raises when the group has none.
+    - **"<group>_footer"**: the group's static footer row (present after
+      ``add_subtotal_row("<group>", position="footer", ...)``); raises
+      when the group's last child is its data row.
+    - **"<group>_rowheader"**: the group's ``TablixHeader`` cell (the
+      row-header column of a matrix / grouped table; column groups too).
+    - **"corner"**: every ``TablixCornerCell`` textbox.
 
     Style kwargs, routing and validation are identical to
     :func:`set_textbox_style`; the writes share
-    :func:`set_textbox_style_bulk`'s helpers.
+    :func:`set_textbox_style_bulk`'s helpers. Each call writes the
+    properties it is given over whatever the cells carry (last writer
+    wins) — a ``background_color`` replaces a zebra or conditional
+    expression from the row-colour tools.
 
     Returns ``{tablix, row, row_index, kind: 'TablixRow', cells:
     list[str], changed: list[str], skipped: list[str]}``.
-    ``cells`` is the list of textbox names that resolved (column order);
-    ``skipped`` lists names that didn't resolve (rare — e.g. malformed
-    cells without a Textbox child).
+    ``cells`` is the list of the row's textbox names (column order; cells
+    holding no textbox are left out); the cells' own elements are styled,
+    so ``skipped`` is always empty (kept for compatibility).
+    ``row_index`` is ``None`` for the header-area roles.
     """
     props = _style_props(style, "style_tablix_row")
     doc = RDLDocument.open(path)
     tablix = resolve_tablix(doc, tablix_name)
-    row_index = _resolve_row_index(tablix, row)
-    cell_names = _row_cell_textbox_names(tablix, row_index)
-    if _no_style(props):
-        cells, skipped, changed = list(cell_names), [], []
-    else:
-        cells, skipped, changed = _style_textboxes(doc, cell_names, props)
-        if changed:
-            doc.save()
+    textboxes = _header_cell_textboxes(tablix, row)
+    row_index: Optional[int] = None
+    if textboxes is None:
+        row_index = _resolve_row_index(tablix, row)
+        textboxes = _row_cell_textboxes(tablix, row_index)
+    # The cells' own elements are styled — never re-resolved by name, so
+    # a cell whose name is duplicated elsewhere is still reached.
+    changed = [] if _no_style(props) else _style_elements(textboxes, props)
+    if changed:
+        doc.save()
     return {
         "tablix": tablix_name,
         "row": row,
         "row_index": row_index,
         "kind": "TablixRow",
-        "cells": cells,
+        "cells": [tb.get("Name") for tb in textboxes],
         "changed": changed,
+        "skipped": [],
+    }
+
+
+# ---- copy_textbox_style (#112) --------------------------------------------
+
+COPY_SCOPES = ("box", "border", "paragraph", "run")
+_BORDER_LOCALS = frozenset({"Border", "TopBorder", "BottomBorder", "LeftBorder", "RightBorder"})
+# Paragraph-level properties (every ParagraphType child but TextRuns).
+_PARAGRAPH_LOCALS = (
+    "Style",
+    "LeftIndent",
+    "RightIndent",
+    "HangingIndent",
+    "ListStyle",
+    "ListLevel",
+    "SpaceBefore",
+    "SpaceAfter",
+)
+_TEXTBOX_FLAGS = ("CanGrow", "CanShrink")
+
+
+def _rdl_children(parent: Optional[etree._Element], wanted: Callable[[str], bool]) -> list:
+    """RDL-namespace element children of ``parent`` whose local name
+    ``wanted`` accepts, in document order."""
+    if parent is None:
+        return []
+    return [
+        child
+        for child in parent
+        if isinstance(child.tag, str)
+        and child.tag.startswith(f"{{{RDL_NS}}}")
+        and wanted(etree.QName(child).localname)
+    ]
+
+
+def _replace_children(
+    parent: etree._Element,
+    wanted: Callable[[str], bool],
+    sources: list[etree._Element],
+    order: Optional[tuple[str, ...]] = None,
+    after: Optional[etree._Element] = None,
+) -> bool:
+    """Make ``parent``'s ``wanted`` children deep copies of ``sources``.
+    Nothing is touched when they already match (layout ignored), so a
+    repeat copy leaves the file byte-identical. Copies go in ``order``
+    (by local name) when given, else just after ``after`` (or appended).
+    Returns ``True`` iff the tree changed."""
+    current = _rdl_children(parent, wanted)
+    if [fingerprint(c) for c in current] == [fingerprint(s) for s in sources]:
+        return False
+    for child in current:
+        _remove_keep_layout(child)
+    anchor = after
+    for source in sources:
+        node = copy.deepcopy(source)
+        node.tail = None
+        if order is not None:
+            _insert_by_order(parent, node, order)
+        elif anchor is not None:
+            anchor.addnext(node)
+            anchor = node
+        else:
+            parent.append(node)
+    return True
+
+
+def _insert_by_order(parent: etree._Element, node: etree._Element, order: tuple[str, ...]) -> None:
+    local = etree.QName(node).localname
+    rank = order.index(local) if local in order else len(order)
+    for child in parent:
+        if not isinstance(child.tag, str):
+            continue
+        child_local = etree.QName(child).localname
+        if child_local in order and order.index(child_local) > rank:
+            child.addprevious(node)
+            return
+    parent.append(node)
+
+
+def _first_paragraph_and_run(
+    textbox: etree._Element,
+) -> tuple[Optional[etree._Element], Optional[etree._Element]]:
+    paragraphs_root = find_child(textbox, "Paragraphs")
+    paragraph = find_child(paragraphs_root, "Paragraph") if paragraphs_root is not None else None
+    runs = _textruns_of(paragraph) if paragraph is not None else []
+    return paragraph, (runs[0] if runs else None)
+
+
+def _copy_style_onto(
+    source: etree._Element, target: etree._Element, scopes: tuple[str, ...], flags: bool
+) -> list[str]:
+    """Copy ``source``'s styling onto ``target`` (in memory) and return
+    the changed parts (``"box"``, ``"border"``, ``"paragraph"``,
+    ``"run"``, ``"textbox.CanGrow"``, ...). Values, actions, visibility
+    and names are never touched."""
+    changed: list[str] = []
+    src_style = find_child(source, "Style")
+    for scope, wanted in (
+        ("box", lambda local: local not in _BORDER_LOCALS),
+        ("border", lambda local: local in _BORDER_LOCALS),
+    ):
+        if scope not in scopes:
+            continue
+        sources = _rdl_children(src_style, wanted)
+        tgt_style = find_child(target, "Style")
+        if tgt_style is None:
+            if not sources:
+                continue
+            tgt_style = _ensure_style(target)
+        if _replace_children(tgt_style, wanted, sources, order=_STYLE_CHILD_ORDER):
+            changed.append(scope)
+
+    src_paragraph, src_run = _first_paragraph_and_run(source)
+    if "paragraph" in scopes or "run" in scopes:
+        paragraphs_root = find_child(target, "Paragraphs")
+        paragraphs = (
+            find_children(paragraphs_root, "Paragraph") if paragraphs_root is not None else []
+        )
+        para_sources = _rdl_children(src_paragraph, lambda local: local in _PARAGRAPH_LOCALS)
+        run_style = find_child(src_run, "Style") if src_run is not None else None
+        run_sources = [run_style] if run_style is not None else []
+        for paragraph in paragraphs:
+            if "paragraph" in scopes and _replace_children(
+                paragraph,
+                lambda local: local in _PARAGRAPH_LOCALS,
+                para_sources,
+                after=find_child(paragraph, "TextRuns"),
+            ):
+                _note(changed, "paragraph")
+            if "run" not in scopes:
+                continue
+            for textrun in _textruns_of(paragraph):
+                last = textrun[-1] if len(textrun) else None
+                anchor = (
+                    last if last is not None and etree.QName(last).localname != "Style" else None
+                )
+                if _replace_children(
+                    textrun, lambda local: local == "Style", run_sources, after=anchor
+                ):
+                    _note(changed, "run")
+
+    if flags:
+        for local in _TEXTBOX_FLAGS:
+            src_flag = find_child(source, local)
+            if src_flag is not None:
+                if _set_or_create_textbox_direct_child(target, local, src_flag.text or ""):
+                    changed.append(f"textbox.{local}")
+            else:
+                tgt_flag = find_child(target, local)
+                if tgt_flag is not None:
+                    _remove_keep_layout(tgt_flag)
+                    changed.append(f"textbox.{local}")
+    return changed
+
+
+def copy_textbox_style(
+    path: str,
+    source: str,
+    targets: list[str],
+    scope: Optional[list[str]] = None,
+    include_textbox_flags: bool = True,
+    strict: bool = False,
+) -> dict[str, Any]:
+    """Make ``targets`` look like the textbox ``source``.
+
+    Copies, by deep-copying the source's elements:
+
+    - ``"box"`` — every ``Textbox/Style`` property except the borders
+      (background, padding, vertical alignment, writing mode, ...);
+    - ``"border"`` — ``Border`` and the per-side ``Top/Bottom/Left/
+      RightBorder``;
+    - ``"paragraph"`` — the first source paragraph's ``Style`` and
+      paragraph properties (indents, list style/level, spacing), onto
+      every target paragraph;
+    - ``"run"`` — the first source run's ``Style``, onto every run of
+      every target paragraph;
+
+    plus ``CanGrow`` / ``CanShrink`` when ``include_textbox_flags``.
+    ``scope`` picks a subset (default: all four). Within a scope the
+    target ends up with exactly the source's properties — one the source
+    lacks is removed. Values, actions, tooltips, visibility and names are
+    never touched.
+
+    Targets resolve like :func:`set_textbox_style_bulk`'s names: repeats
+    count once, unknown names go to ``skipped``, names several textboxes
+    share to ``ambiguous``; ``strict=True`` refuses both before any write.
+    The source must name exactly one textbox. The report is opened and
+    saved once (not at all when nothing changed).
+
+    Returns ``{source, targets, skipped, ambiguous, changed}`` —
+    ``changed`` is the sorted union of the parts that changed (``"box"``,
+    ``"border"``, ``"paragraph"``, ``"run"``, ``"textbox.CanGrow"``, ...).
+    """
+    if not isinstance(targets, list) or not all(isinstance(t, str) for t in targets):
+        raise ValueError("targets must be a list of textbox names")
+    if not targets:
+        raise ValueError("targets must name at least one textbox")
+    scopes = tuple(dict.fromkeys(COPY_SCOPES if scope is None else scope))
+    bad = [s for s in scopes if s not in COPY_SCOPES]
+    if bad or not scopes:
+        raise ValueError(f"scope: expected a non-empty list of {list(COPY_SCOPES)}; got {scope!r}")
+    for field, value in (("include_textbox_flags", include_textbox_flags), ("strict", strict)):
+        if not isinstance(value, bool):
+            raise ValueError(f"{field}: expected true or false; got {value!r}")
+
+    doc = RDLDocument.open(path)
+    source_el = resolve_textbox(doc, source)
+    resolved, skipped, ambiguous = _resolve_textbox_names(doc, targets)
+    if strict:
+        _refuse_unresolved("copy_textbox_style", skipped, ambiguous)
+    union: set[str] = set()
+    for _name, target in resolved:
+        if target is source_el:
+            continue
+        union.update(_copy_style_onto(source_el, target, scopes, include_textbox_flags))
+    changed = sorted(union)
+    if changed:
+        doc.save()
+    return {
+        "source": source,
+        "targets": [name for name, _target in resolved],
         "skipped": skipped,
+        "ambiguous": ambiguous,
+        "changed": changed,
     }
 
 
 __all__ = [
+    "COPY_SCOPES",
     "STYLE_KWARGS",
+    "copy_textbox_style",
     "set_alternating_row_color",
     "set_conditional_row_color",
     "set_textbox_runs",

@@ -37,10 +37,13 @@ __all__ = [
     "ALIAS",
     "COLUMN",
     "Column",
+    "ParamUse",
     "ResultColumns",
     "Token",
     "data_field_matches",
     "normalize_data_field",
+    "parameter_names",
+    "parameter_uses",
     "result_columns",
     "tokenize",
 ]
@@ -747,6 +750,45 @@ def normalize_data_field(data_field: Optional[str]) -> str:
     if not (rest.startswith("[") and rest.endswith("]")):
         return text.casefold()
     return f"{table.casefold()}[{rest[1:-1].casefold()}]"
+
+
+class ParamUse(NamedTuple):
+    """One ``@Name`` in DAX text (#95): ``name`` without the ``@``;
+    ``calls`` the enclosing function names, innermost first, upper-cased
+    (``("RSCUSTOMDAXFILTER", "FILTER")``)."""
+
+    name: str
+    start: int
+    calls: tuple[str, ...]
+
+
+def parameter_uses(dax: Optional[str]) -> list[ParamUse]:
+    """Every ``@Name`` parameter token in ``dax`` — outside string
+    literals, quoted names, brackets and comments — in source order,
+    with the function calls it sits in (so a caller can tell
+    ``RSCustomDaxFilter(@X, …)`` from ``[col] = @X``)."""
+    uses: list[ParamUse] = []
+    stack: list[str] = []
+    prev: Optional[Token] = None
+    for tok in tokenize(dax or ""):
+        if tok.kind in (LPAREN, LBRACE):
+            is_call = tok.kind == LPAREN and prev is not None and prev.kind == IDENT
+            stack.append(prev.value.upper() if is_call and prev is not None else "")
+        elif tok.kind in (RPAREN, RBRACE):
+            if stack:
+                stack.pop()
+        elif tok.kind == PARAM:
+            calls = tuple(c for c in reversed(stack) if c)
+            uses.append(ParamUse(tok.value, tok.start, calls))
+        prev = tok
+    return uses
+
+
+def parameter_names(dax: Optional[str]) -> list[str]:
+    """Distinct ``@Name`` parameter names in ``dax`` (without ``@``), in
+    first-use order. Built on :func:`tokenize`, so ``@X`` inside strings
+    or comments doesn't count."""
+    return list(dict.fromkeys(u.name for u in parameter_uses(dax)))
 
 
 def data_field_matches(data_field: Optional[str], column: Column) -> bool:

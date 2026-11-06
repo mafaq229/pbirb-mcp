@@ -22,7 +22,7 @@ and tokenize it with :mod:`pbirb_mcp.ops.vbexpr` (#46).
 Core rules (19):
 
 * ``multi-value-eq`` (warn) — multi-value param compared with ``=``, or
-  the FilterValue of an ``Equal``/``NotEqual`` ``<Filter>`` (#46).
+  the FilterValue of a ``<Filter>`` whose Operator isn't ``In`` (#46, #95).
 * ``unused-data-source`` (warn) — DataSource never referenced.
 * ``unused-data-set`` (warn) — DataSet never referenced.
 * ``date-param-as-string`` (warn) — ``*date*``-named param typed as
@@ -44,7 +44,8 @@ Core rules (19):
   (:func:`pbirb_mcp.ops.embedded_images.iter_embedded_image_refs`).
 * ``dangling-data-source-reference`` (error) —
   ``<DataSet>/<Query>/<DataSourceName>`` doesn't match a real
-  ``<DataSource>``.
+  ``<DataSource>`` (a ``<DataSourceReference>`` server path is not a name
+  and is never checked, #92).
 * ``dangling-action`` (warn) — drillthrough action with empty
   ``<ReportName>``.
 * ``pbidataset-at-prefix`` (error) — PBIDATASET dataset has a
@@ -234,16 +235,16 @@ def _bare_reference(sig: list[vbexpr.Token]) -> Optional[expr_walk.Ref]:
 
 
 def _multi_value_filter_issues(doc: RDLDocument, multi: set[str]) -> list[Issue]:
-    """``<Filter>`` with ``Operator`` ``Equal``/``NotEqual`` whose
-    ``FilterValue`` is a multi-value parameter — the commonest form of
-    the bug (#46): the filter compares each row against an array and
-    Report Builder rejects it at run time. ``In`` is the operator for a
-    multi-value list."""
+    """``<Filter>`` with any ``Operator`` but ``In`` whose ``FilterValue``
+    is a multi-value parameter — the commonest form of the bug (#46;
+    every non-``In`` operator since #95): the filter compares each row
+    against an array and Report Builder rejects it at run time. ``In`` is
+    the operator for a multi-value list."""
     issues: list[Issue] = []
     for flt in doc.root.iter(q("Filter")):
         op = find_child(flt, "Operator")
         op_text = (op.text or "").strip() if op is not None else ""
-        if op_text not in ("Equal", "NotEqual"):
+        if not op_text or op_text == "In":
             continue
         values = find_child(flt, "FilterValues")
         if values is None:
@@ -554,8 +555,9 @@ def _rule_dangling_data_source_reference(doc: RDLDocument) -> list[Issue]:
     sources = {ds.get("Name") for ds in doc.root.iter(q("DataSource")) if ds.get("Name")}
     issues: list[Issue] = []
     # Restrict to <DataSet>/<Query>/<DataSourceName> — that's where the
-    # reference actually has to resolve. <DataSource>'s own children
-    # (e.g. nested DataSourceReference shapes) are different beasts.
+    # reference actually has to resolve. <DataSource>/<DataSourceReference>
+    # is a shared data source's server path (e.g. "/Data Sources/Sales"),
+    # never an embedded <DataSource> name, so it is not checked here (#92).
     datasets_block = find_child(doc.root, "DataSets")
     if datasets_block is None:
         return []

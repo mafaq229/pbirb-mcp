@@ -540,22 +540,18 @@ def with_cells_target(fn: Callable[..., Any]) -> Callable[..., Any]:
 _COLUMN_PROPERTIES: dict = {
     "header": {
         "type": "string",
-        "description": "The column's header text, e.g. 'Asset Name' (case/space-insensitive).",
+        "description": "Column header text (case/space-insensitive).",
     },
-    "field": {
-        "type": "string",
-        "description": "A dataset field the column shows, e.g. 'AssetID'.",
-    },
+    "field": {"type": "string", "description": "Dataset field the column shows."},
     "index": {"type": "integer", "minimum": 0, "description": "0-based body column."},
-    "textbox": {"type": "string", "description": "Name of a textbox in any cell of the column."},
+    "textbox": {"type": "string", "description": "A textbox in the column."},
 }
 
 COLUMN_REF_SCHEMA: dict = {
     "type": "object",
     "description": (
-        "Pick the column by exactly one of header / field / index / textbox "
-        "(describe_report lists each tablix's column_details). Ambiguous or "
-        "unmatched specs fail with the candidate columns."
+        "One of header/field/index/textbox (see describe_report column_details); none or "
+        "several matches fail with candidates."
     ),
     "properties": dict(_COLUMN_PROPERTIES),
     "additionalProperties": False,
@@ -564,10 +560,8 @@ COLUMN_REF_SCHEMA: dict = {
 CELL_SCHEMA: dict = {
     "type": "object",
     "description": (
-        "Address a tablix cell instead of textbox_name: tablix (optional when "
-        "the report has one) plus exactly one of header / field / index / "
-        "textbox picking the column, and row ('data' — the repeating row, "
-        "default — or 'header') or row_index."
+        "Cell instead of textbox_name: tablix (if several), one of header/field/index/textbox, "
+        "and row ('data' repeating row, default, or 'header') or row_index."
     ),
     "properties": {
         "tablix": {"type": "string"},

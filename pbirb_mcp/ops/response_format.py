@@ -25,8 +25,7 @@ RESPONSE_FORMAT_PARAM: dict = {
     "enum": ["concise", "detailed"],
     "default": "detailed",
     "description": (
-        "'detailed' (default): the full read. 'concise': names, types, counts "
-        "and positions only — use it to plan, then read details for what you edit."
+        "'concise': names, types, counts, positions (to plan); 'detailed' (default): full read."
     ),
 }
 
@@ -89,11 +88,24 @@ def _dataset(d: dict) -> dict:
     out["fields"] = _names(d.get("fields"))
     out["query_parameters"] = _names(d.get("query_parameters"))
     out["filter_count"] = len(d.get("filters") or [])
+    if "designer_state_present" in d:
+        out["designer_state_present"] = d["designer_state_present"]
     return out
 
 
+def _source(values: Any) -> Any:
+    return values.get("source") if isinstance(values, dict) else None
+
+
 def _parameter(d: dict) -> dict:
-    return _pick(d, ("name", "data_type", "prompt", "multi_value", "hidden"))
+    out = _pick(d, ("name", "data_type", "prompt", "multi_value", "hidden", "layout"))
+    # Where defaults / dropdown values come from ('static' | 'query' | None);
+    # the lists themselves are detail.
+    if "default_values" in d:
+        out["default_values_source"] = _source(d["default_values"])
+    if "valid_values" in d:
+        out["valid_values_source"] = _source(d["valid_values"])
+    return out
 
 
 def _tablix(d: dict) -> dict:
@@ -128,6 +140,8 @@ def _chart(d: dict) -> dict:
         _pick(s, ("name", "type")) for s in d.get("series") or [] if isinstance(s, dict)
     ]
     out["category_groups"] = _names(d.get("category_groups"))
+    # Dynamic series groups only (static members have no group name).
+    out["series_groups"] = [n for n in _names(d.get("series_groups")) if n]
     return out
 
 

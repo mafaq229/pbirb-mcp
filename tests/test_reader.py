@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from pbirb_mcp.ops import parameters as P
+from pbirb_mcp.ops.dataset import get_dataset
 from pbirb_mcp.ops.header_footer import set_page_header
 from pbirb_mcp.ops.reader import (
     describe_report,
@@ -25,8 +27,10 @@ from pbirb_mcp.ops.reader import (
 )
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
+from tests._designer_state import build_designer_state_report
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pbi_paginated_minimal.rdl"
+FIXTURE_MULTI = Path(__file__).parent / "fixtures" / "pbi_multi_datasource.rdl"
 
 
 @pytest.fixture
@@ -506,6 +510,30 @@ class TestGetDatasets:
         out = get_datasets(path=str(rdl_path))
         assert out[0]["filters"] == []
 
+    @pytest.mark.parametrize("fixture", sorted(FIXTURE.parent.glob("*.rdl")), ids=lambda p: p.name)
+    def test_each_entry_equals_get_dataset(self, fixture):
+        # #97: get_datasets and get_dataset used to return different keys
+        # (designer_state_present was missing from the former).
+        entries = get_datasets(str(fixture))
+        assert entries
+        for entry in entries:
+            assert entry == get_dataset(str(fixture), entry["name"])
+
+    def test_designer_state_present(self, tmp_path):
+        path = build_designer_state_report(tmp_path / "ds.rdl")
+        entries = get_datasets(str(path))
+        assert any(e["designer_state_present"] for e in entries)
+        for entry in entries:
+            assert entry == get_dataset(str(path), entry["name"])
+
+    def test_concise_view_keeps_designer_state_flag(self, rdl_path):
+        from pbirb_mcp.ops.response_format import with_response_format
+
+        reader = with_response_format("get_datasets", get_datasets)
+        (ds,) = reader(path=str(rdl_path), response_format="concise")
+        assert ds["designer_state_present"] is False
+        assert "command_text" not in ds
+
 
 # ---- get_parameters --------------------------------------------------------
 
@@ -522,6 +550,102 @@ class TestGetParameters:
         date_from = next(p for p in out if p["name"] == "DateFrom")
         assert date_from["data_type"] == "DateTime"
         assert date_from["prompt"] == "Date From"
+
+    def test_values_and_layout_none_when_unset(self, rdl_path):
+        for p in get_parameters(path=str(rdl_path)):
+            assert p["default_values"] is None
+            assert p["valid_values"] is None
+            assert p["layout"] is None
+
+
+class TestGetParametersReadBack:
+    """#97: defaults, valid values and the layout cell are readable."""
+
+    @pytest.fixture
+    def multi_path(self, tmp_path: Path) -> Path:
+        dest = tmp_path / "multi.rdl"
+        shutil.copy(FIXTURE_MULTI, dest)
+        return dest
+
+    def test_issue_repro(self, multi_path):
+        path = str(multi_path)
+        P.set_parameter_default_values(path, "DateFrom", "static", ["=Today()"])
+        P.set_parameter_available_values(
+            path, "DateTo", "query", query_dataset="LookupSet", query_value_field="LookupKey"
+        )
+        P.set_parameter_layout(path, 1, 2, ["DateFrom", "DateTo"])
+        date_from, date_to = get_parameters(path)
+        assert date_from["default_values"] == {"source": "static", "values": ["=Today()"]}
+        assert date_from["valid_values"] is None
+        assert date_from["layout"] == {"row": 0, "column": 0}
+        assert date_to["default_values"] is None
+        assert date_to["valid_values"] == {
+            "source": "query",
+            "dataset": "LookupSet",
+            "value_field": "LookupKey",
+            "label_field": None,
+        }
+        assert date_to["layout"] == {"row": 0, "column": 1}
+
+    def test_static_valid_values_and_query_default(self, multi_path):
+        path = str(multi_path)
+        P.set_parameter_type(path, "DateTo", "String")
+        P.set_parameter_available_values(
+            path,
+            "DateTo",
+            "static",
+            static_values=["EU", {"value": "US", "label": "United States"}],
+        )
+        P.set_parameter_default_values(
+            path, "DateTo", "query", query_dataset="LookupSet", query_value_field="LookupKey"
+        )
+        P.set_parameter_layout(path, 2, 1, ["DateFrom", "DateTo"])
+        date_to = get_parameters(path)[1]
+        assert date_to["valid_values"] == {
+            "source": "static",
+            "values": [
+                {"value": "EU", "label": "EU"},
+                {"value": "US", "label": "United States"},
+            ],
+        }
+        assert date_to["default_values"] == {
+            "source": "query",
+            "dataset": "LookupSet",
+            "value_field": "LookupKey",
+        }
+        assert date_to["layout"] == {"row": 1, "column": 0}
+
+    def test_query_valid_values_with_label_field(self, multi_path):
+        path = str(multi_path)
+        P.set_parameter_available_values(
+            path,
+            "DateFrom",
+            "query",
+            query_dataset="LookupSet",
+            query_value_field="LookupKey",
+            query_label_field="LookupKey",
+        )
+        assert get_parameters(path)[0]["valid_values"]["label_field"] == "LookupKey"
+
+    def test_concise_view_keeps_layout_and_sources(self, multi_path):
+        from pbirb_mcp.ops.response_format import with_response_format
+
+        path = str(multi_path)
+        P.set_parameter_default_values(path, "DateFrom", "static", ["=Today()"])
+        P.set_parameter_layout(path, 1, 2, ["DateFrom", "DateTo"])
+        reader = with_response_format("get_parameters", get_parameters)
+        date_from, date_to = reader(path=path, response_format="concise")
+        assert date_from == {
+            "name": "DateFrom",
+            "data_type": "DateTime",
+            "prompt": "Date From",
+            "multi_value": False,
+            "hidden": False,
+            "layout": {"row": 0, "column": 0},
+            "default_values_source": "static",
+            "valid_values_source": None,
+        }
+        assert date_to["default_values_source"] is None
 
 
 # ---- get_tablixes ----------------------------------------------------------

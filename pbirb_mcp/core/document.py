@@ -82,6 +82,22 @@ _ASCII_COMPATIBLE = {"utf-8", "utf8", "us-ascii", "ascii", "iso-8859-1", "latin-
 PathLike = Union[str, os.PathLike]
 
 
+class NotAnRDLReport(ValueError):
+    """The file is well-formed XML but its root isn't an RDL 2016 ``<Report>`` (#86)."""
+
+    def __init__(self, path: PathLike, root: etree._Element):
+        qname = etree.QName(root)
+        ns = qname.namespace
+        if qname.localname == "Report" and ns:
+            what = f"<Report> in namespace {ns!r}, not the RDL 2016 namespace {RDL_NS!r}"
+            hint = " Open and save it in Power BI Report Builder to upgrade it."
+        else:
+            what = f"<{qname.localname}>" + (f" (namespace {ns!r})" if ns else "")
+            hint = ""
+        super().__init__(f"not an RDL report: root is {what}: {path}.{hint}")
+        self.payload = {"root_element": qname.localname, "root_namespace": ns}
+
+
 @dataclass
 class _SourceForm:
     """Byte-level facts about the file a document was parsed from."""
@@ -389,6 +405,10 @@ class RDLDocument:
         )
         raw = path.read_bytes()
         tree = etree.parse(io.BytesIO(raw), parser, base_url=str(path))
+        # A well-formed non-RDL file would otherwise read as an empty
+        # report (#86): every reader and lint rule finds nothing.
+        if tree.getroot().tag != f"{{{RDL_NS}}}Report":
+            raise NotAnRDLReport(path, tree.getroot())
         encoding = tree.docinfo.encoding or "utf-8"
         form, expanded = _SourceForm(), []
         if encoding.lower() in _ASCII_COMPATIBLE:
@@ -398,6 +418,16 @@ class RDLDocument:
         doc._remember_elements()
         doc._on_disk = _DiskState(str(path.resolve()), raw, _stat_signature(path))
         return doc
+
+    def pin_root_start_tag(self, start_tag: bytes) -> None:
+        """Write the root start tag as ``start_tag`` (exact bytes) for as long
+        as the root's tag, attributes and namespaces stay as they are now.
+
+        For documents built in memory: lxml writes namespace declarations
+        before attributes, Report Builder writes ``MustUnderstand`` first.
+        ``start_tag`` must declare exactly what the root carries."""
+        self.source_form.root_start_tag = start_tag
+        self.source_form.root_signature = _root_signature(self.root)
 
     def _remember_elements(self) -> None:
         refs = list(self.tree.iter())
@@ -635,6 +665,7 @@ class RDLDocument:
 
 
 __all__ = [
+    "NotAnRDLReport",
     "RDLDocument",
     "RDLValidationError",
     "RDL_NS",

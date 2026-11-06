@@ -133,10 +133,9 @@ class TestAddTablixFilterTypeWarnings:
         assert "datetime" in msg
         assert "string" in msg
 
-    def test_field_format_does_not_suppress_warning(self, rdl_path):
-        # Even with a field_format wrap, the underlying types still
-        # mismatch — emit the warning so the user knows the runtime
-        # comparison is string vs string only after Format() runs.
+    def test_field_format_suppresses_warning(self, rdl_path):
+        # #94: field_format is the coercion the warning recommends —
+        # Format() makes the field a String, so String vs String is fine.
         _annotate_field_type(rdl_path, "ProductName", "System.DateTime")
         _add_string_param(rdl_path, "Branch")
         result = add_tablix_filter(
@@ -147,7 +146,7 @@ class TestAddTablixFilterTypeWarnings:
             values=["=Parameters!Branch.Value"],
             field_format="MMM, yyyy",
         )
-        assert len(result["warnings"]) == 1
+        assert result["warnings"] == []
 
 
 # ---- add_dataset_filter integration -------------------------------------

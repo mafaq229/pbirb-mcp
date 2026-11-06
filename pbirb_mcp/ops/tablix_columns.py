@@ -37,6 +37,7 @@ from pbirb_mcp.core import names, tablix_headers, tablix_spans, units
 from pbirb_mcp.core.columns import describe_columns, resolve_column
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.encoding import encode_text
+from pbirb_mcp.core.geometry import sync_tablix_width
 from pbirb_mcp.core.ids import ElementNotFoundError, resolve_tablix
 from pbirb_mcp.core.mutation import remove_child_if_present, set_text_if_different
 from pbirb_mcp.core.tablix_shape import (
@@ -273,6 +274,7 @@ def remove_column_group(
             cell = find_children(find_child(row, "TablixCells"), "TablixCell")[0]
             removed_textboxes.extend(tablix_spans.report_item_names(cell))
             tablix_spans.detach(cell)
+        tablix_width = sync_tablix_width(tablix)  # one column fewer (#89)
 
     corner: dict[str, Any] = {"created": [], "removed": []}
     if tablix_headers.header_depth(tablix, tablix_headers.ROW) > 0:
@@ -289,6 +291,8 @@ def remove_column_group(
         result["padded_header_textboxes"] = padded
     if legacy:
         result["legacy_header_column_removed"] = True
+        if tablix_width is not None:
+            result["tablix_width"] = tablix_width
     return result
 
 
@@ -677,6 +681,7 @@ def add_tablix_column(
     column_headers = tablix_headers.pad_header_levels(
         tablix, tablix_headers.COLUMN, registry, f"{column_name}_Header"
     )
+    tablix_width = sync_tablix_width(tablix)  # #89
 
     doc.save()
     result: dict[str, Any] = {
@@ -696,6 +701,8 @@ def add_tablix_column(
         result["header_textboxes"] = header_names
     if column_headers:
         result["column_header_textboxes"] = column_headers
+    if tablix_width is not None:
+        result["tablix_width"] = tablix_width
     if widened:
         result["widened_span_rows"] = widened
     if point.relocated_from is not None:
@@ -823,6 +830,7 @@ def remove_tablix_column(
     toggle_targets = _visibility.guard_removed_toggle_targets(
         doc.root, textboxes_before, force=force, what=f"removing column {column_name!r}"
     )
+    tablix_width = sync_tablix_width(tablix)  # #89
 
     doc.save()
     result: dict[str, Any] = {
@@ -832,6 +840,8 @@ def remove_tablix_column(
         "removed_textboxes": removed_textboxes,
         "removed_groups": group_names,
     }
+    if tablix_width is not None:
+        result["tablix_width"] = tablix_width
     if toggle_targets:
         result["removed_toggle_targets"] = toggle_targets
     return result
@@ -916,23 +926,22 @@ def set_column_width(
         # Defensive: TablixColumn always carries Width per RDL XSD;
         # synthesize one if absent.
         width_node = etree.SubElement(target, q("Width"))
-    if width_node.text == width:
-        return {
-            "tablix": tablix_name,
-            "column_index": column_index,
-            "width": width,
-            "kind": "TablixColumn",
-            "changed": False,
-        }
+    changed = width_node.text != width
     width_node.text = width
-    doc.save()
-    return {
+    # The tablix's outer Width follows its columns (#89).
+    tablix_width = sync_tablix_width(tablix)
+    result: dict[str, Any] = {
         "tablix": tablix_name,
         "column_index": column_index,
         "width": width,
         "kind": "TablixColumn",
-        "changed": True,
+        "changed": changed or tablix_width is not None,
     }
+    if tablix_width is not None:
+        result["tablix_width"] = tablix_width
+    if result["changed"]:
+        doc.save()
+    return result
 
 
 __all__ = [

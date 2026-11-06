@@ -25,6 +25,26 @@ read-only report is refused with a `PermissionError` and left untouched.
 The rename gives the report a new inode, so other hard links to it keep
 the old content.
 
+Tablix width: a tablix renders at the sum of its column widths plus its
+row-header sizes (the widest `TablixHeader/Size` path of the row
+hierarchy), whatever its `<Width>` says. Every tool that adds, removes or
+resizes a column or a row header — add_tablix_column, remove_tablix_column,
+set_column_width, add_static_column, add_subtotal_column, convert_to_matrix,
+add_row_group / remove_row_group with a row-header cell, and
+remove_column_group's legacy-column cleanup — sets `<Width>` to that sum
+(in the unit `<Width>` already uses) and reports the new value as
+`tablix_width` (convert_to_matrix / add_subtotal_column also list
+`tablix_width` in `changed`), so `tablix-width-mismatch` does not fire on
+their output. set_tablix_size refuses a contradicting width unless
+`distribute=true`.
+
+Paths: a leading `~` in any path argument (`path`, `*_path`, `*_dir`) is
+expanded to the user's home directory before the allowed-roots check and
+the tool see it. A file that is well-formed XML but whose root isn't an
+RDL 2016 `<Report>` is refused by every tool except `validate_report`
+(which reports it as a `structural` error) with `NotAnRDLReport`, naming
+the root element.
+
 ## `core`
 
 ### `describe_report`
@@ -49,13 +69,32 @@ One-shot static check: union of validate_report and lint_report. Returns {valid,
 
 *read-only*
 
-Run static-analysis lint rules against an .rdl (`lint_report` returns `rules_run`; the rules live in `pbirb_mcp/ops/lint_rules/`). They cover the known bug classes (multi-value-eq, missing-field-reference, dangling-embedded-image, database-image-missing-mimetype, pbidataset-at-prefix, parameter-layout-out-of-sync, double-encoded-entities, stale-designer-state, tablix-span-misplaced, dataset-fields-out-of-sync, dangling-dataset-reference-field, duplicate-name, invalid-identifier, tablix-structure, chart-structure, etc.). Returns {issues, rules_run} with each issue {severity (error|warning), rule, location, message, suggestion?}; location names the nearest named items, e.g. Tablix[Name='T']>Textbox[Name='X']>Value. Optional `rules` selects a subset by name (empty = all).
+Run static-analysis lint rules against an .rdl (`lint_report` returns `rules_run`; the rules live in `pbirb_mcp/ops/lint_rules/`). They cover the known bug classes (multi-value-eq, query-parameter-mismatch, multi-value-query-binding, missing-field-reference, dangling-embedded-image, database-image-missing-mimetype, pbidataset-at-prefix, parameter-layout-out-of-sync, double-encoded-entities, stale-designer-state, tablix-span-misplaced, dataset-fields-out-of-sync, dangling-dataset-reference-field, parameter-state, duplicate-name, invalid-identifier, tablix-structure, chart-structure, etc.). Returns {issues, rules_run} with each issue {severity (error|warning), rule, location, message, suggestion?}; location names the nearest named items, e.g. Tablix[Name='T']>Textbox[Name='X']>Value. Optional `rules` selects a subset by name (empty = all).
 
 ### `dry_run_edit`
 
 *read-only*
 
-Apply a list of {tool, args} ops to a tempfile clone of the report; return the unified diff and a verify (validate + lint) report. The original file is NEVER modified. The harness auto-injects `path` into each op's args, so callers don't supply it. On op failure, dispatch stops; partial diff + verify are still returned. Use this to preview risky multi-step edits before committing. The diff is capped at max_diff_bytes (default 40000; capped diffs end in a 'diff truncated' marker line and set diff_truncated); summary=true returns only per-op outcomes, diff_stats and verify counts.
+Apply a list of {tool, args} ops to a tempfile clone of the report; return a diff and a verify (XSD + structural + lint) report. The original file is NEVER modified. The harness auto-injects `path` into each op's args, so callers don't supply it. On op failure, dispatch stops; partial diff + verify are still returned. Use this to preview risky multi-step edits before committing.
+
+The result has the apply_edits shape: `applied` is `[{tool, ok, result|error}]` with `result` the op's result object (`result_text`, the same result as a JSON string, is deprecated and will be removed in the next release), and `verify` is `{valid, issues, rules_run, xsd_used, introduced_count, preexisting_count, introduced_error_count}`. XSD and structural errors are among `issues`; `valid` is false only when an error-severity issue remains (warnings don't count, as in verify_report); each issue carries `new: true` unless the source already had it.
+
+`diff` picks the change report: `unified` (default) is the unified text diff; `summary` is a list of `"<change> <element path>"` lines, e.g. `changed Textbox[Title]/Paragraphs/Paragraph/TextRuns/TextRun/Value` or `added Tablix[T]/TablixBody/TablixColumns/TablixColumn[4]`; `semantic` is diff_report's `{counts, added, removed, changed, moved, reordered}` for the source vs the result; `none` leaves it out. Any diff is capped at max_diff_bytes (default 40000, 0 = no cap), the truncation marker included: a capped unified diff ends in a `\ pbirb-mcp: diff truncated ...` line, a capped summary in a `"... N more"` line, a capped semantic diff keeps its complete `counts`; diff_truncated is then true. `diff_stats` (lines added/removed, hunks of the text diff) is always returned. summary=true drops the op results, reduces verify to {valid, xsd_used, error_count, issue_count, issues_by_rule} and leaves the diff out unless `diff` is given.
+
+### `diff_report`
+
+*read-only*
+
+What changed in `path` relative to `baseline_path` — a backup (list_backups), another version from source control, or a copy — at the RDL level rather than as text. Named nodes are matched by identity, not position: report items and groups (one report-wide namespace), datasets, data sources, report parameters and embedded images by (element type, Name); other named elements (fields, query parameters, chart series / areas / axes, ...) by (element type, Name) within their nearest named ancestor. Everything else is compared below its owner — the nearest named ancestor, or one of `Report` / `ReportSection` / `Body` / `Page` / `PageHeader` / `PageFooter` — by path, with repeated unnamed siblings (columns, rows, cells, members, paragraphs, ...) aligned by content, so an inserted column is one added `TablixColumn` rather than every later column changing.
+
+Returns {path, baseline_path, identical, counts, added, removed, changed, moved, reordered, truncated} ("added" = in path, not in baseline_path):
+
+- `added` / `removed`: `{kind, name, parent}` for a named node; `{kind, name: null, parent, path}` for an unnamed collection member (`TablixColumn`, `TablixCell`, `TablixMember`, `Paragraph`, ...), one entry per subtree. `add_tablix_column` shows up as the `TablixColumn`, its `TablixCell`s, its `TablixMember` and the new cell textboxes.
+- `changed`: `{kind, name, property, from, to}` — a value or attribute (`.../@Attr`) at `property` below the owner `kind`/`name` (`name` null for an anchor), e.g. `{kind: "Textbox", name: "Amount", property: "Paragraphs/Paragraph/TextRuns/TextRun/Style/FontWeight", from: null, to: "Bold"}`; `null` = absent on that side.
+- `moved`: `{kind, name, from, to}` — a named node whose owner changed (e.g. a textbox moved from Body into a rectangle).
+- `reordered`: `{kind, name, path, from, to}` — the named children of `path` kept but reordered (e.g. `reorder_parameters`).
+
+Ignored: layout whitespace, attribute order, comments, the BOM / newline / encoding form, and with ignore_ids (default true) the designer's `rd:*ID` elements (`rd:ReportID`, `rd:DataSourceID`), which duplicate_report and Report Builder regenerate. Text is compared after entity normalisation, so `&` and a double-encoded `&amp;` compare equal. `scope` keeps only the changes at or inside one named node (report item, group, dataset, data source, parameter, field, ...) or Body / Page / PageHeader / PageFooter / ReportSection; an unknown name is an error. max_entries (default 200, 0 = no cap) bounds the entries returned; `counts` is always complete and `truncated` says entries were left out. `identical` is true when nothing differs. Inside the editing transaction holding `path`, its uncommitted tree is compared. dry_run_edit(diff="semantic") returns the same lists for a planned edit.
 
 ### `start_editing_transaction`
 
@@ -71,31 +110,31 @@ Discard a transaction. The in-memory tree is dropped; the on-disk file is unchan
 
 ### `apply_edits`
 
-Atomic batch: open once → apply ops → lint → save once. Opens an internal transaction against path, dispatches each {tool, args} op through the JSON-RPC tools/call path with transaction_id injected, and commits at the end. On any op failure or lint-error at commit, rolls back — disk is byte-identical to its pre-call state. Compare with dry_run_edit (clones to tempfile, never touches the real file): use dry_run_edit to preview a plan, apply_edits to land it. Returns {applied: [{tool, ok, result|error}], verify, committed}.
+Atomic batch: open once → apply ops → lint → save once. Opens an internal transaction against path, dispatches each {tool, args} op through the JSON-RPC tools/call path with transaction_id injected, and commits at the end. On any op failure or lint-error at commit, rolls back — disk is byte-identical to its pre-call state. Compare with dry_run_edit (clones to tempfile, never touches the real file): use dry_run_edit to preview a plan, apply_edits to land it. Returns {applied: [{tool, ok, result|error}], verify, committed}; `verify` has commit_editing_transaction's keys {valid, issues, rules_run, xsd_used, introduced_count, preexisting_count, introduced_error_count} — nothing checked (valid false, no issues) when an op failed — the same keys as dry_run_edit's.
 
 ### `get_expression_reference`
 
 *read-only*
 
-Return a static cheat-sheet of common RDL expression patterns: globals, parameters, fields, aggregates, conditionals, strings, dates. Each entry is {name, syntax, example, description}. Call this when authoring a textbox value or filter expression instead of guessing — and note the explicit encoding hint for the `&` concat operator.
+Return a static cheat-sheet of common RDL expression patterns: globals, parameters, fields, aggregates (incl. the scope argument, CountRows, RowNumber, RunningValue, InScope), lookups (Lookup / LookupSet / MultiLookup), conditionals, strings, dates. Each entry is {name, syntax, example, description}. Call this when authoring a textbox value or filter expression instead of guessing — and note the explicit encoding hint for the `&` concat operator.
 
 ### `count_where`
 
 *read-only*
 
-Emit =Sum(IIf(`<condition>`, 1, 0)) — the SSRS conditional-count idiom. condition is an RDL expression body (no leading '='). Returns a complete top-level expression suitable for set_textbox_value or any RDL `<Value>` sink.
+Emit =Count(IIf(`<condition>`, 1, Nothing)) — count the rows matching a condition (Count skips Nothing; 0 when none match). condition is an RDL expression body; one leading '=' is dropped. scope (a dataset, data region or group name) appends the aggregate's scope argument, `, "<scope>"` (quotes doubled) — needed outside a data region. Returns a complete top-level expression suitable for set_textbox_value or any RDL `<Value>` sink.
 
 ### `sum_where`
 
 *read-only*
 
-Emit =Sum(IIf(`<condition>`, `<field_expression>`, 0)) — the SSRS conditional-sum idiom. Both args are expression bodies (no leading '=').
+Emit =Sum(IIf(`<condition>`, `<field_expression>`, Nothing)) — sum a value where a condition holds. The false branch is Nothing, not 0: an Int32 0 mixed with the Double / Decimal values of Power BI numeric columns fails with 'aggregate function on data of varying data types'; Sum ignores Nothing (the result is blank when no row matches). Both args are expression bodies; one leading '=' on each is dropped. scope works as in count_where.
 
 ### `iif_format`
 
 *read-only*
 
-Emit =IIf(`<condition>`, `<true_value>`, `<false_value>`). All three args are expression bodies (no leading '='); string literals must already be quoted, e.g. true_value='"Yes"'.
+Emit =IIf(`<condition>`, `<true_value>`, `<false_value>`). All three args are expression bodies (one leading '=' on each is dropped); string literals must already be quoted, e.g. true_value='"Yes"'.
 
 ## `data`
 
@@ -103,7 +142,7 @@ Emit =IIf(`<condition>`, `<true_value>`, `<false_value>`). All three args are ex
 
 *read-only*
 
-Full DAX command text, fields, query parameters, and dataset-level filters for every DataSet in the report.
+Full DAX command text, fields, query parameters, and dataset-level filters for every DataSet in the report. Each entry is exactly the get_dataset shape (including designer_state_present). `response_format: "concise"` keeps name, data_source, field and query-parameter names, filter_count and designer_state_present.
 
 ### `update_dataset_query`
 
@@ -119,11 +158,13 @@ Add a `<QueryParameter>` binding to a dataset's query. Use to wire report parame
 
 PBIDATASET parameter naming rule: in DAX/`<CommandText>`, write @MyParam (with @). In `<QueryParameter Name=...>`, write MyParam (no @). SQL/MDX use @ in both places. This tool detects the dataset's provider and AUTO-STRIPS a leading @ from `name` for PBIDATASET datasets, returning {normalised: true, warning: ...}. Pass force_at_prefix=true to override (rare; needed for some RSCustomDaxFilter patterns).
 
+`warnings` lists the lint findings about the new binding: a Power BI dataset's DAX that never uses `@<name>` (query-parameter-mismatch), a multi-value report parameter passed raw into an `@<name>` the DAX compares as a scalar (multi-value-query-binding), a `Parameters!X` in the value that names no report parameter (undefined-parameter).
+
 ### `update_query_parameter`
 
 *idempotent*
 
-Change the value expression of an existing query parameter. Same PBIDATASET @-prefix normalisation as add_query_parameter applies on lookup; legacy Name='@X' parameters that already exist on disk are addressable via either @X or X.
+Change the value expression of an existing query parameter. Same PBIDATASET @-prefix normalisation as add_query_parameter applies on lookup; legacy Name='@X' parameters that already exist on disk are addressable via either @X or X. Returns the same `warnings` as add_query_parameter.
 
 ### `set_datasource_connection`
 
@@ -151,21 +192,23 @@ Create a new `<DataSource>` for a Power BI XMLA endpoint. workspace_url accepts 
 
 *destructive*
 
-Remove a named `<DataSource>`. Refuses by default if any DataSet/Query/DataSourceName or DataSource/DataSourceReference still references it; the error lists the offending locators. Pass force=True to remove anyway.
+Remove a named `<DataSource>`. Refuses by default if any DataSet/Query/DataSourceName still references it; the error lists the offending locators. Pass force=True to remove anyway. A `<DataSourceReference>` is a shared data source's server path, not an embedded name, so it never counts as a reference. Always refuses to remove the report's last data source (even with force): a report without one is invalid RDL — add the replacement first, or repoint it with set_datasource_connection.
 
 ### `rename_data_source`
 
-Rename a `<DataSource>` and rewrite every reference: DataSet/Query/DataSourceName entries AND any DataSource/DataSourceReference shared-source links. Atomic: stages all matches before committing. Errors if new_name already exists or equals old_name.
+Rename a `<DataSource>` and rewrite every DataSet/Query/DataSourceName that names it; `references_rewritten` counts them. `<DataSourceReference>` (a shared data source's server path) is left untouched. Atomic: stages all matches before committing. Errors if new_name already exists or equals old_name.
 
 ### `list_dataset_filters`
 
 *read-only*
 
-List dataset-level filters in document order. Returns [{expression, operator, values}]; index in the list is the stable handle for remove_dataset_filter. DataSet filters apply to every consumer of the dataset (every Tablix / Chart bound to it); use list_tablix_filters for per-tablix filtering.
+List dataset-level filters in document order. Returns [{expression, operator, values, data_type}] (data_type: the `<FilterValue DataType>`, null when unset); index in the list is the stable handle for remove_dataset_filter. DataSet filters apply to every consumer of the dataset (every Tablix / Chart bound to it); use list_tablix_filters for per-tablix filtering.
 
 ### `add_dataset_filter`
 
-Append a `<Filter>` to the named dataset's `<Filters>` block. operator ∈ Equal / NotEqual / GreaterThan / LessThan / GreaterThanOrEqual / LessThanOrEqual / Like / In / Between / TopN / BottomN / TopPercent / BottomPercent. values must be non-empty (single-value filters use a one-element list). Returns the new filter's index for later removal. Optional field_format wraps the expression as Format(`<body>`, fmt) to coerce typed fields for string-parameter comparison. Response includes warnings for field/parameter type mismatches detected via best-effort cross-check.
+Append a `<Filter>` to the named dataset's `<Filters>` block. operator ∈ Equal / NotEqual / GreaterThan / LessThan / GreaterThanOrEqual / LessThanOrEqual / Like / In / Between / TopN / BottomN / TopPercent / BottomPercent (case-sensitive; the schema enumerates them). Arity is checked: Between takes exactly 2 values (low, high), In one or more, every other operator exactly 1; TopN / BottomN take an integer literal or an `=`-expression, TopPercent / BottomPercent a number or an expression. Returns the new filter's index for later removal. Optional field_format wraps the expression as Format(`<body>`, fmt) to coerce typed fields for string-parameter comparison.
+
+value_data_type (Boolean / DateTime / Integer / Float / String) writes `<FilterValue DataType="...">` on every value, so a literal such as `50` compares as an Integer instead of a String; Integer / Float / Boolean literals are checked against the type. Response `warnings` (best-effort): a `Fields!X.Value` whose rd:TypeName group differs from a `Parameters!Y` value's DataType; a numeric or date field compared with bare literal values and no value_data_type (Report Builder's run-time "comparison failed") — the warning names the DataType to pass. Fields wrapped in Format( / CStr( / .ToString compare as strings and are not checked (so field_format clears the warning), nor are TopN-style counts.
 
 Text handling: a literal value or expression (no leading `=`) is written verbatim — `R&amp;D` stays `R&amp;D`. An `=`-expression is entity-decoded (`="A &amp; B"` → `="A & B"`, the guard against double-encoded expressions) and the rewrite is reported in `warnings`. `expression` / `values` in the response echo what was written.
 
@@ -207,11 +250,47 @@ Append a data-bound `<Field>` to a dataset's `<Fields>` block. Writes `<DataFiel
 
 Sync a dataset's `<Fields>` block against the shape detected in its DAX `<CommandText>`. Eliminates the manual 'open Report Builder → right-click → Refresh Fields' step after a query rewrite. Matches existing Fields to the query's result columns by `<DataField>` (Table[Col] / [Alias]), not by Name. Adds a Field per unbound column the way Report Builder does: Name sanitised (Amount (USD) -> Amount__USD_; duplicates Name1, Name2 ...), DataField Table[Col] or [Alias]. Lists orphans without auto-removing (caller decides what to drop). Returns {added: [{name, data_field}], orphans: [{name, data_field}], unchanged: [names], warnings}. When the DAX can't be fully analysed (e.g. bare EVALUATE 'Table') nothing is added and warnings explain why.
 
+### `set_dataset_data_source`
+
+*idempotent*
+
+Point a dataset's `<Query>/<DataSourceName>` at another data source — e.g. to retire a duplicate, unused source. The source must exist (the error lists the data sources). `warnings` flags a switch between provider families: a Power BI source (PBIDATASET, or SQL with a `powerbi://` connect string — DAX, `@Name` in the query and a bare `Name` in `<QueryParameter>`) and a SQL / other one (`@Name` in both places); the command text and query-parameter names probably need rewriting too. Returns {dataset, data_source, previous, changed, warnings}; the same source again → changed: false, no write.
+
+### `add_dataset`
+
+Create `<DataSet Name><Query><DataSourceName/><CommandText/></Query></DataSet>` — e.g. the lookup dataset a cascading parameter's available values need. `name` must be a valid identifier that is neither an existing dataset nor a report item / group name (scope strings such as `Sum(…, "X")` would be ambiguous); the data source must exist; `command_text` (DAX for a Power BI source) is stored verbatim and must not be empty. `fields` optionally seeds data-bound Fields from DataField bindings (`Sales[Amount]`, `'Sales'[Region (EU)]`, `[Total]`), named the way Report Builder's Refresh Fields does (`Region__EU_`, duplicates `Name1` …); refresh_dataset_fields seeds them from the DAX instead. `warnings` lists `@Name` parameters the DAX uses without a QueryParameter (add them with add_query_parameter). Returns {dataset, kind: 'DataSet', data_source, fields: [{name, data_field}], changed, warnings}.
+
+### `remove_dataset`
+
+*destructive*
+
+Remove a `<DataSet>`. Refuses while anything still uses it — a `<DataSetName>` of a data region (Tablix, Chart, GaugePanel, map, CustomReportItem) or of a parameter's ValidValues / DefaultValue `DataSetReference`, or an aggregate / lookup scope string (`Sum(…, "DS")`, `Lookup(…, "DS")`, `CountRows("DS")`) outside the dataset itself — and lists up to 5 locators; force=true removes anyway. The empty `<DataSets>` block is dropped with the last dataset. Returns {removed, force, references, changed}.
+
+### `rename_dataset`
+
+Rename a `<DataSet>` and rewrite every reference to it: each `<DataSetName>` (data regions and parameter DataSetReference) and each aggregate / lookup / scope-function scope string naming it (`Sum(…, "Old")`, `Lookup(…, "Old")`, `CountRows("Old")`, `RowNumber("Old")`). Names in other string literals and comments are left alone. new_name is checked like add_dataset's name. Atomic. Returns {old_name, new_name, references_rewritten (elements rewritten), changed}.
+
+### `rename_dataset_field`
+
+Rename a `<Field>` of a dataset and rewrite its consumers — the references remove_dataset_field looks for: `Fields!<old>.<member>` and `Fields("<old>")` in expressions evaluated against this dataset (aggregate / lookup scope argument, else the data region's DataSetName, else the DataSet itself), and a parameter DataSetReference's ValueField / LabelField. Same-named fields of other datasets are untouched; names in string literals and comments too. A reference whose dataset can't be resolved statically is rewritten only when no other dataset has a field of that name, otherwise left alone and reported in `warnings`. The `<DataField>` (the query column binding) doesn't change. Atomic. Returns {dataset, old_name, new_name, references_rewritten, changed, warnings}.
+
+### `set_field_type`
+
+*idempotent*
+
+Set a field's `<rd:TypeName>` — the .NET type the filter tools' type checks read. type_name is one of System.String, Boolean, Char, Byte, SByte, Int16, Int32, Int64, UInt16, UInt32, UInt64, Single, Double, Decimal, DateTime, DateTimeOffset, TimeSpan, Guid, Object, Byte[] (with or without `System.`, any case; written as `System.X`); null removes the element. Returns {dataset, field, type_name, changed}.
+
+### `set_dataset_options`
+
+*idempotent*
+
+Set dataset properties: timeout (the query `<Timeout>`, seconds, 0 = none), collation (`<Collation>`, e.g. Latin1_General; "" removes it) and case_sensitivity / accent_sensitivity / kanatype_sensitivity / width_sensitivity (True / False / Auto). Omitted options are left alone; at least one is required. Returns {dataset, options: {timeout, case_sensitivity, collation, accent_sensitivity, kanatype_sensitivity, width_sensitivity}, changed}; nothing different → changed: false, no write.
+
 ### `remove_query_parameter`
 
 *destructive*
 
-Remove a query parameter from a dataset. Cleans up the empty `<QueryParameters/>` block when removing the last one.
+Remove a query parameter from a dataset. Same lookup as update_query_parameter: on a PBIDATASET dataset `@X` finds the `Name="X"` binding add_query_parameter wrote (and a legacy `Name="@X"`). Cleans up the empty `<QueryParameters/>` block when removing the last one. Returns {dataset, removed (the Name removed), warnings}; warnings flags an `@X` the DAX still uses (Report Builder: "The query contains the 'X' parameter, which is not declared").
 
 ## `parameters`
 
@@ -219,7 +298,7 @@ Remove a query parameter from a dataset. Cleans up the empty `<QueryParameters/>
 
 *read-only*
 
-Report parameter declarations: name, data type, prompt, flags.
+Report parameter declarations: name, data_type, prompt, flags (nullable, allow_blank, multi_value, hidden), plus `default_values` — {source: 'static', values: [...]} or {source: 'query', dataset, value_field} — `valid_values` — {source: 'static', values: [{value, label}]} or {source: 'query', dataset, value_field, label_field} — and `layout`, the parameter's {row, column} cell (0-based) in `<ReportParametersLayout>`; each is null when not set. `response_format: "concise"` keeps name, data_type, prompt, multi_value, hidden, layout, default_values_source and valid_values_source.
 
 ### `reorder_parameters`
 
@@ -243,11 +322,11 @@ Write the `<Prompt>` text on a ReportParameter. Empty string clears the `<Prompt
 
 *idempotent*
 
-Set `<DataType>` on a ReportParameter. type ∈ {Boolean, DateTime, Integer, Float, String}. Rejects with ValueError if any existing literal default value would be incompatible with the new type — fix defaults first via set_parameter_default_values, then retry.
+Set `<DataType>` on a ReportParameter. type ∈ {Boolean, DateTime, Integer, Float, String}. Rejects with ValueError if any existing literal default value or static valid value would be incompatible with the new type, or the new type is Boolean on a multi-value parameter — fix those first via set_parameter_default_values / set_parameter_available_values, then retry. Setting the type it already has returns changed=false without checking anything.
 
 ### `add_parameter`
 
-Create a new ReportParameter with a minimal valid declaration. Appends to `<ReportParameters>` (creating it if absent). Pair with set_parameter_available_values / set_parameter_default_values afterwards for value lists. Booleans are only emitted when an explicit value is supplied.
+Create a new ReportParameter with a minimal valid declaration. Appends to `<ReportParameters>` (creating it if absent). Pair with set_parameter_available_values / set_parameter_default_values afterwards for value lists. Booleans are only emitted when an explicit value is supplied. Like every parameter writer, it checks the resulting parameter (#93) and refuses a state it introduced that Report Builder rejects: MultiValue + Nullable, a multi-value Boolean, more than one static default without MultiValue, or a literal default / static valid value that doesn't fit the DataType; a hidden parameter with neither a default nor Nullable only adds a `warnings` entry. A problem the parameter already had doesn't block the edit — it comes back in `warnings` (lint rule `parameter-state` reports it).
 
 ### `remove_parameter`
 
@@ -269,19 +348,19 @@ Bring `<ReportParametersLayout>/<GridLayoutDefinition>/<CellDefinitions>` into s
 
 *idempotent*
 
-Set or clear `<ValidValues>` on a report parameter. source='static' with a non-empty static_values writes a list of `<ParameterValue>` entries (each entry can be a string or {value, label} dict). source='static' with static_values=[] or omitted CLEARS the `<ValidValues>` element entirely (mirrors set_parameter_prompt('') and returns cleared=true). source='query' writes a `<DataSetReference>` to a lookup dataset. Replaces any existing `<ValidValues>` block.
+Set or clear `<ValidValues>` on a report parameter. source='static' with a non-empty static_values writes a list of `<ParameterValue>` entries (each entry can be a string or {value, label} dict). source='static' with static_values=[] or omitted CLEARS the `<ValidValues>` element entirely (mirrors set_parameter_prompt('') and returns cleared=true). source='query' writes a `<DataSetReference>` to a lookup dataset; query_value_field and query_label_field must be fields of query_dataset. Replaces any existing `<ValidValues>` block. Like every parameter writer, it checks the resulting parameter (#93) and refuses a state it introduced that Report Builder rejects: MultiValue + Nullable, a multi-value Boolean, more than one static default without MultiValue, or a literal default / static valid value that doesn't fit the DataType; a hidden parameter with neither a default nor Nullable only adds a `warnings` entry. A problem the parameter already had doesn't block the edit — it comes back in `warnings` (lint rule `parameter-state` reports it).
 
 ### `set_parameter_default_values`
 
 *idempotent*
 
-Set or clear `<DefaultValue>` on a report parameter. source='static' with a non-empty static_values writes a `<Values>` list of expressions. source='static' with static_values=[] or omitted CLEARS the `<DefaultValue>` element entirely (mirrors set_parameter_prompt('') and returns cleared=true). source='query' writes a `<DataSetReference>` with ValueField only (no LabelField — defaults are values, not display strings). Replaces any existing block.
+Set or clear `<DefaultValue>` on a report parameter. source='static' with a non-empty static_values writes a `<Values>` list of expressions. source='static' with static_values=[] or omitted CLEARS the `<DefaultValue>` element entirely (mirrors set_parameter_prompt('') and returns cleared=true). source='query' writes a `<DataSetReference>` with ValueField only (no LabelField — defaults are values, not display strings); query_value_field must be a field of query_dataset. Replaces any existing block. Like every parameter writer, it checks the resulting parameter (#93) and refuses a state it introduced that Report Builder rejects: MultiValue + Nullable, a multi-value Boolean, more than one static default without MultiValue, or a literal default / static valid value that doesn't fit the DataType; a hidden parameter with neither a default nor Nullable only adds a `warnings` entry. A problem the parameter already had doesn't block the edit — it comes back in `warnings` (lint rule `parameter-state` reports it).
 
 ### `update_parameter_advanced`
 
 *idempotent*
 
-Toggle the four boolean flags on a report parameter: multi_value, hidden, allow_null (writes `<Nullable>`), allow_blank. Each is independently optional. With no flags passed it's a no-op. Cascading parameters are NOT a flag — use set_parameter_available_values(source='query') + add_query_parameter on the lookup dataset to wire a dependency on another parameter.
+Toggle the four boolean flags on a report parameter: multi_value, hidden, allow_null (writes `<Nullable>`), allow_blank. Each is independently optional. With no flags passed it's a no-op. Cascading parameters are NOT a flag — use set_parameter_available_values(source='query') + add_query_parameter on the lookup dataset to wire a dependency on another parameter. Like every parameter writer, it checks the resulting parameter (#93) and refuses a state it introduced that Report Builder rejects: MultiValue + Nullable, a multi-value Boolean, more than one static default without MultiValue, or a literal default / static valid value that doesn't fit the DataType; a hidden parameter with neither a default nor Nullable only adds a `warnings` entry. A problem the parameter already had doesn't block the edit — it comes back in `warnings` (lint rule `parameter-state` reports it).
 
 ## `tablix`
 
@@ -305,13 +384,13 @@ Tablix layout with stable IDs: columns, row/column groups, sort expressions, fil
 
 *idempotent*
 
-Set `<Width>` on a tablix's body column. column accepts a 0-based integer index OR a textbox name living in any cell of that column (mirrors how set_cell_span / add_subtotal_row address columns), or column_ref {header | field} to pick it by header text or field. width is an RDL size ('1.5in', '4cm', '80pt'). Idempotent: same width → {changed: false}, no save.
+Set `<Width>` on a tablix's body column. column accepts a 0-based integer index OR a textbox name living in any cell of that column (mirrors how set_cell_span / add_subtotal_row address columns), or column_ref {header | field} to pick it by header text or field. width is an RDL size ('1.5in', '4cm', '80pt'). The tablix `<Width>` follows (see "Tablix width" above). Idempotent: same width → {changed: false}, no save.
 
 ### `set_tablix_size`
 
 *idempotent*
 
-Resize a tablix by writing `<Height>` and / or `<Width>` directly. Each arg independently optional. Use after adding header / footer rows that change the body's natural height. Both values are RDL size strings. Returns {tablix, kind, changed: list[str]} — empty list when inputs match existing.
+Resize a tablix by writing `<Height>` and / or `<Width>` directly. Each arg independently optional. Use after adding header / footer rows that change the body's natural height. Both values are RDL size strings. A tablix renders at the sum of its column widths plus its row-header sizes, so a `width` that disagrees with them (beyond 0.001in) is refused, naming the actual sum; with `distribute=true` the body columns are scaled proportionally to fit instead (row headers keep their size; each column keeps its unit, the last one takes the rounding remainder) and the result lists the new `column_widths`. Columns with a missing or invalid width can't be checked and the width is written as given. Height is written as given. Returns {tablix, kind, changed: list[str], column_widths?} — `changed` is empty when inputs match existing; it holds `columns` when columns were rescaled.
 
 ### `set_group_page_break`
 
@@ -347,18 +426,18 @@ Set `<TablixMember>/<KeepWithGroup>` on a static row's member. value ∈ {None, 
 
 *read-only*
 
-List all filters on a named tablix in document order. Returns expression, operator, and values per filter; index in the list is the stable handle for remove_tablix_filter.
+List all filters on a named tablix in document order. Returns expression, operator, values and data_type (`<FilterValue DataType>`, null when unset) per filter; index in the list is the stable handle for remove_tablix_filter.
 
 ### `add_tablix_filter`
 
-Append a `<Filter>` to a tablix. Operator must be one of the RDL 2016 enumeration (Equal, NotEqual, GreaterThan, In, Between, ...). Returns the new filter's index for follow-up calls. Optional field_format wraps the expression as Format(`<body>`, fmt) to coerce typed fields for string-parameter comparison. The response includes warnings for cross-checked field/parameter type mismatches. Literals (no leading `=`) are written verbatim; `=`-expressions are entity-decoded with a warning; the response echoes what was written (same rules as add_dataset_filter).
+Append a `<Filter>` to a tablix. Operator must be one of the RDL 2016 enumeration (Equal, NotEqual, GreaterThan, In, Between, ...). Returns the new filter's index for follow-up calls. Optional field_format wraps the expression as Format(`<body>`, fmt) to coerce typed fields for string-parameter comparison. Arity, value_data_type and the type warnings work as in add_dataset_filter (checked against the tablix's dataset). Literals (no leading `=`) are written verbatim; `=`-expressions are entity-decoded with a warning; the response echoes what was written (same rules as add_dataset_filter).
 
 ### `add_row_group`
 
 Add a dynamic row group, like Report Builder's Add Group > Parent Group.
 
 - **Where:** `parent_group` names the existing row group the new one nests directly inside (default: the top level). `wrap` picks the members at that level it wraps: `"details"` (default) only the member on the path to the detail rows (on a matrix, the innermost group), so the column-header row and grand-total rows stay outside and render once; `"member:<group>"` that group's member wherever it is (`parent_group`, if given, must be its parent; `member:Details` adds the innermost parent of the detail rows); `"all"` every member at that level (the old behaviour: header/total rows then repeat per group).
-- **Header:** `"row"` inserts a group-header row (static member, `KeepWithGroup=After`, textboxes `<group>_Header_<i>`, the expression in the first cell) at the first wrapped row's index. `"column"` gives the group a row-header cell (`TablixHeader`, textbox `<group>_Header`): other rows get blank header cells so the header area stays rectangular, the `TablixCorner` is created/resized and the tablix `Width` grows by the header size. `"none"` adds no header. `"auto"` (default) is `"column"` when the tablix already has row-header cells (a matrix; `"row"`/`"none"` are refused there), else `"row"`.
+- **Header:** `"row"` inserts a group-header row (static member, `KeepWithGroup=After`, textboxes `<group>_Header_<i>`, the expression in the first cell) at the first wrapped row's index. `"column"` gives the group a row-header cell (`TablixHeader`, textbox `<group>_Header`): other rows get blank header cells so the header area stays rectangular, the `TablixCorner` is created/resized and the tablix `Width` grows to include the header size. `"none"` adds no header. `"auto"` (default) is `"column"` when the tablix already has row-header cells (a matrix; `"row"`/`"none"` are refused there), else `"row"`.
 - Refuses (file untouched) duplicate names, unknown groups, a `parent_group` whose member is itself a leaf, and any result with a new tablix-shape problem.
 - Returns {tablix, group, expression, parent_group, wrap, header, wrapped, header_row, header_textboxes, corner_textboxes, changed}. `remove_row_group` is the inverse for every variant.
 
@@ -466,7 +545,7 @@ Remove a filter by index. Filters are anonymous in RDL, so use list_tablix_filte
 
 ### `insert_tablix_from_template`
 
-Build and append a basic Tablix to `<Body>/<ReportItems>`. One column per entry in `columns`: a field name of the dataset, or {"field": `<field name>`, "header": `<caption>}` for a display caption that is not an identifier (e.g. 'Unit Price (USD)'). The header row shows the caption (default: the field name), the detail row binds to =Fields!`<field>.Value`. dataset_name must already exist and every field must be declared in it (unknown fields are refused, listing the available ones). The tablix name must be unused report-wide; generated textbox and detail group names are suffixed until unique. `width` is the tablix outer width — each column defaults to 1in regardless, so for a 3-column tablix the columns sum to 3in even if you pass width=10cm. Resize columns afterwards via direct edits or future column-width tools. `container` names a Rectangle in the body to put the tablix in instead (top/left relative to it; see add_body_textbox); inside a List's rectangle the list must be bound to the same dataset. The header row's member carries `KeepWithGroup=After` and, unless `repeat_header=false`, `RepeatOnNewPage=true`, so the header repeats at the top of every page.
+Build and append a basic Tablix to `<Body>/<ReportItems>`. One column per entry in `columns`: a field name of the dataset, or {"field": `<field name>`, "header": `<caption>}` for a display caption that is not an identifier (e.g. 'Unit Price (USD)'). The header row shows the caption (default: the field name), the detail row binds to =Fields!`<field>.Value`. dataset_name must already exist and every field must be declared in it (unknown fields are refused, listing the available ones; declare them first with add_dataset_field, or with create_report's `fields` for a new report). The tablix name must be unused report-wide; generated textbox and detail group names are suffixed until unique. `width` is the tablix outer width, split evenly over the columns in its unit (width=6in with 3 columns gives three 2in columns; the last column takes any rounding remainder), so `<Width>` is exactly the sum of the columns. Resize columns afterwards with set_column_width. `container` names a Rectangle in the body to put the tablix in instead (top/left relative to it; see add_body_textbox); inside a List's rectangle the list must be bound to the same dataset. The header row's member carries `KeepWithGroup=After` and, unless `repeat_header=false`, `RepeatOnNewPage=true`, so the header repeats at the top of every page.
 
 ## `chart`
 
@@ -474,15 +553,15 @@ Build and append a basic Tablix to `<Body>/<ReportItems>`. One column per entry 
 
 *read-only*
 
-Return effective state of a named Chart: position, size, dataset, palette, series list (name/type/subtype/value expression/color/data_labels — the label that renders: the template data point's, else the series-level one, as {source: point|series, visible, position, use_value_as_label, format, font_weight, color}, or null), category groups (name/expression/label), axes (category and value), legend, title, Style, Visibility. Symmetric with get_textbox / get_image / get_rectangle.
+Return effective state of a named Chart — everything the chart tools write, so an agent can confirm its own edits: position, size, dataset, palette, custom_palette_colors (`ChartCustomPaletteColors`, in order) and palette_hatch_behavior; series list (name, type, subtype, value expression, color, data_labels — the label that renders: the template data point's, else the series-level one, as {source: point|series, visible, position, use_value_as_label, format, font_weight, color}, or null — plus label (the series' hierarchy-member `<Label>`, the legend text), value_axis / category_axis / chart_area / legend_name (`ValueAxisName`, `CategoryAxisName`, `ChartAreaName`, `LegendName`; null = the first one), hidden, and action ({action_type, target_expression, drillthrough_parameters} in the argument shape of set_chart_series_action, or null)). A series without `<Type>` (Report Builder omits it for Column) reports type 'Column' with type_implicit: true. series_groups and category_groups walk their hierarchy depth-first, one entry per ChartMember: {name, expression (the `<Group>`'s; null when static), label, sort: [{value, direction}], static, level}; series_groups leaves also name their series. derived_series: [{name, source, formula, parameters: [{name, value, source}], type}]. chart_areas: [{name, hidden, axes: {category, value}}] for every ChartArea; axes is the first area's. legends / titles list every ChartLegend / ChartTitle; legend / title are the first. Plus Style and Visibility. The concise view keeps name, position, dataset, series {name, type}, category_groups names and the dynamic series_groups names. Symmetric with get_textbox / get_image / get_rectangle.
 
 ### `insert_chart_from_template`
 
-Build and append a basic Column chart to `<Body>/<ReportItems>`. Single category axis grouped by category_field; single Y series Sum(Fields!`<value_field>.Value`). dataset_name must already exist. The series is Column/Plain; change it post-insert with set_chart_series_type (RDL Types: Column, Bar, Line, Area, Shape, Scatter, Range, Polar — e.g. a pie chart is Shape/Pie, a doughnut Shape/Doughnut, a stepped line Line/Stepped). `container` names a Rectangle in the body to put the chart in instead, as for insert_tablix_from_template.
+Build and append a basic Column chart to `<Body>/<ReportItems>`. Single category axis grouped by category_field; single Y series Sum(Fields!`<value_field>.Value`). dataset_name must already exist, and category_field / value_field must be fields of it — bare names, not expressions; an unknown field is refused with the list of available fields. For real expressions pass category_expression (group + label =expression) or value_expression (the whole Y =expression, e.g. `=Sum(Fields!A.Value)/Sum(Fields!B.Value)`; the series is then named Series1) instead, each exclusive with its field. name must be a valid RDL identifier; top/left (non-negative) and width/height (positive) are validated RDL sizes. The series is Column/Plain; change it post-insert with set_chart_series_type (RDL Types: Column, Bar, Line, Area, Shape, Scatter, Range, Polar — e.g. a pie chart is Shape/Pie, a doughnut Shape/Doughnut, a stepped line Line/Stepped). `container` names a Rectangle in the body to put the chart in instead, as for insert_tablix_from_template.
 
 ### `add_chart_series`
 
-Append a new `<ChartSeries>` to a named chart. value_field is the dataset field whose Sum becomes the Y expression (=Sum(Fields!`<value_field>.Value`)). series_type defaults to Column; combine series of different types in one chart for combo charts (e.g. Bar + Line). series_subtype defaults to the type's default (Plain; Pie for Shape). The pair must be a real RDL Type/Subtype (see set_chart_series_type); shorthands like Pie or Bubble are normalised and the canonical type/subtype returned. Also creates the series' ChartSeriesHierarchy member (`<ChartMember><Label>series_name</Label>`, the legend text; a sibling of any dynamic series group) and one ChartDataPoint per category leaf, so series and members stay matched by position. Trailing series that lack a member (files written by older versions) get one first, listed in repaired_members. Refuses if series_name is already used by a series or a derived series.
+Append a new `<ChartSeries>` to a named chart. series_name must be a valid RDL identifier. value_field is the dataset field whose Sum becomes the Y expression (=Sum(Fields!`<value_field>.Value`)); it must be a field of the chart's dataset (unknown fields are refused with the list of available ones). value_expression takes the whole Y =expression instead (exclusive with value_field). series_type defaults to Column; combine series of different types in one chart for combo charts (e.g. Bar + Line). series_subtype defaults to the type's default (Plain; Pie for Shape). The pair must be a real RDL Type/Subtype (see set_chart_series_type); shorthands like Pie or Bubble are normalised and the canonical type/subtype returned. Also creates the series' ChartSeriesHierarchy member (`<ChartMember><Label>series_name</Label>`, the legend text; a sibling of any dynamic series group) and one ChartDataPoint per category leaf, so series and members stay matched by position. Trailing series that lack a member (files written by older versions) get one first, listed in repaired_members. Refuses if series_name is already used by a series or a derived series.
 
 ### `remove_chart_series`
 
@@ -500,43 +579,69 @@ Update `<Type>` and optionally `<Subtype>` on a named ChartSeries. Combo charts 
 
 *idempotent*
 
-Make a chart series dynamic: one rendered series per distinct value of the group expression (`<ChartMember>/<Group>/<GroupExpressions>/<GroupExpression>`) — the '13 violation types unknown at design time' fan-out. group_field='Type' is a shorthand for =Fields!Type.Value; group_expression accepts any VB.NET. Mutually exclusive. The group goes on series_name's own leaf member of ChartSeriesHierarchy (series match leaf members by position), or on the dynamic member that series already sits under; trailing series without a member (files written by older versions) get one first, listed in repaired_members. Promoting a static member writes the Report Builder shape: `<Label>` (each fanned-out series' legend text) becomes the group expression, or label_expression; `<SortExpressions>` sorts by the group expression — sort = Ascending (default) | Descending | None (no sort); the group is named group_name or `<series>_Group`. An existing group is refused unless replace=true, which rewrites only its GroupExpressions and keeps Group/@Name (so `Sum(..., "SeriesGroup1")` scope references keep working) and its other children (filters, ...); group_name renames it. On replace the label follows the new expression when it was a constant or the old group expression (a hand-written label expression is kept unless label_expression is given), and a sort on the old expression follows the new one (sort sets it explicitly). A call that matches the current state returns changed: [] and leaves the file untouched. Returns {chart, series, kind: 'ChartGroup', group_name, expression, label, sort: [{value, direction}], repaired_members, changed} — changed lists what was touched: Group, Group.Name, GroupExpressions, SortExpressions, Label, ChartSeriesHierarchy.
+Make a chart series dynamic: one rendered series per distinct value of the group expression (`<ChartMember>/<Group>/<GroupExpressions>/<GroupExpression>`) — the '13 violation types unknown at design time' fan-out. group_field='Type' is a shorthand for =Fields!Type.Value (a bare field name: empty, `=…` or non-identifier values are refused); group_expression accepts any VB.NET =expression and must start with '=' (without it the value is a constant and every row would land in one series). Mutually exclusive. The group goes on series_name's own leaf member of ChartSeriesHierarchy (series match leaf members by position), or on the dynamic member that series already sits under; trailing series without a member (files written by older versions) get one first, listed in repaired_members. Promoting a static member writes the Report Builder shape: `<Label>` (each fanned-out series' legend text) becomes the group expression, or label_expression; `<SortExpressions>` sorts by the group expression — sort = Ascending (default) | Descending | None (no sort); the group is named group_name or `<series>_Group`. An existing group is refused unless replace=true, which rewrites only its GroupExpressions and keeps Group/@Name (so `Sum(..., "SeriesGroup1")` scope references keep working) and its other children (filters, ...); group_name renames it. On replace the label follows the new expression when it was a constant or the old group expression (a hand-written label expression is kept unless label_expression is given), and a sort on the old expression follows the new one (sort sets it explicitly). A call that matches the current state returns changed: [] and leaves the file untouched. Returns {chart, series, kind: 'ChartGroup', group_name, expression, label, sort: [{value, direction}], repaired_members, changed} — changed lists what was touched: Group, Group.Name, GroupExpressions, SortExpressions, Label, ChartSeriesHierarchy.
 
 ### `set_chart_axis`
 
 *idempotent*
 
-Configure a chart axis: title (Caption), format (numeric/date format string in `<Style>/<Format>`), min/max range, log_scale, interval, visible. axis ∈ {Category, Value}; axis_name defaults to 'Primary' (the only axis the template emits — pass a real name for secondary axes). All field args are optional; pass '' to clear an element. Returns {chart, axis, axis_name, kind, changed: list[str]} with the affected sub-element names.
+Configure a chart axis: title (Caption), format (numeric/date format string in `<Style>/<Format>`), min/max range, log_scale, interval, visible. axis ∈ {Category, Value}. chart_area names the ChartArea (default: the first); axis_name defaults to 'Primary', or the area's only axis of that kind. A named axis that is not in the first area but in exactly one other area is found there without chart_area; a miss lists the `area/axis` pairs present. All field args are optional; pass '' to clear an element. title rewrites only `ChartAxisTitle/Caption`, keeping the title's Style (font), Position and TextOrientation. min / max / interval must be a number, NaN (auto) or an =expression (interval not negative). log_scale writes `True`/`False`; a log scale with a literal minimum <= 0 is refused. visible is true / false / "Auto" (written `True` / `False` / `Auto`). Returns {chart, axis, axis_name, chart_area, kind, changed: list[str]}; changed lists only the fields whose value really changed, and is empty (file untouched) when nothing did.
 
 ### `set_chart_legend`
 
 *idempotent*
 
-Configure a chart legend: position (TopLeft / TopCenter / TopRight / LeftTop / LeftCenter / LeftBottom / RightTop / RightCenter / RightBottom / BottomLeft / BottomCenter / BottomRight) and visible (writes `<Hidden>true|false</Hidden>`). legend_name defaults to 'Default' (the only one the template emits). Returns {chart, legend, kind, changed: list[str]}; no-op short-circuit when nothing supplied.
+Configure a chart legend: position (TopLeft / TopCenter / TopRight / LeftTop / LeftCenter / LeftBottom / RightTop / RightCenter / RightBottom / BottomLeft / BottomCenter / BottomRight) and visible (writes `<Hidden>true|false</Hidden>`). legend_name defaults to the legend named 'Default' (what the template emits), else the chart's only legend; a miss lists the legends present. Returns {chart, legend, kind, changed: list[str]}; no-op short-circuit when nothing supplied.
 
 ### `set_chart_data_labels`
 
 *idempotent*
 
-Configure the data labels of one or all series in a chart. Labels are written where Report Builder keeps them and where they render: `ChartSeries/ChartDataPoints/ChartDataPoint/ChartDataLabel` (every data point of the series — just the template point unless the category hierarchy has several static members). A series-level `ChartSeries/ChartDataLabel` (written by earlier versions) is moved onto the data points that have none, since a point's label overrides it (reported as ChartDataLabel in changed). When series_name is None, the change applies to every series; otherwise only the named series. visible writes `<Visible>true|false</Visible>`; visible_expression writes the same element with a VB.NET =IIf(...) expression (mutually exclusive with visible). format writes `<Style>/<Format>`; pass '' to clear. position ∈ Auto/Top/TopLeft/TopRight/Left/Center/Right/BottomRight/Bottom/BottomLeft/Outside (the RDL ChartDataLabel positions; TopCenter/BottomCenter are legend positions and are refused); Outside is meant for Shape series (pie, doughnut, funnel, pyramid) and adds a warning on other types. use_value_as_label ∈ true/false; font_weight + color write to `<Style>/<FontWeight>` and `<Style>/<Color>` (pass '' to clear). Returns {chart, series, kind, changed, warnings}; changed is empty (file untouched) when everything already matched.
+Configure the data labels of one or all series in a chart. Labels are written where Report Builder keeps them and where they render: `ChartSeries/ChartDataPoints/ChartDataPoint/ChartDataLabel` (every data point of the series — just the template point unless the category hierarchy has several static members). A series-level `ChartSeries/ChartDataLabel` (written by earlier versions) is moved onto the data points that have none, since a point's label overrides it (reported as ChartDataLabel in changed). When series_name is None, the change applies to every series; otherwise only the named series. visible writes `<Visible>true|false</Visible>`; visible_expression writes the same element with a VB.NET =IIf(...) expression (mutually exclusive with visible); it must start with '=' or be a literal true/false. format writes `<Style>/<Format>`; pass '' to clear. position ∈ Auto/Top/TopLeft/TopRight/Left/Center/Right/BottomRight/Bottom/BottomLeft/Outside (the RDL ChartDataLabel positions; TopCenter/BottomCenter are legend positions and are refused); Outside is meant for Shape series (pie, doughnut, funnel, pyramid) and adds a warning on other types. use_value_as_label ∈ true/false; font_weight + color write to `<Style>/<FontWeight>` and `<Style>/<Color>` (pass '' to clear); font_weight must be an RDL weight (Thin … Heavy, 100–900, or an =expression). Returns {chart, series, kind, changed, warnings}; changed is empty (file untouched) when everything already matched.
 
 ### `set_chart_palette`
 
 *idempotent*
 
-Set `<Palette>` on a chart. palette ∈ Default / EarthTones / Excel / GrayScale / Light / Pastel / SemiTransparent / Berry / Chocolate / Fire / SeaGreen / BrightPastel. Pass '' to clear (RB falls back to its built-in default palette). Returns {chart, kind, changed: bool}.
+Set `<Palette>` on a chart. palette ∈ Default / EarthTones / Excel / GrayScale / Light / Pastel / SemiTransparent / Berry / Chocolate / Fire / SeaGreen / BrightPastel / Pacific / PacificLight / PacificSemiTransparent / Custom (the RDL ChartPalette enum; the chart-structure lint rule checks the same list). Custom takes its colours from colors — named colours, #RRGGBB / #AARRGGBB or =expressions, whitespace trimmed — written in order as `<ChartCustomPaletteColors><ChartCustomPaletteColor>`; colors is required with Custom (unless the chart already has custom colours, which are then kept) and refused with any other palette. hatch_behavior ∈ Default / None / Always writes `<PaletteHatchBehavior>` ('' removes it). Pass palette '' to clear `<Palette>` and `<ChartCustomPaletteColors>` (RB falls back to its built-in default palette). Returns {chart, kind, palette, custom_colors, changed: bool}; changed is false (file untouched) when everything already matched.
 
 ### `set_series_color`
 
 *idempotent*
 
-Write `<Color>` into a named series's `<Style>` block, overriding the chart palette for just that series. color accepts a named color ('Red'), a hex string ('#FF0000'), or an =expression. Pass '' to clear (series falls back to the palette). Returns {chart, series, kind, changed: bool}.
+Set one chart series' colour, overriding the chart palette for just that series. color accepts a named color ('Red'), '#RRGGBB' / '#AARRGGBB', or an =expression; whitespace around a literal is trimmed and anything else is refused. Pass '' to clear (the colour falls back to the palette; the `<Style>` element itself is kept). target picks where it is written: 'series' (`ChartSeries/Style/Color`) or 'point' (`Style/Color` of every ChartDataPoint — what Report Builder's Series Properties > Fill writes, and a point colour wins over the series one at render time; an =expression there can colour per category). Default: 'point' when a data point already has a colour, else 'series'; a series colour still overridden by a point colour is reported in warnings. Returns {chart, series, kind, target, changed: bool, warnings}.
 
 ### `set_chart_title`
 
 *idempotent*
 
-Update `<ChartTitle>/<Caption>`. text can be literal text or an =expression. title_name defaults to 'Default' (the only title the template emits). Returns {chart, title, kind, changed: bool}.
+Update `<ChartTitle>/<Caption>`. text can be literal text or an =expression. title_name defaults to the title named 'Default' (what the template emits), else the chart's only title (Report Builder names it 'Title'); a miss lists the titles present. Returns {chart, title, kind, changed: bool} with the resolved title name.
+
+### `set_chart_series_properties`
+
+*idempotent*
+
+Set the per-series properties that have no other tool. Every argument is optional (omitted = unchanged; '' clears a string one):
+
+- Legend entry: legend_text writes `ChartItemInLegend/LegendText` (overrides the series' member label in the legend); hide_in_legend writes `ChartItemInLegend/Hidden`; legend_name writes `LegendName` and must name an existing ChartLegend.
+- Axes and area: value_axis / category_axis write `ValueAxisName` / `CategoryAxisName`. An axis the series' chart area (its `ChartAreaName`, else the first area) doesn't have is created there as `<ChartAxis Name=…><Location>Opposite</Location>` — e.g. value_axis='Secondary' gives a combo chart a second scale on the right; created axes are listed in created_axes (style them with set_chart_axis). chart_area writes `ChartAreaName` and must name an existing ChartArea.
+- hidden writes `ChartSeries/Hidden`.
+- position moves the series to that 0-based index in ChartSeriesCollection together with its ChartSeriesHierarchy member (series match members by position; the member order is the legend order). A series that shares a group member with other series can only move among the positions its siblings allow; others are refused with the reachable ones.
+- Data points: tooltip (`ToolTip`), marker_type (None / Square / Circle / Diamond / Triangle / Cross / Star4 / Star5 / Star6 / Star10 / Auto) and marker_size (a size, e.g. '6pt') write onto every ChartDataPoint of the series, where Report Builder keeps them (`ChartMarker/Type|Size`). A marker on a series type that draws no markers (Column, Bar, Shape) adds a warning. For a per-point colour see set_series_color.
+- Empty points: empty_point_value writes the `EmptyPointValue` custom property — Average (default: plotted between its neighbours) or Zero; empty_point_color writes `ChartEmptyPoints/Style/Color` (empty points are not drawn, leaving a gap, until they have a colour).
+
+Returns {chart, series, kind, position, created_axes, changed, warnings}; changed is empty (file untouched) when everything already matched. get_chart reads every field back (series legend_text, hide_in_legend, legend_name, value_axis, category_axis, chart_area, hidden, tooltip, marker, empty_point_value, empty_point_color; axis location).
+
+### `set_chart_category_group`
+
+*idempotent*
+
+Edit a chart's category grouping, or add a nested category level.
+
+- Edit (no add_level): the group named group_name — default the chart's only category group (with several, group_name is required and the error lists them). group_field / group_expression regroup it (GroupExpressions rewritten, Group/@Name kept; a label that was a constant or the old expression, and a sort on the old expression, follow the new one). label_expression sets the member `<Label>` — the axis label, e.g. `=Format(Fields!OrderDate.Value, "MMM d")`. sort (Ascending / Descending / None) and sort_expression set `<SortExpressions>`: the direction defaults to the current one, the sorted expression to sort_expression, else the current sort's, else the group expression; None removes the sort.
+- Add (add_level = inner | outer): a new dynamic level on group_field / group_expression (one required; an expression must start with '='). inner nests it inside the innermost category member (the chart must have exactly one); outer wraps every top-level member (e.g. Year around Month). Its label is label_expression or the expression, its sort sort (default Ascending) on sort_expression or the expression, its name group_name or `<chart>_CategoryGroup<n>`. Leaf members — and so every series' data points — are unchanged. A level on an expression a category group already uses is not added again (changed: []).
+
+Returns {chart, kind: 'ChartGroup', group_name, expression, label, sort: [{value, direction}], level, changed}. get_chart's category_groups lists every level depth-first with its label, sort and level.
 
 ## `style`
 
@@ -544,7 +649,7 @@ Update `<ChartTitle>/<Caption>`. text can be literal text or an =expression. tit
 
 *read-only*
 
-Return effective state of a named Textbox: position, size, Visibility, CanGrow, CanShrink, plus a nested style dict that mirrors set_textbox_style's routing — {box: {BackgroundColor, VerticalAlign, padding, ...}, border: {Style, Color, Width}, paragraph: {TextAlign}, run: {FontFamily, FontSize, FontWeight, Color, Format, ...}}. Empty branches are dropped. runs[] entries each carry their own per-run style. Searches the entire report; tablix-cell textboxes have None for top/left/width/height. Top-level positioned items with a missing `<Top>` or `<Left>` coerce to '0in' (RDL default).
+Return effective state of a named Textbox: position, size, Visibility, CanGrow, CanShrink, plus a nested style dict that mirrors set_textbox_style's routing — {box: {BackgroundColor, VerticalAlign, padding, ...}, border: {Style, Color, Width}, top_border / bottom_border / left_border / right_border (per-side overrides, same shape), paragraph: {TextAlign}, run: {FontFamily, FontSize, FontWeight, Color, Format, ...}}. Empty branches are dropped. runs[] entries each carry their own per-run style (and markup_type) — exactly the shape set_textbox_runs accepts. paragraphs[] is one {index, text_align, list_style, list_level, left_indent, right_indent, hanging_indent, space_before, space_after} per `<Paragraph>` (null when unset). Interactivity: `action` ({type: Hyperlink | Drillthrough | BookmarkLink, target, parameters: [{name, value, omit?}]} or null), `tooltip`, `document_map_label` and `bookmark` (null when absent); run_interactivity[] lists the runs with their own ToolTip / action as {paragraph_index, run_index, tooltip, action}. Searches the entire report; tablix-cell textboxes have None for top/left/width/height. Top-level positioned items with a missing `<Top>` or `<Left>` coerce to '0in' (RDL default).
 
 ### `set_textbox_style`
 
@@ -568,37 +673,43 @@ Replace the text content of a single-run textbox. value can be raw text or an =e
 
 *idempotent*
 
-Apply the same style kwargs to every named textbox in one call. Same kwarg surface, routing (every run / paragraph) and validation as set_textbox_style; a bad value is refused before any textbox is written. Missing names land in skipped rather than raising. Returns {textboxes, skipped, changed} where changed is the union of sub-paths affected across all textboxes. Pair with find_textboxes_by_style to discover names by current style. cells (a list of {tablix, header | field | index, row}) adds tablix cells picked by column header or field.
+Apply the same style kwargs to every named textbox in one call. Same kwarg surface, routing (every run / paragraph) and validation as set_textbox_style; a bad value is refused before any textbox is written. The report is opened once, every name is resolved before anything is written (a name repeated in the input counts once), and the file is saved once, only if something changed. A name with no textbox lands in skipped and a name several textboxes share lands in ambiguous; the rest are still styled. strict=true refuses the whole call (nothing written) when any name is skipped or ambiguous. Returns {textboxes, skipped, ambiguous, changed} where changed is the union of sub-paths affected across all textboxes. Pair with find_textboxes_by_style to discover names by current style. cells (a list of {tablix, header | field | index, row}) adds tablix cells picked by column header or field.
+
+### `copy_textbox_style`
+
+*idempotent*
+
+Make target textboxes look like a source textbox, e.g. the cells add_tablix_column creates unstyled. Copies the source's elements: scope 'box' (every Textbox/Style property except borders — background, padding, vertical alignment, writing mode, ...), 'border' (Border and the per-side TopBorder / BottomBorder / LeftBorder / RightBorder), 'paragraph' (the first source paragraph's Style plus its paragraph properties — indents, ListStyle / ListLevel, SpaceBefore / SpaceAfter — onto every target paragraph) and 'run' (the first source run's Style, onto every run of every target paragraph); scope picks a subset (default all four). include_textbox_flags (default true) also copies CanGrow / CanShrink. Within a scope the target ends up with exactly the source's properties: one the source lacks is removed. Values, actions, tooltips, visibility and names are never touched. targets resolve like set_textbox_style_bulk's names — repeats count once, unknown names land in skipped, names several textboxes share in ambiguous, strict=true refuses both before any write; the source must name exactly one textbox. Opens and saves the report once; an identical repeat returns changed: [] and leaves the file byte-identical. Returns {source, targets, skipped, ambiguous, changed} where changed lists the parts that changed ('box', 'border', 'paragraph', 'run', 'textbox.CanGrow', 'textbox.CanShrink').
 
 ### `find_textboxes_by_style`
 
 *read-only*
 
-Search for textboxes matching one or more style filters. Filters AND together (every supplied filter must match). Returns [{name, location, matched_fields}] where location is best-effort 'body' / 'header' / 'footer' / 'tablix:`<name>'` / 'rectangle:`<name>'`. Returns [] when no filters supplied. Pair with set_textbox_style_bulk for discovery+apply patterns (e.g. 'recolor every red textbox').
+Search for textboxes matching one or more style filters. Filters AND together (every supplied filter must match). Values compare normalised: colours by value (named colours, '#RRGGBB' / '#AARRGGBB' in either case — 'White' matches '#ffffff'), sizes in points ('10pt' matches '10.0pt'), enums and font_family case-insensitively; format and =expressions compare as written. Paragraph filters (text_align) match when any paragraph matches them; run filters (font_*, color, format, text_decoration) when any run of any paragraph matches all of them. effective=true lets an unset property match the RDL default (FontSize 10pt, FontFamily Arial, Color Black, FontWeight / FontStyle Normal, TextDecoration None, TextAlign General, VerticalAlign Top, WritingMode Horizontal, padding 0pt, BackgroundColor Transparent, border Style None / Color Black / Width 1pt). Returns [{name, location, matched_fields, matched_at}] where location is best-effort 'body' / 'header' / 'footer' / 'tablix:`<name>'` / 'rectangle:`<name>'`, matched_fields maps each filter to the value found (the default when matched under effective) and matched_at gives {paragraph_index} / {paragraph_index, run_index} for paragraph / run filters. Returns [] when no filters supplied. Pair with set_textbox_style_bulk for discovery+apply patterns (e.g. 'recolor every red textbox').
 
 ### `find_textbox_by_value`
 
 *read-only*
 
-Find every Textbox whose `<Value>` text matches a Python regex pattern. Searches Body / PageHeader / PageFooter. A textbox with multiple matching runs surfaces once per match. Returns [{textbox, value, region}]. Useful for finding stale =Parameters!Old.Value references after rename_parameter, or any cross-cutting expression edit.
+Find every Textbox whose displayed value — the `<Value>` of each Paragraph/TextRun — matches a Python regex pattern. Searches Body / PageHeader / PageFooter. A textbox with multiple matching runs surfaces once per match. Other expressions on a textbox are not its value and are searched only when include names them: 'tooltip' (textbox and run ToolTip), 'action' (ActionInfo texts: hyperlink, drillthrough report name and parameter values, bookmark link), 'visibility' (Visibility/Hidden). Returns [{textbox, value, region, kind}] with kind 'value' or the include kind. Useful for finding stale =Parameters!Old.Value references after rename_parameter, or any cross-cutting expression edit.
 
 ### `style_tablix_row`
 
 *idempotent*
 
-Apply the same style kwargs to every cell in a tablix row in ONE call. Replaces the 12-individual-set_textbox_style-calls-per-row pattern. row accepts: integer (0-based body row index), 'header' (first leaf with KeepWithGroup=After — the column header row), 'details' (the Details leaf row), '`<group>_header'` (header row of a named row group), '`<group>_footer'` (footer row when present, e.g. after add_subtotal_row). Same style kwargs, routing and validation as set_textbox_style (font_* incl. font_style, color, text_decoration, background_color, border_*, padding_*, writing_mode, can_grow, can_shrink, etc.). Returns {tablix, row, row_index, kind, cells, changed, skipped}.
+Apply the same style kwargs to every cell in a tablix row in ONE call. Replaces the 12-individual-set_textbox_style-calls-per-row pattern. row accepts: integer (0-based body row index), 'header' (the column header row: the last static top-level row marked KeepWithGroup=After above the row groups — a group's own header row never counts), 'details' (the detail leaf row; on a matrix the innermost row group's row), '`<group>_header'` (alias '`<group>_group_header'`: the group's own static header row, e.g. from add_row_group), '`<group>_footer'` (the group's static footer row after its data, e.g. from add_subtotal_row). Both group roles raise when the group has no such row — a group whose only child is its data row has neither. Header-area cells: '`<group>_rowheader'` styles the group's TablixHeader cell (row or column group) and 'corner' every TablixCornerCell; row_index is null for these. Same style kwargs, routing and validation as set_textbox_style (font_* incl. font_style, color, text_decoration, background_color, border_*, padding_*, writing_mode, can_grow, can_shrink, etc.). Last writer wins: a background_color replaces a zebra or conditional expression from the row-colour tools (compose those with set_conditional_row_color's base_color instead). Returns {tablix, row, row_index, kind, cells, changed, skipped}.
 
 ### `set_alternating_row_color`
 
 *idempotent*
 
-Zebra-stripe a tablix's detail row by writing BackgroundColor=IIf(RowNumber(Nothing) Mod 2, color_a, color_b) on every detail cell's Textbox. Walks the row hierarchy to find the Details leaf — works after add_row_group nests the structure deeper. Replaces any existing BackgroundColor.
+Zebra-stripe a tablix's detail row by writing BackgroundColor=IIf(RowNumber(Nothing) Mod 2, color_a, color_b) on every detail cell's Textbox. Walks the row hierarchy to find the Details leaf — works after add_row_group nests the structure deeper. Both colours are validated as in set_textbox_style (named colour, '#RRGGBB', '#AARRGGBB' or an =expression) before the file is touched; literals are quoted, an =expression colour (e.g. '=Parameters!Stripe.Value') is embedded as an expression. Replaces any existing BackgroundColor (last writer wins) — to combine striping with a value-driven colour use set_conditional_row_color with base_color='zebra:<a>,<b>'. Returns {tablix, row_index, expression, cells, changed}.
 
 ### `set_conditional_row_color`
 
 *idempotent*
 
-Color every cell of a tablix's detail row based on the value of one of its fields. Builds a Switch(...) expression mapping field values to colors and writes it as BackgroundColor on every detail cell. value_expression is the field reference (e.g. 'Fields!Status.Value' — a leading '=' is accepted). color_map is an ordered dict of value->color (e.g. {"Red":"#FF0000","Yellow":"#FFFF00"}); first match wins. Unmatched values fall back to default_color (default 'Transparent'). When case_sensitive is False (default), wraps the field reference in UCase() and uppercases the keys for case-insensitive matching. Walks the row hierarchy to find the Details leaf — works after add_row_group nests the structure. Replaces any existing BackgroundColor.
+Color every cell of a tablix's detail row based on the value of one of its fields. Builds a Switch(...) expression mapping field values to colors and writes it as BackgroundColor on every detail cell. value_expression is the field reference (e.g. 'Fields!Status.Value' — a leading '=' is accepted). color_map is an ordered dict of value->color (e.g. {"Red":"#FF0000","Yellow":"#FFFF00"}); first match wins. Unmatched values fall back to default_color (default 'Transparent'), or to base_color when given: 'zebra:<a>,<b>' keeps zebra striping on unmatched rows (Switch(..., True, IIf(RowNumber(Nothing) Mod 2, a, b)) — striping and conditional colour in one BackgroundColor), and an =expression (e.g. the one set_alternating_row_color returned) is used as the fallback as is; base_color and a non-default default_color are exclusive. Every colour is validated as in set_textbox_style before the file is touched; literals are quoted (embedded quotes doubled), =expression colours are embedded as expressions. When case_sensitive is False (default), wraps the field reference in UCase() and uppercases the keys for case-insensitive matching. Walks the row hierarchy to find the Details leaf — works after add_row_group nests the structure. Replaces any existing BackgroundColor (last writer wins). Returns {tablix, row_index, expression, cells, changed}.
 
 ## `layout`
 
@@ -641,6 +752,10 @@ Move a report item into the body, page header, page footer or a Rectangle: `to` 
 ### `ungroup_rectangle`
 
 Remove a Rectangle and move its items out to the rectangle's own container (body, band or outer rectangle), at the rectangle's place in the item order, keeping their on-page position: each child's Top/Left += the rectangle's, in the child's units — the inverse of add_rectangle(contained_items=...), restoring the pre-grouping coordinates. Warns (listing the items) when the rectangle had a Visibility, a border or background, an action, tooltip, bookmark, document-map label or page break, which no longer applies to them. Refuses a rectangle that fills a tablix cell (a List's): the cell must hold an item — use move_report_item on its items. Returns {name, moved, to, changed} (+ warnings).
+
+### `rename_report_item`
+
+Rename a report item (Textbox, Rectangle, Image, Line, Subreport, Tablix, Chart, GaugePanel, Map, CustomReportItem) or a Group, anywhere in the report (body, header, footer, nested in rectangles and tablix cells), and rewrite every reference to it: `@Name`; `rd:DefaultName` and `DataElementName` on the element when they equal the old name; `ReportItems!Old` / `ReportItems("Old")` in any expression; the quoted scope argument of aggregates, `RowNumber`, `RunningValue`, `Previous`, `CountRows`, `InScope`, `Level` (`"Old"`); `<ToggleItem>`, `<RepeatWith>`, UserSort `<SortExpressionScope>` / `<SortTarget>`, `<DomainScope>`, `<TransformationScope>`. Only the name token changes — names in string literals and comments, and a scope string that names a dataset, are left alone. new_name must be a valid RDL identifier (letter first, then letters, digits, underscores) not used by any report item or group; a data region or group also may not take a dataset's name. kind (a report-item type or `Group`) narrows the lookup when old_name is ambiguous. rename_inner (a Tablix made by add_list) also renames the tablix's own `<old>_Rect` cell rectangle and `<old>_Details` group (any of its cell rectangles / groups named `<old>_…`) to `<new>_…`. Chart sub-objects (series, chart areas, legends) are not report-scope names and aren't renamed here. Returns {renamed, old_name, kind, references_updated: [{location, before, after}], changed} (+ also_renamed {old: new}, warnings, with rename_inner). Idempotent: when old_name is gone and new_name exists (already renamed), or the names are equal, nothing is written and changed is false.
 
 ### `set_body_item_position`
 
@@ -700,13 +815,13 @@ Same shape as list_body_items but for `<PageFooter>`.
 
 *read-only*
 
-Return effective state of a named Image: position, size, Source (External / Embedded / Database), Value, Sizing (AutoSize / Fit / FitProportional / Clip), MIMEType, Style, Visibility.
+Return effective state of a named Image: position, size, Source (External / Embedded / Database), Value, Sizing (AutoSize / Fit / FitProportional / Clip), MIMEType, Visibility, and style as {box: {BackgroundColor, VerticalAlign, padding, ...}, border: {Style, Color, Width}, top_border / bottom_border / left_border / right_border} (empty branches dropped; null when nothing is set). Interactivity as in get_textbox: `action` ({type, target, parameters} or null), `tooltip`, `document_map_label`, `bookmark`.
 
 ### `get_rectangle`
 
 *read-only*
 
-Return effective state of a named Rectangle: position, size, names of contained ReportItems, Style, Visibility.
+Return effective state of a named Rectangle: position, size, names of contained ReportItems, Visibility, style in the get_image shape ({box, border, per-side borders}; a rectangle from add_rectangle reads {border: {Style: None}}), and `action`, `tooltip`, `document_map_label`, `bookmark` as in get_textbox.
 
 ### `set_page_setup`
 
@@ -770,7 +885,7 @@ Same as add_header_image, for `<PageFooter>`.
 
 *destructive*
 
-Remove a named item from `<PageHeader>`, at its top level or nested in a Rectangle there (the result then has `parent`). Empties the ReportItems block when the last item leaves.
+Remove a named item from `<PageHeader>`, at its top level or nested in a Rectangle there (the result then has `parent`). Empties the ReportItems block when the last item leaves. Everything inside goes too; `also_removed` names those report items and groups. Refuses while anything outside the removed subtree still references the item or one of those — `ReportItems!X` / `ReportItems("X")`, a `<ToggleItem>`, the scope string of an aggregate / `RowNumber` / `RunningValue` / `InScope` …, `<RepeatWith>`, a UserSort `<SortExpressionScope>` / `<SortTarget>`, `<DomainScope>` — and lists each; force=true removes it anyway, leaves those references in place and returns them as `dangling_refs` [{kind, name, location, text}] (lint_report flags them as undefined-report-item, dangling-toggle-item, unknown-aggregate-scope). Returns {region, removed, kind, parent?, also_removed, dangling_refs}.
 
 ### `remove_footer_item`
 
@@ -790,11 +905,11 @@ Add an Image to `<Body>/<ReportItems>`, or inside the body Rectangle `container`
 
 *destructive*
 
-Remove a named item (Textbox, Image, Tablix, Chart, ...) from the body — at its top level or nested in a Rectangle / List cell (the result then has `parent`, the rectangle it left). Destructive but explicit — raises if the name doesn't match anything. A tablix cell's own content (e.g. a List's rectangle) is refused: the cell must hold an item.
+Remove a named item (Textbox, Image, Tablix, Chart, ...) from the body — at its top level or nested in a Rectangle / List cell (the result then has `parent`, the rectangle it left). Destructive but explicit — raises if the name doesn't match anything. A tablix cell's own content (e.g. a List's rectangle) is refused: the cell must hold an item. Everything inside goes too; `also_removed` names those report items and groups. Refuses while anything outside the removed subtree still references the item or one of those — `ReportItems!X` / `ReportItems("X")`, a `<ToggleItem>`, the scope string of an aggregate / `RowNumber` / `RunningValue` / `InScope` …, `<RepeatWith>`, a UserSort `<SortExpressionScope>` / `<SortTarget>`, `<DomainScope>` — and lists each; force=true removes it anyway, leaves those references in place and returns them as `dangling_refs` [{kind, name, location, text}] (lint_report flags them as undefined-report-item, dangling-toggle-item, unknown-aggregate-scope). Returns {removed, kind, parent?, also_removed, dangling_refs}.
 
 ### `add_embedded_image`
 
-Read a real image file off disk, base64-encode it, and store it under `<EmbeddedImages>`. Reference it later with image_source='Embedded' + value=`<name>`. Supported MIME types: image/bmp, image/gif, image/jpeg, image/png, image/x-png. The file's magic bytes are sniffed and must match mime_type — claiming PNG bytes as image/jpeg is rejected here rather than letting Report Builder fail at preview time.
+Read a real image file off disk, base64-encode it, and store it under `<EmbeddedImages>`. Reference it later with image_source='Embedded' + value=`<name>`. Supported MIME types: image/bmp, image/gif, image/jpeg, image/png, image/x-png. The file's magic bytes are sniffed and must match mime_type — claiming PNG bytes as image/jpeg is rejected here rather than letting Report Builder fail at preview time. The structure is checked too (no decoding): PNG needs an IHDR chunk right after the signature with width and height > 0 and an IEND chunk at the end; JPEG a start-of-image FFD8 and an end-of-image FFD9; GIF a logical screen descriptor and a ';' trailer; BMP a header whose file size does not exceed the file and a pixel offset inside it — so a bare signature, a truncated file or random bytes behind a signature are refused, naming what is missing. name must be an RDL identifier (a letter, then letters, digits or _). Nothing is written on a refusal. Returns {name, mime_type, bytes, width, height} (pixels, from the header; null when not cheaply known), plus warnings when the file is larger than warn_above_bytes (default 1,000,000): base64 adds about 4/3 of the image size to the .rdl — consider a smaller image or an External one.
 
 ### `list_embedded_images`
 
@@ -820,19 +935,37 @@ Set `<Visibility>` on any named ReportItem (Tablix, Textbox, Image, Rectangle, S
 
 *idempotent*
 
-Set `<Textbox>/<Action>` to a Hyperlink (URL), Drillthrough (another report + optional parameters), or BookmarkLink (jump within document). target_expression accepts literal text or =expression. drillthrough_parameters is a list of {name, value} dicts wired into `<Drillthrough>/<Parameters>`. Idempotent: same action_type + target + parameters → {changed: false}, no save. Tablix cell by column header or field: pass cell {tablix, header | field | index, row: data (default) | header} instead of textbox_name.
+Set the textbox's `<ActionInfo>` to a Hyperlink (URL), Drillthrough (another report + optional parameters), or BookmarkLink (jump within the document). target_expression accepts literal text or =expression. drillthrough_parameters is a list of {name, value, omit?} dicts wired into `<Drillthrough>/<Parameters>`; omit (true / false or an =expression) writes `<Omit>`. Refused, file untouched: a parameter name that is empty, not an identifier or repeated; drillthrough_parameters with a Hyperlink / BookmarkLink action (they would be dropped); an empty target_expression; a literal BookmarkLink target that no item's `<Bookmark>` carries (set it first with set_bookmark — an =expression target, or any =expression bookmark in the report, passes). clear=true (with no other action arguments) removes the action, leaving the file byte-identical to before it was added. Idempotent: same action_type + target + parameters → {changed: false}, no save. Returns {textbox, kind, action_type, changed}. Tablix cell by column header or field: pass cell {tablix, header | field | index, row: data (default) | header} instead of textbox_name.
 
 ### `set_image_action`
 
 *idempotent*
 
-Same shape as set_textbox_action but operates on a named `<Image>`. action_type ∈ Hyperlink / Drillthrough / BookmarkLink. Returns {image, kind, action_type, changed}.
+Same shape and checks as set_textbox_action but operates on a named `<Image>`. action_type ∈ Hyperlink / Drillthrough / BookmarkLink; clear=true removes the action. Returns {image, kind, action_type, changed}.
+
+### `set_item_action`
+
+*idempotent*
+
+set_textbox_action for any named Textbox, Image, Rectangle or Line anywhere in the report (body, header, footer, rectangles, tablix cells), addressed by `name`: same arguments, checks and clear=true. Other item types are refused (a chart's click action lives on its series — set_chart_series_action; a tablix's on its cells' textboxes). Returns {name, kind, action_type, changed}.
 
 ### `set_textbox_tooltip`
 
 *idempotent*
 
-Set `<Textbox>/<ToolTip>`. Literal text or =expression. Pass '' to clear. Idempotent. Returns {textbox, kind, changed: bool}. Tablix cell by column header or field: pass cell {tablix, header | field | index, row: data (default) | header} instead of textbox_name.
+Set `<Textbox>/<ToolTip>`. Literal text or =expression. Pass '' to clear. Idempotent. Returns {textbox, kind, changed: bool}. Tablix cell by column header or field: pass cell {tablix, header | field | index, row: data (default) | header} instead of textbox_name. For other item types use set_item_tooltip.
+
+### `set_item_tooltip`
+
+*idempotent*
+
+Set `<ToolTip>` on any named report item — Textbox, Image, Rectangle, Line, Chart, Tablix, Subreport, Map, GaugePanel, CustomReportItem — anywhere in the report. Literal text or =expression; '' clears (byte-identical to before). Idempotent. Returns {name, kind, changed}. Read it back as `tooltip` from get_textbox / get_image / get_rectangle.
+
+### `set_bookmark`
+
+*idempotent*
+
+Set `<Bookmark>` on any named report item: the anchor a BookmarkLink action (set_textbox_action / set_image_action / set_item_action) jumps to. Literal id or =expression; '' clears. Idempotent. Returns {name, kind, changed}, plus warnings when another item already carries the same literal bookmark (a link jumps to the first one). Clearing a bookmark that a link still points at is left to the dangling-bookmark-link lint rule. Read it back as `bookmark` from get_textbox / get_image / get_rectangle.
 
 ### `set_document_map_label`
 
@@ -844,7 +977,7 @@ Set `<DocumentMapLabel>` on any named ReportItem (Textbox / Image / Rectangle / 
 
 *idempotent*
 
-Set `<ChartSeries>/<Action>` to a Hyperlink (URL), Drillthrough (another report + optional parameters), or BookmarkLink. Same kwarg surface as set_textbox_action / set_image_action; the chart series is addressed by (chart_name, series_name). Schema-aware insertion respects ChartSeries child order. Idempotent on structural equality of the inner block.
+Set the click action of a chart series to a Hyperlink (URL), Drillthrough (another report + optional parameters), or BookmarkLink. It is written as `ActionInfo/Actions/Action` on the series' template `ChartDataPoint` (RDL has no ActionInfo on ChartSeries; a legacy series-level one is migrated). Same kwarg surface as set_textbox_action / set_image_action; the chart series is addressed by (chart_name, series_name). drillthrough_parameters are refused unless action_type is Drillthrough. action_type 'None' removes the action (every data point's ActionInfo plus any legacy series-level one) and takes no target_expression; changed is false when there was none. Idempotent on structural equality of the inner block.
 
 ## `admin`
 
@@ -854,25 +987,37 @@ Clone an .rdl to a new path. When regenerate_ids=true (default), every `<rd:Data
 
 ### `create_report`
 
-Emit a minimal valid RDL from scratch at `path`. Refuses if `path` exists (no clobbering). Default page_setup is US Letter portrait with 1in margins; pass any subset of {page_height, page_width, margin_top, margin_bottom, margin_left, margin_right, body_width, body_height} to override. Pass `datasource` {name, workspace_url, dataset_name, provider, integrated_security, catalog_id, identity_provider} to wire a real Power BI connection in exactly the add_data_source shape; omit it (or workspace_url / dataset_name) for a placeholder DataSource1 + DataSet1 stub the caller fills in via subsequent tools. Validates structurally + against the bundled XSD before saving (atomic .tmp + rename). Returns {path, validated, size_bytes}, plus warnings when the connection builder has any (e.g. a PBIDATASET catalog taken from the display name).
+Emit a minimal valid RDL from scratch at `path`. Refuses if `path` exists (no clobbering). Default page_setup is US Letter portrait with 1in margins; pass any subset of {page_height, page_width, margin_top, margin_bottom, margin_left, margin_right, body_width, body_height} to override. Pass `datasource` {name, workspace_url, dataset_name, provider, integrated_security, catalog_id, identity_provider} to wire a real Power BI connection in exactly the add_data_source shape; omit it (or workspace_url / dataset_name) for a placeholder DataSource1 + DataSet1 stub the caller fills in via subsequent tools. `fields` declares DataSet1's `<Fields>`: each entry is a field name (its `DataField` is the same name) or {name, data_field, type_name} (`type_name` writes `<rd:TypeName>`, e.g. `System.Decimal`). Declare the fields here (or later with add_dataset_field) before insert_tablix_from_template or any other tool that binds to them: those refuse undeclared fields. The file is written the way Report Builder writes one — indented, one element per line, with the `df` namespace marked `MustUnderstand="df"` and `<df:DefaultFontFamily>Segoe UI</df:DefaultFontFamily>` as the first child. Validates structurally + against the bundled XSD before saving (atomic .tmp + rename). Returns {path, validated, size_bytes}, plus warnings when the connection builder has any (e.g. a PBIDATASET catalog taken from the display name).
 
 ### `raw_xml_view`
 
 *read-only*
 
-Read-only XPath query against the report. Returns matched elements as serialised XML strings. XPath context is `<Report>` (the root); 'r:' is bound to the RDL namespace, 'rd:' to the rd namespace. Examples: "r:DataSources/r:DataSource[@Name='X']" / ".//r:Textbox[@Name='X']/r:Style". Returns [] when nothing matches; raises on malformed xpath. Output is capped at max_bytes (default 40000); a capped result ends in an explicit '`<!-- pbirb-mcp: truncated ... -->'` marker.
+Read-only XPath query against the report. XPath context is `<Report>` (the root); 'r:' is bound to the RDL namespace, 'rd:' to the report designer namespace, 'am:' / 'df:' / 'cl:' to Report Builder's authoring-metadata / default-font-family / component-library namespaces, plus every prefix the root declares. Examples: "r:DataSources/r:DataSource[@Name='X']" / ".//r:Textbox[@Name='X']/r:Style" / "//am:AuthoringMetadata" / "//r:Textbox/@Name" / "count(//r:Textbox)". Raises on malformed xpath.
+
+A node-set XPath returns `{kind: "nodes", count, matches, truncated}`, each match typed: `{kind: "element", xml}` (the element alone — no trailing whitespace, only the namespace declarations it uses, so it pastes into raw_xml_replace), `{kind: "attribute", name, value, element}`, `{kind: "text", value}` or `{kind: "comment", value}`; no match is `count: 0, matches: []`. A number / string / boolean XPath (`count()`, `string()`, `boolean()`, comparisons) returns `{kind: "number"|"string"|"boolean", value}`. Output is capped at max_bytes (default 40000, 0 = no cap): the match that crosses the cap is cut, ends in an explicit `<!-- pbirb-mcp: truncated ... -->` marker and carries `truncated: true`; later matches are left out (the marker counts them) and the result's `truncated` is true.
 
 ### `raw_xml_replace`
 
 *destructive, idempotent*
 
-Replace the single element matched by xpath with new content. content is parsed with RDL as the default namespace and 'rd:' bound, so bare names like `<Textbox><Value>x</Value></Textbox>` work without explicit xmlns. Refuses on zero matches, multiple matches, or if the xpath targets the `<Report>` root. Saves atomically. Returns {xpath, kind, changed}.
+Replace the single element matched by xpath with new content. content is parsed with RDL as the default namespace and the raw_xml_view prefixes bound, so bare names like `<Textbox><Value>x</Value></Textbox>` (or `<rd:DefaultName>`) work without explicit xmlns. The replacement must be the same element as the target — same namespace and local name — unless allow_kind_change=true (so a `<PageWidth xmlns="urn:x">`, which the XSD accepts as an extension element, can't silently stand in for the real PageWidth). Refuses on zero matches, multiple matches, a non-element match, the `<Report>` root, a report item / group name already used elsewhere, and — outside an editing transaction — a result with XSD / structural errors the report didn't have (inside one, commit_editing_transaction verifies the end state). Content equal to the target (layout whitespace and attribute order aside) is a no-op: changed=false and the file is not rewritten. Saves atomically. Returns {xpath, kind, changed}.
+
+### `raw_xml_insert`
+
+Insert the element(s) in content relative to the single element xpath matches: position `append` (last children, the default), `prepend` (first children), `before` / `after` (siblings; refused for the `<Report>` root). content is one or more elements, parsed as for raw_xml_replace, and inserted in order and indented to fit the file's layout. The bundled RDL 2016 XSD orders children only inside collections (`<Fields>`, `<TablixMembers>`, ...), which hold one element type, so every position is XSD-correct wherever the element is allowed at all. Refuses on zero or several matches, a non-element match, content that isn't XML elements, report item / group names already in the report, and — outside an editing transaction — a result with XSD / structural errors the report didn't have. Not idempotent: an identical second call inserts another copy (or refuses its duplicate names). Returns {xpath, position, inserted, changed}; `inserted` lists the new elements' local names.
+
+### `raw_xml_remove`
+
+*destructive*
+
+Remove the element xpath matches, keeping the surrounding layout. Several matches are refused unless all=true, which removes every match (a match nested in another goes with it). Refuses on zero matches, a non-element match (attributes, text), the `<Report>` root, and — outside an editing transaction — a result with XSD / structural errors the report didn't have (e.g. removing a required element). Prefer the dedicated remove_* tools, which also clean up references. Returns {xpath, removed, count, changed}; `removed` lists the removed elements' local names.
 
 ### `backup_report`
 
 Copy the report to `<dest_dir>/<name>.bak.<UTC-timestamp>[-<n>][.<label>]`; the report is untouched. `dest_dir` (an existing folder) defaults to the report's folder; `label` (1-64 letters, digits, `-`, `_`) tags the name, e.g. `report.rdl.bak.20261105-101500.before-cleanup`. A sidecar `<backup>.meta.json` records `{source, sha1, size_bytes, source_mtime_ns, label, created, reason, in_transaction}`, so restore_from_backup finds the report even from another folder. The backup keeps the report's permission bits (plus owner-write); its mtime is the time of the backup. Called with a `transaction_id`, the backup holds the transaction's edited (not yet committed) state. Returns {source, backup, size_bytes, label, created, in_transaction}. Nothing is rotated or deleted.
 
-With `PBIRB_MCP_AUTO_BACKUP` on, the server takes a backup like this by itself before every removal (`remove_*`), `rename_data_source`, `rename_parameter`, `update_dataset_query`, `refresh_dataset_fields`, `raw_xml_replace` and `convert_to_matrix`, and adds its path to the result as `auto_backup`. When the newest backup already holds the file's bytes it is reused, so a repeated call — or every op of one transaction, whose file doesn't change until commit — shares one backup: the state before the edits.
+With `PBIRB_MCP_AUTO_BACKUP` on, the server takes a backup like this by itself before every removal (`remove_*`), `rename_data_source`, `rename_parameter`, `rename_report_item`, `update_dataset_query`, `refresh_dataset_fields`, `raw_xml_replace`, `raw_xml_remove` and `convert_to_matrix`, and adds its path to the result as `auto_backup`. When the newest backup already holds the file's bytes it is reused, so a repeated call — or every op of one transaction, whose file doesn't change until commit — shares one backup: the state before the edits.
 
 ### `list_backups`
 

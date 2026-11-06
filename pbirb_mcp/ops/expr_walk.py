@@ -18,12 +18,17 @@ Public API::
     enclosing_calls(calls, index) -> list[Call]        # innermost first
     ScopeIndex(root)                                   # datasets / regions / groups
     find_field_references(root, dataset, field)        # consumers of one field (#72)
+    iter_field_expression_references(root, dataset, field)  # … with tokens, to rewrite (#98)
+    field_dataset_reference_slots(root, dataset, field)     # DataSetReference Value/LabelField
+    dataset_scope_references(root, dataset)            # Sum(…, "DS") / Lookup(…, "DS") (#98)
     locator(elem) -> str                               # Type[Name='X']/Sub/Path label
     parameter_references(tokens, name=None)            # Parameters!X / ("X") / Report.Parameters…
     iter_parameter_references(root, name=None)         # (elem, text, tokens, refs), incl. <Code>
     rename_parameter_references(text, tokens, refs, new)
     parameter_dependency_edges(root) / parameter_dependencies(root)
     forward_dependencies(order, edges)                 # dependants declared before a dependency
+    find_inbound_references(root, names)               # ReportItems!X, ToggleItem, scopes … (#105)
+    rewrite_references(refs, mapping)                  # rename what those point at (#111)
 
 All token indices refer to the *significant* token list (whitespace and
 comments dropped) — what :func:`expression_tokens` returns and what
@@ -502,8 +507,39 @@ def find_field_references(
 
     The field's own ``<Field>`` definition is not a consumer and is skipped.
     """
-    ns = etree.QName(root).namespace
-    index = ScopeIndex(root)
+    hits: list[tuple[etree._Element, FieldReference]] = []
+    for elem, text, _sig, refs in iter_field_expression_references(root, dataset_name, field_name):
+        for ref, _resolved, ds in refs:
+            hits.append(
+                (
+                    elem,
+                    FieldReference(
+                        elem, locator(elem), "expression", text[ref.start : ref.end], ds
+                    ),
+                )
+            )
+
+    for el in field_dataset_reference_slots(root, dataset_name, field_name):
+        hits.append(
+            (el, FieldReference(el, locator(el), "dataset_reference", field_name, dataset_name))
+        )
+
+    order = {el: i for i, el in enumerate(root.iter())}
+    hits.sort(key=lambda h: order.get(h[0], 0))
+    return [h[1] for h in hits]
+
+
+def iter_field_expression_references(
+    root: etree._Element, dataset_name: str, field_name: str
+) -> Iterator[tuple[etree._Element, str, list, list]]:
+    """``(element, text, tokens, [(ref, resolved, dataset)])`` for every
+    expression holding a ``Fields`` reference to ``field_name`` whose scope
+    is ``dataset_name`` or can't be resolved statically (``resolved`` is
+    then False, ``dataset`` None) — the expression half of
+    :func:`find_field_references`, with the tokens (offsets index
+    ``text``) so a caller can rewrite the name token
+    (``tokens[ref.first + 2]``, as :func:`rename_parameter_references`
+    does). The field's own ``<Field>/<Value>`` is skipped."""
 
     def own_definition(elem: etree._Element) -> bool:
         # <DataSet Name=dataset_name>/<Fields>/<Field Name=field_name>/<Value>
@@ -518,7 +554,7 @@ def find_field_references(
             and ds.get("Name") == dataset_name
         )
 
-    hits: list[tuple[etree._Element, FieldReference]] = []
+    index = ScopeIndex(root)
     for elem, text in iter_expressions(root):
         if field_name not in text:
             continue
@@ -530,19 +566,24 @@ def find_field_references(
             continue
         calls = aggregate_calls(sig)
         region_ds = dataset_scope(elem)
+        kept = []
         for ref in refs:
             resolved, ds = _resolve_ref_dataset(ref, calls, region_ds, index)
             if resolved and ds != dataset_name:
                 continue
-            hits.append(
-                (
-                    elem,
-                    FieldReference(
-                        elem, locator(elem), "expression", text[ref.start : ref.end], ds
-                    ),
-                )
-            )
+            kept.append((ref, resolved, ds))
+        if kept:
+            yield elem, text, sig, kept
 
+
+def field_dataset_reference_slots(
+    root: etree._Element, dataset_name: str, field_name: str
+) -> list[etree._Element]:
+    """The ``DataSetReference/ValueField|LabelField`` elements (a
+    parameter's ValidValues / DefaultValue query) of dataset
+    ``dataset_name`` that name ``field_name``."""
+    ns = etree.QName(root).namespace
+    out: list[etree._Element] = []
     for dsref in root.iter(f"{{{ns}}}DataSetReference"):
         names = _children(dsref, ns, "DataSetName")
         if not names or (names[0].text or "").strip() != dataset_name:
@@ -550,18 +591,29 @@ def find_field_references(
         for slot in ("ValueField", "LabelField"):
             for el in _children(dsref, ns, slot):
                 if (el.text or "").strip() == field_name:
-                    hits.append(
-                        (
-                            el,
-                            FieldReference(
-                                el, locator(el), "dataset_reference", field_name, dataset_name
-                            ),
-                        )
-                    )
+                    out.append(el)
+    return out
 
-    order = {el: i for i, el in enumerate(root.iter())}
-    hits.sort(key=lambda h: order.get(h[0], 0))
-    return [h[1] for h in hits]
+
+def dataset_scope_references(
+    root: etree._Element, dataset_name: str
+) -> list[tuple[etree._Element, str, list, list]]:
+    """``(element, text, tokens, calls)`` for every expression whose
+    aggregate / lookup / scope-function calls name ``dataset_name`` in a
+    literal scope or dataset argument (``Sum(…, "DS")``,
+    ``Lookup(…, "DS")``, ``CountRows("DS")``); ``calls`` are those
+    :class:`Call` s (their ``scope_token`` indexes ``text``)."""
+    out = []
+    for elem, text in iter_expressions(root):
+        if dataset_name not in text:
+            continue
+        sig = expression_tokens(text)
+        if not sig:
+            continue
+        calls = [c for c in aggregate_calls(sig) if c.scope == dataset_name]
+        if calls:
+            out.append((elem, text, sig, calls))
+    return out
 
 
 # ---- report-parameter references (#73) and dependencies (#74) ---------------
@@ -731,11 +783,176 @@ def forward_dependencies(
     return out
 
 
+# ---- inbound references to report items and groups (#105, #111) -------------
+
+# Elements whose whole text is the name of a report item, data region or
+# group (plain strings in the XSD, never expressions) -> reference kind.
+ELEMENT_NAME_REFERENCES = {
+    "ToggleItem": "toggle_item",  # a Textbox
+    "RepeatWith": "repeat_with",  # a data region
+    "SortExpressionScope": "sort_scope",  # UserSort: a data region or group
+    "SortTarget": "sort_target",  # UserSort: a data region or group
+    "DomainScope": "domain_scope",  # a group's domain scope
+    "TransformationScope": "transformation_scope",  # a chart formula's group
+}
+
+
+class InboundReference(NamedTuple):
+    """One reference to a report item or group, found by
+    :func:`find_inbound_references`.
+
+    ``element`` holds it; ``locator`` labels it (see :func:`locator`);
+    ``kind`` is ``"report_items"`` (``ReportItems!X`` / ``ReportItems("X")``
+    in an expression), ``"scope"`` (the literal scope argument of an
+    aggregate, ``RowNumber``, ``RunningValue``, ``Previous``, ``InScope``,
+    ``Level`` …) or one of :data:`ELEMENT_NAME_REFERENCES`' kinds; ``name``
+    is the referenced name; ``text`` the matched source text; ``span`` the
+    ``(start, end)`` offsets of the name token in ``element.text`` for an
+    expression reference, ``None`` when the element's whole text is the name.
+    """
+
+    element: etree._Element
+    locator: str
+    kind: str
+    name: str
+    text: str
+    span: Optional[tuple[int, int]]
+
+
+def find_inbound_references(root: etree._Element, names) -> list[InboundReference]:
+    """Every reference to the report items / groups called ``names`` (one
+    name or an iterable of names; case-sensitive), in document order.
+
+    1. ``ReportItems!N`` / ``ReportItems("N")`` in any ``=``-expression
+       (:func:`iter_expressions`; VB tokens, so names in string literals or
+       comments don't count).
+    2. The literal scope argument of a scope-taking call (see
+       :func:`aggregate_calls`; not ``Lookup``'s dataset argument) — unless
+       a dataset has that name too, which the scope string then means.
+    3. Elements whose whole text is the name (:data:`ELEMENT_NAME_REFERENCES`):
+       ``<ToggleItem>``, ``<RepeatWith>``, ``UserSort``'s
+       ``<SortExpressionScope>`` / ``<SortTarget>``, ``<DomainScope>``,
+       ``<TransformationScope>``.
+
+    Bookmarks are values rather than names (``BookmarkLink`` points at a
+    ``<Bookmark>`` text) and ``DataElementName`` is output naming, so neither
+    counts. Callers decide which hits matter (e.g. only those outside a
+    subtree being removed).
+    """
+    wanted = {names} if isinstance(names, str) else set(names)
+    if not wanted:
+        return []
+    ns = etree.QName(root).namespace
+    datasets = {
+        ds.get("Name")
+        for block in _children(root, ns, "DataSets")
+        for ds in _children(block, ns, "DataSet")
+        if ds.get("Name")
+    }
+    hits: list[InboundReference] = []
+    for elem, text in iter_expressions(root):
+        if not any(n in text for n in wanted):
+            continue
+        sig = expression_tokens(text)
+        if not sig:
+            continue
+        loc: Optional[str] = None
+        for ref in references(sig, "ReportItems"):
+            if ref.name not in wanted:
+                continue
+            tok = sig[ref.first + 2]
+            loc = loc or locator(elem)
+            hits.append(
+                InboundReference(
+                    elem,
+                    loc,
+                    "report_items",
+                    ref.name,
+                    text[ref.start : ref.end],
+                    (tok.start, tok.end),
+                )
+            )
+        for call in aggregate_calls(sig):
+            if call.kind == LOOKUP or call.scope not in wanted or call.scope in datasets:
+                continue
+            tok = call.scope_token
+            end = sig[call.close_index].end if call.close_index < len(sig) else len(text)
+            loc = loc or locator(elem)
+            hits.append(
+                InboundReference(
+                    elem,
+                    loc,
+                    "scope",
+                    call.scope,
+                    text[sig[call.name_index].start : end],
+                    (tok.start, tok.end),
+                )
+            )
+    for local, kind in ELEMENT_NAME_REFERENCES.items():
+        for el in root.iter(f"{{{ns}}}{local}" if ns else local):
+            value = (el.text or "").strip()
+            if value in wanted:
+                hits.append(InboundReference(el, locator(el), kind, value, value, None))
+    order = {el: i for i, el in enumerate(root.iter())}
+    hits.sort(key=lambda h: (order.get(h.element, 0), h.span or (0, 0)))
+    return hits
+
+
+def _name_token(original: str, new_name: str) -> str:
+    """``new_name`` spelt like the token it replaces: a string literal stays
+    quoted, a bracketed identifier stays bracketed."""
+    if original.startswith('"'):
+        return '"' + new_name.replace('"', '""') + '"'
+    if original.startswith("["):
+        return f"[{new_name}]"
+    return new_name
+
+
+def rewrite_references(
+    refs: Sequence[InboundReference], mapping: dict
+) -> list[tuple[etree._Element, str, str]]:
+    """Point each of ``refs`` (from :func:`find_inbound_references`) at
+    ``mapping[ref.name]`` instead, editing the elements in place; refs whose
+    name isn't in ``mapping`` are left alone. Only the name changes — the
+    rest of an expression, and the whitespace around a plain name, are kept.
+    Returns ``(element, before, after)`` per element rewritten."""
+    by_elem: dict[etree._Element, list[InboundReference]] = {}
+    for ref in refs:
+        if ref.name in mapping:
+            by_elem.setdefault(ref.element, []).append(ref)
+    out = []
+    for elem, group in by_elem.items():
+        before = elem.text or ""
+        spans = sorted({r.span for r in group if r.span is not None})
+        if spans:
+            names_at = {r.span: r.name for r in group if r.span is not None}
+            pieces, pos = [], 0
+            for start, end in spans:
+                pieces.append(before[pos:start])
+                pieces.append(_name_token(before[start:end], mapping[names_at[(start, end)]]))
+                pos = end
+            pieces.append(before[pos:])
+            after = "".join(pieces)
+        else:
+            name = group[0].name
+            lead = before[: len(before) - len(before.lstrip())]
+            trail = before[len(before.rstrip()) :]
+            after = f"{lead}{mapping[name]}{trail}"
+        if after != before:
+            elem.text = after
+            out.append((elem, before, after))
+    return out
+
+
 __all__ = [
     "AGGREGATE",
     "Call",
+    "ELEMENT_NAME_REFERENCES",
     "EXCLUDED_TAGS",
     "FieldReference",
+    "InboundReference",
+    "find_inbound_references",
+    "rewrite_references",
     "LOOKUP",
     "Ref",
     "SCOPE_ONLY",
@@ -744,8 +961,11 @@ __all__ = [
     "dataset_scope",
     "enclosing_calls",
     "expression_tokens",
+    "dataset_scope_references",
+    "field_dataset_reference_slots",
     "find_field_references",
     "iter_expressions",
+    "iter_field_expression_references",
     "locator",
     "references",
     "scope_region",

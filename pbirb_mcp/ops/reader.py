@@ -17,13 +17,15 @@ from typing import Any, Optional
 
 from lxml import etree
 
-from pbirb_mcp.core import chart_shape
+from pbirb_mcp.core import chart_shape, chart_types, style_values
 from pbirb_mcp.core.columns import describe_columns
 from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.geometry import PAGE_DEFAULTS, REPORT_ITEM_TAGS, size_unit
 from pbirb_mcp.core.tablix_shape import is_detail_group, is_dynamic_group
 from pbirb_mcp.core.units import format_size, to_inches
 from pbirb_mcp.core.xpath import RD_NS, RDL_NS, find_child, find_children, q, qrd
+from pbirb_mcp.ops.dataset import dataset_to_dict
+from pbirb_mcp.ops.parameters import _cell_parameter_name, _cell_slot
 from pbirb_mcp.ops.styling import _resolve_row_index
 from pbirb_mcp.ops.tablix import read_sort
 
@@ -372,64 +374,86 @@ def _filter_dict(filter_node: etree._Element) -> dict[str, Any]:
 
 
 def get_datasets(path: str) -> list[dict[str, Any]]:
+    """Every ``<DataSet>``, each entry exactly what ``get_dataset`` returns
+    for it (#97: built by the same :func:`dataset.dataset_to_dict`)."""
     doc = RDLDocument.open(path)
-    out: list[dict[str, Any]] = []
-    for ds in doc.root.iter(f"{{{RDL_NS}}}DataSet"):
-        query = find_child(ds, "Query")
-        command_text = None
-        data_source = None
-        query_parameters: list[dict[str, Any]] = []
-        if query is not None:
-            command_text = _text(find_child(query, "CommandText"))
-            data_source = _text(find_child(query, "DataSourceName"))
-            qp_root = find_child(query, "QueryParameters")
-            if qp_root is not None:
-                for qp in find_children(qp_root, "QueryParameter"):
-                    query_parameters.append(
-                        {
-                            "name": qp.get("Name"),
-                            "value": _text(find_child(qp, "Value")),
-                        }
-                    )
-
-        fields: list[dict[str, Any]] = []
-        fields_root = find_child(ds, "Fields")
-        if fields_root is not None:
-            for f in find_children(fields_root, "Field"):
-                # Calculated fields carry <Value> instead of <DataField>;
-                # the reader surfaces both so consumers can disambiguate.
-                fields.append(
-                    {
-                        "name": f.get("Name"),
-                        "data_field": _text(find_child(f, "DataField")),
-                        "value": _text(find_child(f, "Value")),
-                        "type_name": _rd_text(f, "TypeName"),
-                    }
-                )
-
-        filters = []
-        filters_root = find_child(ds, "Filters")
-        if filters_root is not None:
-            filters = [_filter_dict(f) for f in find_children(filters_root, "Filter")]
-
-        out.append(
-            {
-                "name": ds.get("Name"),
-                "data_source": data_source,
-                "command_text": command_text,
-                "fields": fields,
-                "query_parameters": query_parameters,
-                "filters": filters,
-            }
-        )
-    return out
+    return [dataset_to_dict(ds) for ds in doc.root.iter(f"{{{RDL_NS}}}DataSet")]
 
 
 # ---- get_parameters --------------------------------------------------------
 
 
+def _dataset_reference_dict(ref: etree._Element, *, with_label: bool) -> dict[str, Any]:
+    out = {
+        "source": "query",
+        "dataset": _text(find_child(ref, "DataSetName")),
+        "value_field": _text(find_child(ref, "ValueField")),
+    }
+    if with_label:
+        out["label_field"] = _text(find_child(ref, "LabelField"))
+    return out
+
+
+def _parameter_default_values(parameter: etree._Element) -> Optional[dict[str, Any]]:
+    """``{source: 'static', values}`` / ``{source: 'query', dataset,
+    value_field}`` for ``<DefaultValue>``; ``None`` when absent."""
+    default_value = find_child(parameter, "DefaultValue")
+    if default_value is None:
+        return None
+    ref = find_child(default_value, "DataSetReference")
+    if ref is not None:
+        return _dataset_reference_dict(ref, with_label=False)
+    values_root = find_child(default_value, "Values")
+    values = (
+        [_text(v) for v in find_children(values_root, "Value")] if values_root is not None else []
+    )
+    return {"source": "static", "values": values}
+
+
+def _parameter_valid_values(parameter: etree._Element) -> Optional[dict[str, Any]]:
+    """``{source: 'static', values: [{value, label}]}`` / ``{source: 'query',
+    dataset, value_field, label_field}`` for ``<ValidValues>``; ``None``
+    when absent."""
+    valid_values = find_child(parameter, "ValidValues")
+    if valid_values is None:
+        return None
+    ref = find_child(valid_values, "DataSetReference")
+    if ref is not None:
+        return _dataset_reference_dict(ref, with_label=True)
+    pvs = find_child(valid_values, "ParameterValues")
+    values = [
+        {
+            "value": _text(find_child(pv, "Value")),
+            "label": _text(find_child(pv, "Label")),
+        }
+        for pv in (find_children(pvs, "ParameterValue") if pvs is not None else [])
+    ]
+    return {"source": "static", "values": values}
+
+
+def _parameter_layout_cells(root: etree._Element) -> dict[str, dict[str, Optional[int]]]:
+    """Parameter name -> ``{row, column}`` of its first ``<CellDefinition>``
+    in ``<ReportParametersLayout>`` (0-based, as RDL stores them)."""
+    layout = find_child(root, "ReportParametersLayout")
+    grid = find_child(layout, "GridLayoutDefinition") if layout is not None else None
+    cells_root = find_child(grid, "CellDefinitions") if grid is not None else None
+    cells: dict[str, dict[str, Optional[int]]] = {}
+    if cells_root is None:
+        return cells
+    for cell in find_children(cells_root, "CellDefinition"):
+        name = _cell_parameter_name(cell)
+        if name is not None and name not in cells:
+            row, column = _cell_slot(cell)
+            cells[name] = {"row": row, "column": column}
+    return cells
+
+
 def get_parameters(path: str) -> list[dict[str, Any]]:
+    """Every ``<ReportParameter>``: type, prompt, flags, plus (#97) its
+    ``default_values``, ``valid_values`` and parameter-pane ``layout``
+    cell (each ``None`` when not set)."""
     doc = RDLDocument.open(path)
+    layout_cells = _parameter_layout_cells(doc.root)
     out: list[dict[str, Any]] = []
     for p in doc.root.iter(f"{{{RDL_NS}}}ReportParameter"):
         out.append(
@@ -441,6 +465,9 @@ def get_parameters(path: str) -> list[dict[str, Any]]:
                 "allow_blank": _text(find_child(p, "AllowBlank")) == "true",
                 "multi_value": _text(find_child(p, "MultiValue")) == "true",
                 "hidden": _text(find_child(p, "Hidden")) == "true",
+                "default_values": _parameter_default_values(p),
+                "valid_values": _parameter_valid_values(p),
+                "layout": layout_cells.get(p.get("Name")),
             }
         )
     return out
@@ -879,13 +906,168 @@ def _paragraph_style_dict(paragraph: etree._Element) -> Optional[dict[str, str]]
     return _capture_style_fields(find_child(paragraph, "Style"), _PARAGRAPH_STYLE_FIELDS)
 
 
-def _border_dict(style: Optional[etree._Element]) -> Optional[dict[str, str]]:
-    """Capture the simple ``Border`` sub-element. Per-side borders
-    (``TopBorder`` / etc.) are reported separately if useful later."""
+def _border_dict(
+    style: Optional[etree._Element], local: str = "Border"
+) -> Optional[dict[str, str]]:
+    """Capture a ``Style`` border sub-element (``Border`` by default, or a
+    per-side ``TopBorder`` / ``BottomBorder`` / ``LeftBorder`` /
+    ``RightBorder``) as ``{Style, Color, Width}``; None when absent."""
     if style is None:
         return None
-    border = find_child(style, "Border")
+    border = find_child(style, local)
     return _capture_style_fields(border, _BORDER_STYLE_FIELDS) if border is not None else None
+
+
+# Per-side border elements → their key in the nested style dict.
+_SIDE_BORDERS = (
+    ("TopBorder", "top_border"),
+    ("BottomBorder", "bottom_border"),
+    ("LeftBorder", "left_border"),
+    ("RightBorder", "right_border"),
+)
+
+
+def _borders_into(out: dict[str, Any], style: Optional[etree._Element]) -> None:
+    """Add ``border`` and any per-side ``*_border`` dicts of ``style`` to
+    ``out`` (empty ones are skipped)."""
+    border = _border_dict(style)
+    if border:
+        out["border"] = border
+    for local, key in _SIDE_BORDERS:
+        side = _border_dict(style, local)
+        if side:
+            out[key] = side
+
+
+def _item_style_dict(el: etree._Element) -> Optional[dict[str, Any]]:
+    """Nested ``{box, border, top_border, ...}`` style of a non-text item
+    (Image, Rectangle) — the textbox shape without paragraph / run.
+    Empty branches are dropped; None when nothing is set (#108)."""
+    style = find_child(el, "Style")
+    out: dict[str, Any] = {}
+    box = _capture_style_fields(style, _BOX_STYLE_FIELDS)
+    if box:
+        out["box"] = box
+    _borders_into(out, style)
+    return out or None
+
+
+def _action_dict(action: etree._Element) -> Optional[dict[str, Any]]:
+    """``{type, target, parameters}`` of one ``<Action>``: type is
+    Hyperlink / Drillthrough / BookmarkLink, target the URL / report name
+    / bookmark, parameters the drillthrough ``[{name, value}]`` (plus
+    ``omit`` when the parameter carries ``<Omit>``)."""
+    for kind in ("Hyperlink", "BookmarkLink"):
+        node = find_child(action, kind)
+        if node is not None:
+            return {"type": kind, "target": node.text, "parameters": []}
+    drill = find_child(action, "Drillthrough")
+    if drill is None:
+        return None
+    params: list[dict[str, Any]] = []
+    params_root = find_child(drill, "Parameters")
+    if params_root is not None:
+        for param in find_children(params_root, "Parameter"):
+            entry: dict[str, Any] = {
+                "name": param.get("Name"),
+                "value": _text(find_child(param, "Value")),
+            }
+            omit = find_child(param, "Omit")
+            if omit is not None:
+                entry["omit"] = omit.text
+            params.append(entry)
+    return {
+        "type": "Drillthrough",
+        "target": _text(find_child(drill, "ReportName")),
+        "parameters": params,
+    }
+
+
+def _action_of(el: etree._Element) -> Optional[dict[str, Any]]:
+    """The first action of ``el``'s ``<ActionInfo>`` (or of a legacy bare
+    ``<Action>`` child), or None."""
+    info = find_child(el, "ActionInfo")
+    if info is not None:
+        actions_root = find_child(info, "Actions")
+        for action in find_children(actions_root, "Action") if actions_root is not None else []:
+            found = _action_dict(action)
+            if found is not None:
+                return found
+        return None
+    legacy = find_child(el, "Action")
+    return _action_dict(legacy) if legacy is not None else None
+
+
+def _interactivity_dict(el: etree._Element) -> dict[str, Any]:
+    """``{action, tooltip, document_map_label, bookmark}`` of a report item
+    — what the action / tooltip / document-map / bookmark tools write
+    (#108). Each is None when absent."""
+    return {
+        "action": _action_of(el),
+        "tooltip": _text(find_child(el, "ToolTip")),
+        "document_map_label": _text(find_child(el, "DocumentMapLabel")),
+        "bookmark": _text(find_child(el, "Bookmark")),
+    }
+
+
+# Paragraph-level properties → their key in get_textbox's ``paragraphs``.
+_PARAGRAPH_FIELDS = (
+    ("ListStyle", "list_style"),
+    ("ListLevel", "list_level"),
+    ("LeftIndent", "left_indent"),
+    ("RightIndent", "right_indent"),
+    ("HangingIndent", "hanging_indent"),
+    ("SpaceBefore", "space_before"),
+    ("SpaceAfter", "space_after"),
+)
+
+
+def _paragraph_elements(textbox: etree._Element) -> list[etree._Element]:
+    paragraphs_root = find_child(textbox, "Paragraphs")
+    return find_children(paragraphs_root, "Paragraph") if paragraphs_root is not None else []
+
+
+def _paragraphs_of(textbox: etree._Element) -> list[dict[str, Any]]:
+    """``[{index, text_align, list_style, list_level, left_indent,
+    right_indent, hanging_indent, space_before, space_after}]`` per
+    ``<Paragraph>`` (None for each property that is not set)."""
+    out: list[dict[str, Any]] = []
+    for index, paragraph in enumerate(_paragraph_elements(textbox)):
+        style = find_child(paragraph, "Style")
+        entry: dict[str, Any] = {
+            "index": index,
+            "text_align": _text(find_child(style, "TextAlign")) if style is not None else None,
+        }
+        for local, key in _PARAGRAPH_FIELDS:
+            entry[key] = _text(find_child(paragraph, local))
+        out.append(entry)
+    return out
+
+
+def _run_interactivity(textbox: etree._Element) -> list[dict[str, Any]]:
+    """``[{paragraph_index, run_index, tooltip, action}]`` for each text run
+    that carries a ``<ToolTip>`` or an action (run_index counts within its
+    paragraph). Kept out of ``runs`` so ``runs`` stays exactly the shape
+    ``set_textbox_runs`` accepts."""
+    out: list[dict[str, Any]] = []
+    for paragraph_index, paragraph in enumerate(_paragraph_elements(textbox)):
+        runs_root = find_child(paragraph, "TextRuns")
+        if runs_root is None:
+            continue
+        for run_index, run in enumerate(find_children(runs_root, "TextRun")):
+            tooltip = _text(find_child(run, "ToolTip"))
+            action = _action_of(run)
+            if tooltip is None and action is None:
+                continue
+            out.append(
+                {
+                    "paragraph_index": paragraph_index,
+                    "run_index": run_index,
+                    "tooltip": tooltip,
+                    "action": action,
+                }
+            )
+    return out
 
 
 def _runs_of(textbox: etree._Element) -> list[dict[str, Any]]:
@@ -925,6 +1107,8 @@ def _full_textbox_style(textbox: etree._Element) -> Optional[dict[str, Any]]:
         {
           "box":       {BackgroundColor, VerticalAlign, Padding*, ...},
           "border":    {Style, Color, Width},
+          "top_border" / "bottom_border" / "left_border" / "right_border":
+                       {Style, Color, Width}  (per-side overrides),
           "paragraph": {TextAlign},
           "run":       {FontFamily, FontSize, FontWeight, Color, Format, ...},
         }
@@ -936,7 +1120,6 @@ def _full_textbox_style(textbox: etree._Element) -> Optional[dict[str, Any]]:
     same behavior ``set_textbox_style`` uses for writes.
     """
     box = _capture_style_fields(find_child(textbox, "Style"), _BOX_STYLE_FIELDS)
-    border = _border_dict(find_child(textbox, "Style"))
 
     paragraph_style: Optional[dict[str, str]] = None
     run_style: Optional[dict[str, str]] = None
@@ -954,8 +1137,7 @@ def _full_textbox_style(textbox: etree._Element) -> Optional[dict[str, Any]]:
     out: dict[str, Any] = {}
     if box:
         out["box"] = box
-    if border:
-        out["border"] = border
+    _borders_into(out, find_child(textbox, "Style"))
     if paragraph_style:
         out["paragraph"] = paragraph_style
     if run_style:
@@ -966,8 +1148,8 @@ def _full_textbox_style(textbox: etree._Element) -> Optional[dict[str, Any]]:
 def _style_dict(el: Optional[etree._Element]) -> Optional[dict[str, Any]]:
     """Capture key Style children. Best-effort; returns None if no style.
 
-    Used by non-Textbox readers (Image, Rectangle) where there's only one
-    Style block to look at — fall back to a flat field dump.
+    Used by get_chart, where there's only one Style block to look at —
+    a flat field dump. (Image and Rectangle use :func:`_item_style_dict`.)
     """
     style = find_child(el, "Style") if el is not None else None
     if style is None:
@@ -1046,6 +1228,11 @@ def get_textbox(path: str, name: str) -> dict[str, Any]:
     properties: ``{"box": {...}, "border": {...}, "paragraph": {...},
     "run": {...}}``. Empty branches are dropped. ``runs`` entries each
     carry their own ``style`` dict.
+
+    Also returns ``paragraphs`` (per-paragraph TextAlign, list and indent
+    / spacing properties), ``run_interactivity`` (runs with their own
+    ToolTip / action) and the item's ``action`` / ``tooltip`` /
+    ``document_map_label`` / ``bookmark`` (#108).
     """
     doc = RDLDocument.open(path)
     tb = _find_named_anywhere(doc, "Textbox", name)
@@ -1058,15 +1245,20 @@ def get_textbox(path: str, name: str) -> dict[str, Any]:
         "type": "Textbox",
         **_layout_dict_for(tb),
         "runs": _runs_of(tb),
+        "paragraphs": _paragraphs_of(tb),
+        "run_interactivity": _run_interactivity(tb),
         "style": _full_textbox_style(tb),
         "visibility": _visibility(tb),
         "can_grow": _text(find_child(tb, "CanGrow")),
         "can_shrink": _text(find_child(tb, "CanShrink")),
+        **_interactivity_dict(tb),
     }
 
 
 def get_image(path: str, name: str) -> dict[str, Any]:
-    """Return position, size, source, value, sizing for a named Image."""
+    """Return position, size, source, value, sizing, nested style
+    (``box`` / ``border`` / per-side borders), visibility, action,
+    tooltip, document_map_label and bookmark for a named Image."""
     doc = RDLDocument.open(path)
     img = _find_named_anywhere(doc, "Image", name)
     if img is None:
@@ -1081,13 +1273,15 @@ def get_image(path: str, name: str) -> dict[str, Any]:
         "value": _text(find_child(img, "Value")),
         "sizing": _text(find_child(img, "Sizing")),
         "mime_type": _text(find_child(img, "MIMEType")),
-        "style": _style_dict(img),
+        "style": _item_style_dict(img),
         "visibility": _visibility(img),
+        **_interactivity_dict(img),
     }
 
 
 def get_rectangle(path: str, name: str) -> dict[str, Any]:
-    """Return position, size, contained-item names, and style for a Rectangle."""
+    """Return position, size, contained-item names, nested style (as
+    get_image), visibility and interactivity for a Rectangle."""
     doc = RDLDocument.open(path)
     rect = _find_named_anywhere(doc, "Rectangle", name)
     if rect is None:
@@ -1106,8 +1300,9 @@ def get_rectangle(path: str, name: str) -> dict[str, Any]:
         "type": "Rectangle",
         **_layout_dict_for(rect),
         "contained_items": contained,
-        "style": _style_dict(rect),
+        "style": _item_style_dict(rect),
         "visibility": _visibility(rect),
+        **_interactivity_dict(rect),
     }
 
 
@@ -1142,14 +1337,60 @@ def _chart_data_labels_dict(series: etree._Element) -> Optional[dict[str, Any]]:
     }
 
 
-def _chart_series_dict(series: etree._Element) -> dict[str, Any]:
+def _chart_action_dict(host: Optional[etree._Element]) -> Optional[dict[str, Any]]:
+    """Read-back of the first action on ``host`` (``ActionInfo/Actions/Action``,
+    or a legacy bare ``<Action>``), in the argument shape of the
+    ``set_*_action`` tools: ``{action_type, target_expression,
+    drillthrough_parameters: [{name, value}]}``. None when there is none."""
+    if host is None:
+        return None
+    action = None
+    info = find_child(host, "ActionInfo")
+    if info is not None:
+        actions = find_child(info, "Actions")
+        action = find_child(actions, "Action") if actions is not None else None
+    if action is None:
+        action = find_child(host, "Action")
+    if action is None:
+        return None
+    for kind in ("Hyperlink", "BookmarkLink"):
+        node = find_child(action, kind)
+        if node is not None:
+            return {"action_type": kind, "target_expression": _text(node)}
+    drill = find_child(action, "Drillthrough")
+    if drill is None:
+        return None
+    params_root = find_child(drill, "Parameters")
+    params = (
+        [
+            {"name": p.get("Name"), "value": _text(find_child(p, "Value"))}
+            for p in find_children(params_root, "Parameter")
+        ]
+        if params_root is not None
+        else []
+    )
+    return {
+        "action_type": "Drillthrough",
+        "target_expression": _text(find_child(drill, "ReportName")),
+        "drillthrough_parameters": params,
+    }
+
+
+def _chart_series_dict(
+    series: etree._Element, member: Optional[etree._Element] = None
+) -> dict[str, Any]:
     """Return the read-back shape for one ``<ChartSeries>``: name, type,
-    subtype, value/category expressions on the (single) data point,
-    style color (when explicitly set via ``<Style>/<Color>``), and
-    ``data_labels`` (``None`` when ``<ChartDataLabel>`` is absent).
+    subtype, value/category expressions on the template data point, style
+    color (when explicitly set via ``<Style>/<Color>``), ``data_labels``
+    (``None`` when ``<ChartDataLabel>`` is absent), the axis / area /
+    legend bindings, ``hidden``, the click ``action`` and the series'
+    hierarchy ``label`` (its leaf ``member``'s ``<Label>``).
+
+    ``type`` is the effective type: RDL's default ``Column`` when
+    ``<Type>`` is absent (Report Builder omits it for Column series), with
+    ``type_implicit: true``.
     """
-    data_points = find_child(series, "ChartDataPoints")
-    point = find_child(data_points, "ChartDataPoint") if data_points is not None else None
+    point = chart_shape.template_data_point(series)
     values = find_child(point, "ChartDataPointValues") if point is not None else None
     y = find_child(values, "Y") if values is not None else None
     x = find_child(values, "X") if values is not None else None
@@ -1157,14 +1398,65 @@ def _chart_series_dict(series: etree._Element) -> dict[str, Any]:
     style = find_child(series, "Style")
     color = _text(find_child(style, "Color")) if style is not None else None
 
+    type_text = _text(find_child(series, "Type"))
+    type_implicit = type_text is None or not type_text.strip()
+
+    action = _chart_action_dict(point)
+    if action is None:  # legacy series-level placement
+        action = _chart_action_dict(series)
+
     return {
         "name": series.get("Name"),
-        "type": _text(find_child(series, "Type")),
+        "type": chart_types.RDL_DEFAULT_TYPE if type_implicit else type_text,
+        "type_implicit": type_implicit,
         "subtype": _text(find_child(series, "Subtype")),
         "value_expression": _text(y),
         "category_expression": _text(x),
         "color": color,
         "data_labels": _chart_data_labels_dict(series),
+        "label": _text(find_child(member, "Label")) if member is not None else None,
+        "value_axis": _text(find_child(series, "ValueAxisName")),
+        "category_axis": _text(find_child(series, "CategoryAxisName")),
+        "chart_area": _text(find_child(series, "ChartAreaName")),
+        "legend_name": _text(find_child(series, "LegendName")),
+        "hidden": _text(find_child(series, "Hidden")),
+        "action": action,
+        **_chart_series_extras(series, point),
+    }
+
+
+def _sub_text(parent: Optional[etree._Element], *path: str) -> Optional[str]:
+    """Text of ``parent/path[0]/path[1]/...`` (None anywhere along it)."""
+    node = parent
+    for local in path:
+        if node is None:
+            return None
+        node = find_child(node, local)
+    return _text(node)
+
+
+def _chart_series_extras(series: etree._Element, point: Optional[etree._Element]) -> dict[str, Any]:
+    """What set_chart_series_properties writes (#104): the legend entry,
+    and the template data point's tooltip / marker / colour, and the
+    empty-point display."""
+    empty_value = None
+    props = find_child(series, "CustomProperties")
+    for cp in find_children(props, "CustomProperty") if props is not None else []:
+        if (_text(find_child(cp, "Name")) or "").strip() == "EmptyPointValue":
+            empty_value = _text(find_child(cp, "Value"))
+    marker = find_child(point, "ChartMarker") if point is not None else None
+    return {
+        "legend_text": _sub_text(series, "ChartItemInLegend", "LegendText"),
+        "hide_in_legend": _sub_text(series, "ChartItemInLegend", "Hidden"),
+        "tooltip": _sub_text(point, "ToolTip"),
+        "point_color": _sub_text(point, "Style", "Color"),
+        "marker": (
+            {"type": _sub_text(marker, "Type"), "size": _sub_text(marker, "Size")}
+            if marker is not None
+            else None
+        ),
+        "empty_point_value": empty_value,
+        "empty_point_color": _sub_text(series, "ChartEmptyPoints", "Style", "Color"),
     }
 
 
@@ -1197,16 +1489,34 @@ def _chart_axis_dict(axis: etree._Element) -> dict[str, Any]:
         "visible": _text(visible_node),
         "log_scale": _text(log_node),
         "format": _text(format_node),
+        "location": _text(find_child(axis, "Location")),
     }
 
 
-def _chart_legend_dict(chart: etree._Element) -> Optional[dict[str, Any]]:
-    legends_root = find_child(chart, "ChartLegends")
-    if legends_root is None:
-        return None
-    legend = find_child(legends_root, "ChartLegend")
-    if legend is None:
-        return None
+def _chart_area_axes(chart_area: etree._Element) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {"category": [], "value": []}
+    for key, local in (("category", "ChartCategoryAxes"), ("value", "ChartValueAxes")):
+        root = find_child(chart_area, local)
+        if root is not None:
+            out[key] = [_chart_axis_dict(a) for a in find_children(root, "ChartAxis")]
+    return out
+
+
+def _chart_areas(chart: etree._Element) -> list[dict[str, Any]]:
+    areas_root = find_child(chart, "ChartAreas")
+    if areas_root is None:
+        return []
+    return [
+        {
+            "name": area.get("Name"),
+            "hidden": _text(find_child(area, "Hidden")),
+            "axes": _chart_area_axes(area),
+        }
+        for area in find_children(areas_root, "ChartArea")
+    ]
+
+
+def _chart_legend_entry(legend: etree._Element) -> dict[str, Any]:
     # set_chart_legend writes <Hidden>true|false</Hidden> as the inverse
     # of `visible` (visible=True → Hidden=false). Echo the inverse on
     # read so the field name matches the writer's input arg semantics:
@@ -1216,11 +1526,8 @@ def _chart_legend_dict(chart: etree._Element) -> Optional[dict[str, Any]]:
         visible_text: Optional[str] = None
     else:
         visible_text = "false" if hidden_text.strip().lower() == "true" else "true"
-    # Pre-v0.3.1 had a fallback `_text(<DockOutsideChartArea>) or
-    # _text(<Position>)` which returned the boolean's text as the
-    # "position" string when both elements were present. Read only
-    # <Position> — DockOutsideChartArea is a separate boolean and
-    # doesn't belong in this field.
+    # Read only <Position> — DockOutsideChartArea is a separate boolean
+    # and doesn't belong in this field.
     return {
         "name": legend.get("Name"),
         "position": _text(find_child(legend, "Position")),
@@ -1228,50 +1535,100 @@ def _chart_legend_dict(chart: etree._Element) -> Optional[dict[str, Any]]:
     }
 
 
-def _chart_title_dict(chart: etree._Element) -> Optional[dict[str, Any]]:
+def _chart_legends(chart: etree._Element) -> list[dict[str, Any]]:
+    legends_root = find_child(chart, "ChartLegends")
+    if legends_root is None:
+        return []
+    return [_chart_legend_entry(lg) for lg in find_children(legends_root, "ChartLegend")]
+
+
+def _chart_titles(chart: etree._Element) -> list[dict[str, Any]]:
     titles_root = find_child(chart, "ChartTitles")
     if titles_root is None:
-        return None
-    title = find_child(titles_root, "ChartTitle")
-    if title is None:
-        return None
+        return []
+    return [
+        {"name": title.get("Name"), "caption": _text(find_child(title, "Caption"))}
+        for title in find_children(titles_root, "ChartTitle")
+    ]
+
+
+def _chart_member_entry(member: etree._Element, level: int) -> dict[str, Any]:
+    """``{name, expression, label, sort, static, level}`` for one ChartMember
+    (``name`` / ``expression`` are the ``<Group>``'s; None when static)."""
+    group = find_child(member, "Group")
+    expressions: list[str] = []
+    if group is not None:
+        expr_root = find_child(group, "GroupExpressions")
+        if expr_root is not None:
+            expressions = [
+                e.text for e in find_children(expr_root, "GroupExpression") if e.text is not None
+            ]
     return {
-        "name": title.get("Name"),
-        "caption": _text(find_child(title, "Caption")),
+        "name": group.get("Name") if group is not None else None,
+        "expression": expressions[0] if expressions else None,
+        "label": _text(find_child(member, "Label")),
+        "sort": [{"value": v, "direction": d} for v, d in chart_shape.member_sorts(member)],
+        "static": group is None,
+        "level": level,
     }
 
 
 def _chart_category_groups(chart: etree._Element) -> list[dict[str, Any]]:
+    """Every category-hierarchy member, depth-first (outer level first)."""
+    return [
+        _chart_member_entry(member, level)
+        for member, level in chart_shape.walk_members(chart_shape.category_hierarchy_members(chart))
+    ]
+
+
+def _chart_series_groups(chart: etree._Element) -> list[dict[str, Any]]:
+    """Every series-hierarchy member, depth-first; a leaf also names the
+    ``series`` it belongs to (series and leaves match by position)."""
+    all_series = chart_shape.series_list(chart)
+    leaf_index = {id(m): i for i, m in enumerate(chart_shape.series_leaf_members(chart))}
     out: list[dict[str, Any]] = []
-    cat_h = find_child(chart, "ChartCategoryHierarchy")
-    members_root = find_child(cat_h, "ChartMembers") if cat_h is not None else None
-    if members_root is None:
-        return out
-    for member in find_children(members_root, "ChartMember"):
-        group = find_child(member, "Group")
-        label = _text(find_child(member, "Label"))
-        if group is None:
-            out.append({"name": None, "expression": None, "label": label})
-            continue
-        expr_root = find_child(group, "GroupExpressions")
-        expressions: list[str] = []
-        if expr_root is not None:
-            for e in find_children(expr_root, "GroupExpression"):
-                if e.text:
-                    expressions.append(e.text)
+    for member, level in chart_shape.walk_members(chart_shape.series_hierarchy_members(chart)):
+        entry = _chart_member_entry(member, level)
+        idx = leaf_index.get(id(member))
+        entry["series"] = (
+            all_series[idx].get("Name") if idx is not None and idx < len(all_series) else None
+        )
+        out.append(entry)
+    return out
+
+
+def _chart_derived_series(chart: etree._Element) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for derived in chart_shape.derived_series_list(chart):
+        inner = find_child(derived, "ChartSeries")
+        params_root = find_child(derived, "ChartFormulaParameters")
+        params = (
+            [
+                {
+                    "name": p.get("Name"),
+                    "value": _text(find_child(p, "Value")),
+                    "source": _text(find_child(p, "Source")),
+                }
+                for p in find_children(params_root, "ChartFormulaParameter")
+            ]
+            if params_root is not None
+            else []
+        )
+        type_text = _text(find_child(inner, "Type")) if inner is not None else None
         out.append(
             {
-                "name": group.get("Name"),
-                "expression": expressions[0] if expressions else None,
-                "label": label,
+                "name": chart_shape.derived_series_name(derived),
+                "source": chart_shape.derived_source_name(derived),
+                "formula": _text(find_child(derived, "DerivedSeriesFormula")),
+                "parameters": params,
+                "type": type_text or chart_types.RDL_DEFAULT_TYPE,
             }
         )
     return out
 
 
 def get_chart(path: str, name: str) -> dict[str, Any]:
-    """Read-back for a named ``<Chart>``: position, size, dataset, series,
-    category groups, axes, legend, title, palette.
+    """Read-back for a named ``<Chart>``: everything the chart tools write.
 
     Symmetric with :func:`get_textbox` / :func:`get_image` /
     :func:`get_rectangle`. Returns shape::
@@ -1282,12 +1639,21 @@ def get_chart(path: str, name: str) -> dict[str, Any]:
           "top": "..", "left": "..", "width": "..", "height": "..",
           "dataset": "..",
           "palette": "EarthTones" | None,
-          "series": [{name, type, subtype, value_expression,
-                      category_expression, color, data_labels}, ...],
-          "category_groups": [{name, expression, label}, ...],
-          "axes": {"category": [...], "value": [...]},
-          "legend": {name, position, visible} | None,
-          "title": {name, caption} | None,
+          "custom_palette_colors": [..], "palette_hatch_behavior": .. | None,
+          "series": [{name, type, type_implicit, subtype, value_expression,
+                      category_expression, color, data_labels, label,
+                      value_axis, category_axis, chart_area, legend_name,
+                      hidden, action}, ...],
+          "series_groups": [{name, expression, label, sort, static, level,
+                             series}, ...],
+          "derived_series": [{name, source, formula, parameters, type}, ...],
+          "category_groups": [{name, expression, label, sort, static, level}, ...],
+          "axes": {"category": [...], "value": [...]},      # first ChartArea
+          "chart_areas": [{name, hidden, axes: {category, value}}, ...],
+          "legend": {name, position, visible} | None,         # first legend
+          "legends": [...],
+          "title": {name, caption} | None,                    # first title
+          "titles": [...],
           "style": {...} | None,
           "visibility": {...} | None,
         }
@@ -1299,26 +1665,21 @@ def get_chart(path: str, name: str) -> dict[str, Any]:
 
         raise ElementNotFoundError(f"no Chart named {name!r}")
 
-    # Series collection.
-    series_collection = chart.find(f"{{{RDL_NS}}}ChartData/{{{RDL_NS}}}ChartSeriesCollection")
-    series_list: list[dict[str, Any]] = []
-    if series_collection is not None:
-        for s in find_children(series_collection, "ChartSeries"):
-            series_list.append(_chart_series_dict(s))
+    leaves = chart_shape.series_leaf_members(chart)
+    series_list = [
+        _chart_series_dict(s, leaves[i] if i < len(leaves) else None)
+        for i, s in enumerate(chart_shape.series_list(chart))
+    ]
 
-    # Axes (Default ChartArea only).
-    chart_area = chart.find(f"{{{RDL_NS}}}ChartAreas/{{{RDL_NS}}}ChartArea")
-    cat_axes: list[dict[str, Any]] = []
-    val_axes: list[dict[str, Any]] = []
-    if chart_area is not None:
-        cat_axes_root = find_child(chart_area, "ChartCategoryAxes")
-        if cat_axes_root is not None:
-            for a in find_children(cat_axes_root, "ChartAxis"):
-                cat_axes.append(_chart_axis_dict(a))
-        val_axes_root = find_child(chart_area, "ChartValueAxes")
-        if val_axes_root is not None:
-            for a in find_children(val_axes_root, "ChartAxis"):
-                val_axes.append(_chart_axis_dict(a))
+    areas = _chart_areas(chart)
+    legends = _chart_legends(chart)
+    titles = _chart_titles(chart)
+    custom_root = find_child(chart, "ChartCustomPaletteColors")
+    custom_colors = (
+        [_text(c) for c in find_children(custom_root, "ChartCustomPaletteColor")]
+        if custom_root is not None
+        else []
+    )
 
     return {
         "name": name,
@@ -1326,11 +1687,18 @@ def get_chart(path: str, name: str) -> dict[str, Any]:
         **_layout_dict_for(chart),
         "dataset": _text(find_child(chart, "DataSetName")),
         "palette": _text(find_child(chart, "Palette")),
+        "custom_palette_colors": custom_colors,
+        "palette_hatch_behavior": _text(find_child(chart, "PaletteHatchBehavior")),
         "series": series_list,
+        "series_groups": _chart_series_groups(chart),
+        "derived_series": _chart_derived_series(chart),
         "category_groups": _chart_category_groups(chart),
-        "axes": {"category": cat_axes, "value": val_axes},
-        "legend": _chart_legend_dict(chart),
-        "title": _chart_title_dict(chart),
+        "axes": areas[0]["axes"] if areas else {"category": [], "value": []},
+        "chart_areas": areas,
+        "legend": legends[0] if legends else None,
+        "legends": legends,
+        "title": titles[0] if titles else None,
+        "titles": titles,
         "style": _style_dict(chart),
         "visibility": _visibility(chart),
     }
@@ -1340,81 +1708,133 @@ def get_chart(path: str, name: str) -> dict[str, Any]:
 
 
 # Filter kwargs accepted by find_textboxes_by_style. Each entry maps a
-# user-facing kwarg name to (style_level, RDL local name).
+# user-facing kwarg name to (style_level, RDL local name, comparison kind).
 #
-# Box-level filters route to <Textbox/Style>/X; paragraph filters to
-# <Paragraph/Style>/X; run filters to the FIRST <TextRun/Style>/X.
-_FILTER_LOCATIONS: dict[str, tuple[str, str]] = {
-    "background_color": ("box", "BackgroundColor"),
-    "vertical_align": ("box", "VerticalAlign"),
-    "writing_mode": ("box", "WritingMode"),
-    "padding_top": ("box", "PaddingTop"),
-    "padding_bottom": ("box", "PaddingBottom"),
-    "padding_left": ("box", "PaddingLeft"),
-    "padding_right": ("box", "PaddingRight"),
-    "border_style": ("border", "Style"),
-    "border_color": ("border", "Color"),
-    "border_width": ("border", "Width"),
-    "text_align": ("paragraph", "TextAlign"),
-    "font_family": ("run", "FontFamily"),
-    "font_size": ("run", "FontSize"),
-    "font_weight": ("run", "FontWeight"),
-    "font_style": ("run", "FontStyle"),
-    "color": ("run", "Color"),
-    "format": ("run", "Format"),
-    "text_decoration": ("run", "TextDecoration"),
+# Box-level filters read <Textbox/Style>/X, border filters
+# <Textbox/Style/Border>/X; paragraph filters are tried on every
+# <Paragraph/Style>, run filters on every <TextRun/Style>.
+_FILTER_LOCATIONS: dict[str, tuple[str, str, str]] = {
+    "background_color": ("box", "BackgroundColor", "color"),
+    "vertical_align": ("box", "VerticalAlign", "enum"),
+    "writing_mode": ("box", "WritingMode", "enum"),
+    "padding_top": ("box", "PaddingTop", "size"),
+    "padding_bottom": ("box", "PaddingBottom", "size"),
+    "padding_left": ("box", "PaddingLeft", "size"),
+    "padding_right": ("box", "PaddingRight", "size"),
+    "border_style": ("border", "Style", "enum"),
+    "border_color": ("border", "Color", "color"),
+    "border_width": ("border", "Width", "size"),
+    "text_align": ("paragraph", "TextAlign", "enum"),
+    "font_family": ("run", "FontFamily", "text"),
+    "font_size": ("run", "FontSize", "size"),
+    "font_weight": ("run", "FontWeight", "enum"),
+    "font_style": ("run", "FontStyle", "enum"),
+    "color": ("run", "Color", "color"),
+    "format": ("run", "Format", "exact"),
+    "text_decoration": ("run", "TextDecoration", "enum"),
 }
 
+# What Report Builder renders when a property is unset — matched by an
+# unset property under ``effective=True``.
+_STYLE_DEFAULTS: dict[str, str] = {
+    "BackgroundColor": "Transparent",
+    "VerticalAlign": "Top",
+    "WritingMode": "Horizontal",
+    "PaddingTop": "0pt",
+    "PaddingBottom": "0pt",
+    "PaddingLeft": "0pt",
+    "PaddingRight": "0pt",
+    "Style": "None",
+    "Width": "1pt",
+    "TextAlign": "General",
+    "FontFamily": "Arial",
+    "FontSize": "10pt",
+    "FontWeight": "Normal",
+    "FontStyle": "Normal",
+    "Color": "Black",
+    "TextDecoration": "None",
+}
+_BORDER_DEFAULTS = {"Style": "None", "Color": "Black", "Width": "1pt"}
 
-def _textbox_style_field_value(textbox: etree._Element, level: str, local: str) -> Optional[str]:
-    """Read the effective value of one Style field on a textbox at the
-    given level (box / border / paragraph / run). Returns ``None`` when
-    absent."""
-    if level == "box":
+
+def _style_key(kind: str, value: str) -> Any:
+    """Comparison key for a style value: colours by value (named, hex
+    of either case), sizes in points (``10pt`` == ``10.0pt`` ==
+    ``0.13889in``), enums and font families case-insensitively (font
+    weights 100-900 as their names). Expressions compare as written."""
+    text = value.strip()
+    if text.startswith("="):
+        return text
+    if kind == "color":
+        return style_values.normalize_color(text)
+    if kind == "size":
+        try:
+            return round(to_inches(text) * 72.0, 4)
+        except ValueError:
+            return text
+    if kind == "enum":
+        canonical = style_values.font_weight(text) if text.isdigit() else text
+        return (canonical or text).lower()
+    if kind == "text":
+        return text.lower()
+    return value
+
+
+def _style_text(style: Optional[etree._Element], local: str) -> Optional[str]:
+    node = find_child(style, local) if style is not None else None
+    return node.text if node is not None and node.text is not None else None
+
+
+def _style_candidates(
+    textbox: etree._Element, level: str
+) -> list[tuple[Optional[etree._Element], dict[str, int]]]:
+    """``(style element or None, position)`` pairs a filter at ``level``
+    is tried against: the box/border style once, every paragraph's style
+    (``{paragraph_index}``) or every run's (``{paragraph_index,
+    run_index}``). A textbox with no paragraph/run still yields one
+    style-less candidate, so ``effective`` can match its defaults."""
+    if level in ("box", "border"):
         style = find_child(textbox, "Style")
-        if style is None:
-            return None
-        node = find_child(style, local)
-        return node.text if node is not None and node.text is not None else None
-    if level == "border":
-        style = find_child(textbox, "Style")
-        if style is None:
-            return None
-        border = find_child(style, "Border")
-        if border is None:
-            return None
-        node = find_child(border, local)
-        return node.text if node is not None and node.text is not None else None
-    if level == "paragraph":
-        paragraphs_root = find_child(textbox, "Paragraphs")
-        if paragraphs_root is None:
-            return None
-        paragraph = find_child(paragraphs_root, "Paragraph")
-        if paragraph is None:
-            return None
-        style = find_child(paragraph, "Style")
-        if style is None:
-            return None
-        node = find_child(style, local)
-        return node.text if node is not None and node.text is not None else None
-    if level == "run":
-        paragraphs_root = find_child(textbox, "Paragraphs")
-        if paragraphs_root is None:
-            return None
-        paragraph = find_child(paragraphs_root, "Paragraph")
-        if paragraph is None:
-            return None
+        if level == "border" and style is not None:
+            style = find_child(style, "Border")
+        return [(style, {})]
+    paragraphs_root = find_child(textbox, "Paragraphs")
+    paragraphs = find_children(paragraphs_root, "Paragraph") if paragraphs_root is not None else []
+    out: list[tuple[Optional[etree._Element], dict[str, int]]] = []
+    for p_idx, paragraph in enumerate(paragraphs):
+        if level == "paragraph":
+            out.append((find_child(paragraph, "Style"), {"paragraph_index": p_idx}))
+            continue
         runs_root = find_child(paragraph, "TextRuns")
-        if runs_root is None:
-            return None
-        run = find_child(runs_root, "TextRun")
-        if run is None:
-            return None
-        style = find_child(run, "Style")
-        if style is None:
-            return None
-        node = find_child(style, local)
-        return node.text if node is not None and node.text is not None else None
+        runs = find_children(runs_root, "TextRun") if runs_root is not None else []
+        for r_idx, run in enumerate(runs):
+            out.append((find_child(run, "Style"), {"paragraph_index": p_idx, "run_index": r_idx}))
+    if not out:
+        out.append((None, {"paragraph_index": 0} if level == "paragraph" else {}))
+    return out
+
+
+def _match_level(
+    textbox: etree._Element,
+    level: str,
+    wanted: dict[str, tuple[str, str, Any]],
+    effective: bool,
+) -> Optional[tuple[dict[str, str], dict[str, int]]]:
+    """Try every candidate style at ``level``; the first one on which
+    every ``wanted`` filter (kwarg -> (local, kind, key)) matches gives
+    ``(matched values, position)``. ``None`` when none does."""
+    defaults = _BORDER_DEFAULTS if level == "border" else _STYLE_DEFAULTS
+    for style, position in _style_candidates(textbox, level):
+        matched: dict[str, str] = {}
+        for kwarg, (local, kind, key) in wanted.items():
+            actual = _style_text(style, local)
+            if actual is None and effective:
+                actual = defaults.get(local)
+            if actual is None or _style_key(kind, actual) != key:
+                break
+            matched[kwarg] = actual
+        else:
+            return matched, position
     return None
 
 
@@ -1461,6 +1881,7 @@ def find_textboxes_by_style(
     color: Optional[str] = None,
     format: Optional[str] = None,  # noqa: A002 - tool-facing
     text_decoration: Optional[str] = None,
+    effective: bool = False,
 ) -> list[dict[str, Any]]:
     """Search for textboxes matching one or more style filters.
 
@@ -1468,23 +1889,37 @@ def find_textboxes_by_style(
     must match every supplied filter to appear in the result. Useful as
     a discovery step before :func:`set_textbox_style_bulk`.
 
-    Returns a list of ``{name, location, matched_fields: dict[str,str]}``
-    where ``location`` is best-effort (``body`` / ``header`` / ``footer``
-    / ``tablix:<name>`` / ``rectangle:<name>`` / ``unknown``) and
-    ``matched_fields`` lists the filtered kwargs and their actual values
-    on that textbox (always equal to the supplied filter — included so
-    callers can confirm the match shape).
+    Values compare normalised (#107): colours by value (``White`` ==
+    ``#FFFFFF`` == ``#ffffff``), sizes in points (``10pt`` == ``10.0pt``),
+    enums and font families case-insensitively; ``format`` and
+    ``=expressions`` compare as written. Paragraph filters match when
+    any paragraph matches them all, run filters when any run (of any
+    paragraph) does. ``effective=True`` lets an unset property match the
+    RDL default (FontSize 10pt, FontFamily Arial, Color Black,
+    FontWeight Normal, TextAlign General, VerticalAlign Top, padding
+    0pt, ...).
+
+    Returns a list of ``{name, location, matched_fields, matched_at}``:
+    ``location`` is best-effort (``body`` / ``header`` / ``footer`` /
+    ``tablix:<name>`` / ``rectangle:<name>`` / ``unknown``),
+    ``matched_fields`` maps each filter to the value found on the
+    textbox (the default under ``effective`` when unset), and
+    ``matched_at`` gives ``{paragraph_index}`` / ``{paragraph_index,
+    run_index}`` for paragraph / run filters.
 
     Returns ``[]`` when no filters are supplied (refusing to match
     everything would be a footgun, since the caller almost certainly
     wants to feed the result into ``set_textbox_style_bulk``).
     """
-    filters: dict[str, str] = {}
-    for kwarg in _FILTER_LOCATIONS:
-        v = locals().get(kwarg)
+    if not isinstance(effective, bool):
+        raise ValueError(f"effective: expected true or false; got {effective!r}")
+    by_level: dict[str, dict[str, tuple[str, str, Any]]] = {}
+    supplied = locals()
+    for kwarg, (level, local, kind) in _FILTER_LOCATIONS.items():
+        v = supplied.get(kwarg)
         if v is not None:
-            filters[kwarg] = v
-    if not filters:
+            by_level.setdefault(level, {})[kwarg] = (local, kind, _style_key(kind, v))
+    if not by_level:
         return []
 
     doc = RDLDocument.open(path)
@@ -1494,20 +1929,24 @@ def find_textboxes_by_style(
         if name is None:
             continue
         matched: dict[str, str] = {}
-        all_match = True
-        for kwarg, expected in filters.items():
-            level, local = _FILTER_LOCATIONS[kwarg]
-            actual = _textbox_style_field_value(textbox, level, local)
-            if actual != expected:
-                all_match = False
+        matched_at: dict[str, dict[str, int]] = {}
+        for level, wanted in by_level.items():
+            hit = _match_level(textbox, level, wanted, effective)
+            if hit is None:
                 break
-            matched[kwarg] = actual
-        if all_match:
+            values, position = hit
+            matched.update(values)
+            if position:
+                matched_at.update({kwarg: dict(position) for kwarg in values})
+        else:
+            # Report filters in the order the tool lists them.
+            ordered = {k: matched[k] for k in _FILTER_LOCATIONS if k in matched}
             out.append(
                 {
                     "name": name,
                     "location": _textbox_location(textbox),
-                    "matched_fields": matched,
+                    "matched_fields": ordered,
+                    "matched_at": {k: matched_at[k] for k in ordered if k in matched_at},
                 }
             )
     return out
@@ -1515,18 +1954,67 @@ def find_textboxes_by_style(
 
 # ---- find_textbox_by_value (Phase 12 commit 44) -------------------------
 
+_VALUE_KINDS = ("tooltip", "action", "visibility")
 
-def find_textbox_by_value(path: str, pattern: str) -> list[dict[str, Any]]:
-    """Return every ``Textbox`` whose ``<Value>`` text matches ``pattern``
+
+def _value_hits(textbox: etree._Element, include: tuple[str, ...]) -> list[tuple[str, str]]:
+    """``(kind, text)`` for every text ``find_textbox_by_value`` searches
+    in ``textbox``: each run's ``<Value>`` (``"value"``), then — when
+    included — ``ToolTip``s, ``ActionInfo`` texts (hyperlink, drillthrough
+    report and parameter values, bookmark link) and ``Visibility/Hidden``."""
+    hits: list[tuple[str, str]] = []
+    paragraphs_root = find_child(textbox, "Paragraphs")
+    paragraphs = find_children(paragraphs_root, "Paragraph") if paragraphs_root is not None else []
+    runs = [
+        run
+        for paragraph in paragraphs
+        for runs_root in [find_child(paragraph, "TextRuns")]
+        if runs_root is not None
+        for run in find_children(runs_root, "TextRun")
+    ]
+    for run in runs:
+        value = find_child(run, "Value")
+        if value is not None:
+            hits.append(("value", value.text or ""))
+    if "tooltip" in include:
+        for owner in [textbox, *runs]:
+            tip = find_child(owner, "ToolTip")
+            if tip is not None and tip.text:
+                hits.append(("tooltip", tip.text))
+    if "action" in include:
+        for owner in [textbox, *runs]:
+            action_info = find_child(owner, "ActionInfo")
+            if action_info is None:
+                continue
+            for node in action_info.iter():
+                if isinstance(node.tag, str) and len(node) == 0 and (node.text or "").strip():
+                    hits.append(("action", node.text))
+    if "visibility" in include:
+        visibility = find_child(textbox, "Visibility")
+        hidden = find_child(visibility, "Hidden") if visibility is not None else None
+        if hidden is not None and hidden.text:
+            hits.append(("visibility", hidden.text))
+    return hits
+
+
+def find_textbox_by_value(
+    path: str, pattern: str, include: Optional[list[str]] = None
+) -> list[dict[str, Any]]:
+    """Return every ``Textbox`` whose displayed value matches ``pattern``
     (a Python regex, not RDL/SQL glob).
 
-    Searches the value text of each ``<TextRun>`` in every textbox under
-    ``<Body>`` / ``<PageHeader>`` / ``<PageFooter>``. A textbox with
-    multiple matching runs surfaces once per matching run.
+    Searches the ``<Value>`` of each ``Paragraph/TextRun`` in every
+    textbox under ``<Body>`` / ``<PageHeader>`` / ``<PageFooter>``. A
+    textbox with multiple matching runs surfaces once per matching run.
+    Other expressions on the textbox (a drillthrough parameter's
+    ``<Value>``, a tooltip) are not its value and are only searched when
+    ``include`` names them: ``"tooltip"``, ``"action"`` (hyperlink,
+    drillthrough report / parameter values, bookmark link),
+    ``"visibility"`` (``Visibility/Hidden``).
 
-    Returns ``[{textbox, value, region}]`` where ``region`` is one of
-    ``Body``, ``PageHeader``, ``PageFooter`` (the nearest top-level
-    ancestor).
+    Returns ``[{textbox, value, region, kind}]`` where ``region`` is one
+    of ``Body``, ``PageHeader``, ``PageFooter`` (the nearest top-level
+    ancestor) and ``kind`` is ``"value"`` or the ``include`` kind.
 
     Useful for finding stale ``=Parameters!Old.Value`` references after
     ``rename_parameter``, or any other cross-cutting expression edit.
@@ -1535,6 +2023,10 @@ def find_textbox_by_value(path: str, pattern: str) -> list[dict[str, Any]]:
         regex = re.compile(pattern)
     except re.error as exc:
         raise ValueError(f"invalid regex pattern {pattern!r}: {exc}") from exc
+    kinds = tuple(dict.fromkeys(include or []))
+    bad = [k for k in kinds if k not in _VALUE_KINDS]
+    if bad:
+        raise ValueError(f"include: unknown kind(s) {bad}; expected any of {list(_VALUE_KINDS)}")
 
     doc = RDLDocument.open(path)
     out: list[dict[str, Any]] = []
@@ -1543,9 +2035,7 @@ def find_textbox_by_value(path: str, pattern: str) -> list[dict[str, Any]]:
         name = tb.get("Name")
         if not name:
             continue
-        # Walk all <Value> elements under this textbox's <Paragraphs>.
-        for value in tb.iter(q("Value")):
-            text = value.text or ""
+        for kind, text in _value_hits(tb, kinds):
             if not regex.search(text):
                 continue
             out.append(
@@ -1553,6 +2043,7 @@ def find_textbox_by_value(path: str, pattern: str) -> list[dict[str, Any]]:
                     "textbox": name,
                     "value": text,
                     "region": _region_of(tb),
+                    "kind": kind,
                 }
             )
     return out

@@ -35,18 +35,32 @@ def _configure_logging() -> None:
     level = getattr(logging, level_name, logging.WARNING)
     log_file = os.environ.get("PBIRB_MCP_LOG_FILE")
 
-    handlers: list[logging.Handler] = []
+    handler: logging.Handler
+    file_error: Optional[OSError] = None
     if log_file:
-        handlers.append(logging.FileHandler(log_file))
+        log_file = os.path.expanduser(log_file)
+        try:
+            handler = logging.FileHandler(log_file)
+        except OSError as exc:
+            # A bad log path (missing directory, no permission) must not
+            # stop the server answering the client (issue #86).
+            handler = logging.StreamHandler(sys.stderr)
+            file_error = exc
     else:
-        handlers.append(logging.StreamHandler(sys.stderr))
+        handler = logging.StreamHandler(sys.stderr)
 
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        handlers=handlers,
+        handlers=[handler],
         force=True,
     )
+    if file_error is not None:
+        logging.getLogger("pbirb_mcp").warning(
+            "cannot open PBIRB_MCP_LOG_FILE %r (%s); logging to stderr instead",
+            log_file,
+            file_error,
+        )
 
 
 def _parser() -> argparse.ArgumentParser:

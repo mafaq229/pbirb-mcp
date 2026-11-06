@@ -8,16 +8,28 @@ import shutil
 from pathlib import Path
 
 import pytest
+from lxml import etree
 
 from pbirb_mcp.core import transactions
+from pbirb_mcp.core.xpath import XPATH_NS
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pbi_paginated_minimal.rdl"
 BOGUS = {
     "xpath": ".//r:Textbox[@Name='HeaderAmount']/r:CanGrow",
-    "content": "<Bogus>1</Bogus>",
+    # Same element, XSD-invalid value: raw_xml_replace leaves the check to
+    # the commit inside a transaction (#85).
+    "content": "<CanGrow>maybe</CanGrow>",
 }
+
+
+def _corrupt(path: Path) -> None:
+    """Write BOGUS's XSD error straight into the file: outside a transaction
+    raw_xml_replace now refuses an edit that fails the XSD (#85)."""
+    tree = etree.parse(str(path))
+    tree.getroot().xpath(BOGUS["xpath"], namespaces=XPATH_NS)[0].text = "maybe"
+    tree.write(str(path), xml_declaration=True, encoding="utf-8")
 
 
 @pytest.fixture(autouse=True)
@@ -127,7 +139,7 @@ def test_new_error_still_blocks_on_report_with_preexisting_errors(server, broken
 
 def test_preexisting_xsd_error_does_not_block(server, rdl):
     # The file is already XSD-invalid before the transaction starts.
-    _call(server, "raw_xml_replace", path=str(rdl), **BOGUS)
+    _corrupt(rdl)
     payload, _ = _call(
         server,
         "apply_edits",
@@ -158,7 +170,7 @@ def test_verify_report_inside_transaction_marks_new(server, broken):
 def test_verify_report_baseline_path(server, broken, tmp_path):
     backup = tmp_path / "before.rdl"
     shutil.copy(broken, backup)
-    _call(server, "raw_xml_replace", path=str(broken), **BOGUS)
+    _corrupt(broken)
     payload, is_error = _call(server, "verify_report", path=str(broken), baseline_path=str(backup))
     assert not is_error, payload
     flags = {(i["rule"], i["new"]) for i in payload["issues"]}

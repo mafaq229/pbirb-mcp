@@ -62,7 +62,13 @@ def chart_path(tmp_path: Path) -> Path:
 @pytest.fixture
 def png_path(tmp_path: Path) -> Path:
     p = tmp_path / "logo.png"
-    p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    # A complete 1x1 PNG (add_embedded_image checks the structure, #110).
+    p.write_bytes(
+        bytes.fromhex(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+            "0000000b49444154789c6360000200000500017a5eab3f0000000049454e44ae426082"
+        )
+    )
     return p
 
 

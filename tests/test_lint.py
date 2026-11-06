@@ -371,6 +371,16 @@ class TestDanglingDataSourceReference:
         assert _rule_count(result, "dangling-data-source-reference") == 1
         assert "GhostDataSource" in result["issues"][0]["message"]
 
+    def test_shared_reference_server_path_is_not_a_name(self, multi_ds_path):
+        # #92: <DataSource>/<DataSourceReference> holds a shared data
+        # source's server path; it never has to match an embedded name.
+        doc = RDLDocument.open(multi_ds_path)
+        shared = next(d for d in doc.root.iter(q("DataSource")) if d.get("Name") == "SharedRef")
+        shared.find(q("DataSourceReference")).text = "/Data Sources/NoSuchEmbeddedName"
+        _save(doc)
+        result = lint_report(str(multi_ds_path), rules=["dangling-data-source-reference"])
+        assert result["issues"] == []
+
 
 # ---- rule 10: dangling-action ------------------------------------------
 
@@ -1018,3 +1028,277 @@ class TestPageChromeRules:
         _save(doc)
         set_page_footer(str(rdl_path), print_on_last_page=False)
         assert lint_report(str(rdl_path), rules=["page-section-missing-height"])["issues"] == []
+
+
+# ---- removal leaves dangling report-item references (#105) -------------------
+
+
+class TestDanglingReferencesAfterForcedRemoval:
+    """remove_body_item(force=True) leaves ReportItems!X / ToggleItem in place;
+    the existing undefined-report-item and dangling-toggle-item rules catch
+    them (#105 needed no new rule)."""
+
+    def _setup(self, rdl_path):
+        from pbirb_mcp.ops.body import add_body_textbox
+        from pbirb_mcp.ops.visibility import set_element_visibility
+
+        for name, text, top in (
+            ("Src", "hello", "1.2in"),
+            ("Echo", "=ReportItems!Src.Value", "1.5in"),
+            ("Toggle", "+", "1.8in"),
+        ):
+            add_body_textbox(str(rdl_path), name, text, top, "0.5in", "2in", "0.2in")
+        set_element_visibility(str(rdl_path), "MainTable", "true", "Toggle")
+
+    def test_clean_before_removal(self, rdl_path):
+        self._setup(rdl_path)
+        rules = ["undefined-report-item", "dangling-toggle-item"]
+        assert lint_report(str(rdl_path), rules=rules)["issues"] == []
+
+    def test_both_reported_after_forced_removal(self, rdl_path):
+        from pbirb_mcp.ops.body import remove_body_item
+
+        self._setup(rdl_path)
+        remove_body_item(str(rdl_path), "Src", force=True)
+        remove_body_item(str(rdl_path), "Toggle", force=True)
+        issues = lint_report(str(rdl_path))["issues"]
+        by_rule = {i["rule"]: i for i in issues}
+        assert set(by_rule) == {"undefined-report-item", "dangling-toggle-item"}
+        assert by_rule["undefined-report-item"]["severity"] == "error"
+        assert "Src" in by_rule["undefined-report-item"]["message"]
+        assert "Toggle" in by_rule["dangling-toggle-item"]["message"]
+        assert "MainTable" in by_rule["dangling-toggle-item"]["location"]
+
+
+class TestFindInboundReferences:
+    """pbirb_mcp.ops.expr_walk.find_inbound_references (#105) — the helper the
+    remove_*_item guards and rename_report_item share."""
+
+    def _root(self, rdl_path, edit):
+        doc = RDLDocument.open(rdl_path)
+        edit(doc.root)
+        return doc.root
+
+    def test_every_reference_kind(self, rdl_path):
+        from pbirb_mcp.ops import expr_walk
+
+        def edit(root):
+            amount = root.find(f".//{q('Textbox')}[@Name='Amount']")
+            value = amount.find(f".//{q('Value')}")
+            value.text = '=RowNumber("Details") & ReportItems("ProductID").Value'
+            etree.SubElement(amount, q("RepeatWith")).text = " MainTable "
+            sort = etree.SubElement(amount, q("UserSort"))
+            etree.SubElement(sort, q("SortExpression")).text = "=Fields!Amount.Value"
+            etree.SubElement(sort, q("SortExpressionScope")).text = "Details"
+            etree.SubElement(sort, q("SortTarget")).text = "MainTable"
+
+        root = self._root(rdl_path, edit)
+        refs = expr_walk.find_inbound_references(root, {"Details", "ProductID", "MainTable"})
+        got = [(r.kind, r.name, r.text) for r in refs]
+        assert got == [
+            ("scope", "Details", 'RowNumber("Details")'),
+            ("report_items", "ProductID", 'ReportItems("ProductID").Value'),
+            ("repeat_with", "MainTable", "MainTable"),
+            ("sort_scope", "Details", "Details"),
+            ("sort_target", "MainTable", "MainTable"),
+        ]
+        assert refs[0].locator.startswith("Tablix[Name='MainTable']>Textbox[Name='Amount']")
+
+    def test_dataset_named_scope_and_lookup_are_not_item_references(self, rdl_path):
+        from pbirb_mcp.ops import expr_walk
+
+        def edit(root):
+            value = root.find(f".//{q('Textbox')}[@Name='Amount']//{q('Value')}")
+            value.text = (
+                '=Sum(Fields!Amount.Value, "MainDataset") + '
+                'Lookup(1, 1, Fields!Amount.Value, "MainTable")'
+            )
+
+        root = self._root(rdl_path, edit)
+        assert expr_walk.find_inbound_references(root, ["MainDataset", "MainTable"]) == []
+
+    def test_single_name_and_empty(self, rdl_path):
+        from pbirb_mcp.ops import expr_walk
+
+        root = RDLDocument.open(rdl_path).root
+        assert expr_walk.find_inbound_references(root, "Amount") == []
+        assert expr_walk.find_inbound_references(root, []) == []
+
+    def test_rewrite_references_keeps_quoting_and_whitespace(self, rdl_path):
+        from pbirb_mcp.ops import expr_walk
+
+        def edit(root):
+            amount = root.find(f".//{q('Textbox')}[@Name='Amount']")
+            amount.find(f".//{q('Value')}").text = (
+                '=ReportItems!ProductID.Value & ReportItems("ProductID").Value '
+                '& RowNumber("Details") & "ProductID"'
+            )
+            etree.SubElement(amount, q("RepeatWith")).text = " MainTable "
+
+        root = self._root(rdl_path, edit)
+        refs = expr_walk.find_inbound_references(root, {"ProductID", "Details", "MainTable"})
+        changes = expr_walk.rewrite_references(
+            refs, {"ProductID": "Code", "Details": "Rows", "MainTable": "Sales"}
+        )
+        assert [c[2] for c in changes] == [
+            '=ReportItems!Code.Value & ReportItems("Code").Value & RowNumber("Rows") & "ProductID"',
+            " Sales ",
+        ]
+
+
+# ---- #95: query-parameter-mismatch / multi-value-query-binding -------------
+
+_RAG_DAX = (
+    "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[ProductName], "
+    "FILTER('Sales', 'Sales'[Year] = @Year && 'Sales'[Month] = @MonthNum), "
+    '"Amount", SUM(Sales[Amount]))  // @Commented "@InComment"'
+)
+
+
+def _rag_like(rdl_path: Path, dax: str = _RAG_DAX) -> None:
+    """A RAG-Report-shaped dataset: DAX with @Year / @MonthNum, both bound."""
+    from pbirb_mcp.ops.dataset import add_query_parameter
+    from pbirb_mcp.ops.parameters import add_parameter
+
+    update_dataset_query(str(rdl_path), "MainDataset", dax)
+    add_parameter(str(rdl_path), "Year", "Integer", prompt="Year")
+    add_parameter(str(rdl_path), "MonthNum", "Integer", prompt="Month")
+    add_query_parameter(str(rdl_path), "MainDataset", "Year", "=Parameters!Year.Value")
+    add_query_parameter(str(rdl_path), "MainDataset", "MonthNum", "=Parameters!MonthNum.Value")
+
+
+def _issues(path, rule):
+    return [i for i in lint_report(str(path), rules=[rule])["issues"]]
+
+
+class TestQueryParameterMismatch:
+    def test_registered(self):
+        assert "query-parameter-mismatch" in ALL_RULES
+        assert "multi-value-query-binding" in ALL_RULES
+
+    def test_clean_when_every_param_is_bound_and_used(self, rdl_path):
+        _rag_like(rdl_path)
+        assert _issues(rdl_path, "query-parameter-mismatch") == []
+
+    def test_unbound_dax_param_is_an_error(self, rdl_path):
+        from pbirb_mcp.ops.dataset import remove_query_parameter
+
+        _rag_like(rdl_path)
+        result = remove_query_parameter(str(rdl_path), "MainDataset", "Year")
+        assert any("@Year" in w for w in result["warnings"])
+        issues = _issues(rdl_path, "query-parameter-mismatch")
+        assert [(i["severity"], i["location"]) for i in issues] == [
+            ("error", "DataSet[Name='MainDataset']/Query/CommandText")
+        ]
+        assert "@Year" in issues[0]["message"]
+        assert "not declared" in issues[0]["message"]
+
+    def test_unused_binding_is_a_warning(self, rdl_path):
+        from pbirb_mcp.ops.dataset import add_query_parameter
+
+        _rag_like(rdl_path)
+        add_query_parameter(str(rdl_path), "MainDataset", "Ghost", "=Parameters!Year.Value")
+        issues = _issues(rdl_path, "query-parameter-mismatch")
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "warning"
+        assert issues[0]["location"].endswith("QueryParameter[Name='Ghost']")
+
+    def test_params_in_strings_and_comments_dont_count(self, rdl_path):
+        _rag_like(rdl_path)
+        messages = " ".join(i["message"] for i in _issues(rdl_path, "query-parameter-mismatch"))
+        assert "Commented" not in messages and "InComment" not in messages
+
+    def test_names_compare_case_insensitively(self, rdl_path):
+        _rag_like(rdl_path, _RAG_DAX.replace("@Year", "@YEAR"))
+        assert _issues(rdl_path, "query-parameter-mismatch") == []
+
+    def test_non_power_bi_datasets_are_skipped(self, rdl_path):
+        doc = RDLDocument.open(rdl_path)
+        cs = doc.root.find(f".//{{{RDL_NS}}}ConnectString")
+        cs.text = "Data Source=sqlhost;Initial Catalog=db"
+        doc.save()
+        update_dataset_query(str(rdl_path), "MainDataset", "SELECT * FROM t WHERE a = @A")
+        assert _issues(rdl_path, "query-parameter-mismatch") == []
+
+    def test_undeclared_report_parameter_is_undefined_parameter(self, rdl_path):
+        # The third #95 check is the existing undefined-parameter rule — not
+        # duplicated by query-parameter-mismatch.
+        from pbirb_mcp.ops.dataset import update_query_parameter
+
+        _rag_like(rdl_path)
+        update_query_parameter(str(rdl_path), "MainDataset", "Year", "=Parameters!NoSuch.Value")
+        assert _issues(rdl_path, "query-parameter-mismatch") == []
+        undefined = _issues(rdl_path, "undefined-parameter")
+        assert len(undefined) == 1 and "NoSuch" in undefined[0]["message"]
+
+
+class TestMultiValueQueryBinding:
+    def _multi(self, rdl_path):
+        from pbirb_mcp.ops.parameters import update_parameter_advanced
+
+        update_parameter_advanced(str(rdl_path), "MonthNum", multi_value=True)
+
+    def test_raw_multi_value_into_scalar_comparison_warns(self, rdl_path):
+        _rag_like(rdl_path)
+        self._multi(rdl_path)
+        issues = _issues(rdl_path, "multi-value-query-binding")
+        assert len(issues) == 1
+        assert issues[0]["location"].endswith("QueryParameter[Name='MonthNum']")
+        assert "Join" in issues[0]["suggestion"]
+
+    def test_joined_value_is_fine(self, rdl_path):
+        from pbirb_mcp.ops.dataset import update_query_parameter
+
+        _rag_like(rdl_path)
+        self._multi(rdl_path)
+        update_query_parameter(
+            str(rdl_path), "MainDataset", "MonthNum", '=Join(Parameters!MonthNum.Value, "|")'
+        )
+        assert _issues(rdl_path, "multi-value-query-binding") == []
+
+    def test_rscustomdaxfilter_use_is_fine(self, rdl_path):
+        dax = (
+            "EVALUATE SUMMARIZECOLUMNS('Sales'[ProductID], 'Sales'[ProductName], "
+            "FILTER('Sales', 'Sales'[Year] = @Year), "
+            "RSCustomDaxFilter(@MonthNum, EqualToCondition, [Sales].[Month], Int64), "
+            '"Amount", SUM(Sales[Amount]))'
+        )
+        _rag_like(rdl_path, dax)
+        self._multi(rdl_path)
+        assert _issues(rdl_path, "multi-value-query-binding") == []
+
+    def test_single_value_parameter_is_fine(self, rdl_path):
+        _rag_like(rdl_path)
+        assert _issues(rdl_path, "multi-value-query-binding") == []
+
+
+class TestMultiValueFilterOperators:
+    @pytest.mark.parametrize("operator", ["Equal", "NotEqual", "GreaterThan", "Like"])
+    def test_non_in_operator_with_multi_value_param_warns(self, rdl_path, operator):
+        from pbirb_mcp.ops.dataset import add_dataset_filter
+        from pbirb_mcp.ops.parameters import add_parameter
+
+        add_parameter(str(rdl_path), "Region", "String", prompt="Region", multi_value=True)
+        add_dataset_filter(
+            str(rdl_path),
+            "MainDataset",
+            "=Fields!ProductName.Value",
+            operator,
+            ["=Parameters!Region.Value"],
+        )
+        issues = _issues(rdl_path, "multi-value-eq")
+        assert len(issues) == 1 and operator in issues[0]["message"]
+
+    def test_in_operator_is_fine(self, rdl_path):
+        from pbirb_mcp.ops.dataset import add_dataset_filter
+        from pbirb_mcp.ops.parameters import add_parameter
+
+        add_parameter(str(rdl_path), "Region", "String", prompt="Region", multi_value=True)
+        add_dataset_filter(
+            str(rdl_path),
+            "MainDataset",
+            "=Fields!ProductName.Value",
+            "In",
+            ["=Parameters!Region.Value"],
+        )
+        assert _issues(rdl_path, "multi-value-eq") == []

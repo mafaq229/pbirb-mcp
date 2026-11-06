@@ -57,7 +57,8 @@ ALWAYS_ON = "core"
 # interactivity). tests/test_toolsets.py checks every registered tool is in
 # exactly one.
 TOOLSETS: dict[str, frozenset[str]] = {
-    # Always on: inventory, validation, batches, transactions, expression helpers.
+    # Always on: inventory, validation, comparison, batches, transactions,
+    # expression helpers.
     "core": frozenset(
         {
             "describe_report",
@@ -66,6 +67,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "lint_report",
             "apply_edits",
             "dry_run_edit",
+            "diff_report",
             "start_editing_transaction",
             "commit_editing_transaction",
             "cancel_editing_transaction",
@@ -98,6 +100,13 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "add_dataset_field",
             "remove_dataset_field",
             "refresh_dataset_fields",
+            "set_dataset_data_source",
+            "add_dataset",
+            "remove_dataset",
+            "rename_dataset",
+            "rename_dataset_field",
+            "set_field_type",
+            "set_dataset_options",
         }
     ),
     # Report parameters: declarations, values, prompts, the parameter pane layout.
@@ -169,6 +178,8 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "set_chart_palette",
             "set_series_color",
             "set_chart_title",
+            "set_chart_series_properties",
+            "set_chart_category_group",
         }
     ),
     # Textbox text and formatting, finding textboxes, row styling.
@@ -181,6 +192,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "set_textbox_runs",
             "set_textbox_style",
             "set_textbox_style_bulk",
+            "copy_textbox_style",
             "style_tablix_row",
             "set_alternating_row_color",
             "set_conditional_row_color",
@@ -220,6 +232,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "add_line",
             "move_report_item",
             "ungroup_rectangle",
+            "rename_report_item",
             "get_rectangle",
             "get_image",
             "set_image_sizing",
@@ -237,7 +250,10 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "set_textbox_action",
             "set_image_action",
             "set_chart_series_action",
+            "set_item_action",
             "set_textbox_tooltip",
+            "set_item_tooltip",
+            "set_bookmark",
             "set_document_map_label",
         }
     ),
@@ -251,6 +267,8 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "restore_from_backup",
             "raw_xml_view",
             "raw_xml_replace",
+            "raw_xml_insert",
+            "raw_xml_remove",
         }
     ),
 }

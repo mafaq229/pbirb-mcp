@@ -108,6 +108,17 @@ def _check_fields(dataset: etree._Element, dataset_name: str, fields: list[str])
         )
 
 
+def _split_width(width: str, count: int) -> list[str]:
+    """``width`` split into ``count`` equal column widths in its unit, the
+    last taking the rounding remainder — so ``Tablix/Width`` is exactly
+    the sum of its columns (#89)."""
+    unit = units.parse_size(width).unit
+    total = units.to_inches(width)
+    share = units.format_size(total / count, unit)
+    last = units.format_size(total - units.to_inches(share) * (count - 1), unit)
+    return [share] * (count - 1) + [last]
+
+
 # ---- insert_tablix_from_template -----------------------------------------
 
 
@@ -163,9 +174,9 @@ def insert_tablix_from_template(
     # ---- TablixBody ----
     body_root = etree.SubElement(tablix, q("TablixBody"))
     cols_root = etree.SubElement(body_root, q("TablixColumns"))
-    for _ in fields:
+    for column_width in _split_width(width, len(fields)):
         col = etree.SubElement(cols_root, q("TablixColumn"))
-        etree.SubElement(col, q("Width")).text = "1in"
+        etree.SubElement(col, q("Width")).text = column_width
 
     rows_root = etree.SubElement(body_root, q("TablixRows"))
     # Header row.

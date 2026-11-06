@@ -115,14 +115,14 @@ class TestBasicFixture:
         set_alternating_row_color(
             path=str(rdl_path),
             tablix_name="MainTable",
-            color_a="#A",
-            color_b="#B",
+            color_a="#AAAAAA",
+            color_b="#BBBBBB",
         )
         doc = RDLDocument.open(rdl_path)
         tb = doc.root.find(f".//{{{RDL_NS}}}Textbox[@Name='Amount']")
         bgs = tb.findall(f"{q('Style')}/{q('BackgroundColor')}")
         assert len(bgs) == 1
-        assert bgs[0].text == '=IIf(RowNumber(Nothing) Mod 2, "#A", "#B")'
+        assert bgs[0].text == '=IIf(RowNumber(Nothing) Mod 2, "#AAAAAA", "#BBBBBB")'
 
 
 # ---- detail-row tracks group structure ------------------------------------
@@ -139,20 +139,20 @@ class TestWithGroups:
         set_alternating_row_color(
             path=str(rdl_path),
             tablix_name="MainTable",
-            color_a="#A",
-            color_b="#B",
+            color_a="#AAAAAA",
+            color_b="#BBBBBB",
         )
         # Detail textboxes (now at body row index 2) should have the IIf.
         for tb in _detail_row_textboxes(rdl_path):
             bg = tb.find(f"{q('Style')}/{q('BackgroundColor')}")
             assert bg is not None
-            assert bg.text == '=IIf(RowNumber(Nothing) Mod 2, "#A", "#B")'
+            assert bg.text == '=IIf(RowNumber(Nothing) Mod 2, "#AAAAAA", "#BBBBBB")'
 
         # Group-header textboxes (row 0) must NOT have it.
         doc = RDLDocument.open(rdl_path)
         gh_tb = doc.root.find(f".//{{{RDL_NS}}}Textbox[@Name='Region_Header_0']")
         gh_bg = gh_tb.find(f"{q('Style')}/{q('BackgroundColor')}")
-        assert gh_bg is None or "#A" not in (gh_bg.text or "")
+        assert gh_bg is None or "#AAAAAA" not in (gh_bg.text or "")
 
 
 # ---- error paths ----------------------------------------------------------
@@ -164,8 +164,8 @@ class TestErrors:
             set_alternating_row_color(
                 path=str(rdl_path),
                 tablix_name="NoSuch",
-                color_a="#A",
-                color_b="#B",
+                color_a="#AAAAAA",
+                color_b="#BBBBBB",
             )
 
     def test_tablix_without_details_group_raises(self, rdl_path):
@@ -182,8 +182,8 @@ class TestErrors:
             set_alternating_row_color(
                 path=str(rdl_path),
                 tablix_name="MainTable",
-                color_a="#A",
-                color_b="#B",
+                color_a="#AAAAAA",
+                color_b="#BBBBBB",
             )
 
     def test_round_trip_safe(self, rdl_path):

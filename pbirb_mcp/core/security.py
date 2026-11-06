@@ -50,6 +50,7 @@ __all__ = [
     "check_paths",
     "confirmation_payload",
     "confirmation_required",
+    "expand_user_paths",
     "is_preview_path",
     "path_arguments",
     "preview_path",
@@ -157,6 +158,19 @@ def path_arguments(arguments: dict[str, Any]) -> list[tuple[str, str]]:
     ]
 
 
+def expand_user_paths(arguments: dict[str, Any]) -> dict[str, Any]:
+    """``arguments`` with a leading ``~`` / ``~user`` expanded in every path
+    argument (issue #86). LLM clients send ``~/…`` routinely; the dispatcher
+    runs this once, before :func:`check_paths`, so the sandbox check and the
+    tool both see the expanded path. Returns a new dict only when needed."""
+    expanded = {
+        name: os.path.expanduser(value)
+        for name, value in path_arguments(arguments)
+        if value.startswith("~")
+    }
+    return {**arguments, **expanded} if expanded else arguments
+
+
 def _inside(resolved: Path, root: str) -> bool:
     try:
         resolved.relative_to(root)
@@ -172,7 +186,8 @@ def check_paths(arguments: dict[str, Any]) -> None:
         return
     for name, value in path_arguments(arguments):
         # realpath semantics: `..` and symlinks are resolved, so neither
-        # can step outside a root.
+        # can step outside a root. `~` is expanded the same way the
+        # dispatcher expands it for the tool (expand_user_paths).
         resolved = Path(os.path.expanduser(value)).resolve()
         if _is_preview(str(resolved)):
             continue

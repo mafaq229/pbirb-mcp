@@ -27,6 +27,7 @@ from pbirb_mcp.ops.datasource import (
     set_datasource_connection,
 )
 from pbirb_mcp.ops.reader import describe_report
+from pbirb_mcp.ops.validate import validate_report
 from pbirb_mcp.server import MCPServer
 from pbirb_mcp.tools import register_all_tools
 
@@ -402,10 +403,50 @@ class TestAddDataSourcePbidataset:
 
 class TestRemoveDataSource:
     def test_refuses_when_referenced(self, multi_path):
-        # PowerBIDataset is referenced by MainDataset's <DataSourceName>
-        # AND by SharedRef's <DataSourceReference>.
-        with pytest.raises(ValueError, match="still referenced"):
+        # PowerBIDataset is referenced by MainDataset's <DataSourceName>.
+        with pytest.raises(ValueError, match="still referenced") as exc:
             remove_data_source(path=str(multi_path), name="PowerBIDataset")
+        # SharedRef's <DataSourceReference> is a server path, not a
+        # reference to the embedded name (#92).
+        assert "DataSourceReference" not in str(exc.value)
+        assert "1 location(s)" in str(exc.value)
+
+    def test_shared_reference_path_does_not_block_removal(self, multi_path):
+        # #92: SharedRef's <DataSourceReference>LookupDataset</...> is a
+        # shared-source server path that merely happens to equal an
+        # embedded name — it must not count as a reference.
+        doc = RDLDocument.open(multi_path)
+        shared = next(
+            d for d in doc.root.iter(f"{{{RDL_NS}}}DataSource") if d.get("Name") == "SharedRef"
+        )
+        find_child(shared, "DataSourceReference").text = "LookupDataset"
+        lookup_set = next(
+            d for d in doc.root.iter(f"{{{RDL_NS}}}DataSet") if d.get("Name") == "LookupSet"
+        )
+        find_child(find_child(lookup_set, "Query"), "DataSourceName").text = "PowerBIDataset"
+        doc.save()
+        result = remove_data_source(path=str(multi_path), name="LookupDataset")
+        assert result["removed"] == "LookupDataset"
+        assert get_data_source(str(multi_path), "SharedRef")["shared_reference"] == "LookupDataset"
+
+    def test_refuses_last_data_source_even_with_force(self, rdl_path):
+        # #92: removing the only source used to delete <DataSources>,
+        # leaving a structurally invalid report.
+        before = rdl_path.read_bytes()
+        for force in (False, True):
+            with pytest.raises(ValueError, match="only data source"):
+                remove_data_source(path=str(rdl_path), name="PowerBIDataset", force=force)
+        assert rdl_path.read_bytes() == before
+        assert validate_report(str(rdl_path))["valid"]
+
+    def test_removing_down_to_one_keeps_report_valid(self, multi_path):
+        remove_data_source(path=str(multi_path), name="SharedRef")
+        remove_data_source(path=str(multi_path), name="LookupDataset", force=True)
+        assert [d["name"] for d in list_data_sources(str(multi_path))] == ["PowerBIDataset"]
+        result = validate_report(str(multi_path))
+        assert not [e for e in result["errors"] if e["rule"] in ("structural", "xsd")]
+        with pytest.raises(ValueError, match="only data source"):
+            remove_data_source(path=str(multi_path), name="PowerBIDataset", force=True)
 
     def test_force_removes_anyway(self, multi_path):
         result = remove_data_source(path=str(multi_path), name="PowerBIDataset", force=True)
@@ -444,29 +485,24 @@ class TestRenameDataSource:
         ref = lookup_set.find(f"{{{RDL_NS}}}Query/{{{RDL_NS}}}DataSourceName")
         assert ref.text == "LookupRenamed"
 
-    def test_rewrites_data_source_reference_in_shared_link(self, multi_path):
-        # PowerBIDataset is referenced by SharedRef's DataSourceReference.
-        # Renaming must rewrite that link too.
+    def test_leaves_shared_reference_path_alone(self, multi_path):
+        # #92: SharedRef's <DataSourceReference>PowerBIDataset</...> is a
+        # shared data source's server path, not a link to the embedded
+        # PowerBIDataset — renaming must not rewrite it.
         result = rename_data_source(
             path=str(multi_path),
             old_name="PowerBIDataset",
-            new_name="PowerBIRenamed",
+            new_name="Sales",
         )
-        # 2 references: MainDataset/Query/DataSourceName +
-        # SharedRef/DataSourceReference.
-        assert result["references_rewritten"] == 2
-        # Verify both rewrites landed.
+        # 1 reference: MainDataset/Query/DataSourceName only.
+        assert result["references_rewritten"] == 1
         doc = RDLDocument.open(multi_path)
         main_ds = next(
             ds for ds in doc.root.iter(f"{{{RDL_NS}}}DataSet") if ds.get("Name") == "MainDataset"
         )
         ref1 = main_ds.find(f"{{{RDL_NS}}}Query/{{{RDL_NS}}}DataSourceName")
-        assert ref1.text == "PowerBIRenamed"
-        shared = next(
-            ds for ds in doc.root.iter(f"{{{RDL_NS}}}DataSource") if ds.get("Name") == "SharedRef"
-        )
-        ref2 = find_child(shared, "DataSourceReference")
-        assert ref2.text == "PowerBIRenamed"
+        assert ref1.text == "Sales"
+        assert get_data_source(str(multi_path), "SharedRef")["shared_reference"] == "PowerBIDataset"
 
     def test_renames_declaration(self, multi_path):
         rename_data_source(

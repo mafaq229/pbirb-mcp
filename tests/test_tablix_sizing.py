@@ -157,15 +157,24 @@ class TestSetTablixSize:
         t = _tablix(rdl_path, "MainTable")
         assert find_child(t, "Height").text == "3.5in"
 
+    # A width that disagrees with the columns (1 + 2 + 1 = 4in) is refused
+    # unless distribute=true (#89).
     def test_sets_width_only(self, rdl_path):
         result = set_tablix_size(
             path=str(rdl_path),
             name="MainTable",
             width="6in",
+            distribute=True,
         )
-        assert result["changed"] == ["Width"]
+        assert result["changed"] == ["columns", "Width"]
+        assert result["column_widths"] == ["1.5in", "3in", "1.5in"]
         t = _tablix(rdl_path, "MainTable")
         assert find_child(t, "Width").text == "6in"
+
+    def test_matching_width_written_without_distribute(self, rdl_path):
+        result = set_tablix_size(path=str(rdl_path), name="MainTable", width="10.16cm")
+        assert result["changed"] == ["Width"]
+        assert find_child(_tablix(rdl_path, "MainTable"), "Width").text == "10.16cm"
 
     def test_sets_both(self, rdl_path):
         result = set_tablix_size(
@@ -173,8 +182,9 @@ class TestSetTablixSize:
             name="MainTable",
             height="3in",
             width="7in",
+            distribute=True,
         )
-        assert sorted(result["changed"]) == ["Height", "Width"]
+        assert sorted(result["changed"]) == ["Height", "Width", "columns"]
 
     def test_no_args_no_op(self, rdl_path):
         before = (rdl_path).read_bytes()
@@ -193,9 +203,13 @@ class TestSetTablixSize:
     def test_partial_change_only_lists_changed_fields(self, rdl_path):
         # First set both; then re-set only width with same height to
         # confirm only the changed field appears.
-        set_tablix_size(path=str(rdl_path), name="MainTable", height="2in", width="5in")
-        result = set_tablix_size(path=str(rdl_path), name="MainTable", height="2in", width="6in")
-        assert result["changed"] == ["Width"]
+        set_tablix_size(
+            path=str(rdl_path), name="MainTable", height="2in", width="5in", distribute=True
+        )
+        result = set_tablix_size(
+            path=str(rdl_path), name="MainTable", height="2in", width="6in", distribute=True
+        )
+        assert result["changed"] == ["columns", "Width"]
 
     def test_empty_height_rejected(self, rdl_path):
         with pytest.raises(ValueError, match="invalid RDL size"):
@@ -210,7 +224,9 @@ class TestSetTablixSize:
             set_tablix_size(path=str(rdl_path), name="NoSuchTablix", height="2in")
 
     def test_round_trip_safe(self, rdl_path):
-        set_tablix_size(path=str(rdl_path), name="MainTable", height="3in", width="6in")
+        set_tablix_size(
+            path=str(rdl_path), name="MainTable", height="3in", width="6in", distribute=True
+        )
         RDLDocument.open(rdl_path).validate()
 
 

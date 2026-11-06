@@ -21,9 +21,12 @@ from pbirb_mcp.core.document import RDLDocument
 from pbirb_mcp.core.ids import ElementNotFoundError
 from pbirb_mcp.core.xpath import RDL_NS, find_child, find_children, q
 from pbirb_mcp.ops.actions import (
+    set_bookmark,
     set_chart_series_action,
     set_document_map_label,
     set_image_action,
+    set_item_action,
+    set_item_tooltip,
     set_textbox_action,
     set_textbox_tooltip,
 )
@@ -120,6 +123,8 @@ class TestSetTextboxActionHyperlink:
             action_type="Hyperlink",
             target_expression="https://old.example.com",
         )
+        # A BookmarkLink needs its target bookmark to exist (#109).
+        set_bookmark(str(rdl_path), "MainTable", "anchor1")
         set_textbox_action(
             path=str(rdl_path),
             textbox_name="HeaderProductID",
@@ -729,6 +734,347 @@ class TestSetChartSeriesAction:
         RDLDocument.open(chart_path).validate()
 
 
+# ---- read-back through the get_* readers (#108) ---------------------------
+
+
+def _add_image(rdl_path: Path, name: str = "Logo") -> None:
+    add_body_image(
+        path=str(rdl_path),
+        name=name,
+        image_source="External",
+        value="http://example.com/logo.png",
+        top="1.5in",
+        left="0in",
+        width="1in",
+        height="0.5in",
+    )
+
+
+class TestReadBack:
+    def test_textbox_action(self, rdl_path):
+        from pbirb_mcp.ops.reader import get_textbox
+
+        set_textbox_action(
+            str(rdl_path),
+            "ProductID",
+            "Drillthrough",
+            "Detail",
+            [{"name": "Id", "value": "=Fields!ProductID.Value"}],
+        )
+        assert get_textbox(str(rdl_path), "ProductID")["action"] == {
+            "type": "Drillthrough",
+            "target": "Detail",
+            "parameters": [{"name": "Id", "value": "=Fields!ProductID.Value"}],
+        }
+
+    def test_image_action(self, rdl_path):
+        from pbirb_mcp.ops.reader import get_image
+
+        _add_image(rdl_path)
+        set_bookmark(str(rdl_path), "MainTable", "Top")
+        set_image_action(str(rdl_path), "Logo", "BookmarkLink", "Top")
+        assert get_image(str(rdl_path), "Logo")["action"] == {
+            "type": "BookmarkLink",
+            "target": "Top",
+            "parameters": [],
+        }
+
+    def test_textbox_tooltip(self, rdl_path):
+        from pbirb_mcp.ops.reader import get_textbox
+
+        set_textbox_tooltip(str(rdl_path), "ProductID", "=Fields!ProductName.Value")
+        assert get_textbox(str(rdl_path), "ProductID")["tooltip"] == "=Fields!ProductName.Value"
+        set_textbox_tooltip(str(rdl_path), "ProductID", "")
+        assert get_textbox(str(rdl_path), "ProductID")["tooltip"] is None
+
+    def test_document_map_label(self, rdl_path):
+        from pbirb_mcp.ops.layout import add_rectangle
+        from pbirb_mcp.ops.reader import get_image, get_rectangle, get_textbox
+
+        p = str(rdl_path)
+        _add_image(rdl_path)
+        add_rectangle(p, "Frame", "2.5in", "0in", "1in", "1in")
+        set_document_map_label(p, "ProductID", "Products")
+        set_document_map_label(p, "Logo", "Logo")
+        set_document_map_label(p, "Frame", "Frame")
+        assert get_textbox(p, "ProductID")["document_map_label"] == "Products"
+        assert get_image(p, "Logo")["document_map_label"] == "Logo"
+        assert get_rectangle(p, "Frame")["document_map_label"] == "Frame"
+
+
+# ---- #109: validation, clearing, generic item tools, bookmarks ------------
+
+
+def _valid(path: Path) -> bool:
+    from pbirb_mcp.ops.validate import validate_report
+
+    return validate_report(str(path))["valid"]
+
+
+def _lint_rules(path: Path) -> list[str]:
+    from pbirb_mcp.ops.lint import lint_report
+
+    return [i["rule"] for i in lint_report(str(path))["issues"]]
+
+
+class TestDrillthroughValidation:
+    @pytest.mark.parametrize(
+        "kwargs, match",
+        [
+            (
+                {
+                    "textbox_name": "ProductID",
+                    "action_type": "Drillthrough",
+                    "target_expression": "Detail",
+                    "drillthrough_parameters": [
+                        {"name": "", "value": "1"},
+                        {"name": "A", "value": "2"},
+                    ],
+                },
+                "not a parameter name",
+            ),
+            (
+                {
+                    "textbox_name": "ProductID",
+                    "action_type": "Drillthrough",
+                    "target_expression": "Detail",
+                    "drillthrough_parameters": [
+                        {"name": "A", "value": "2"},
+                        {"name": "A", "value": "3"},
+                    ],
+                },
+                "twice",
+            ),
+            (
+                {
+                    "textbox_name": "ProductName",
+                    "action_type": "Hyperlink",
+                    "target_expression": "https://example.test",
+                    "drillthrough_parameters": [{"name": "A", "value": "1"}],
+                },
+                "only apply to action_type='Drillthrough'",
+            ),
+            (
+                {
+                    "textbox_name": "Amount",
+                    "action_type": "BookmarkLink",
+                    "target_expression": "NoSuchBookmark",
+                },
+                "matches no <Bookmark>",
+            ),
+            (
+                {
+                    "textbox_name": "ProductID",
+                    "action_type": "Drillthrough",
+                    "target_expression": "Detail",
+                    "drillthrough_parameters": [{"name": "A", "value": "1", "omit": "maybe"}],
+                },
+                "omit",
+            ),
+            (
+                {"textbox_name": "ProductID", "action_type": "Hyperlink", "target_expression": ""},
+                "clear=true",
+            ),
+        ],
+    )
+    def test_bad_actions_refused_file_unchanged(self, rdl_path, kwargs, match):
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match=match):
+            set_textbox_action(path=str(rdl_path), **kwargs)
+        assert rdl_path.read_bytes() == before
+
+    def test_omit_written_and_read_back(self, rdl_path):
+        from pbirb_mcp.ops.reader import get_textbox
+
+        params = [
+            {"name": "A", "value": "1", "omit": True},
+            {"name": "B", "value": "2", "omit": "=Parameters!X.Value = 0"},
+            {"name": "C", "value": "3"},
+        ]
+        set_textbox_action(str(rdl_path), "ProductID", "Drillthrough", "Detail", params)
+        got = get_textbox(str(rdl_path), "ProductID")["action"]["parameters"]
+        assert got == [
+            {"name": "A", "value": "1", "omit": "true"},
+            {"name": "B", "value": "2", "omit": "=Parameters!X.Value = 0"},
+            {"name": "C", "value": "3"},
+        ]
+        # Same call again: no-op; a changed omit is a change.
+        before = rdl_path.read_bytes()
+        r = set_textbox_action(str(rdl_path), "ProductID", "Drillthrough", "Detail", params)
+        assert r["changed"] is False and rdl_path.read_bytes() == before
+        params[0]["omit"] = False
+        r = set_textbox_action(str(rdl_path), "ProductID", "Drillthrough", "Detail", params)
+        assert r["changed"] is True
+        assert _valid(rdl_path)
+
+
+class TestClearAction:
+    def test_clear_restores_original_bytes_textbox(self, rdl_path):
+        before = rdl_path.read_bytes()
+        set_textbox_action(str(rdl_path), "ProductID", "Hyperlink", "https://example.test")
+        assert rdl_path.read_bytes() != before
+        r = set_textbox_action(str(rdl_path), "ProductID", clear=True)
+        assert r["changed"] is True and r["action_type"] is None
+        assert rdl_path.read_bytes() == before
+        # Clearing again is a no-op.
+        assert set_textbox_action(str(rdl_path), "ProductID", clear=True)["changed"] is False
+        assert rdl_path.read_bytes() == before
+
+    def test_clear_restores_original_bytes_image(self, rdl_path):
+        _add_image(rdl_path)
+        before = rdl_path.read_bytes()
+        set_image_action(str(rdl_path), "Logo", "Hyperlink", "https://example.test")
+        assert set_image_action(str(rdl_path), "Logo", clear=True)["changed"] is True
+        assert rdl_path.read_bytes() == before
+
+    def test_clear_drops_legacy_bare_action(self, rdl_path):
+        text = rdl_path.read_text(encoding="utf-8")
+        rdl_path.write_text(
+            text.replace(
+                '<Textbox Name="ProductID">',
+                '<Textbox Name="ProductID"><Action><Hyperlink>x</Hyperlink></Action>',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert set_textbox_action(str(rdl_path), "ProductID", clear=True)["changed"] is True
+        assert find_child(_textbox(rdl_path, "ProductID"), "Action") is None
+
+    def test_clear_with_action_args_refused(self, rdl_path):
+        with pytest.raises(ValueError, match="clear=true"):
+            set_textbox_action(str(rdl_path), "ProductID", "Hyperlink", "x", clear=True)
+
+    def test_missing_action_type_refused(self, rdl_path):
+        with pytest.raises(ValueError, match="required"):
+            set_textbox_action(str(rdl_path), "ProductID")
+
+
+class TestSetItemAction:
+    def test_rectangle_and_line(self, rdl_path):
+        from pbirb_mcp.ops.layout import add_line, add_rectangle
+        from pbirb_mcp.ops.reader import get_rectangle
+
+        p = str(rdl_path)
+        add_rectangle(p, "Frame", "2.5in", "0in", "1in", "1in")
+        add_line(p, "Rule", "3.6in", "0in", "2in", "0in")
+        r = set_item_action(p, "Frame", "Hyperlink", "https://example.test")
+        assert r == {
+            "name": "Frame",
+            "kind": "Rectangle",
+            "action_type": "Hyperlink",
+            "changed": True,
+        }
+        assert set_item_action(p, "Rule", "Drillthrough", "Detail")["kind"] == "Line"
+        assert get_rectangle(p, "Frame")["action"]["target"] == "https://example.test"
+        doc = RDLDocument.open(p)
+        line = doc.root.find(f".//{{{RDL_NS}}}Line[@Name='Rule']")
+        assert _inner_action(line) is not None
+        assert _valid(rdl_path)
+        # Repeat is a no-op; clear removes.
+        assert set_item_action(p, "Frame", "Hyperlink", "https://example.test")["changed"] is False
+        assert set_item_action(p, "Frame", clear=True)["changed"] is True
+        assert get_rectangle(p, "Frame")["action"] is None
+
+    def test_textbox_and_image_via_generic_tool(self, rdl_path):
+        from pbirb_mcp.ops.reader import get_image, get_textbox
+
+        _add_image(rdl_path)
+        set_item_action(str(rdl_path), "ProductID", "Hyperlink", "https://a.test")
+        set_item_action(str(rdl_path), "Logo", "Hyperlink", "https://b.test")
+        assert get_textbox(str(rdl_path), "ProductID")["action"]["target"] == "https://a.test"
+        assert get_image(str(rdl_path), "Logo")["action"]["target"] == "https://b.test"
+
+    def test_other_kinds_refused(self, rdl_path):
+        before = rdl_path.read_bytes()
+        with pytest.raises(ValueError, match="can't carry an action"):
+            set_item_action(str(rdl_path), "MainTable", "Hyperlink", "https://x.test")
+        assert rdl_path.read_bytes() == before
+
+    def test_unknown_item(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            set_item_action(str(rdl_path), "NoSuch", "Hyperlink", "https://x.test")
+
+
+class TestSetItemTooltip:
+    def test_image_tooltip(self, rdl_path):
+        from pbirb_mcp.ops.reader import get_image
+
+        _add_image(rdl_path, "Img")
+        r = set_item_tooltip(str(rdl_path), "Img", "tip")
+        assert r == {"name": "Img", "kind": "Image", "changed": True}
+        assert find_child(_image(rdl_path, "Img"), "ToolTip").text == "tip"
+        assert get_image(str(rdl_path), "Img")["tooltip"] == "tip"
+        before = rdl_path.read_bytes()
+        assert set_item_tooltip(str(rdl_path), "Img", "tip")["changed"] is False
+        assert rdl_path.read_bytes() == before
+        assert _valid(rdl_path)
+
+    def test_clear_restores_bytes(self, rdl_path):
+        before = rdl_path.read_bytes()
+        set_item_tooltip(str(rdl_path), "MainTable", "=Fields!ProductName.Value")
+        assert set_item_tooltip(str(rdl_path), "MainTable", "")["changed"] is True
+        assert rdl_path.read_bytes() == before
+
+    @pytest.mark.parametrize("name, kind", [("MainTable", "Tablix"), ("ProductID", "Textbox")])
+    def test_any_item(self, rdl_path, name, kind):
+        assert set_item_tooltip(str(rdl_path), name, "tip")["kind"] == kind
+        assert _valid(rdl_path)
+
+    def test_chart_and_rectangle(self, chart_path):
+        from pbirb_mcp.ops.layout import add_rectangle
+        from pbirb_mcp.ops.reader import get_rectangle
+
+        p = str(chart_path)
+        assert set_item_tooltip(p, "SalesByProduct", "Sales")["kind"] == "Chart"
+        add_rectangle(p, "Frame", "5in", "0in", "1in", "1in")
+        set_item_tooltip(p, "Frame", "frame tip")
+        assert get_rectangle(p, "Frame")["tooltip"] == "frame tip"
+        assert _valid(chart_path)
+
+
+class TestSetBookmark:
+    def test_bookmark_then_link_passes_lint(self, rdl_path):
+        from pbirb_mcp.ops.reader import get_textbox
+
+        p = str(rdl_path)
+        r = set_bookmark(p, "HeaderProductID", "Top")
+        assert r == {"name": "HeaderProductID", "kind": "Textbox", "changed": True}
+        assert get_textbox(p, "HeaderProductID")["bookmark"] == "Top"
+        set_textbox_action(p, "Amount", "BookmarkLink", "Top")
+        assert "dangling-bookmark-link" not in _lint_rules(rdl_path)
+        assert _valid(rdl_path)
+        # Clearing the bookmark leaves a dangling link, which lint flags.
+        assert set_bookmark(p, "HeaderProductID", "")["changed"] is True
+        assert get_textbox(p, "HeaderProductID")["bookmark"] is None
+        assert "dangling-bookmark-link" in _lint_rules(rdl_path)
+
+    def test_idempotent(self, rdl_path):
+        set_bookmark(str(rdl_path), "MainTable", "T")
+        before = rdl_path.read_bytes()
+        assert set_bookmark(str(rdl_path), "MainTable", "T")["changed"] is False
+        assert rdl_path.read_bytes() == before
+        assert set_bookmark(str(rdl_path), "MainTable", "")["changed"]
+
+    def test_expression_bookmark_allows_any_literal_link(self, rdl_path):
+        set_bookmark(str(rdl_path), "ProductID", "=Fields!ProductID.Value")
+        r = set_textbox_action(str(rdl_path), "Amount", "BookmarkLink", "42")
+        assert r["changed"] is True
+
+    def test_expression_link_needs_no_bookmark(self, rdl_path):
+        r = set_textbox_action(str(rdl_path), "Amount", "BookmarkLink", "=Fields!X.Value")
+        assert r["changed"] is True
+
+    def test_duplicate_literal_warns(self, rdl_path):
+        set_bookmark(str(rdl_path), "MainTable", "Top")
+        r = set_bookmark(str(rdl_path), "ProductID", "Top")
+        assert r["changed"] is True
+        assert "MainTable" in r["warnings"][0]
+
+    def test_unknown_item(self, rdl_path):
+        with pytest.raises(ElementNotFoundError):
+            set_bookmark(str(rdl_path), "NoSuch", "Top")
+
+
 # ---- registration ---------------------------------------------------------
 
 
@@ -755,3 +1101,36 @@ class TestToolRegistration:
         ]
         names = {t["name"] for t in listing}
         assert "set_chart_series_action" in names
+
+    def test_item_tools_through_the_server(self, rdl_path):
+        import json
+
+        from pbirb_mcp.core.toolsets import toolset_of
+
+        srv = MCPServer()
+        register_all_tools(srv)
+
+        def call(tool, **arguments):
+            resp = srv.handle_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": tool, "arguments": {"path": str(rdl_path), **arguments}},
+                }
+            )["result"]
+            assert not resp.get("isError"), resp
+            return json.loads(resp["content"][0]["text"])
+
+        for tool in ("set_item_action", "set_item_tooltip", "set_bookmark"):
+            assert toolset_of(tool) == "interactivity"
+        assert call("set_bookmark", name="MainTable", bookmark_or_expression="Top")["changed"]
+        assert call(
+            "set_item_action",
+            name="ProductID",
+            action_type="Drillthrough",
+            target_expression="Detail",
+            drillthrough_parameters=[{"name": "Id", "value": "1", "omit": True}],
+        )["changed"]
+        assert call("set_textbox_action", textbox_name="ProductID", clear=True)["changed"]
+        assert call("set_item_tooltip", name="MainTable", text_or_expression="tip")["changed"]

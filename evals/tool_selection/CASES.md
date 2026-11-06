@@ -6,14 +6,14 @@ Every edit case is also graded by the structural gate (XSD + lint errors the edi
 
 | id | category | difficulty | source | fixture | reference solution | tools in subset arm |
 |---|---|---|---|---|---|---|
-| d01 | data | easy | feedback | fleet_utilization.rdl | `remove_data_source` → `remove_data_source` | 31 |
-| d02 | data | medium | synth | fleet_utilization.rdl | `rename_data_source` | 31 |
-| d03 | data | easy | synth | fleet_utilization.rdl | `add_calculated_field` | 31 |
-| d04 | data | medium | synth | fleet_utilization.rdl | `add_dataset_filter` | 31 |
-| d05 | data | hard | feedback | fleet_utilization.rdl | `update_dataset_query` → `add_dataset_field` | 31 |
-| d06 | data | easy | synth | fleet_utilization.rdl | `set_datasource_connection` | 32 |
-| d07 | data | medium | synth | fleet_utilization.rdl | `add_query_parameter` → `add_query_parameter` | 31 |
-| d08 | data | easy | synth | fleet_utilization.rdl | `remove_dataset_field` | 31 |
+| d01 | data | easy | feedback | fleet_utilization.rdl | `remove_data_source` → `remove_data_source` | 37 |
+| d02 | data | medium | synth | fleet_utilization.rdl | `rename_data_source` | 37 |
+| d03 | data | easy | synth | fleet_utilization.rdl | `add_calculated_field` | 37 |
+| d04 | data | medium | synth | fleet_utilization.rdl | `add_dataset_filter` | 37 |
+| d05 | data | hard | feedback | fleet_utilization.rdl | `update_dataset_query` → `add_dataset_field` | 37 |
+| d06 | data | easy | synth | fleet_utilization.rdl | `set_datasource_connection` | 38 |
+| d07 | data | medium | synth | fleet_utilization.rdl | `add_query_parameter` → `add_query_parameter` | 37 |
+| d08 | data | easy | synth | fleet_utilization.rdl | `remove_dataset_field` | 37 |
 | p01 | parameters | easy | feedback | fleet_utilization.rdl | `set_parameter_type` → `set_parameter_type` | 29 |
 | p02 | parameters | easy | synth | fleet_utilization.rdl | `set_parameter_prompt` | 29 |
 | p03 | parameters | medium | synth | fleet_utilization.rdl | `set_parameter_available_values` | 29 |
@@ -29,15 +29,15 @@ Every edit case is also graded by the structural gate (XSD + lint errors the edi
 | t05 | tablix | medium | synth | fleet_utilization.rdl | `set_group_sort` | 45 |
 | t06 | tablix | hard | feedback | fleet_utilization.rdl | `add_row_group` → `add_column_group` → `convert_to_matrix` → `set_tablix_corner` | 45 |
 | t07 | tablix | medium | synth | fleet_utilization.rdl | `add_tablix_filter` | 45 |
-| s01 | style | medium | synth | fleet_utilization.rdl | `style_tablix_row` | 28 |
-| s02 | style | medium | synth | fleet_utilization.rdl | `set_alternating_row_color` | 28 |
-| s03 | style | hard | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 28 |
-| s04 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 28 |
-| s05 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style` | 28 |
-| s06 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style` | 28 |
-| s07 | style | medium | synth | fleet_utilization.rdl | `set_textbox_runs` | 28 |
-| s08 | style | hard | feedback | fleet_utilization.rdl | `set_textbox_runs` | 28 |
-| s09 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 28 |
+| s01 | style | medium | synth | fleet_utilization.rdl | `style_tablix_row` | 29 |
+| s02 | style | medium | synth | fleet_utilization.rdl | `set_alternating_row_color` | 29 |
+| s03 | style | hard | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 29 |
+| s04 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 29 |
+| s05 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style` | 29 |
+| s06 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style` | 29 |
+| s07 | style | medium | synth | fleet_utilization.rdl | `set_textbox_runs` | 29 |
+| s08 | style | hard | feedback | fleet_utilization.rdl | `set_textbox_runs` | 29 |
+| s09 | style | easy | synth | fleet_utilization.rdl | `set_textbox_style_bulk` | 29 |
 | l01 | layout | easy | synth | fleet_utilization.rdl | `set_page_orientation` | 52 |
 | l02 | layout | easy | feedback | fleet_utilization.rdl | `set_body_item_position` | 52 |
 | l03 | layout | medium | feedback | fleet_utilization.rdl | `set_page_footer` → `add_footer_textbox` | 52 |
@@ -46,23 +46,23 @@ Every edit case is also graded by the structural gate (XSD + lint errors the edi
 | l06 | layout | easy | synth | fleet_utilization.rdl | `add_line` | 52 |
 | l07 | layout | medium | synth | fleet_utilization.rdl | `set_element_visibility` | 52 |
 | l08 | layout | hard | synth | fleet_utilization.rdl | `add_embedded_image` → `set_page_header` → `add_header_image` | 52 |
-| c01 | chart | medium | feedback | fleet_utilization.rdl | `set_chart_series_type` | 27 |
-| c02 | chart | hard | feedback | fleet_utilization.rdl | `set_chart_series_grouping` | 27 |
-| c03 | chart | hard | feedback | fleet_utilization.rdl | `set_chart_data_labels` | 27 |
-| c04 | chart | easy | synth | fleet_utilization.rdl | `set_chart_title` → `set_chart_legend` | 27 |
-| c05 | chart | easy | synth | fleet_utilization.rdl | `add_chart_series` | 27 |
-| c06 | chart | medium | synth | fleet_utilization.rdl | `set_chart_axis` | 27 |
-| i01 | interactivity | hard | synth | fleet_utilization.rdl | `set_textbox_action` | 23 |
-| i02 | interactivity | easy | synth | fleet_utilization.rdl | `set_textbox_tooltip` | 23 |
+| c01 | chart | medium | feedback | fleet_utilization.rdl | `set_chart_series_type` | 29 |
+| c02 | chart | hard | feedback | fleet_utilization.rdl | `set_chart_series_grouping` | 29 |
+| c03 | chart | hard | feedback | fleet_utilization.rdl | `set_chart_data_labels` | 29 |
+| c04 | chart | easy | synth | fleet_utilization.rdl | `set_chart_title` → `set_chart_legend` | 29 |
+| c05 | chart | easy | synth | fleet_utilization.rdl | `add_chart_series` | 29 |
+| c06 | chart | medium | synth | fleet_utilization.rdl | `set_chart_axis` | 29 |
+| i01 | interactivity | hard | synth | fleet_utilization.rdl | `set_textbox_action` | 25 |
+| i02 | interactivity | easy | synth | fleet_utilization.rdl | `set_textbox_tooltip` | 25 |
 | t08 | tablix | hard | synth | fleet_utilization.rdl | `add_row_group` → `add_row_group` | 45 |
 | t09 | tablix | medium | synth | fleet_utilization.rdl | `add_static_row` → `set_cell_span` | 45 |
 | t10 | tablix | hard | synth | fleet_rb.rdl | `add_subtotal_row` | 45 |
 | t11 | tablix | medium | synth | fleet_utilization.rdl | `add_column_group` | 45 |
 | t12 | tablix | medium | synth | fleet_rb.rdl | `set_repeat_header_rows` | 46 |
 | t13 | tablix | easy | synth | fleet_utilization.rdl | `set_group_sort` | 45 |
-| s10 | style | hard | synth | fleet_rb.rdl | `set_textbox_runs` | 28 |
-| c07 | chart | medium | synth | fleet_utilization.rdl | `add_chart_series` → `remove_chart_series` | 27 |
-| c08 | chart | easy | synth | fleet_rb.rdl | `remove_chart_series` | 27 |
+| s10 | style | hard | synth | fleet_rb.rdl | `set_textbox_runs` | 29 |
+| c07 | chart | medium | synth | fleet_utilization.rdl | `add_chart_series` → `remove_chart_series` | 29 |
+| c08 | chart | easy | synth | fleet_rb.rdl | `remove_chart_series` | 29 |
 | p09 | parameters | medium | synth | fleet_rb.rdl | `rename_parameter` | 29 |
 | q01 | question | easy | synth | fleet_utilization.rdl | `get_parameters`; must not edit | 15 |
 | q02 | question | medium | synth | fleet_utilization.rdl | `list_data_sources`; must not edit | 15 |
