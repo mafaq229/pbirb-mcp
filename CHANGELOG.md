@@ -1,5 +1,28 @@
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-17
+
+The v0.4.1 review release (#113): 94 of its 95 issues fixed across six
+milestones (M1–M6; #58, the Power BI service toolset, is deferred), the tool
+surface grows from 143 to 166 tools, and the server moves to the official MCP
+Python SDK. The milestone sections below list every change; each starts with
+its breaking changes.
+
+**Upgrade notes** (pre-1.0, so breaking changes ship in a MINOR release):
+- **Python 3.10+ is required** (3.9 dropped) (M4, #53).
+- **The stdio server only opens reports under its working directory and asks
+  before destructive edits.** Set `PBIRB_MCP_ALLOWED_ROOTS` to your reports
+  folder (Claude Desktop may start servers in `/` or its app folder), and
+  pass `confirm=true` to removals, `convert_to_matrix`, `raw_xml_replace` /
+  `raw_xml_remove` and `restore_from_backup` — or set
+  `PBIRB_MCP_REQUIRE_CONFIRM=0` (M4, #57; M6, #85).
+- Several tools now refuse inputs they used to accept or return a new result
+  shape — e.g. `raw_xml_view`, `get_image` / `get_rectangle` style,
+  `dry_run_edit`'s `verify`, removals that would leave dangling references,
+  invalid parameter states, contradicting `set_tablix_size` widths and the
+  `count_where` / `sum_where` output. See each milestone's
+  "Changed — breaking" list.
+
 ### Added
 - Claude Code plugin distribution. The repo now self-hosts a marketplace via
   `.claude-plugin/marketplace.json` + `.claude-plugin/plugin.json`, so Claude

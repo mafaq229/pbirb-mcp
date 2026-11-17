@@ -35,7 +35,7 @@ from typing import Any, Callable, Optional, Union
 logger = logging.getLogger(__name__)
 
 SERVER_NAME = "pbirb-mcp"
-SERVER_VERSION = "0.4.1"
+SERVER_VERSION = "0.5.0"
 
 
 def _auto_verify_enabled() -> bool:

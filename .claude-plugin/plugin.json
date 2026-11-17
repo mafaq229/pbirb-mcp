@@ -1,7 +1,7 @@
 {
   "name": "pbirb-mcp",
   "displayName": "Power BI Report Builder (RDL)",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "MCP server for editing Power BI Report Builder paginated reports (RDL)",
   "author": {
     "name": "Muhammad Afaq",

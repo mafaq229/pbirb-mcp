@@ -6,12 +6,12 @@
     "url": "https://github.com/mafaq229/pbirb-mcp",
     "source": "github"
   },
-  "version": "0.4.1",
+  "version": "0.5.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "pbirb-mcp",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
