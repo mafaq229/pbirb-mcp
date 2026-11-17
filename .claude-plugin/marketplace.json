@@ -9,8 +9,8 @@
     {
       "name": "pbirb-mcp",
       "source": "./",
-      "description": "MCP server for editing Power BI Report Builder paginated reports (RDL) — 140+ tools covering datasets, charts, layout, grouping, sorting, styling, page setup, parameters, transactions, and validation.",
-      "version": "0.4.1",
+      "description": "MCP server for editing Power BI Report Builder paginated reports (RDL) — 160+ tools covering datasets, charts, layout, grouping, sorting, styling, page setup, parameters, transactions, and validation.",
+      "version": "0.5.0",
       "homepage": "https://github.com/mafaq229/pbirb-mcp",
       "license": "MIT",
       "keywords": [

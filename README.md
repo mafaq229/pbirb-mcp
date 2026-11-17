@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 An MCP server for editing **Power BI Report Builder paginated reports** (`.rdl`)
-through Claude (Desktop, CLI, or any MCP client). 140+ tools cover the gaps
+through Claude (Desktop, CLI, or any MCP client). 160+ tools cover the gaps
 that otherwise force hand-written XML: report creation, data sources and
 datasets, calculated fields, dataset and tablix filters, groupings (row,
 column, matrix), sorting, charts, headers and footers, body composition,
@@ -102,7 +102,7 @@ holding your reports (on Windows e.g. `"C:\\Users\\you\\Reports"`; separate
 several with `:` on macOS/Linux, `;` on Windows). See
 [Security defaults](#security-defaults).
 
-Restart Claude Desktop. The hammer icon should show `pbirb` and the 140+ tools
+Restart Claude Desktop. The hammer icon should show `pbirb` and the 160+ tools
 listed below.
 
 To enable file logging, add `PBIRB_MCP_LOG_FILE` to the `env` block — but keep
